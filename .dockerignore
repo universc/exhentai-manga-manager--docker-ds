@@ -1,0 +1,25 @@
+# ---------- 依赖与构建产物(镜像内重新安装/构建) ----------
+node_modules
+dist
+out
+
+# ---------- 本地数据(不应进入镜像) ----------
+data
+portable
+screenshots
+安装包
+
+# ---------- VCS / 编辑器 ----------
+.git
+.github
+*.md
+.vscode
+.idea
+*.iml
+
+# ---------- 日志与临时文件 ----------
+*.log
+electron_err.txt
+electron_out.txt
+electron_run.log
+*.tmp
