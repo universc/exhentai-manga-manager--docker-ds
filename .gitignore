@@ -13,7 +13,8 @@ dist-ssr
 out
 *.local
 data
-secret_key.json
+# secret_key.json 是前端构建必需(Setting.vue import gh_token),提交空 token 占位;
+# ⚠️ 填入真实 token 后请勿 commit(构建后 token 会打进前端产物,建议用空占位+运行时环境变量)
 resources/extraResources/manga_reader.exe
 temp
 
