@@ -1694,7 +1694,7 @@ const testProxy = async () => {
 }
 
 const autoCheckUpdates = async (forceShowDialog) => {
-  await fetch('https://api.github.com/repos/universc/emm-dafeiyu-edition/releases/latest', {
+  await fetch('https://api.github.com/repos/universc/exhentai-manga-manager--docker-ds/releases/latest', {
     headers: {
       'Accept': 'application/vnd.github+json',
       'Authorization': 'Bearer ' + gh_token,
