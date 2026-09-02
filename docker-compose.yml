@@ -1,0 +1,49 @@
+# ============================================================
+# exhentai-manga-manager 网页版 - Docker Compose 配置
+#
+# 用法:
+#   1. 把整个项目文件夹传到飞牛 NAS(例如 /vol1/1000/docker/exhentai-manga-manager)
+#   2. 修改下方 volumes 中的漫画库/数据目录为你 NAS 上的实际路径
+#   3. SSH 登录 NAS 后执行: docker compose up -d --build
+#   4. 浏览器访问 http://NAS的IP:10000
+#
+# 或在飞牛 fnOS 的 应用商店 → 自定义应用中粘贴本文件(需先手动构建镜像,
+# 详见 docker/README.md 方案 B)。
+#
+# 本机已部署的路径(按需修改):
+#   数据目录: /vol3/1000/01/01-漫画/S/数据存放 → 容器 /data
+#   漫画库:   /vol3/1000/01/01-漫画             → 容器 /library
+# ============================================================
+services:
+  exhentai-manga-manager:
+    build: .
+    image: exhentai-manga-manager:1.6.16
+    container_name: exhentai-manga-manager
+    restart: unless-stopped
+
+    ports:
+      # 网页管理界面(电脑/手机浏览器访问)
+      - "10000:10000"
+
+    environment:
+      # 数据目录(设置、sqlite 数据库、封面、阅读缓存、日志)
+      WEB_DATA_DIR: /data
+      # 默认漫画库路径:首次启动会写入 setting.json;
+      # 之后可在网页 设置 → 漫画库 中改为 /library 下的任意子目录
+      LIBRARY_DIR: /library
+      # 容器模式:强制库路径为 /library,并兼容 Windows 共享数据库的路径互译
+      WEB_LIBRARY: /library
+      WEB_PORT: "10000"
+      # 账户系统:首次启动时用以下变量创建管理员账户,
+      # 之后可在网页 设置 → 账户 中管理(添加只读的普通账户 / 删除 / 重置密码)。
+      # 不配置则账户系统不启用,保持匿名访问。
+      WEB_ADMIN_USER: universc
+      WEB_ADMIN_PASSWORD: CHANGE_ME_PASSWORD
+      # 时区,按需修改
+      TZ: Asia/Shanghai
+
+    volumes:
+      # 数据持久化(数据库/封面/设置)
+      - /vol3/1000/01/01-漫画/S/数据存放:/data
+      # 漫画库
+      - /vol3/1000/01/01-漫画:/library

@@ -1,0 +1,114 @@
+const fs = require('fs')
+const path = require('node:path')
+const { nanoid } = require('nanoid')
+const { createHash } = require('crypto')
+const sharp = require('sharp')
+const { getFolderlist, solveBookTypeFolder, getImageListFromFolder, deleteImageFromFolder } = require('./folder.js')
+const { getArchivelist, solveBookTypeArchive, getImageListFromArchive, deleteImageFromArchive } = require('./archive.js')
+const { getZipFilelist, solveBookTypeZip, getImageListFromZip } = require('./zip.js')
+const { TEMP_PATH, COVER_PATH, VIEWER_PATH } = require('../modules/init_folder_setting.js')
+
+// 流式计算文件 sha1:边读边哈希,避免把整张原图载入内存
+// (对几十 MB 的大图和并发扫描尤其重要)
+const sha1File = async (filePath) => {
+  const hash = createHash('sha1')
+  await new Promise((resolve, reject) => {
+    const stream = fs.createReadStream(filePath)
+    stream.on('data', d => hash.update(d))
+    stream.on('end', resolve)
+    stream.on('error', reject)
+  })
+  return hash.digest('hex')
+}
+
+const getBookFilelist = async (library) => {
+  // 三类遍历并行执行(全部异步,不阻塞主进程),总耗时由三者之和降为最慢者
+  const [folderList, archiveList, zipList] = await Promise.all([
+    getFolderlist(library),
+    getArchivelist(library),
+    getZipFilelist(library)
+  ])
+  return [
+    ...folderList.map(filepath => ({ filepath, type: 'folder' })),
+    ...archiveList.map(filepath => ({ filepath, type: 'archive' })),
+    ...zipList.map(filepath => ({ filepath, type: 'zip' })),
+  ]
+}
+
+// coverName 三态:undefined=旧行为(扫描即生成,nanoid 文件名);
+// null=懒加载模式(只探测第一页信息,不生成封面文件,coverPath 为 null);
+// 字符串=以指定文件名生成封面(如「漫画名.webp」)
+const geneCover = async (filepath, type, coverName) => {
+  let targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime
+  switch (type) {
+    case 'folder':
+      ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeFolder(filepath, TEMP_PATH, COVER_PATH, coverName))
+      break
+    case 'zip':
+      try {
+        ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeArchive(filepath, TEMP_PATH, COVER_PATH, coverName))
+      } catch (e) {
+        console.log(e)
+        console.log(`reload ${filepath} use adm-zip`)
+        ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeZip(filepath, TEMP_PATH, COVER_PATH, coverName))
+      }
+      break
+    case 'archive':
+      ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeArchive(filepath, TEMP_PATH, COVER_PATH, coverName))
+      break
+  }
+
+  const coverHash = await sha1File(tempCoverPath)
+  if (!coverPath) {
+    // 懒加载模式:只探测信息,不生成封面文件
+    return { targetFilePath, coverPath: null, pageCount, bundleSize, mtime, coverHash }
+  }
+  const copyTempCoverPath = path.join(TEMP_PATH, nanoid(8) + path.extname(tempCoverPath))
+  await fs.promises.copyFile(tempCoverPath, copyTempCoverPath)
+  await sharp(copyTempCoverPath, { failOnError: false })
+    .resize(500, 707, {
+      fit: 'contain',
+      background: '#303133'
+    })
+    .toFile(coverPath)
+  return { targetFilePath, coverPath, pageCount, bundleSize, mtime, coverHash }
+}
+
+const getImageListByBook = async (filepath, type) => {
+  switch (type) {
+    case 'folder':
+      return await getImageListFromFolder(filepath, VIEWER_PATH)
+    case 'zip':
+      // zip 优先用 adm-zip 内存解压(更快),失败回退 7z
+      try {
+        return await getImageListFromZip(filepath, VIEWER_PATH)
+      } catch (e) {
+        console.log(`zip fallback to 7z: ${filepath}`)
+        return await getImageListFromArchive(filepath, VIEWER_PATH)
+      }
+    case 'archive':
+      return await getImageListFromArchive(filepath, VIEWER_PATH)
+    default:
+      return await getImageListFromArchive(filepath, VIEWER_PATH)
+  }
+}
+
+const deleteImageFromBook = async (filename, filepath, type) => {
+  switch (type) {
+    case 'folder':
+      return await deleteImageFromFolder(filename, filepath)
+    case 'zip':
+    case 'archive':
+      return await deleteImageFromArchive(filename, filepath)
+    default:
+      return await deleteImageFromArchive(filename, filepath)
+  }
+}
+
+module.exports = {
+  getBookFilelist,
+  geneCover,
+  getImageListByBook,
+  deleteImageFromBook,
+  sha1File
+}
