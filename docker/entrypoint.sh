@@ -79,7 +79,7 @@ if [ ! -f "$DATA_DIR/setting.json" ]; then
   "themeCustomFontColor": "",
   "themeCustomFontStyle": "",
   "customIconPath": "",
-  "toolbarButtons": ["folderTree", "search", "shuffle", "manualScan", "batchMetadata", "tagAnalysis", "manageCollection", "manageTag", "viewerSwitch", "themeSwitch"],
+  "toolbarButtons": ["folderTree", "search", "shuffle", "manualScan", "incrementalScan", "batchMetadata", "tagAnalysis", "manageCollection", "manageTag", "viewerSwitch", "themeSwitch"],
   "customPageSizes": "12,24,42,72,500,5000,1000000",
   "scrollInertiaLevel": "medium",
   "enableImageUpscale": false,

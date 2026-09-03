@@ -1,5 +1,7 @@
 <template>
-  <div class="book-card" :class="{'cover-only': coverOnly}">
+  <div class="book-card" :class="{'fill-cover': fillCover}">
+    <!-- ================= 经典卡片布局(默认;原版布局原样保留) ================= -->
+    <template v-if="!fillCover">
     <p class="book-title" v-if="!setting.hideTitle"
       @click="$emit('openBookDetail')"
       @contextmenu="onMangaTitleContextMenu($event, book)"
@@ -50,6 +52,62 @@
       >{{book.status}}</el-tag>
       <el-rate v-if="!setting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole" @change="saveBook(Object.assign({}, book, {rating: bookRating}))"/>
     </div>
+    </template>
+    <!-- ================= 填充封面布局(设置 → 显示选项「填充封面」打开后) ================= -->
+    <!-- 封面铺满整卡;阅读数/页数/阅·读按钮/状态/评分/收藏标签全部透明浮在图上(无白底) -->
+    <template v-else>
+      <img
+        class="book-cover-fill"
+        :src="book.coverPath"
+        @click="$emit('handleClickCover')"
+        @contextmenu="$emit('onBookContextMenu', $event, book)"
+        @error="onCoverError"
+      />
+      <div class="fill-top" v-if="fillTopShown || (!setting.hideBookmarkButton && !viewerRole)">
+        <el-tag class="fill-badge" size="small" v-if="!setting.hideReadCount"
+          @click="$emit('handleSearchString', `:count=${book.readCount}`)"
+        >{{book.readCount}}</el-tag>
+        <p class="fill-title" v-if="!setting.hideTitle"
+          @click="$emit('openBookDetail')"
+          @contextmenu="onMangaTitleContextMenu($event, book)"
+          :title="getDisplayTitle(book)"
+        >{{getDisplayTitle(book)}}</p>
+        <!-- 收藏按钮:与角标/标题同一行;标题在角标与收藏按钮之间居中,
+             隐藏任一侧时标题自动伸展填补空位 -->
+        <el-icon
+          v-if="!setting.hideBookmarkButton && !viewerRole"
+          :size="24"
+          :color="book.mark ? '#F7BA2A' : '#ffffff'"
+          class="fill-mark"
+          @click="switchMark(book)"
+        ><BookmarkTwotone /></el-icon>
+      </div>
+      <div class="fill-footer" v-if="fillFooterShown">
+        <!-- 阅读/页数/标签/评分尽量排在一行,放不下自动换行,换出的行居中 -->
+        <div class="footer-row" v-if="fillRow1Shown || !setting.hideRating">
+          <el-tag
+            v-for="tag in filterCollectTag(book.tags)" :key="tag.id"
+            @click="$emit('searchFromTag', tag.tag, tag.cat)"
+            class="book-collect-tag"
+            :color="tag.color"
+            size="small"
+            effect="dark"
+          >{{tag.letter}}:{{resolvedTranslation[tag.cat]?.[tag.tag]?.name || tag.tag}}</el-tag>
+          <el-tag class="fill-badge" size="small" v-if="!setting.hidePageCount && book.pageDiff" @click="$emit('handleSearchString', 'pageDiff')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
+          <el-tag class="fill-badge" size="small" v-else-if="!setting.hidePageCount" @click="$emit('handleSearchString', 'pageDiff')">{{ book.pageCount }}P</el-tag>
+          <el-button-group class="outer-read-button-group" v-if="!setting.hideReadButton">
+            <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('openLocalBook')">{{$t('m.re')}}</el-button>
+            <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('viewManga')">{{$t('m.ad')}}</el-button>
+          </el-button-group>
+          <el-tag
+            v-if="!setting.hideNonTag"
+            class="fill-badge"
+            @click="$emit('searchFromTag', book.status)"
+          >{{book.status}}</el-tag>
+          <el-rate v-if="!setting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole" @change="saveBook(Object.assign({}, book, {rating: bookRating}))"/>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -68,10 +126,21 @@ const { getDisplayTitle, isChineseTranslatedManga, saveBook, switchMark } = appS
 
 const { t } = useI18n()
 
-// 纯图片模式:所有隐藏项都勾选时,封面铺满卡片
-const coverOnly = computed(() => {
+// 填充封面开关(设置 → 显示选项「填充封面」):开 = 封面铺满卡片、文字/按钮透明浮层
+const fillCover = computed(() => !!setting.value.fillCover)
+
+// 填充布局:顶部/底部浮层是否有内容(各元素显隐由独立开关控制,互相不联动)
+const fillTopShown = computed(() => {
   const s = setting.value
-  return !!(s.hideBookmarkButton && s.hidePageCount && s.hideReadCount && s.hideReadButton && s.hideNonTag && s.hideTitle)
+  return !s.hideTitle || !s.hideReadCount
+})
+const fillRow1Shown = computed(() => {
+  const s = setting.value
+  return filterCollectTag(props.book.tags).length > 0 || !s.hidePageCount || !s.hideReadButton || !s.hideNonTag
+})
+const fillFooterShown = computed(() => {
+  const s = setting.value
+  return fillRow1Shown.value || !s.hideRating
 })
 
 // 网页版(Docker)只读账户:隐藏收藏/评分(写操作)
@@ -154,7 +223,7 @@ const onMangaTitleContextMenu = (e, book) => {
   padding-bottom: 4px
   border: solid 1px var(--el-border-color)
   border-radius: 6px
-  margin: var(--emm-card-gap, 6px)
+  margin: var(--emm-card-gap-v, var(--emm-card-gap, 6px)) var(--emm-card-gap-h, var(--emm-card-gap, 6px))
   position: relative
   // 悬停上浮 + 阴影,更丝滑
   transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease
@@ -231,4 +300,139 @@ const onMangaTitleContextMenu = (e, book) => {
 .el-rate
   display: inline-block
   height: 18px
+
+// ============ 填充封面布局(设置「填充封面」打开后;经典布局不受影响) ============
+// 封面铺满整卡,所有信息为透明浮层(无白底块),上/下缘黑色渐变兜底保证可读
+.book-card.fill-cover
+  // 高度来自「封面高度」设置(经典布局不受影响,高度由内容自适应)
+  height: var(--emm-cover-height, calc(var(--emm-cover-size, 220px) * 1.5 + 36px))
+  padding: 0
+  overflow: hidden
+  background: #2b2d31
+  border-radius: 8px
+  .book-cover-fill
+    // 封面放大铺满卡片框,再居中放大 ~15%:旧封面文件自带的深色边缘(黑边)
+    // 会被推出画面裁掉,避免"内容小 + 四周黑"的观感
+    position: absolute
+    top: 0
+    left: 0
+    width: 100%
+    height: 100%
+    object-fit: cover
+    display: block
+    transform: scale(1.15)
+  // 顶部浮层:阅读数角标 + 标题 + 收藏按钮同一行。
+  // 标题始终在"角标 ~ 收藏按钮"之间的可用区居中;任一侧隐藏,标题自动伸展填补空位
+  .fill-top
+    position: absolute
+    top: 0
+    left: 0
+    right: 0
+    z-index: 2
+    display: flex
+    align-items: flex-start
+    gap: 6px
+    padding: 6px 8px 18px
+    background: linear-gradient(180deg, rgba(0, 0, 0, .55), rgba(0, 0, 0, 0))
+    pointer-events: none
+    // 阅读数角标(左上,随开关显隐)
+    .fill-badge
+      flex: 0 0 auto
+      pointer-events: auto
+      margin-top: 1px
+    .fill-title
+      flex: 1 1 auto
+      min-width: 0
+      margin: 0
+      color: #fff
+      font-size: 13px
+      line-height: 1.4
+      cursor: pointer
+      text-shadow: 0 1px 2px rgba(0, 0, 0, .85)
+      pointer-events: auto
+      text-align: center
+      display: -webkit-box
+      -webkit-box-orient: vertical
+      -webkit-line-clamp: 2
+      overflow: hidden
+      word-break: break-all
+      &:hover
+        color: #ffd04b
+    // 收藏按钮(右上,随开关显隐;与角标、标题同一行)
+    .fill-mark
+      flex: 0 0 auto
+      pointer-events: auto
+      cursor: pointer
+      padding: 2px
+      margin-top: 1px
+      filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .8))
+      transition: transform .15s ease
+      &:hover
+        transform: scale(1.15)
+  // 底部浮层
+  .fill-footer
+    position: absolute
+    bottom: 0
+    left: 0
+    right: 0
+    z-index: 2
+    padding: 18px 6px 6px
+    background: linear-gradient(0deg, rgba(0, 0, 0, .6) 0%, rgba(0, 0, 0, .35) 55%, rgba(0, 0, 0, 0) 100%)
+    .footer-row
+      display: flex
+      flex-wrap: wrap
+      justify-content: center
+      align-items: center
+      gap: 4px 5px
+      // 元素尽可能挤在一排;放不下自动换行,换出的行居中
+  // 透明徽标(阅读数/页数/状态):半透明黑底 + 白字,无白底
+  .fill-badge
+    flex: 0 0 auto
+    cursor: pointer
+    background: rgba(0, 0, 0, .36) !important
+    border: 1px solid rgba(255, 255, 255, .28) !important
+    color: #fff !important
+    font-weight: 600
+    border-radius: 4px
+    padding: 0 5px
+    height: 20px
+    line-height: 18px
+    box-shadow: none
+    text-shadow: 0 1px 1px rgba(0, 0, 0, .5)
+    &:hover
+      background: rgba(255, 255, 255, .25) !important
+  // 收藏标签:保留自定义彩色信息色
+  .book-collect-tag
+    flex: 0 0 auto
+    cursor: pointer
+    border-width: 0
+    opacity: .94
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .35)
+  // 阅/读按钮:透明浮层(无白底)
+  .outer-read-button-group
+    flex: 0 0 auto
+    .el-button.is-plain
+      background: rgba(0, 0, 0, .22)
+      border-color: rgba(255, 255, 255, .65)
+      color: #fff
+      text-shadow: 0 1px 1px rgba(0, 0, 0, .6)
+      &:hover
+        background: rgba(255, 255, 255, .3)
+        border-color: #fff
+    .outer-read-button:first-child
+      padding: 0 0 0 6px
+    .outer-read-button + .outer-read-button
+      padding: 0 6px 0 0
+  // 评分:透明,未选星半透明白,选中保持金色
+  .el-rate
+    height: 22px
+    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, .7))
+    .el-rate__item
+      color: rgba(255, 255, 255, .8)
+      cursor: pointer
+    .el-rate__icon.is-active
+      color: #f7ba2a
+    &.is-disabled .el-rate__item
+      color: rgba(255, 255, 255, .55)
+      cursor: auto
 </style>

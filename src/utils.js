@@ -211,14 +211,23 @@ const applyAppName = (setting) => {
 }
 
 // 应用封面尺寸与卡片间距(通过 CSS 变量)
+// coverWidth/coverHeight:封面(卡片)宽/高;经典布局高度自动,coverHeight 仅"填充封面"生效
+// cardGapV/cardGapH:卡片间距(上下)/(左右);旧 cardGap 单值自动兼容
 const applyCoverStyle = (setting) => {
   if (typeof document === 'undefined') return
   const root = document.documentElement
   const s = setting || {}
   const size = Number(s.coverWidth) > 0 ? Number(s.coverWidth) : 220
-  const gap = Number(s.cardGap) >= 0 ? Number(s.cardGap) : 6
+  const height = Number(s.coverHeight) > 0 ? Number(s.coverHeight) : 360
+  const oldGap = Number(s.cardGap) >= 0 ? Number(s.cardGap) : 6
+  const gapV = Number(s.cardGapV) >= 0 ? Number(s.cardGapV) : oldGap
+  const gapH = Number(s.cardGapH) >= 0 ? Number(s.cardGapH) : oldGap
   root.style.setProperty('--emm-cover-size', size + 'px')
-  root.style.setProperty('--emm-card-gap', gap + 'px')
+  root.style.setProperty('--emm-cover-height', height + 'px')
+  root.style.setProperty('--emm-card-gap-v', gapV + 'px')
+  root.style.setProperty('--emm-card-gap-h', gapH + 'px')
+  // 兼容旧引用
+  root.style.setProperty('--emm-card-gap', gapV + 'px')
 }
 
 // ---------- 工具栏按钮 ----------
@@ -227,6 +236,7 @@ const toolbarButtonDefinitions = [
   { id: 'folderTree', labelKey: 'm.folderTree' },
   { id: 'shuffle', labelKey: 'm.shuffle' },
   { id: 'manualScan', labelKey: 'm.manualScan' },
+  { id: 'incrementalScan', labelKey: 'm.incrementalScan' },
   { id: 'batchMetadata', labelKey: 'm.batchGetMetadata' },
   { id: 'tagAnalysis', labelKey: 'm.tagAnalysis' },
   { id: 'manageCollection', labelKey: 'm.manageCollection' },
@@ -293,11 +303,14 @@ const defaultUiSettings = () => ({
   hideNonTag: false,
   hideTitle: false,
   hideRating: false,
-  coverOnly: false,
+  // 填充封面(开关):开 = 封面铺满卡片、文字/按钮透明浮层;关 = 经典卡片布局
+  fillCover: false,
   coverWidth: 220,
-  cardGap: 6,
-  // 封面懒加载:扫描不生成封面,用户浏览时按需生成(以漫画名命名)
-  lazyCover: true,
+  // 封面高度:填充封面布局的固定卡片高度(经典布局高度由内容自适应)
+  coverHeight: 360,
+  // 卡片间距(上下)/(左右)
+  cardGapV: 6,
+  cardGapH: 6,
   themeCustomBg: '',
   themeCustomBgImage: '',
   themeCustomPrimary: '#409EFF',

@@ -10,12 +10,15 @@
 # ---------- Stage 1: 安装运行时依赖 ----------
 FROM node:18-bookworm-slim AS deps
 
-# 国内镜像加速:sharp 的 libvips / 预编译二进制 与 sqlite3 预编译二进制走 npmmirror
-# (GitHub releases 直连在国内网络经常超时,导致 npm ci 失败)
-ENV npm_config_sharp_libvips_binary_host=https://npmmirror.com/mirrors/sharp-libvips \
+# 国内镜像加速:npm registry + sharp 的 libvips / 预编译二进制 与 sqlite3 预编译二进制走 npmmirror
+# (GitHub releases 直连在国内网络经常超时,导致 npm ci 失败;electron 二进制下载同理)
+ENV npm_config_registry=https://registry.npmmirror.com \
+    npm_config_sharp_libvips_binary_host=https://npmmirror.com/mirrors/sharp-libvips \
     SHARP_LIBVIPS_BINARY_HOST=https://npmmirror.com/mirrors/sharp-libvips \
     npm_config_sharp_binary_host=https://registry.npmmirror.com/-/binary/sharp \
-    npm_config_sqlite3_binary_host_mirror=https://npmmirror.com/mirrors/sqlite3
+    npm_config_sqlite3_binary_host_mirror=https://npmmirror.com/mirrors/sqlite3 \
+    ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
+    ELECTRON_CUSTOM_DIR="{{ version }}"
 
 # sqlite3 需要编译工具链,作为其预编译二进制下载失败时的兜底
 RUN apt-get update \

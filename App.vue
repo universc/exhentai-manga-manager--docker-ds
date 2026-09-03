@@ -217,7 +217,7 @@
 import { defineComponent } from 'vue'
 import { Setting as SettingIcon, FullScreen, Edit } from '@element-plus/icons-vue'
 import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular } from '@vicons/fluent'
-import { MdShuffle, MdRefresh, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone } from '@vicons/ionicons4'
+import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
 import { getWidth, fetchRecentReads, isContextMenuItemEnabled, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, parsePageSizes } from './utils.js'
@@ -335,6 +335,7 @@ export default defineComponent({
         folderTree: { icon: TreeViewAlt, titleKey: 'm.folderTree', loading: false, action: () => this.$refs.FolderTreeRef.openFolderTree() },
         shuffle: { icon: MdShuffle, titleKey: 'm.shuffle', loading: false, action: () => this.shuffleBook() },
         manualScan: { icon: MdRefresh, titleKey: 'm.manualScan', loading: this.buttonLoadBookListLoading || this.scanning, action: () => this.loadBookList(true) },
+        incrementalScan: { icon: MdSync, titleKey: 'm.incrementalScan', loading: this.scanning, action: () => this.incrementalScan() },
         batchMetadata: { icon: MdCodeDownload, titleKey: 'm.batchGetMetadata', loading: this.buttonGetMetadatasLoading, action: () => this.getBookListMetadata() },
         tagAnalysis: { icon: ArrowTrendingLines20Filled, titleKey: 'm.tagAnalysis', loading: false, action: () => this.$refs.TagGraphRef.displayTagGraph() },
         manageCollection: { icon: CicsSystemGroup, titleKey: 'm.manageCollection', loading: false, action: () => this.$refs.EditViewRef.enterEditCollectionView() },
@@ -346,7 +347,7 @@ export default defineComponent({
         ? this.setting.toolbarButtons
         : defaultToolbarButtons()
       // 只读账户:隐藏写操作类按钮(扫描/批量元数据/合集编辑/标签编辑),服务端同样会拦截
-      const viewerBlock = new Set(['manualScan', 'batchMetadata', 'manageCollection', 'manageTag'])
+      const viewerBlock = new Set(['manualScan', 'incrementalScan', 'batchMetadata', 'manageCollection', 'manageTag'])
       return order.filter(id => map[id] && !(this.viewerRole && viewerBlock.has(id))).map(id => map[id])
     },
     // 网页版标志(Vue 模板不能直接访问 window,需经 computed)
@@ -454,6 +455,15 @@ export default defineComponent({
     ipcRenderer.invoke('load-setting')
     .then(async (res) => {
       this.setting = res
+      // 新版本自动把「增量扫描」按钮补进工具栏(紧跟手动扫描;之后可在设置中拖出)
+      if (Array.isArray(res.toolbarButtons) && !res.toolbarButtons.includes('incrementalScan')) {
+        const list = [...res.toolbarButtons]
+        const idx = list.indexOf('manualScan')
+        list.splice(idx >= 0 ? idx + 1 : list.length, 0, 'incrementalScan')
+        res.toolbarButtons = list
+        this.setting = res
+        ipcRenderer.invoke('save-setting', _.cloneDeep(res))
+      }
       // 应用名称 / 自定义主题 / 自定义图标 / 封面尺寸
       applyAppName(this.setting)
       applyCoverStyle(this.setting)
@@ -851,6 +861,21 @@ export default defineComponent({
       } catch (error) {
         this.buttonLoadBookListLoading = false
         console.error(error)
+      }
+      // 扫描已后台化:扫描完成由 'Scan complete' 消息触发刷新与提示
+    },
+    // 增量扫描:只对目录指纹变化的子树做 diff,无快照时服务端自动退化为全量扫描
+    async incrementalScan () {
+      try {
+        this.buttonLoadBookListLoading = true
+        this.scanning = true
+        await ipcRenderer.invoke('incremental-scan')
+      } catch (e) {
+        this.scanning = false
+        this.printMessage('error', String(e?.message || e))
+        console.error(e)
+      } finally {
+        this.buttonLoadBookListLoading = false
       }
       // 扫描已后台化:扫描完成由 'Scan complete' 消息触发刷新与提示
     },

@@ -91,6 +91,7 @@
     "importMetadata": "Restore Metadata",
     "importMetadataFromSqlite": "Import api_dump.sqlite",
     "manualScan": "Manual Scan",
+    "incrementalScan": "Incremental Scan",
     "onStartScan": "Scan on Start",
     "startOnLogin": "Start on Login",
     "comment": "Comment",

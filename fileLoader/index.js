@@ -65,10 +65,12 @@ const geneCover = async (filepath, type, coverName) => {
   }
   const copyTempCoverPath = path.join(TEMP_PATH, nanoid(8) + path.extname(tempCoverPath))
   await fs.promises.copyFile(tempCoverPath, copyTempCoverPath)
+  // 封面按 500×707 居中裁切(fit: cover),而不是 contain 留底色边:
+  // contain 会让横图/异形封面上下(左右)带 #303133 黑边,在"填充封面"布局里很难看。
+  // 已有封面文件不受影响,重新扫描/修补封面后会按新规则生成。
   await sharp(copyTempCoverPath, { failOnError: false })
     .resize(500, 707, {
-      fit: 'contain',
-      background: '#303133'
+      fit: 'cover'
     })
     .toFile(coverPath)
   return { targetFilePath, coverPath, pageCount, bundleSize, mtime, coverHash }

@@ -91,6 +91,7 @@
     "importMetadata": "還原元數據",
     "importMetadataFromSqlite": "匯入api_dump.sqlite",
     "manualScan": "手動掃描",
+    "incrementalScan": "增量掃描",
     "onStartScan": "啟動時掃描",
     "startOnLogin": "開機啟動",
     "comment": "評論",

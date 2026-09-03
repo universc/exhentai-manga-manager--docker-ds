@@ -1093,7 +1093,7 @@ import { ref, onMounted, h, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
 import draggable from 'vuedraggable'
-import { MdRefresh, MdShuffle, MdCodeDownload, MdBook, MdColorPalette } from '@vicons/ionicons4'
+import { MdRefresh, MdSync, MdShuffle, MdCodeDownload, MdBook, MdColorPalette } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 import { Search32Filled, ArrowTrendingLines20Filled } from '@vicons/fluent'
 
@@ -1165,6 +1165,7 @@ const toolbarIconMap = {
   search: Search32Filled,
   shuffle: MdShuffle,
   manualScan: MdRefresh,
+  incrementalScan: MdSync,
   batchMetadata: MdCodeDownload,
   tagAnalysis: ArrowTrendingLines20Filled,
   manageCollection: CicsSystemGroup,

@@ -78,8 +78,6 @@ const prepareSetting = () => {
       imageExplorer: _mange_reader,
       pageSize: 42,
       loadOnStart: false,
-      // 封面懒加载:扫描不生成封面,用户浏览时按需生成(以漫画名命名)
-      lazyCover: true,
       // Windows 客户端:开机自启动 / 窗口置顶 / 全局快捷键(显示/隐藏窗口)
       startOnLogin: false,
       alwaysOnTop: false,
@@ -139,10 +137,13 @@ const prepareSetting = () => {
       hideNonTag: false,
       hideTitle: false,
       hideRating: false,
-      coverOnly: false,
-      // 封面尺寸与卡片间距(px)
+      // 填充封面(开关):开 = 封面铺满卡片、文字/按钮透明浮层;关 = 经典卡片布局
+      fillCover: false,
+      // 封面尺寸与卡片间距(px):宽/高独立;间距分上下/左右
       coverWidth: 220,
-      cardGap: 6,
+      coverHeight: 360,
+      cardGapV: 6,
+      cardGapH: 6,
       // 自定义主题
       themeCustomBg: '',
       themeCustomBgImage: '',
@@ -153,7 +154,7 @@ const prepareSetting = () => {
       // 自定义网站图标
       customIconPath: '',
       // 工具栏按钮(设置按钮始终保留)
-      toolbarButtons: ['folderTree', 'search', 'shuffle', 'manualScan', 'batchMetadata', 'tagAnalysis', 'manageCollection', 'manageTag', 'viewerSwitch', 'themeSwitch'],
+      toolbarButtons: ['folderTree', 'search', 'shuffle', 'manualScan', 'incrementalScan', 'batchMetadata', 'tagAnalysis', 'manageCollection', 'manageTag', 'viewerSwitch', 'themeSwitch'],
       // 每页条数选项
       customPageSizes: '12,24,42,72,500,5000,1000000',
       // 惯性滚动力度:off / low / medium / high

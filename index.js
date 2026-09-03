@@ -29,11 +29,15 @@ const {
   _mange_reader
 } = require('./modules/init_folder_setting.js')
 const { findSameFile } = require('./fileLoader/folder.js')
+const { inventoryLibrary, diffInventory, snapshotFromInventory, loadSnapshotFile, saveSnapshotFile, archiveTypeOf } = require('./fileLoader/incremental.js')
 
 const WEB_MODE = process.env.WEB_MODE === '1'
 
 preparePath()
 let setting = prepareSetting()
+
+// 增量扫描目录指纹快照(存于共享数据目录;路径随环境不同,快照内部记录 library 以自校验)
+const SNAPSHOT_FILE = path.join(STORE_PATH, 'scan-snapshot.json')
 
 // 容器模式(WEB_LIBRARY 环境变量):数据目录挂载为 /data、漫画库挂载为 /library,
 // 但共享的 setting.json 可能是 Windows 桌面版写的(库路径如 Y:\01-漫画)。
@@ -873,8 +877,10 @@ const translateBookPath = (p, kind) => {
     const rel = p.slice(root.length).replace(/\\/g, '/').replace(/^\/+/, '')
     return rel ? path.join(setting.library, rel) : setting.library
   }
-  if (kind === 'coverPath' && (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\'))) {
-    // Windows 封面绝对路径 → 只取文件名,映射到当前 COVER_PATH
+  if (kind === 'coverPath' && (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\') || p.startsWith('/'))) {
+    // 封面绝对路径(Windows 盘符 / UNC / Linux 如 /data/cover/...) →
+    // 只取文件名,映射到当前 COVER_PATH(封面文件统一存在共享 cover 目录,
+    // NAS 端写入的 /data/cover/x.webp 在 Windows 桌面也能据此读到)
     const base = p.split(/[\\/]/).pop()
     return base ? path.join(COVER_PATH, base) : p
   }
@@ -1167,9 +1173,90 @@ ipcMain.handle('set-viewer-active', (event, active) => {
   viewerActive = !!active
 })
 
+// 编译排除规则正则(非法正则返回 null,与旧逻辑一致:忽略该规则)
+const compileExclude = () => {
+  if (_.isEmpty(setting.excludeFile)) return null
+  try {
+    return new RegExp(setting.excludeFile)
+  } catch {
+    console.log('Illegal regular expressions')
+    return null
+  }
+}
+
+// 共享:处理一本"枚举结果"漫画的 DB 比对(全量扫描与增量扫描共用)
+// 命中数据库 → 标记 exist;路径未命中但找到"搬家" → 更新 filepath 沿用封面;
+// 全新 → geneCover 探测并推入 batchNewBooks(由调用方批量入库)
+// 封面懒加载为固定行为:扫描只探测信息不生成封面(geneCover 传 null),
+// 封面由用户浏览时按需生成(见 ensureBookCover),不再提供切换开关
+const processScanItem = async (ctx, filepath, type) => {
+  const { bookMap, bookIdMap, batchNewBooks } = ctx
+  const foundData = bookMap.get(filepath)
+  if (foundData === undefined) {
+    /*
+    * check whether the file is the relocated only
+    * return the existing data if and only if there is one match
+    * */
+    const existingManga = await findSameFile(filepath, type, Manga)
+    if (existingManga) {
+      // the file is relocated only, so no need to regenerate the cover
+      const foundPrevBook = bookIdMap.get(existingManga.id)
+      if (foundPrevBook) {
+        // this is necessary otherwise it will be deleted in the next step
+        foundPrevBook.exist = true
+        // update the Mangas table in database.sqlite(路径写 Windows 格式)
+        // 懒加载模式下旧封面可能为空:保留空,由用户使用时按需生成
+        const newCoverPath = foundPrevBook.coverPath
+          ? path.join(COVER_PATH, path.basename(foundPrevBook.coverPath))
+          : null
+        foundPrevBook.coverPath = newCoverPath
+        await Manga.update(
+          {
+            filepath: toExternalPath(filepath, 'filepath'),
+            coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath') : null
+          },
+          { where: { id: existingManga.id } }
+        )
+      }
+    } else {
+      // this is the new file, so generate the cover(懒加载:只探测信息,封面为空)
+      const id = nanoid()
+      const { targetFilePath, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null)
+      // 懒加载模式下 coverPath 为 null(封面按需生成),书仍然入库
+      if (targetFilePath) {
+        const hash = await sha1File(targetFilePath)
+        batchNewBooks.push({
+          title: path.basename(filepath),
+          coverPath,
+          hash,
+          filepath,
+          type,
+          id,
+          pageCount,
+          bundleSize,
+          mtime: mtime.toJSON(),
+          coverHash,
+          status: 'non-tag',
+          exist: true,
+          date: Date.now()
+        })
+      }
+    }
+  } else {
+    foundData.exist = true
+    if (isPortable) {
+      const newCoverPath = foundData.coverPath
+        ? path.join(COVER_PATH, path.basename(foundData.coverPath))
+        : null
+      if (foundData.coverPath !== newCoverPath) {
+        foundData.coverPath = newCoverPath
+        await Manga.update({ coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath') : null }, { where: { id: foundData.id } })
+      }
+    }
+  }
+}
+
 const runScan = async () => {
-  // 封面懒加载:开启(默认)时扫描只探测信息不生成封面,由用户浏览时按需生成
-  const lazyCover = setting.lazyCover !== false
   const bookList = await Manga.findAll({ raw: true })
   bookList.forEach(b => {
     b.filepath = translateBookPath(b.filepath, 'filepath')
@@ -1182,16 +1269,11 @@ const runScan = async () => {
 
   // 枚举阶段先给一点进度,避免界面长时间无反馈
   setProgressBar(0.02)
-  let list = await getBookFilelist(setting.library)
-  if (!_.isEmpty(setting.excludeFile)) {
-    let excludeRe
-    try {
-      excludeRe = new RegExp(setting.excludeFile)
-      list = _.filter(list, file => !excludeRe.test(file.filepath))
-    } catch {
-      console.log('Illegal regular expressions')
-    }
-  }
+  // 统一单次遍历:等价于原「文件夹并发BFS + rar/7z glob + zip glob」三次遍历,
+  // 同时产出目录/压缩包指纹,供增量扫描快照使用
+  const excludeRe = compileExclude()
+  const inv = await inventoryLibrary(setting.library, { excludeRe })
+  let list = inv.books
   const listLength = list.length
   sendMessageToWebContents(`从漫画库找到 ${listLength} 本漫画`)
 
@@ -1210,69 +1292,7 @@ const runScan = async () => {
       // 用户在阅读时暂停任务,让出 CPU/磁盘
       await waitViewerIdle()
       try {
-        const foundData = bookMap.get(filepath)
-        if (foundData === undefined) {
-          /*
-          * check whether the file is the relocated only
-          * return the existing data if and only if there is one match
-          * */
-          const existingManga = await findSameFile(filepath,type, Manga)
-          if (existingManga) {
-            // the file is relocated only, so no need to regenerate the cover
-            const foundPrevBook = bookIdMap.get(existingManga.id)
-            if (foundPrevBook) {
-              // this is necessary otherwise it will be deleted in the next step
-              foundPrevBook.exist = true
-              // update the Mangas table in database.sqlite(路径写 Windows 格式)
-              // 懒加载模式下旧封面可能为空:保留空,由用户使用时按需生成
-              const newCoverPath = foundPrevBook.coverPath
-                ? path.join(COVER_PATH, path.basename(foundPrevBook.coverPath))
-                : null
-              foundPrevBook.coverPath = newCoverPath
-              await Manga.update(
-                {
-                  filepath: toExternalPath(filepath, 'filepath'),
-                  coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath') : null
-                },
-                { where: { id: existingManga.id } }
-              )
-            }
-          } else {
-            // this is the new file, so generate the cover
-            const id = nanoid()
-            const { targetFilePath, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, lazyCover ? null : undefined)
-            // 懒加载模式下 coverPath 为 null(封面按需生成),书仍然入库
-            if (targetFilePath && (lazyCover || coverPath)) {
-              const hash = await sha1File(targetFilePath)
-              batchNewBooks.push({
-                title: path.basename(filepath),
-                coverPath,
-                hash,
-                filepath,
-                type,
-                id,
-                pageCount,
-                bundleSize,
-                mtime: mtime.toJSON(),
-                coverHash,
-                status: 'non-tag',
-                exist: true,
-                date: Date.now()
-              })
-            }
-          }
-        } else {
-          foundData.exist = true
-          if (isPortable) {
-            const newCoverPath = foundData.coverPath
-              ? path.join(COVER_PATH, path.basename(foundData.coverPath))
-              : null
-            if (foundData.coverPath !== newCoverPath) {
-              foundData.coverPath = newCoverPath
-              await Manga.update({ coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath') : null }, { where: { id: foundData.id } })
-            }
-          }
-        }
+        await processScanItem({ bookMap, bookIdMap, batchNewBooks }, filepath, type)
       } catch (e) {
         sendMessageToWebContents(`加载 ${filepath} 失败:${e}(${i + 1}/${listLength})`)
       }
@@ -1336,6 +1356,12 @@ const runScan = async () => {
       sendMessageToWebContents(`清理不存在的漫画失败:${e}`)
     }
   }
+  // 全量扫描成功收尾:保存目录指纹快照,供增量扫描使用
+  try {
+    await saveSnapshotFile(SNAPSHOT_FILE, snapshotFromInventory(setting.library, setting.excludeFile || '', inv))
+  } catch (e) {
+    console.log('save scan snapshot failed', e)
+  }
   setProgressBar(-1)
   sendMessageToWebContents('Scan complete')
 }
@@ -1364,9 +1390,159 @@ ipcMain.handle('load-book-list', async (event, scan) => {
   return await loadBookListFromDatabase()
 })
 
+// ---------- 增量扫描(快照式增量对账) ----------
+// 与全量扫描不同:依赖上次扫描保存的目录指纹快照(scan-snapshot.json),
+// 只对"目录 mtime 变化"的子树 readdir 下钻,其余目录仅做 stat,秒级完成。
+// 无有效快照 / 库路径或排除规则变化时自动退化为全量扫描(全量会重建快照)。
+const runIncrementalScan = async () => {
+  const oldSnap = await loadSnapshotFile(SNAPSHOT_FILE)
+  const excludeStr = setting.excludeFile || ''
+  const libStat = await fs.promises.stat(setting.library).catch(() => null)
+  if (!libStat || !libStat.isDirectory()) {
+    sendMessageToWebContents('扫描结果异常:漫画库目录不可访问,请检查挂载')
+    setProgressBar(-1)
+    sendMessageToWebContents('Scan complete')
+    return
+  }
+  if (!oldSnap || oldSnap.library !== setting.library || (oldSnap.excludeFile || '') !== excludeStr) {
+    sendMessageToWebContents('增量扫描:无有效快照(库路径或排除规则变化),转为全量扫描')
+    await runScan()
+    return
+  }
+  setProgressBar(0.02)
+  const excludeRe = compileExclude()
+  const diff = await diffInventory(setting.library, oldSnap, { excludeRe })
+  // 读取数据库并建立索引(与全量扫描相同的路径翻译;内存 Map 成本远低于枚举成本)
+  const bookList = await Manga.findAll({ raw: true })
+  bookList.forEach(b => {
+    b.filepath = translateBookPath(b.filepath, 'filepath')
+    b.coverPath = translateBookPath(b.coverPath, 'coverPath')
+    b.exist = false
+  })
+  const bookMap = new Map(bookList.map(b => [b.filepath, b]))
+  const bookIdMap = new Map(bookList.map(b => [b.id, b]))
+  // 候选 = 目录变化发现的新书 + 快照有记录但数据库缺失的书(补上次探测失败的书)
+  const candidates = [...diff.newBooks]
+  const seenCand = new Set(candidates.map(c => c.filepath))
+  for (const p of Object.keys(diff.nextSnap.arch)) {
+    if (seenCand.has(p) || bookMap.has(p)) continue
+    const t = archiveTypeOf(p)
+    if (t && !(excludeRe && excludeRe.test(p))) {
+      seenCand.add(p)
+      candidates.push({ filepath: p, type: t })
+    }
+  }
+  for (const p of Object.keys(diff.nextSnap.dirs)) {
+    if (seenCand.has(p) || bookMap.has(p) || !diff.nextSnap.dirs[p].img) continue
+    if (!(excludeRe && excludeRe.test(p))) {
+      seenCand.add(p)
+      candidates.push({ filepath: p, type: 'folder' })
+    }
+  }
+  sendMessageToWebContents(`从漫画库找到 ${candidates.length} 本待处理漫画(增量扫描)`)
+  // 安全阀:大比例目录消失 → 判定漫画库掉线,跳过清理并保留原快照
+  if (diff.totalDirsCount > 50 && diff.removedDirsCount / diff.totalDirsCount > 0.8) {
+    sendMessageToWebContents('扫描结果异常:检测到大量目录消失,可能漫画库不可访问,已跳过清理')
+    setProgressBar(-1)
+    sendMessageToWebContents('Scan complete')
+    return
+  }
+  const CONCURRENCY = 4
+  const BATCH_SIZE = 200
+  setProgressBar(0.1)
+  for (let start = 0; start < candidates.length; start += BATCH_SIZE) {
+    // 用户在阅读漫画时暂停扫描,让出 CPU/磁盘
+    await waitViewerIdle()
+    const end = Math.min(start + BATCH_SIZE, candidates.length)
+    const chunk = candidates.slice(start, end)
+    const batchNewBooks = []
+    await runConcurrent(chunk, CONCURRENCY, async ({ filepath, type }, chunkIndex) => {
+      const i = start + chunkIndex
+      await waitViewerIdle()
+      try {
+        await processScanItem({ bookMap, bookIdMap, batchNewBooks }, filepath, type)
+      } catch (e) {
+        sendMessageToWebContents(`加载 ${filepath} 失败:${e}(${i + 1}/${candidates.length})`)
+      }
+    })
+    // 批量入库:一个事务写入一批,避免逐条 fsync(路径写入 Windows 格式)
+    if (batchNewBooks.length) {
+      await Manga.bulkCreate(batchNewBooks.map(b => ({
+        ...b,
+        filepath: toExternalPath(b.filepath, 'filepath'),
+        coverPath: toExternalPath(b.coverPath, 'coverPath')
+      })))
+      for (const newBook of batchNewBooks) {
+        bookMap.set(newBook.filepath, newBook)
+        bookList.push(newBook)
+      }
+    }
+    if (end < candidates.length) await clearFolder(TEMP_PATH)
+    setProgressBar(0.1 + 0.7 * (end / Math.max(1, candidates.length)))
+  }
+  await clearFolder(TEMP_PATH)
+  // 清理增量发现的消失书目(封面文件 / 数据库记录 / 关联元数据)
+  const removedRows = []
+  const seenRemove = new Set()
+  for (const rb of diff.removedBooks) {
+    if (seenRemove.has(rb.filepath)) continue
+    seenRemove.add(rb.filepath)
+    const row = bookMap.get(rb.filepath)
+    if (row) removedRows.push(row)
+  }
+  if (removedRows.length) {
+    try {
+      for (const row of removedRows) {
+        if (row.coverPath) {
+          const coverFile = path.join(COVER_PATH, path.basename(String(row.coverPath)))
+          await fs.promises.rm(coverFile, { force: true }).catch(() => {})
+        }
+      }
+      const removeIds = removedRows.map(b => b.id)
+      const removeHashes = removedRows.map(b => b.hash).filter(Boolean)
+      await Manga.destroy({ where: { id: { [Op.in]: removeIds } } })
+      if (removeHashes.length) {
+        await Metadata.destroy({ where: { hash: { [Op.in]: removeHashes } } })
+      }
+      sendMessageToWebContents(`清理了 ${removedRows.length} 本不存在的漫画`)
+    } catch (e) {
+      console.error(e)
+      sendMessageToWebContents(`清理不存在的漫画失败:${e}`)
+    }
+  }
+  try {
+    await saveSnapshotFile(SNAPSHOT_FILE, diff.nextSnap)
+  } catch (e) {
+    console.log('save scan snapshot failed', e)
+  }
+  setProgressBar(-1)
+  sendMessageToWebContents('Scan complete')
+}
+
+ipcMain.handle('incremental-scan', async () => {
+  if (isScanning) {
+    sendMessageToWebContents('扫描正在进行中,已跳过重复扫描')
+  } else {
+    isScanning = true
+    sendMessageToWebContents('开始加载漫画库')
+    // 后台执行:立即返回当前列表,不阻塞 UI,完成后通知前端刷新
+    setImmediate(async () => {
+      try {
+        await runIncrementalScan()
+      } catch (e) {
+        console.error(e)
+        sendMessageToWebContents(`扫描失败:${e}`)
+      } finally {
+        isScanning = false
+        setProgressBar(-1)
+      }
+    })
+  }
+  return await loadBookListFromDatabase()
+})
+
 ipcMain.handle('force-gene-book-list', async (event, arg) => {
-  // 封面懒加载:开启时重建库也不生成封面,由用户浏览时按需生成
-  const lazyCover = setting.lazyCover !== false
+  // 封面懒加载为固定行为:重建库也不生成封面,由用户浏览时按需生成
   await Manga.destroy({ truncate: true })
   await clearFolder(TEMP_PATH)
   await clearFolder(COVER_PATH)
@@ -1399,9 +1575,9 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
       await waitViewerIdle()
       try {
         const id = nanoid()
-        const { targetFilePath, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, lazyCover ? null : undefined)
+        const { targetFilePath, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null)
         // 懒加载模式下 coverPath 为 null(封面按需生成),书仍然入库
-        if (targetFilePath && (lazyCover || coverPath)) {
+        if (targetFilePath) {
           const hash = await sha1File(targetFilePath)
           batchNewBooks.push({
             title: path.basename(filepath),

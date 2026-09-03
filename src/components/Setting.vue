@@ -514,13 +514,6 @@
           </el-col>
           <el-col :span="6" class="setting-switch">
             <el-switch
-              v-model="setting.lazyCover"
-              :active-text="$t('m.lazyCover')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
               v-model="setting.showComment"
               :active-text="$t('m.showComment')"
               @change="saveSetting"
@@ -545,61 +538,6 @@
               v-model="setting.disableRandomTag"
               :active-text="$t('m.disableRandomTag')"
               @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideBookmarkButton"
-              :active-text="$t('m.hideBookmarkButton')"
-              @change="handleHideOptionChange"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hidePageCount"
-              :active-text="$t('m.hidePageCount')"
-              @change="handleHideOptionChange"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideReadCount"
-              :active-text="$t('m.hideReadCount')"
-              @change="handleHideOptionChange"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideReadButton"
-              :active-text="$t('m.hideReadButton')"
-              @change="handleHideOptionChange"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideNonTag"
-              :active-text="$t('m.hideNonTag')"
-              @change="handleHideOptionChange"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideTitle"
-              :active-text="$t('m.hideTitle')"
-              @change="handleHideOptionChange"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideRating"
-              :active-text="$t('m.hideRating')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="coverOnly"
-              :active-text="$t('m.coverOnly')"
             />
           </el-col>
         </el-row>
@@ -658,10 +596,78 @@
           </el-col>
         </el-row>
 
-        <!-- 卡片样式:封面大小与间距 -->
+        <!-- ================= 卡片样式 ================= -->
         <div class="advanced-section-title">{{$t('m.cardStyle')}}</div>
+        <!-- 卡片相关开关(自其它分区归并到此):各元素显隐独立 + 填充封面 -->
         <el-row :gutter="8">
-          <el-col :span="12">
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.hideBookmarkButton"
+              :active-text="$t('m.hideBookmarkButton')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.hidePageCount"
+              :active-text="$t('m.hidePageCount')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.hideReadCount"
+              :active-text="$t('m.hideReadCount')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.hideReadButton"
+              :active-text="$t('m.hideReadButton')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.hideNonTag"
+              :active-text="$t('m.hideNonTag')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.hideTitle"
+              :active-text="$t('m.hideTitle')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.hideRating"
+              :active-text="$t('m.hideRating')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.fillCover"
+              :active-text="$t('m.fillCover')"
+              @change="saveSetting"
+            />
+          </el-col>
+        </el-row>
+        <!-- 封面大小(整体百分比,宽高等比)/ 封面宽度 / 封面高度 -->
+        <el-row :gutter="8">
+          <el-col :span="8">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="100px">
+                <template #prepend><span class="setting-label">{{$t('m.coverSize')}}</span></template>
+                <el-input-number v-model="coverSizePercent" :min="50" :max="200" :step="5" controls-position="right" />
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="8">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverWidth')}}</span></template>
@@ -669,11 +675,30 @@
               </NameFormItem>
             </div>
           </el-col>
+          <el-col :span="8">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="100px">
+                <template #prepend><span class="setting-label">{{$t('m.coverHeight')}}</span></template>
+                <el-input-number v-model="setting.coverHeight" :min="160" :max="640" :step="10" controls-position="right" @change="handleCoverStyleChange" />
+              </NameFormItem>
+            </div>
+          </el-col>
+        </el-row>
+        <!-- 卡片间距:上下 / 左右 分别调整 -->
+        <el-row :gutter="8">
           <el-col :span="12">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
-                <template #prepend><span class="setting-label">{{$t('m.cardGap')}}</span></template>
-                <el-input-number v-model="setting.cardGap" :min="0" :max="40" :step="2" controls-position="right" @change="handleCoverStyleChange" />
+                <template #prepend><span class="setting-label">{{$t('m.cardGapV')}}</span></template>
+                <el-input-number v-model="setting.cardGapV" :min="0" :max="40" :step="2" controls-position="right" @change="handleCoverStyleChange" />
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="12">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="100px">
+                <template #prepend><span class="setting-label">{{$t('m.cardGapH')}}</span></template>
+                <el-input-number v-model="setting.cardGapH" :min="0" :max="40" :step="2" controls-position="right" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -1100,7 +1125,7 @@ import { ref, onMounted, h, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
 import draggable from 'vuedraggable'
-import { MdRefresh, MdShuffle, MdCodeDownload, MdBook, MdColorPalette } from '@vicons/ionicons4'
+import { MdRefresh, MdSync, MdShuffle, MdCodeDownload, MdBook, MdColorPalette } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 import { Search32Filled, ArrowTrendingLines20Filled } from '@vicons/fluent'
 
@@ -1150,21 +1175,9 @@ const translationEnabled = computed(() => {
   return !!setting.value.titleTranslationMode && setting.value.titleTranslationMode !== 'off'
 })
 
-// ---------- 显示选项:纯图片模式 ----------
-// 勾选纯图片 → 所有隐藏项一并勾选;取消任一隐藏项 → 纯图片自动取消
-const hideOptionKeys = ['hideBookmarkButton', 'hidePageCount', 'hideReadCount', 'hideReadButton', 'hideNonTag', 'hideTitle', 'hideRating']
-const coverOnly = computed({
-  get: () => hideOptionKeys.every(key => setting.value[key]),
-  set: (val) => {
-    hideOptionKeys.forEach(key => { setting.value[key] = val })
-    setting.value.coverOnly = val
-    saveSetting()
-  }
-})
-const handleHideOptionChange = () => {
-  setting.value.coverOnly = hideOptionKeys.every(key => setting.value[key])
-  saveSetting()
-}
+// ---------- 显示选项 ----------
+// 卡片为"填充封面 + 文字浮层"布局;各隐藏开关互相独立,不再有
+// "纯图片模式"式的一键联动(每个元素是否显示由各自的开关控制)
 
 // ---------- 工具栏按钮自定义 ----------
 const toolbarIconMap = {
@@ -1172,6 +1185,7 @@ const toolbarIconMap = {
   search: Search32Filled,
   shuffle: MdShuffle,
   manualScan: MdRefresh,
+  incrementalScan: MdSync,
   batchMetadata: MdCodeDownload,
   tagAnalysis: ArrowTrendingLines20Filled,
   manageCollection: CicsSystemGroup,
@@ -1248,6 +1262,20 @@ const handleCoverStyleChange = () => {
   applyCoverStyle(setting.value)
   saveSetting()
 }
+// 封面大小(整体百分比):显示当前宽相对基准 220px 的比例;
+// 调整时宽度与高度(填充卡片高)按当前比例等比缩放
+const coverSizePercent = computed({
+  get: () => Math.round((Number(setting.value.coverWidth) || 220) / 220 * 100),
+  set: (val) => {
+    const k = Number(val) / 100
+    if (!Number.isFinite(k) || k <= 0) return
+    const w = Math.min(400, Math.max(120, Math.round((Number(setting.value.coverWidth) || 220) * k / 10) * 10))
+    const h = Math.min(640, Math.max(160, Math.round((Number(setting.value.coverHeight) || 360) * k / 10) * 10))
+    setting.value.coverWidth = w
+    setting.value.coverHeight = h
+    handleCoverStyleChange()
+  }
+})
 // 清空主题颜色
 const clearThemeColor = (kind) => {
   if (kind === 'bg') setting.value.themeCustomBg = ''
@@ -1566,11 +1594,19 @@ onMounted(() => {
       if (res.hideTitle === undefined) setting.value.hideTitle = false
       if (res.hideRating === undefined) setting.value.hideRating = false
       if (res.coverWidth === undefined) setting.value.coverWidth = 220
-      if (res.cardGap === undefined) setting.value.cardGap = 6
-      // 封面懒加载默认开启(老 setting.json 无此键时补默认值)
-      if (res.lazyCover === undefined) setting.value.lazyCover = true
+      if (res.coverHeight === undefined) setting.value.coverHeight = 360
+      // 卡片间距:旧版单值 cardGap → 拆分为 上下/左右 两个方向
+      if (res.cardGapV === undefined) setting.value.cardGapV = res.cardGap !== undefined ? res.cardGap : 6
+      if (res.cardGapH === undefined) setting.value.cardGapH = res.cardGap !== undefined ? res.cardGap : 6
+      // 封面懒加载已是固定行为;旧"只显示封面(coverOnly)"改为独立开关「填充封面」:
+      // - 曾开启 coverOnly 的用户:还原其联动隐藏项,并把新开关置为开(延续大图偏好)
+      // - 其余用户:开关默认关(经典卡片布局)
+      if (res.fillCover === undefined) setting.value.fillCover = !!res.coverOnly
       if (res.coverOnly) {
-        hideOptionKeys.forEach(key => { setting.value[key] = true })
+        for (const key of ['hideBookmarkButton', 'hidePageCount', 'hideReadCount', 'hideReadButton', 'hideNonTag', 'hideTitle', 'hideRating']) {
+          setting.value[key] = false
+        }
+        setting.value.coverOnly = false
       }
       // 自定义主题/图标/工具栏/分页默认值
       if (res.themeCustomBg === undefined) setting.value.themeCustomBg = ''
