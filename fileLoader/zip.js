@@ -25,13 +25,12 @@ const solveBookTypeZip = async (filepath, TEMP_PATH, COVER_PATH, coverName) => {
     return _.find(zipFileList, zFile => zFile.entryName == entryName)
   }
   const fileList = zipFileList.map(zFile => zFile.entryName)
-  let imageList = _.filter(fileList, filepath => _.includes(['.jpg', ',jpeg', '.png', '.webp', '.avif', '.gif'], path.extname(filepath).toLowerCase()))
+  // 修复:原列表里误写成 ',jpeg',导致 zip/cbz 内的 .jpeg 图片不被识别
+  let imageList = _.filter(fileList, filepath => _.includes(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif'], path.extname(filepath).toLowerCase()))
   imageList = imageList.sort((a, b) => a.localeCompare(b, undefined, {numeric: true, sensitivity: 'base'}))
 
   let targetFile
-  let targetFilePath
   let coverFile
-  let tempCoverPath
   let coverPath
   if (imageList.length > 8) {
     targetFile = imageList[7]
@@ -45,12 +44,11 @@ const solveBookTypeZip = async (filepath, TEMP_PATH, COVER_PATH, coverName) => {
   } else {
     throw new Error('compression package isnot include image')
   }
-
-  targetFilePath = path.join(TEMP_PATH, nanoid(8) + path.extname(targetFile))
-  await fs.promises.copyFile(path.join(tempFolder, targetFile), targetFilePath)
-
-  tempCoverPath = path.join(TEMP_PATH, nanoid(8) + path.extname(imageList[0]))
-  await fs.promises.copyFile(path.join(tempFolder, imageList[0]), tempCoverPath)
+  // 直接引用解压产物(adm-zip 为内存解压,不再复制到 TEMP 根):
+  // 生命周期只到本批扫描结束(TEMP_PATH 批次间统一清理),
+  // 每本最多省 2 次整文件复制(写+读)。
+  const targetFilePath = path.join(tempFolder, targetFile)
+  const tempCoverPath = path.join(tempFolder, coverFile)
 
   coverPath = coverName === undefined
     ? path.join(COVER_PATH, nanoid() + '.webp')

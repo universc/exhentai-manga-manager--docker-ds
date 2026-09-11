@@ -251,7 +251,12 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
           await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })])
         } catch (e) { console.warn('复制图片失败(浏览器剪贴板需要 HTTPS 或 localhost)', e) }
         return
-      case 'show-file':
+      case 'show-file': {
+        // 网页版(含 Docker/NAS 与远程桌面模式):新标签页打开 NAS 上的目录浏览页
+        const p = args[0]
+        if (p) window.open('/browse?path=' + encodeURIComponent(p), '_blank')
+        return
+      }
       case 'open-local-book':
         console.warn(`[网页版] ${channel} 在浏览器中不可用`)
         return

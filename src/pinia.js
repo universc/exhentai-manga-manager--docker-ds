@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
+import { catDisplayName } from './utils.js'
 
 export const useAppStore = defineStore('appStore', {
   state: () => ({
@@ -97,7 +98,7 @@ export const useAppStore = defineStore('appStore', {
         let labelHeader = tagArray[0]
         let labelTail = tagArray[1]
         if (state.setting.showTranslation) {
-          labelHeader = state.resolvedTranslation[tagArray[0]]?._name || tagArray[0]
+          labelHeader = state.resolvedTranslation[tagArray[0]]?._name || catDisplayName(tagArray[0])
           labelTail = state.resolvedTranslation[tagArray[0]]?.[tagArray[1]]?.name || tagArray[1]
         }
         return {
@@ -128,7 +129,7 @@ export const useAppStore = defineStore('appStore', {
     tagListForSelect (state) {
       if (state.setting.showTranslation) {
         return state.tagListRaw.map(({letter, cat, tag}) => {
-          const labelHeader = state.resolvedTranslation[cat]?._name || cat
+          const labelHeader = state.resolvedTranslation[cat]?._name || catDisplayName(cat)
           const labelTail = state.resolvedTranslation[cat]?.[tag]?.name || tag
           return {
             label: `${labelHeader}:${labelTail} || ${letter}:"${tag}"$`,

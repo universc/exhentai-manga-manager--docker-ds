@@ -108,8 +108,13 @@ const sanitizeSettingForViewer = (setting) => {
 const sseClients = new Set()
 const broadcast = (channel, arg) => {
   const payload = `data: ${JSON.stringify({ channel, arg })}\n\n`
+  // viewer(只读账户)不推送扫描/管理类消息,只保留阅读器图片等必要推送
+  const isAdminOnly = channel === 'send-message' || channel === 'send-action'
   for (const res of sseClients) {
-    try { res.write(payload) } catch {}
+    try {
+      if (isAdminOnly && res._emmViewer) continue
+      res.write(payload)
+    } catch {}
   }
 }
 setBroadcast(broadcast)
@@ -119,6 +124,9 @@ app.get('/api/events', (req, res) => {
     res.status(401).end()
     return
   }
+  // 记录该连接的角色,广播时用于过滤只读账户
+  const sess = sessionOf(req)
+  res._emmViewer = !!sess && sess.role === 'viewer'
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -238,7 +246,15 @@ app.get('/api/file', (req, res) => {
   const ok = roots.some(root => p === root || p.startsWith(root + path.sep))
   if (!ok) return res.status(403).send('Forbidden')
   if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).send('Not found')
-  res.sendFile(p)
+  // 封面文件(共享 cover 目录,文件名稳定)→ 允许长缓存,滚动浏览提速;
+  // 阅读用临时图(viewer 缓存/漫画库原图)→ 不缓存,避免旧图错乱
+  const coverDir = path.join(STORE_PATH, 'cover')
+  const isCover = p.startsWith(coverDir + path.sep)
+  res.sendFile(p, {
+    headers: isCover
+      ? { 'Cache-Control': 'public, max-age=86400' }
+      : { 'Cache-Control': 'no-store' }
+  })
 })
 
 // ---------- 目录列表(网页版文件夹/文件选择器) ----------
@@ -262,6 +278,53 @@ app.get('/api/list-dir', (req, res) => {
   }
   const parent = p === path.parse(p).root ? null : path.dirname(p)
   res.json({ path: p, parent, dirs, files })
+})
+
+// ---------- 目录浏览页(网页版「打开所在目录」:新标签页打开 NAS 文件夹) ----------
+app.get('/browse', (req, res) => {
+  if (auth.isEnabled() && !sessionOf(req)) return res.status(401).send('Unauthorized')
+  const roots = allowedRoots()
+  if (!roots.length) return res.status(400).send('未配置可浏览目录')
+  let target = path.resolve(String(req.query.path || roots[0]))
+  const ok = roots.some(root => target === root || target.startsWith(root + path.sep))
+  if (!ok) return res.status(403).send('Forbidden: 只能浏览漫画库/数据目录内的路径')
+  let st = null
+  try { st = fs.statSync(target) } catch (e) { return res.status(404).send('Not found: ' + target) }
+  const dir = st.isDirectory() ? target : path.dirname(target)
+  let entries = []
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch (e) { return res.status(400).send(String(e.message || e)) }
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+  const enc = (s) => encodeURIComponent(s)
+  const dirs = entries.filter(e => e.isDirectory()).map(e => e.name).sort((a, b) => a.localeCompare(b, 'zh'))
+  const files = entries.filter(e => e.isFile()).map(e => e.name).sort((a, b) => a.localeCompare(b, 'zh', { numeric: true }))
+  const rootPath = path.parse(dir).root
+  const parent = dir === rootPath ? null : path.dirname(dir)
+  const segs = dir.split(path.sep).filter(Boolean)
+  let acc = rootPath
+  const crumbs = segs.map(seg => { acc = path.join(acc, seg); return { name: seg, p: acc } })
+  const rows = []
+  if (parent) rows.push({ name: '..', url: '/browse?path=' + enc(parent), dir: true })
+  dirs.forEach(n => rows.push({ name: n + '/', url: '/browse?path=' + enc(path.join(dir, n)), dir: true }))
+  files.forEach(n => rows.push({ name: n, url: '/api/file?path=' + enc(path.join(dir, n)), dir: false }))
+  const html = [
+    '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+    '<title>目录浏览 - ' + esc(path.basename(dir) || dir) + '</title>',
+    '<style>',
+    'body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;margin:0;background:#f5f6f8;color:#303133}',
+    'header{position:sticky;top:0;background:#fff;border-bottom:1px solid #e4e7ed;padding:10px 14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between}',
+    '.crumb{font-size:13px;color:#606266;word-break:break-all}.crumb a{color:#409eff;text-decoration:none}.crumb a:hover{text-decoration:underline}',
+    'main{padding:10px 14px 40px}ul{list-style:none;margin:0;padding:0}li{border-bottom:1px solid #ebeef5}',
+    'a.row{display:flex;gap:10px;align-items:center;padding:10px 6px;color:#303133;text-decoration:none;font-size:14px;word-break:break-all}',
+    'a.row:hover{background:#ecf5ff}.ico{flex:0 0 20px;text-align:center}.count{font-size:12px;color:#909399}',
+    '</style></head><body>',
+    '<header><div class="crumb">' + crumbs.map(c => '<a href="/browse?path=' + enc(c.p) + '">' + esc(c.name) + '</a>').join(' / ') + '</div>',
+    '<div class="count">' + dirs.length + ' 个文件夹 / ' + files.length + ' 个文件</div></header>',
+    '<main><ul>',
+    rows.map(r => '<li><a class="row" href="' + r.url + '"' + (r.dir ? '' : ' target="_blank"') + '><span class="ico">' + (r.dir ? 'DIR' : 'FILE') + '</span><span>' + esc(r.name) + '</span></a></li>').join(''),
+    '</ul></main></body></html>'
+  ].join('')
+  res.type('html').send(html)
 })
 
 // ---------- 前端静态资源 ----------

@@ -3,13 +3,12 @@
     fullscreen
     class="dialog-detail"
   >
-    <template #header>
-      <p class="detail-book-title">
-        <span class="url-link" @click="openUrl(bookDetail.url)" @contextmenu="onMangaTitleContextMenu($event, bookDetail)">{{getDisplayTitle(bookDetail)}}</span>
-      </p>
-    </template>
     <el-row :gutter="20" class="book-detail-card">
       <el-col :span="6">
+        <!-- 标题:与封面同宽居中显示(与图片、按钮对齐) -->
+        <div class="detail-title-above-cover" :title="getDisplayTitle(bookDetail)">
+          <span class="url-link" @click="openUrl(bookDetail.url)" @contextmenu="onMangaTitleContextMenu($event, bookDetail)">{{ getDisplayTitle(bookDetail) }}</span>
+        </div>
         <el-row class="book-detail-function book-detail-cover-frame">
           <img
             class="book-detail-cover"
@@ -17,8 +16,12 @@
             @click="$emit('openContentView', bookDetail)"
             @mousedown.middle.prevent="openLocalBook(bookDetail)"
             @contextmenu="$emit('openThumbnailView', bookDetail)"
+            @load="detailCoverLoading = false"
             @error="onCoverError"
           />
+          <div class="cover-loading" v-if="detailCoverLoading">
+            <el-icon class="is-loading" :size="26"><Loading /></el-icon>
+          </div>
           <el-icon
             v-if="!setting.hideBookmarkButton && !viewerRole"
             :size="30"
@@ -50,7 +53,7 @@
             <el-button type="success" plain @click="$emit('openContentView', bookDetail)">{{$t('m.ad')}}</el-button>
           </el-button-group>
           <el-button class="detail-func-btn" plain @click="triggerShowComment">{{setting.showComment ? $t('m.hideComment') : $t('m.showComment')}}</el-button>
-          <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain @click="editTags">{{editingTag ? $t('m.showTag') : $t('m.editTag')}}</el-button>
+          <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain @click="editTags">{{editingTag ? $t('m.viewInfo') : $t('m.editInfo')}}</el-button>
         </el-row>
         <el-row class="book-detail-function">
           <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain @click="$emit('openSearchDialog')">{{$t('m.getMetadata')}}</el-button>
@@ -65,22 +68,15 @@
       <el-col :span="setting.showComment ? 10 : 18">
         <el-scrollbar class="book-tag-frame">
           <div v-if="editingTag && !viewerRole">
+            <!-- 标题:沿用原样式(日文标题 / 中文标题 / 英文标题 三个输入框) -->
             <div class="edit-line">
-              <el-input v-model="bookDetail.title_jpn" :placeholder="$t('m.title')" @change="saveBook(bookDetail)">
-                <template #append>
-                  <el-button class="translate-title-btn"
-                    :loading="translatingTitle"
-                    :disabled="titleTranslationUnavailable || translatingTitle"
-                    @click="translateCurrentTitle"
-                  >{{ translatingTitle ? $t('m.translatingTitle') : $t('m.translateTitle') }}</el-button>
-                </template>
-              </el-input>
+              <el-input v-model="bookDetail.title_jpn" :placeholder="$t('m.titleLangJpn')" @change="saveBook(bookDetail)"></el-input>
             </div>
             <div class="edit-line">
-              <el-input v-model="bookDetail.title_cn" :placeholder="$t('m.chineseTitle')" @change="saveBook(bookDetail)"></el-input>
+              <el-input v-model="bookDetail.title_cn" :placeholder="$t('m.titleLangCn')" @change="saveBook(bookDetail)"></el-input>
             </div>
             <div class="edit-line">
-              <el-input v-model="bookDetail.title" :placeholder="$t('m.englishTitle')" @change="saveBook(bookDetail)"></el-input>
+              <el-input v-model="bookDetail.title" :placeholder="$t('m.titleLangEn')" @change="saveBook(bookDetail)"></el-input>
             </div>
             <div class="edit-line">
               <el-select v-model="bookDetail.status" :placeholder="$t('m.metadataStatus')" @change="saveBook(bookDetail)">
@@ -95,20 +91,37 @@
                 <el-option v-for="cat in categoryOption" :value="cat" :key="cat" :label="cat" />
               </el-select>
             </div>
-            <div class="edit-line" v-for="(arr, key) in tagGroup" :key="key">
-              <el-select-v2
-                v-model="bookDetail.tags[key]" :placeholder="key" @change="saveBookTags(bookDetail)"
-                filterable clearable allow-create multiple :reserve-keyword="false" :height="340"
-                :options="arr"
+            <!-- 标签:与原选择框一致(框内可打字筛选/新建),下拉里标签一排一排排列 -->
+            <div class="tag-picker" v-for="(arr, key) in tagGroup" :key="key">
+              <el-select
+                v-model="bookDetail.tags[key]"
+                class="tag-select"
+                multiple
+                filterable
+                clearable
+                allow-create
+                default-first-option
+                :reserve-keyword="false"
+                fit-input-width
+                popper-class="tag-select-dropdown"
+                :placeholder="resolvedTranslation[key]?._name || catDisplayName(key)"
+                @change="saveBookTags(bookDetail)"
               >
-              </el-select-v2>
+                <el-option
+                  v-for="opt in arr"
+                  :key="key + '|' + opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
             </div>
             <el-space wrap class="tag-edit-buttons">
               <el-button @click="addTagCat">{{$t('m.addCategory')}}</el-button>
               <el-button @click="$emit('getBookInfo')">{{$t('m.getTagbyUrl')}}</el-button>
-              <el-button :loading="aiProcessingBook" @click="aiProcessCurrentBook">{{$t('m.aiProcessBook')}}</el-button>
               <el-button :loading="queryingOrigins" @click="queryBookOrigins">{{$t('m.queryCharacterOrigins')}}</el-button>
-              <el-button :loading="analyzingTitle" @click="analyzeBookTitleCharacters">{{$t('m.analyzeTitleCharacters')}}</el-button>
+              <el-button :loading="analyzingTitle" @click="analyzeBookTitleCharacters">{{$t('m.translateTitle')}}</el-button>
+              <el-button @click="notImplemented($t('m.superResolution'))">{{$t('m.superResolution')}}</el-button>
+              <el-button @click="notImplemented($t('m.colorization'))">{{$t('m.colorization')}}</el-button>
               <el-button @click="resetMetadata(bookDetail)">{{$t('m.resetMetadata')}}</el-button>
               <el-button @click="copyTagClipboard(bookDetail)">{{$t('m.copyTagClipboard')}}</el-button>
               <el-button @click="pasteTagClipboard(bookDetail)">{{$t('m.pasteTagClipboard')}}</el-button>
@@ -116,15 +129,16 @@
           </div>
           <div v-else>
             <el-descriptions :column="1">
-              <el-descriptions-item :label="$t('m.chineseTitle')+':'">{{bookDetail.title_cn || '—'}}</el-descriptions-item>
-              <el-descriptions-item :label="$t('m.title')+':'">{{bookDetail.title_jpn}}</el-descriptions-item>
-              <el-descriptions-item :label="$t('m.englishTitle')+':'">{{bookDetail.title}}</el-descriptions-item>
+              <!-- 标题:浏览模式只展示各语言已有标题;需要修改请点「编辑信息」 -->
+              <el-descriptions-item :label="$t('m.titleLangJpn')+':'">{{ bookDetail.title_jpn || '—' }}</el-descriptions-item>
+              <el-descriptions-item :label="$t('m.titleLangCn')+':'">{{ bookDetail.title_cn || '—' }}</el-descriptions-item>
+              <el-descriptions-item :label="$t('m.titleLangEn')+':'">{{ bookDetail.title || '—' }}</el-descriptions-item>
               <el-descriptions-item :label="$t('m.filename')+':'">{{returnFileNameWithExt(bookDetail.filepath)}}</el-descriptions-item>
               <el-descriptions-item :label="$t('m.fileLocation')+':'">{{returnDirname(bookDetail.filepath)}}</el-descriptions-item>
               <el-descriptions-item :label="$t('m.category')+':'">
                 <el-tag type="info" class="book-tag" @click="$emit('searchFromTag', `cat:${bookDetail.category}`)">{{bookDetail.category}}</el-tag>
               </el-descriptions-item>
-              <el-descriptions-item v-for="(tagArr, key) in bookDetail.tags" :label="resolvedTranslation[key]?._name || key + ':'" :key="key">
+              <el-descriptions-item v-for="(tagArr, key) in bookDetail.tags" :label="(resolvedTranslation[key]?._name || catDisplayName(key)) + ':'" :key="key">
                 <el-popover
                   effect="dark"
                   trigger="hover"
@@ -146,6 +160,19 @@
               </el-descriptions-item>
             </el-descriptions>
           </div>
+          <!-- 故事简介:标签栏最下方,查看模式只读、编辑模式可填写(存库并随元数据同步) -->
+          <div class="story-summary">
+            <div class="story-summary-title">{{ $t('m.storySummary') }}</div>
+            <el-input
+              v-if="editingTag && !viewerRole"
+              v-model="bookDetail.description"
+              type="textarea"
+              :autosize="{ minRows: 4, maxRows: 16 }"
+              :placeholder="$t('m.storySummaryPlaceholder')"
+              @change="saveBook(bookDetail)"
+            />
+            <div v-else class="story-summary-text">{{ bookDetail.description || '—' }}</div>
+          </div>
         </el-scrollbar>
       </el-col>
       <el-col :span="8" v-if="setting.showComment">
@@ -166,13 +193,14 @@ import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
 import { CaretRight20Regular, CaretLeft20Regular } from '@vicons/fluent'
 import { BookmarkTwotone } from '@vicons/material'
+import { Loading, ArrowDown } from '@element-plus/icons-vue'
 import { nanoid } from 'nanoid'
 import he from 'he'
 import * as linkify from 'linkifyjs'
 import ContextMenu from '@imengyu/vue3-context-menu'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { isContextMenuItemEnabled, ensureBookCover } from '../utils.js'
+import { isContextMenuItemEnabled, ensureBookCover, catDisplayName } from '../utils.js'
 import  { insertLocalReadRecord } from '../utils.js'
 
 const appStore = useAppStore()
@@ -215,11 +243,70 @@ const emit = defineEmits([
 
 const dialogVisibleBookDetail = ref(false)
 
+// 封面加载动画(详情页)
+const detailCoverLoading = ref(true)
 // 封面懒加载:详情页封面缺失/加载失败时按需生成
-const onCoverError = () => ensureBookCover(bookDetail.value)
+const onCoverError = () => { detailCoverLoading.value = true; ensureBookCover(bookDetail.value) }
 watch(() => bookDetail.value?.coverPath, (v) => {
+  detailCoverLoading.value = true
   if (!v) ensureBookCover(bookDetail.value)
 }, { immediate: true })
+
+// ---------- 标签:一排一排的网格选择(替代单列下拉,节省空间) ----------
+const TAG_PAGE = 40            // 每个分类首屏展示的标签数
+const tagSearch = ref({})      // 每个分类的搜索词
+const tagExpand = ref({})      // 每个分类的展开数量
+const sortTagOptions = (key, arr) => {
+  const kw = String(tagSearch.value[key] || '').trim().toLowerCase()
+  const selected = bookDetail.value?.tags?.[key] || []
+  // 已选中的排前面;搜索时按名称过滤
+  const list = (arr || []).filter(o => !kw || String(o.label || '').toLowerCase().includes(kw) || String(o.value || '').toLowerCase().includes(kw))
+  return list.sort((a, b) => {
+    const sa = selected.includes(a.value) ? 0 : 1
+    const sb = selected.includes(b.value) ? 0 : 1
+    return sa - sb
+  })
+}
+const tagLimit = (key) => TAG_PAGE + (tagExpand.value[key] || 0)
+const visibleTagOptions = (key, arr) => sortTagOptions(key, arr).slice(0, tagLimit(key))
+const hasMoreTagOptions = (key, arr) => sortTagOptions(key, arr).length > tagLimit(key)
+const tagMoreCount = (key, arr) => Math.max(0, sortTagOptions(key, arr).length - tagLimit(key))
+const showMoreTags = (key) => { tagExpand.value[key] = (tagExpand.value[key] || 0) + 120 }
+const isTagChecked = (key, value) => (bookDetail.value?.tags?.[key] || []).includes(value)
+const canCreateTag = (key, arr) => {
+  const kw = String(tagSearch.value[key] || '').trim()
+  if (!kw) return false
+  return !(arr || []).some(o => String(o.value) === kw)
+}
+const applyTags = async (key, values) => {
+  const tags = bookDetail.value.tags || (bookDetail.value.tags = {})
+  if (values.length) tags[key] = values
+  else delete tags[key]
+  await saveBookTags(bookDetail.value)
+}
+const toggleBookTag = (key, value) => {
+  const cur = [...(bookDetail.value?.tags?.[key] || [])]
+  const idx = cur.indexOf(value)
+  if (idx >= 0) cur.splice(idx, 1)
+  else cur.push(value)
+  applyTags(key, cur)
+}
+const removeBookTag = (key, value) => {
+  const cur = [...(bookDetail.value?.tags?.[key] || [])].filter(t => t !== value)
+  applyTags(key, cur)
+}
+const addNewTag = (key) => {
+  const kw = String(tagSearch.value[key] || '').trim()
+  if (!kw) return
+  const cur = [...(bookDetail.value?.tags?.[key] || [])]
+  if (!cur.includes(kw)) cur.push(kw)
+  tagSearch.value[key] = ''
+  applyTags(key, cur)
+}
+
+
+// 暂未实现的功能(仅按钮占位)
+const notImplemented = (name) => printMessage('info', name + ' ' + t('c.featureComingSoon'))
 
 const openBookDetail = (book, addToHistory = true) => {
   bookDetail.value = book
@@ -338,33 +425,6 @@ const queryBookOrigins = async () => {
   }
 }
 
-// ---------- AI 标题翻译 ----------
-const titleTranslationUnavailable = computed(() => {
-  return !setting.value.titleTranslationMode || setting.value.titleTranslationMode === 'off'
-})
-// 翻译进行中标志:显示加载动画并阻止重复点击
-const translatingTitle = ref(false)
-const translateCurrentTitle = async () => {
-  if (translatingTitle.value) return
-  const book = bookDetail.value
-  if (!book || !(book.title_jpn || book.title)) {
-    printMessage('warning', t('c.titleTranslationNoSource'))
-    return
-  }
-  translatingTitle.value = true
-  try {
-    const updated = await ipcRenderer.invoke('translate-book-title', _.cloneDeep(book))
-    if (updated?.title_cn) {
-      // 原地更新,保持 bookList / displayBookList 中的引用一致
-      _.assign(book, updated)
-      printMessage('success', t('c.titleTranslationSingleDone', { title: updated.title_cn }))
-    }
-  } catch (e) {
-    printMessage('error', t('c.titleTranslationSingleFailed') + (e?.message ? `:${e.message}` : ''))
-  } finally {
-    translatingTitle.value = false
-  }
-}
 const deleteBook = async (book) => {
   await ipcRenderer.invoke('delete-local-book', book.filepath)
   .finally(() => {
@@ -567,6 +627,10 @@ defineExpose({
 
 <style lang="stylus">
 .el-dialog.is-fullscreen.dialog-detail
+  .detail-book-title
+    display: flex
+    align-items: center
+    gap: 8px
   .el-dialog__header
     .el-dialog__headerbtn
       margin: 8px 16px 0 0
@@ -586,18 +650,28 @@ defineExpose({
 .url-link
   cursor: pointer
 .book-detail-card
+  // 统一列宽变量:标题 / 封面 / 按钮行严格对齐(抵消 el-row gutter 的负边距)
+  --detail-cover-w: 250px
   .book-detail-function, .book-detail-rate
     justify-content: center
     margin-bottom: 10px
+    width: var(--detail-cover-w)
+    max-width: 100%
+    margin-left: auto !important
+    margin-right: auto !important
   // 功能按钮行:等宽弹性排列,自动换行,宽度与封面图片一致
   .book-detail-function
     display: flex
     flex-wrap: wrap
     gap: 8px
     align-items: stretch
-    width: 250px
-    margin-left: auto
-    margin-right: auto
+    width: var(--detail-cover-w)
+    max-width: 100%
+    // el-row 的 gutter 会加负边距,这里强制归零以与图片边框对齐
+    margin-left: auto !important
+    margin-right: auto !important
+    padding-left: 0
+    padding-right: 0
     .detail-func-btn, .detail-read-group
       flex: 1 1 108px
       margin: 0
@@ -606,16 +680,27 @@ defineExpose({
       .el-button
         flex: 1
         margin: 0
-  .translate-title-btn
-    min-width: 96px
+  .title-lang-select
+    width: 104px
+    margin-right: 6px
+    flex: 0 0 auto
+  .title-inline-input
+    flex: 1 1 auto
+    min-width: 200px
   .book-detail-cover-frame
     position: relative
-    width: 250px
-    margin: 0 auto
+    width: var(--detail-cover-w)
+    max-width: 100%
+    margin-left: auto !important
+    margin-right: auto !important
     margin-bottom: 10px
+    padding-left: 0
+    padding-right: 0
     .book-detail-cover
-      width: 250px
-      height: 354px
+      width: 100%
+      max-width: 100%
+      height: auto
+      aspect-ratio: 250 / 354
       object-fit: cover
       border-radius: 4px
     .next-manga-pane, .prev-manga-pane
@@ -687,4 +772,121 @@ defineExpose({
       white-space: pre-wrap
       padding-left: 4px
       color: var(--el-text-color-regular)
+
+// 故事简介(标签栏最下方)
+// 标题行(语言选择 + 值 + 编辑按钮)与其它详细项同列排列
+.title-row
+  display: flex
+  align-items: center
+  gap: 6px
+  .title-row-value
+    word-break: break-word
+.title-row-others
+  margin-top: 4px
+  display: flex
+  flex-direction: column
+  gap: 2px
+  .title-other
+    display: flex
+    gap: 6px
+    font-size: 12px
+    color: var(--el-text-color-secondary)
+    cursor: pointer
+    &:hover
+      color: var(--el-color-primary)
+    .title-other-label
+      flex: 0 0 auto
+    .title-other-value
+      word-break: break-word
+
+// 标题:与封面同宽居中(放在封面上方)
+.detail-title-above-cover
+  width: 250px
+  max-width: 100%
+  margin: 0 auto 8px
+  text-align: center
+  font-size: 15px
+  line-height: 1.4
+  word-break: break-word
+  display: -webkit-box
+  -webkit-box-orient: vertical
+  -webkit-line-clamp: 3
+  overflow: hidden
+  .url-link
+    cursor: pointer
+// 标签:框与原选择框一致(可打字筛选/新建),下拉里标签一排一排排列
+.tag-picker
+  display: block
+  margin-bottom: 8px
+  text-align: left
+  .tag-select
+    width: 100%
+
+// 下拉选项:网格化(一排一排),宽度跟随输入框(fit-input-width)
+.tag-select-dropdown
+  .el-select-dropdown__wrap
+    max-height: 300px
+  .el-select-dropdown__list
+    display: flex
+    flex-wrap: wrap
+    gap: 6px
+    padding: 8px
+  .el-select-dropdown__item
+    display: inline-flex
+    align-items: center
+    width: auto
+    max-width: 100%
+    height: 26px
+    line-height: 24px
+    padding: 0 10px
+    margin: 0
+    border: 1px solid var(--el-border-color)
+    border-radius: 13px
+    font-size: 12px
+    background-color: var(--el-fill-color-blank, #fff)
+    &.is-hovering,
+    &:hover
+      background-color: var(--el-fill-color-light)
+    &.is-selected
+      color: var(--el-color-primary)
+      border-color: var(--el-color-primary)
+      font-weight: 600
+      background-color: var(--el-color-primary-light-9)
+
+.story-summary
+  margin-top: 12px
+  padding-top: 10px
+  border-top: 1px solid var(--el-border-color-lighter)
+  .story-summary-title
+    font-size: 13px
+    font-weight: 600
+    margin-bottom: 6px
+    color: var(--el-text-color-primary)
+  .story-summary-text
+    font-size: 13px
+    line-height: 1.7
+    white-space: pre-wrap
+    word-break: break-word
+    color: var(--el-text-color-regular)
+    max-height: 260px
+    overflow-y: auto
+
+// 详情封面加载动画
+.book-detail-cover-frame
+  .cover-loading
+    position: absolute
+    top: 0
+    left: 50%
+    transform: translateX(-50%)
+    width: min(250px, 100%)
+    height: 354px
+    transition: opacity .25s ease
+    display: flex
+    align-items: center
+    justify-content: center
+    background: var(--el-fill-color-light, rgba(0, 0, 0, .04))
+    color: var(--el-text-color-secondary, #909399)
+    border-radius: 4px
+    z-index: 6
+    pointer-events: none
 </style>

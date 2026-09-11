@@ -106,8 +106,13 @@
               @on-book-context-menu="onBookContextMenu"
               @handle-search-string="handleSearchString"
               @search-from-tag="searchFromTag"
+              @tag-long-press="openQuickTagEdit"
+              @cover-click="onCoverClick(book)"
+              @cover-dblclick="onCoverDblClick(book)"
+              @yue-click="onYueClick(book)"
+              @du-click="onDuClick(book)"
+              @page-count-click="onPageCountClick(book)"
               @open-local-book="$refs.BookDetailDialogRef.openLocalBook(book)"
-              @view-manga="$refs.InternalViewerRef.viewManga(book)"
             />
             <BookCardCollection
               :book="book"
@@ -167,8 +172,13 @@
             @on-book-context-menu="onBookContextMenu"
             @handle-search-string="handleSearchString"
             @search-from-tag="searchFromTag"
+            @tag-long-press="openQuickTagEdit"
+            @cover-click="onCoverClick(book)"
+            @cover-dblclick="onCoverDblClick(book)"
+            @yue-click="onYueClick(book)"
+            @du-click="onDuClick(book)"
+            @page-count-click="onPageCountClick(book)"
             @open-local-book="$refs.BookDetailDialogRef.openLocalBook(book)"
-            @view-manga="$refs.InternalViewerRef.viewManga(book)"
           />
         </div>
       </div>
@@ -187,6 +197,25 @@
       <template #footer>
         <el-button @click="moveFileDialogVisible = false">{{$t('c.cancel')}}</el-button>
         <el-button type="primary" @click="confirmMoveFile">{{$t('m.move')}}</el-button>
+      </template>
+    </el-dialog>
+    <!-- 标签快速编辑:长按卡片上的收藏标签(鼠标右键亦可)弹出 -->
+    <el-dialog v-model="quickTagDialogVisible" :title="$t('m.quickTagEdit')" width="380px">
+      <div v-if="quickTag" class="quick-tag-body">
+        <p class="quick-tag-line">
+          <el-tag size="small" effect="dark" :color="quickTag.color">{{ quickTag.letter }}:{{ quickTag.tag }}</el-tag>
+          <span class="quick-tag-raw">{{ quickTag.cat }}</span>
+        </p>
+        <el-input v-model="quickTagNewName" size="small" :placeholder="$t('m.newTagName')" @keyup.enter="quickTagRename" />
+      </div>
+      <template #footer>
+        <div class="quick-tag-actions">
+          <el-button size="small" @click="quickTagFilter">{{ $t('m.filterByThisTag') }}</el-button>
+          <el-button size="small" @click="quickTagCopy">{{ $t('m.copyTagName') }}</el-button>
+          <el-button size="small" @click="quickTagRemoveFromBook">{{ $t('m.removeTagFromThisBook') }}</el-button>
+          <el-button size="small" type="primary" :disabled="!quickTagNewName || quickTagNewName === quickTag?.tag" @click="quickTagRename">{{ $t('m.renameTagGlobal') }}</el-button>
+          <el-button size="small" type="danger" @click="quickTagDelete">{{ $t('m.deleteTagGlobal') }}</el-button>
+        </div>
       </template>
     </el-dialog>
     <BookDetailDialog
@@ -291,6 +320,11 @@ export default defineComponent({
       moveFileTargetFolder: null,
       // UI 模式:auto(随窗口宽度) / phone(手机) / tablet(平板) / desktop(电脑)
       uiMode: 'auto',
+      // 标签快速编辑(长按卡片标签):当前标签 / 所属漫画 / 新名字
+      quickTagDialogVisible: false,
+      quickTag: null,
+      quickTagBook: null,
+      quickTagNewName: '',
     }
   },
   computed: {
@@ -559,6 +593,11 @@ export default defineComponent({
           break
         case 'send-progress':
           this.progress = +arg.progress > 1 ? 100 : +arg.progress < 0 ? 0 : +arg.progress * 100
+          break
+        case 'scan-batch':
+          // 扫描批次入库完成:节流轻刷列表,扫到多少就先显示多少(不重建文件夹树,
+          // 避免打断用户浏览;整轮扫描完成后仍会做一次完整刷新)
+          this.queueScanBatchLoad()
           break
         case 'tag-fail-non-tag-book':
           if (this.currentUI() === 'home') {
@@ -902,6 +941,27 @@ export default defineComponent({
         console.error(error)
       }
       // 扫描已后台化:扫描完成由 'Scan complete' 消息触发刷新与提示
+    },
+    // 扫描进行中:新书每批入库后轻刷列表(900ms 节流合并),实现"边扫边显示";
+    // 不重建文件夹树/不重置选中,避免打断浏览,整轮完成后会再完整刷新一次
+    queueScanBatchLoad () {
+      if (this._scanBatchTimer) return
+      this._scanBatchTimer = setTimeout(async () => {
+        this._scanBatchTimer = null
+        if (!this.scanning) return // 扫描已完成,最终刷新会接管
+        try {
+          const res = await ipcRenderer.invoke('load-book-list', false)
+          if (!this.scanning || !res) return
+          const list = this.prepareBookList(res)
+          // bookList 变更会触发 watch → 自动重排序/重绘
+          this.bookList = list
+          if (Number.isFinite(this.renderedCount) && list.length < this.renderedCount) {
+            this.renderedCount = list.length
+          }
+        } catch (e) {
+          console.error(e)
+        }
+      }, 900)
     },
     // 增量扫描:只对目录指纹变化的子树做 diff,无快照时服务端自动退化为全量扫描
     async incrementalScan () {
@@ -1282,6 +1342,63 @@ export default defineComponent({
           break
       }
     },
+    // ---------- 标签快速编辑(长按卡片标签) ----------
+    openQuickTagEdit ({ tag, book } = {}) {
+      if (!tag) return
+      // 只读账户:直接退化为按标签筛选,不提供写操作
+      if (this.viewerRole) {
+        this.searchFromTag(tag.tag, tag.cat)
+        return
+      }
+      this.quickTag = tag
+      this.quickTagBook = book
+      this.quickTagNewName = tag.tag
+      this.quickTagDialogVisible = true
+    },
+    quickTagFilter () {
+      this.quickTagDialogVisible = false
+      if (this.quickTag) this.searchFromTag(this.quickTag.tag, this.quickTag.cat)
+    },
+    quickTagCopy () {
+      if (this.quickTag) ipcRenderer.invoke('copy-text-to-clipboard', this.quickTag.tag)
+    },
+    async quickTagRename () {
+      const { cat, tag } = this.quickTag || {}
+      const newName = (this.quickTagNewName || '').trim()
+      if (!cat || !tag || !newName || newName === tag) return
+      const res = await ipcRenderer.invoke('rename-tag', { cat, oldName: tag, newName })
+      if (res?.ok) {
+        this.printMessage('success', this.$t('m.renameTagDone', { n: res.count ?? 0 }))
+        this.quickTagDialogVisible = false
+        await this.loadBookList(false)
+      } else {
+        this.printMessage('error', res?.error || 'rename failed')
+      }
+    },
+    async quickTagRemoveFromBook () {
+      const { cat, tag } = this.quickTag || {}
+      const book = this.quickTagBook
+      if (book && cat && Array.isArray(book.tags?.[cat])) {
+        book.tags[cat] = book.tags[cat].filter(t => t !== tag)
+        await this.saveBook(book)
+        this.printMessage('success', this.$t('m.tagRemoved'))
+      }
+      this.quickTagDialogVisible = false
+    },
+    async quickTagDelete () {
+      const { cat, tag } = this.quickTag || {}
+      if (!cat || !tag) return
+      const ok = window.confirm(this.$t('m.deleteTagGlobal') + ': ' + tag + ' ?')
+      if (!ok) return
+      const res = await ipcRenderer.invoke('delete-tag', { cat, name: tag })
+      if (res?.ok) {
+        this.printMessage('success', this.$t('m.deleteTagDone', { n: res.count ?? 0 }))
+        this.quickTagDialogVisible = false
+        await this.loadBookList(false)
+      } else {
+        this.printMessage('error', res?.error || 'delete failed')
+      }
+    },
     searchFromTag (tag, cat) {
       this.$refs.BookDetailDialogRef.dialogVisibleBookDetail = false
       this.drawerVisibleCollection = false
@@ -1293,8 +1410,32 @@ export default defineComponent({
       }
       this.searchBook()
     },
-    // home main
+    // ---------- 可配置点击策略(设置 → 高级设置):详细界面 / 内容界面 / 缩略图 ----------
+    runClickAction (action, book) {
+      if (!book) return
+      switch (action) {
+        case 'content':
+          this.openContentView(book)
+          break
+        case 'thumbnail':
+          this.openThumbnailView(book)
+          break
+        default:
+          this.$refs.BookDetailDialogRef.openBookDetail(book)
+          break
+      }
+    },
+    onCoverClick (book) { this.runClickAction(this.setting.clickCoverAction || 'detail', book) },
+    onYueClick (book) { this.runClickAction(this.setting.clickYueAction || 'detail', book) },
+    onDuClick (book) { this.runClickAction(this.setting.clickDuAction || 'content', book) },
+    onPageCountClick (book) { this.runClickAction(this.setting.clickPageCountAction || 'thumbnail', book) },
+    onCoverDblClick (book) { this.runClickAction(this.setting.dblClickCoverAction || 'content', book) },
+    // home main(兼容旧入口:未配置点击策略时沿用「单击封面进入」设置)
     handleClickCover (book) {
+      if (this.setting.clickCoverAction) {
+        this.runClickAction(this.setting.clickCoverAction, book)
+        return
+      }
       switch (this.setting.directEnter) {
         case 'internalViewer':
           this.$refs.InternalViewerRef.viewManga(book)
@@ -1709,19 +1850,23 @@ html
 // (auto 模式随窗口宽度 <768px 自动生效,或手动强制移动/桌面布局)
 // ============================================================
 body.emm-mobile
-  // 卡片自适应列数:手机 2 列,平板 3-4 列
-  --emm-cover-size: calc((100vw - 56px) / 2)
+  // 卡片自适应列数:手机 2 列,平板 3-5 列
+  // 注意:el-row 的 gutter 会为卡片列加上左右内边距(共约 20px),
+  // 所以列宽要按「内容可用宽 = 100vw - 卡片区留白 - gutter 内边距」反推,
+  // 否则算出来的列宽实际放不下 N 列,flex 会把每行折成 1 列(手机出现"单列大图")。
+  // 只能用纯 calc(sass 会把 min()/clamp() 提前折叠成常数,导致列宽公式失效)
+  --emm-cover-size: calc((100vw - 70px) / 2)
   @media (min-width: 600px)
-    --emm-cover-size: calc((100vw - 90px) / 3)
+    --emm-cover-size: calc((100vw - 100px) / 3)
   @media (min-width: 900px)
-    --emm-cover-size: calc((100vw - 120px) / 4)
+    --emm-cover-size: calc((100vw - 130px) / 4)
   @media (min-width: 1200px)
-    --emm-cover-size: calc((100vw - 160px) / 5)
+    --emm-cover-size: calc((100vw - 170px) / 5)
   // 手动指定模式时覆盖列数:手机强制 2 列,平板强制 3 列
   &.emm-phone
-    --emm-cover-size: calc((100vw - 56px) / 2) !important
+    --emm-cover-size: calc((100vw - 70px) / 2) !important
   &.emm-tablet
-    --emm-cover-size: calc((100vw - 90px) / 3) !important
+    --emm-cover-size: calc((100vw - 100px) / 3) !important
   // 移动端:卡片间距统一,上下/左右可独立覆盖;封面高度随列宽自动
   --emm-card-gap-v: 6px
   --emm-card-gap-h: 6px
@@ -1776,6 +1921,22 @@ body.emm-mobile
   // 详情页封面与信息在窄屏下自然堆叠
   .book-detail-cover
     max-width: 100%
+  // 分页条:窄屏下允许换行,禁止把整页撑出横向滚动(内容按 100vw 排布)
+  .pagination-bar
+    justify-content: center
+    .el-pagination
+      flex-wrap: wrap
+      row-gap: 4px
+      max-width: 100%
+      justify-content: center
+  // 设置弹窗窄屏:内边距收紧、顶部分类标签可横向滑动
+  .setting-dialog
+    .el-dialog__body
+      padding: 8px 10px
+    .el-tabs__header
+      margin-bottom: 6px
+    .el-tabs__nav-wrap
+      overflow-x: auto
 
 @keyframes scan-slide
   0%
@@ -1882,6 +2043,22 @@ html.theme-custom
     flex-wrap: wrap
     justify-content: center
     align-content: flex-start
+
+// 标签快速编辑弹窗(长按卡片标签)
+.quick-tag-body
+  .quick-tag-line
+    display: flex
+    align-items: center
+    gap: 8px
+    margin: 0 0 10px
+    .quick-tag-raw
+      font-size: 12px
+      color: var(--el-text-color-secondary)
+.quick-tag-actions
+  display: flex
+  flex-wrap: wrap
+  gap: 8px
+  justify-content: flex-end
 
 .book-card-frame
   min-width: calc(var(--emm-cover-size, 220px) + 14px)

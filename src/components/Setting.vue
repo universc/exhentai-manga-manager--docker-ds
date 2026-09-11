@@ -359,18 +359,6 @@
           <el-col :span="24">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.directEnter')}}</span></template>
-                <el-select placeholder=" " v-model="setting.directEnter" @change="saveSetting">
-                  <el-option :label="$t('m.detailPage')" value="detail"></el-option>
-                  <el-option :label="$t('m.internalViewer')" value="internalViewer"></el-option>
-                  <el-option :label="$t('m.externalViewer')" value="externalViewer"></el-option>
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
                 <template #prepend><span class="setting-label">{{$t('m.displayTitle')}}</span></template>
                 <el-select :placeholder="$t('m.displayTitleInfo')" v-model="setting.displayTitle" @change="saveSetting">
                   <el-option :label="$t('m.englishTitle')" value="englishTitle"></el-option>
@@ -824,6 +812,74 @@
           </el-col>
         </el-row>
 
+        <!-- 点击策略:单击封面 / 阅 / 读 / 页数 分别进入哪个界面 -->
+        <div class="advanced-section-title">{{$t('m.clickPolicy')}}</div>
+        <el-row :gutter="8">
+          <el-col :span="12">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.clickCover')}}</span></template>
+                <el-select placeholder=" " v-model="setting.clickCoverAction" @change="saveSetting">
+                  <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
+                  <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
+                  <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="12">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.dblClickCover')}}</span></template>
+                <el-select placeholder=" " v-model="setting.dblClickCoverAction" @change="saveSetting">
+                  <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
+                  <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
+                  <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="12">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.clickYue')}}</span></template>
+                <el-select placeholder=" " v-model="setting.clickYueAction" @change="saveSetting">
+                  <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
+                  <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
+                  <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="12">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.clickDu')}}</span></template>
+                <el-select placeholder=" " v-model="setting.clickDuAction" @change="saveSetting">
+                  <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
+                  <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
+                  <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="12">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.clickPageCount')}}</span></template>
+                <el-select placeholder=" " v-model="setting.clickPageCountAction" @change="saveSetting">
+                  <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
+                  <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
+                  <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-hint">{{$t('m.clickPolicyHint')}}</div>
+          </el-col>
+        </el-row>
+
         <!-- 恢复全部默认(放在最下方) -->
         <el-row :gutter="8">
           <el-col :span="24">
@@ -1089,17 +1145,33 @@
           <el-descriptions :column="1">
             <el-descriptions-item :label="$t('m.appName')+':'">exhentai-manga-manager</el-descriptions-item>
             <el-descriptions-item :label="$t('m.appPage')+':'">
-              <a href="#" @click="openLink('https://github.com/SchneeHertz/exhentai-manga-manager')">github</a>
+              <a href="#" @click="openLink('https://github.com/SchneeHertz/exhentai-manga-manager')">github(原作者)</a>
             </el-descriptions-item>
-            <el-descriptions-item :label="$t('m.help')+':'">
-              <a v-if="['zh-CN', 'zh-TW'].includes($i18n.locale)" href="#" @click="openLink('https://github.com/SchneeHertz/exhentai-manga-manager/wiki/中文说明')">github wiki</a>
-              <a v-else href="#" @click="openLink('https://github.com/SchneeHertz/exhentai-manga-manager/wiki/English-Instruction')">github wiki</a>
-            </el-descriptions-item>
-            <el-descriptions-item :label="$t('m.donation')+':'">
-              <a v-if="['zh-CN', 'zh-TW'].includes($i18n.locale)" href="#" @click="openLink('https://afdian.com/a/SeldonHorizon')">爱发电</a>
-              <a v-else href="#" @click="openLink('https://www.buymeacoffee.com/schneehertz')">buy me a coffee</a>
+            <el-descriptions-item :label="$t('m.updatedVersion')+':'">
+              <a href="#" @click="openLink('https://github.com/universc/exhentai-manga-manager--docker-ds')">github.com/universc/exhentai-manga-manager--docker-ds</a>
             </el-descriptions-item>
           </el-descriptions>
+          <!-- 更新日志 -->
+          <el-divider />
+          <div class="guide-section">
+            <h3 class="guide-title">{{$t('m.changelog')}}</h3>
+            <!-- 默认收缩,点击版本标题展开 -->
+            <el-collapse class="changelog-collapse" :model-value="[]">
+              <el-collapse-item
+                v-for="log in changelog"
+                :key="log.version"
+                :name="log.version"
+              >
+                <template #title>
+                  <span class="changelog-version">{{ log.version }}</span>
+                  <span class="changelog-summary" v-if="log.summary">{{ log.summary }}</span>
+                </template>
+                <ul class="changelog-list">
+                  <li v-for="(line, i) in log.items" :key="i">{{ line }}</li>
+                </ul>
+              </el-collapse-item>
+            </el-collapse>
+          </div>
           <img src="/icon.png" class="about-logo">
           <!-- 致谢:大肥鱼 / universc -->
           <el-divider />
@@ -2212,6 +2284,36 @@ const reloadWindow = () => {
 }
 
 const dialogVisibleSetting = ref(false)
+// 更新日志(关于页展示;新版本加在数组最前面)
+const changelog = [
+  {
+    version: 'v1.9.8',
+    summary: '扫描优化 / 详情页重构 / 标签网格选择 / 移动端适配',
+    items: [
+      '扫描优化:压缩包只解压一次、去掉冗余整文件复制、同一文件只算一次哈希(封面懒加载)',
+      '封面加载动画只覆盖封面区域,不再遮挡标题与角标',
+      '详情页:故事简介字段(可编辑,随元数据同步)',
+      '详情页:封面 / 标题 / 按钮 / 评分统一宽度并居中对齐,窗口缩放不再错位',
+      '点击策略可配置:单击封面、双击封面、阅、读、页数 → 详细界面 / 内容界面 / 缩略图',
+      '标签选择:框与原选择框一致(可直接打字筛选、回车新建),下拉里标签按一排一排网格平铺,宽度与输入框一致',
+      '标签分类名内置中文兜底(角色 / 作品 / 社团 …),不再依赖联网词库',
+      '长按卡片上的收藏标签(或右键)打开简易标签编辑器:按标签筛选 / 重命名(全库) / 删除(全库) / 从本书移除',
+      '打开所在目录:网页版与远程桌面模式改为新标签页浏览 NAS 文件夹',
+      '编辑信息按钮调整:移除「AI 信息处理」,改为「查询角色出处 / 翻译」,新增「超分辨率 / 上色」(占位)',
+      '界面模式(自动 / 手机 / 平板 / 桌面)文案补全;手机端两列布局、分页不再横向溢出',
+      '版本号 1.9.8;关于页移除帮助/捐赠入口,新增本仓库链接与更新日志',
+    ]
+  },
+  {
+    version: 'v1.9.7',
+    summary: '封面懒加载 / 跨平台共享数据库(上游 v1.9.7 基线)',
+    items: [
+      '封面懒加载(默认开启):扫描建库不再批量生成封面,浏览到哪本按需生成',
+      '跨平台共享数据库:Windows 桌面版与 Docker 网页版读写同一份数据库与封面目录',
+      '封面清理修复:按文件名统一对比,避免误删另一端路径引用的封面',
+    ]
+  },
+]
 const activeSettingPanel = ref('general')
 
 // 设置页内容区惯性滚动(对话框打开/挂载后各尝试一次)
@@ -2410,15 +2512,81 @@ defineExpose({
       text-align: left
     .el-checkbox
       margin-right: 0
-  // 高级页分区标题
+  // 关于页:更新日志(默认收缩,点击展开)
+  .changelog-collapse
+    border-top: none
+    .el-collapse-item__header
+      height: auto
+      min-height: 36px
+      line-height: 1.5
+      padding: 6px 0
+      font-weight: 600
+    .changelog-version
+      color: var(--el-color-primary)
+    .changelog-summary
+      margin-left: 8px
+      font-size: 12px
+      font-weight: 400
+      color: var(--el-text-color-secondary)
+    .el-collapse-item__content
+      padding-bottom: 8px
+    .changelog-list
+      margin: 0
+      padding-left: 18px
+      li
+        font-size: 12px
+        line-height: 1.7
+        color: var(--el-text-color-regular)
+        list-style: disc
+  .changelog-box
+    margin-top: 6px
+    border: 1px solid var(--el-border-color-lighter)
+    border-radius: 8px
+    padding: 10px 12px
+    background-color: var(--el-fill-color-extra-light, transparent)
+    text-align: left
+    max-height: 320px
+    overflow-y: auto
+    .changelog-item + .changelog-item
+      margin-top: 10px
+      border-top: 1px dashed var(--el-border-color-lighter)
+      padding-top: 10px
+    .changelog-version
+      font-weight: 600
+      font-size: 13px
+      color: var(--el-color-primary)
+      margin-bottom: 4px
+    .changelog-list
+      margin: 0
+      padding-left: 18px
+      li
+        font-size: 12px
+        line-height: 1.7
+        color: var(--el-text-color-regular)
+        list-style: disc
+  // 高级页分区标题(与下方行距统一,视觉更整齐)
   .advanced-section-title
     font-weight: 600
     font-size: 13px
     color: var(--el-text-color-primary)
     border-left: 3px solid var(--el-color-primary)
     padding-left: 8px
-    margin: 16px 0 8px
+    margin: 18px 0 10px
+    line-height: 18px
     text-align: left
+    &:first-child
+      margin-top: 4px
+  // 设置项说明文字(灰字小提示)
+  .setting-hint
+    font-size: 12px
+    line-height: 1.6
+    color: var(--el-text-color-secondary)
+    margin: 2px 0 6px
+    text-align: left
+  // 高级页里的行:统一左右对齐与间距
+  .el-tab-pane > .el-row
+    .el-col
+      padding-bottom: 2px
   // 工具栏按钮编辑
   .toolbar-section-label
     font-size: 12px

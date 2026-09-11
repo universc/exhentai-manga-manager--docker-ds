@@ -1,6 +1,5 @@
 const fs = require('fs')
 const path = require('node:path')
-const { nanoid } = require('nanoid')
 const { createHash } = require('crypto')
 const sharp = require('sharp')
 const { getFolderlist, solveBookTypeFolder, getImageListFromFolder, deleteImageFromFolder } = require('./folder.js')
@@ -59,21 +58,25 @@ const geneCover = async (filepath, type, coverName) => {
   }
 
   const coverHash = await sha1File(tempCoverPath)
+  // 目标页与封面页是同一文件(≤8 页)时复用 coverHash,避免同一文件被完整读两遍;
+  // 不同文件才补算一次。hash 语义与旧逻辑一致(均为原图字节 sha1)。
+  const hash = (targetFilePath && targetFilePath !== tempCoverPath)
+    ? await sha1File(targetFilePath)
+    : coverHash
   if (!coverPath) {
     // 懒加载模式:只探测信息,不生成封面文件
-    return { targetFilePath, coverPath: null, pageCount, bundleSize, mtime, coverHash }
+    return { targetFilePath, coverPath: null, hash, pageCount, bundleSize, mtime, coverHash }
   }
-  const copyTempCoverPath = path.join(TEMP_PATH, nanoid(8) + path.extname(tempCoverPath))
-  await fs.promises.copyFile(tempCoverPath, copyTempCoverPath)
   // 封面按 500×707 居中裁切(fit: cover),而不是 contain 留底色边:
   // contain 会让横图/异形封面上下(左右)带 #303133 黑边,在"填充封面"布局里很难看。
   // 已有封面文件不受影响,重新扫描/修补封面后会按新规则生成。
-  await sharp(copyTempCoverPath, { failOnError: false })
+  // 解压产物/库内原图在本批内不会被清理,sharp 直接读取,省一次整文件复制。
+  await sharp(tempCoverPath, { failOnError: false })
     .resize(500, 707, {
       fit: 'cover'
     })
     .toFile(coverPath)
-  return { targetFilePath, coverPath, pageCount, bundleSize, mtime, coverHash }
+  return { targetFilePath, coverPath, hash, pageCount, bundleSize, mtime, coverHash }
 }
 
 const getImageListByBook = async (filepath, type) => {

@@ -31,6 +31,8 @@ const prepareMangaModel = (databasePath) => {
     title_jpn: DataTypes.TEXT,
     // AI 翻译的中文标题(本地AI / 在线API 翻译结果)
     title_cn: DataTypes.TEXT,
+    // 故事简介(详情页手动填写,随元数据同步)
+    description: DataTypes.TEXT,
     filecount: DataTypes.INTEGER,
     posted: DataTypes.INTEGER,
     filesize: DataTypes.INTEGER,
@@ -84,6 +86,8 @@ const prepareMetadataModel = (databasePath) => {
     },
     title_jpn: DataTypes.TEXT,
     title_cn: DataTypes.TEXT,
+    // 故事简介(与 Mangas.description 同步)
+    description: DataTypes.TEXT,
     filecount: DataTypes.INTEGER,
     posted: DataTypes.INTEGER,
     filesize: DataTypes.INTEGER,

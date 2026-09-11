@@ -246,6 +246,37 @@ const toolbarButtonDefinitions = [
 ]
 const defaultToolbarButtons = () => toolbarButtonDefinitions.map(b => b.id)
 
+// ---------- 内置标签分类中文名(兜底) ----------
+// 标签分类的中文名原本依赖 EhTagTranslation 在线词库(setting.showTranslation);
+// 未开启或词库未加载时会回退成英文 key(character/parody…)。这里内置一份常见分类名兜底,
+// 保证界面上始终显示中文:resolvedTranslation[cat]?._name || DEFAULT_CAT_NAMES[cat] || cat
+const DEFAULT_CAT_NAMES = {
+  language: '语言',
+  parody: '作品',
+  character: '角色',
+  group: '社团',
+  artist: '作者',
+  male: '男性',
+  female: '女性',
+  mixed: '混合',
+  other: '其他',
+  cosplayer: 'Cosplay',
+  reclass: '重新分类',
+  temp: '临时',
+  rows: '行数',
+  doujinshi: '同人志',
+  manga: '漫画',
+  artistcg: '作者CG',
+  gamecg: '游戏CG',
+  western: '欧美',
+  nonh: '非H',
+  imageset: '图集',
+  cosplay: 'Cosplay',
+  asianporn: '亚洲',
+  misc: '杂项',
+}
+const catDisplayName = (key) => DEFAULT_CAT_NAMES[key] || key
+
 // ---------- 每页条数 ----------
 const parsePageSizes = (raw) => {
   const parsed = String(raw || '')
@@ -267,6 +298,14 @@ const defaultUiSettings = () => ({
   theme: 'light e-hentai',
   widthLimit: undefined,
   directEnter: 'detail',
+  // 点击策略:detail=详细界面 / content=内容界面(阅读器) / thumbnail=阅读器缩略图
+  clickCoverAction: 'detail',
+  clickYueAction: 'detail',
+  clickDuAction: 'content',
+  clickPageCountAction: 'thumbnail',
+  dblClickCoverAction: 'content',
+  // 「编辑信息」里信息块的显示顺序(可拖动调整)
+  detailEditBlockOrder: ['title', 'status', 'url', 'category', 'tags'],
   language: 'default',
   folderTreeWidth: '',
   advancedSearch: true,
@@ -343,6 +382,8 @@ export {
   DEFAULT_APP_NAME,
   toolbarButtonDefinitions,
   defaultToolbarButtons,
+  DEFAULT_CAT_NAMES,
+  catDisplayName,
   parsePageSizes,
   defaultUiSettings,
 }

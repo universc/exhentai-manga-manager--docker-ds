@@ -11,15 +11,21 @@
       <img
         class="book-cover"
         :src="book.coverPath"
-        @click="$emit('handleClickCover')"
+        @click="onCoverClickOnce"
+        @dblclick="onCoverDblClick"
         @contextmenu="$emit('onBookContextMenu', $event, book)"
+        @load="coverLoading = false"
         @error="onCoverError"
       />
+      <!-- 封面加载动画:只覆盖封面区域,加载完成自动消失 -->
+      <div class="cover-loading" v-if="coverLoading">
+        <el-icon class="is-loading" :size="26"><Loading /></el-icon>
+      </div>
       <el-tag class="book-card-language" size="small" v-if="!setting.hideReadCount"
         :type="isChineseTranslatedManga(book) ? 'danger' : 'info'"
         @click="$emit('handleSearchString', `:count=${book.readCount}`)"
       >{{book.readCount}}</el-tag>
-      <el-tag class="book-card-pagecount" size="small" type="danger" v-if="!setting.hidePageCount && book.pageDiff" @click="$emit('handleSearchString', 'pageDiff')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
+      <el-tag class="book-card-pagecount" size="small" type="danger" v-if="!setting.hidePageCount && book.pageDiff" @click="$emit('pageCountClick')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
       <el-tag class="book-card-pagecount" size="small" type="info" v-else-if="!setting.hidePageCount">{{ book.pageCount }}P</el-tag>
       <el-icon
         v-if="!setting.hideBookmarkButton && !viewerRole"
@@ -31,7 +37,14 @@
     <div class="collect-tag">
       <el-tag
         v-for="tag in filterCollectTag(book.tags)" :key="tag.id"
-        @click="$emit('searchFromTag', tag.tag, tag.cat)"
+        @click="onCollectTagClick(tag)"
+        @mousedown="startTagPress(tag)"
+        @mouseup="cancelTagPress"
+        @mouseleave="cancelTagPress"
+        @touchstart.passive="startTagPress(tag)"
+        @touchend="cancelTagPress"
+        @touchmove.passive="cancelTagPress"
+        @contextmenu="onCollectTagContextMenu($event, tag)"
         class="book-collect-tag"
         :color="tag.color"
         size="small"
@@ -40,8 +53,8 @@
     </div>
     <div class="book-card-footer">
       <el-button-group class="outer-read-button-group" v-if="!setting.hideReadButton">
-        <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('openLocalBook')">{{$t('m.re')}}</el-button>
-        <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('viewManga')">{{$t('m.ad')}}</el-button>
+        <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('yueClick')">{{$t('m.re')}}</el-button>
+        <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('duClick')">{{$t('m.ad')}}</el-button>
       </el-button-group>
       <el-tag
         v-if="!setting.hideNonTag"
@@ -59,10 +72,15 @@
       <img
         class="book-cover-fill"
         :src="book.coverPath"
-        @click="$emit('handleClickCover')"
+        @click="onCoverClickOnce"
+        @dblclick="onCoverDblClick"
         @contextmenu="$emit('onBookContextMenu', $event, book)"
+        @load="coverLoading = false"
         @error="onCoverError"
       />
+      <div class="cover-loading" v-if="coverLoading">
+        <el-icon class="is-loading" :size="26"><Loading /></el-icon>
+      </div>
       <div class="fill-top" v-if="fillTopShown || (!setting.hideBookmarkButton && !viewerRole)">
         <el-tag class="fill-badge" size="small" v-if="!setting.hideReadCount"
           @click="$emit('handleSearchString', `:count=${book.readCount}`)"
@@ -87,17 +105,24 @@
         <div class="footer-row" v-if="fillRow1Shown || !setting.hideRating">
           <el-tag
             v-for="tag in filterCollectTag(book.tags)" :key="tag.id"
-            @click="$emit('searchFromTag', tag.tag, tag.cat)"
+            @click="onCollectTagClick(tag)"
+            @mousedown="startTagPress(tag)"
+            @mouseup="cancelTagPress"
+            @mouseleave="cancelTagPress"
+            @touchstart.passive="startTagPress(tag)"
+            @touchend="cancelTagPress"
+            @touchmove.passive="cancelTagPress"
+            @contextmenu="onCollectTagContextMenu($event, tag)"
             class="book-collect-tag"
             :color="tag.color"
             size="small"
             effect="dark"
           >{{tag.letter}}:{{resolvedTranslation[tag.cat]?.[tag.tag]?.name || tag.tag}}</el-tag>
-          <el-tag class="fill-badge" size="small" v-if="!setting.hidePageCount && book.pageDiff" @click="$emit('handleSearchString', 'pageDiff')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
-          <el-tag class="fill-badge" size="small" v-else-if="!setting.hidePageCount" @click="$emit('handleSearchString', 'pageDiff')">{{ book.pageCount }}P</el-tag>
+          <el-tag class="fill-badge" size="small" v-if="!setting.hidePageCount && book.pageDiff" @click="$emit('pageCountClick')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
+          <el-tag class="fill-badge" size="small" v-else-if="!setting.hidePageCount" @click="$emit('pageCountClick')">{{ book.pageCount }}P</el-tag>
           <el-button-group class="outer-read-button-group" v-if="!setting.hideReadButton">
-            <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('openLocalBook')">{{$t('m.re')}}</el-button>
-            <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('viewManga')">{{$t('m.ad')}}</el-button>
+            <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('yueClick')">{{$t('m.re')}}</el-button>
+            <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('duClick')">{{$t('m.ad')}}</el-button>
           </el-button-group>
           <el-tag
             v-if="!setting.hideNonTag"
@@ -115,6 +140,7 @@
 import { ref, watchEffect, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { BookmarkTwotone } from '@vicons/material'
+import { Loading } from '@element-plus/icons-vue'
 import ContextMenu from '@imengyu/vue3-context-menu'
 
 import { storeToRefs } from 'pinia'
@@ -157,6 +183,16 @@ const emit = defineEmits([
   'searchFromTag',
   'openLocalBook',
   'viewManga',
+  // 阅读器:进入缩略图模式(点击页数标签)
+  'viewThumbnails',
+  // 可配置点击策略:封面 / 阅 / 读 / 页数(由设置「点击策略」决定进入 详细/内容/缩略图)
+  'coverClick',
+  'coverDblClick',
+  'yueClick',
+  'duClick',
+  'pageCountClick',
+  // 长按卡片上的收藏标签 → 弹出简易标签编辑器(筛选 / 全库重命名 / 全库删除 等)
+  'tagLongPress',
 ])
 
 const props = defineProps({
@@ -169,11 +205,49 @@ watchEffect(() => {
   bookRating.value = props.book.rating
 })
 
+// 封面加载动画:封面路径变化 / 懒加载生成中保持转圈,<img> 加载完成由 @load 关闭
+const coverLoading = ref(true)
 // 封面懒加载:路径为空(扫描未生成)或加载失败时,按需生成封面
-const onCoverError = () => ensureBookCover(props.book)
+const onCoverError = () => { coverLoading.value = true; ensureBookCover(props.book) }
 watch(() => props.book.coverPath, (v) => {
+  coverLoading.value = true
   if (!v) ensureBookCover(props.book)
 }, { immediate: true })
+
+// ---------- 封面单击/双击分离:双击时取消单击动作 ----------
+let coverClickTimer = null
+const onCoverClickOnce = () => {
+  clearTimeout(coverClickTimer)
+  coverClickTimer = setTimeout(() => emit('coverClick'), 240)
+}
+const onCoverDblClick = () => {
+  clearTimeout(coverClickTimer)
+  emit('coverDblClick')
+}
+
+// ---------- 收藏标签:点击筛选,长按(500ms)打开简易标签编辑器 ----------
+let tagPressTimer = null
+let tagLongPressed = false
+const startTagPress = (tag) => {
+  tagLongPressed = false
+  clearTimeout(tagPressTimer)
+  tagPressTimer = setTimeout(() => {
+    tagLongPressed = true
+    emit('tagLongPress', { tag, book: props.book })
+  }, 500)
+}
+const cancelTagPress = () => { clearTimeout(tagPressTimer) }
+const onCollectTagClick = (tag) => {
+  // 长按已触发编辑器时,抑制随后的 click 误触发筛选
+  if (tagLongPressed) { tagLongPressed = false; return }
+  emit('searchFromTag', tag.tag, tag.cat)
+}
+// 右键标签:同一份简易编辑器(方便鼠标用户)
+const onCollectTagContextMenu = (e, tag) => {
+  e.preventDefault()
+  cancelTagPress()
+  emit('tagLongPress', { tag, book: props.book })
+}
 
 const filterCollectTag = (tagObject) => {
   if (setting.value.showCollectTag) {
@@ -242,6 +316,20 @@ const onMangaTitleContextMenu = (e, book) => {
       border-width: 0
       padding-left: 4px
       padding-right: 4px
+// 封面加载动画遮罩(经典/填充布局共用)
+.cover-loading
+  position: absolute
+  top: 0
+  left: 0
+  right: 0
+  bottom: 0
+  display: flex
+  align-items: center
+  justify-content: center
+  background: var(--el-fill-color-light, rgba(0, 0, 0, .04))
+  color: var(--el-text-color-secondary, #909399)
+  border-radius: 6px
+  pointer-events: none
 .book-title
   height: 36px
   overflow-y: hidden

@@ -16,7 +16,7 @@
 services:
   exhentai-manga-manager:
     build: .
-    image: exhentai-manga-manager:1.9.7
+    image: exhentai-manga-manager:1.9.8
     container_name: exhentai-manga-manager
     restart: unless-stopped
 
@@ -33,8 +33,8 @@ services:
       WEB_LIBRARY: /library
       WEB_PORT: "10000"
       # 璐︽埛绯荤粺:棣栨鍚姩鏃剁敤浠ヤ笅鍙橀噺鍒涘缓绠＄悊鍛樿处鎴?
-      # 涔嬪悗鍙湪缃戦〉 璁剧疆 鈫?璐︽埛 涓鐞?娣诲姞鍙鐨勬櫘閫氳处鎴?/ 鍒犻櫎 / 閲嶇疆瀵嗙爜)銆?      # 涓嶉厤缃垯璐︽埛绯荤粺涓嶅惎鐢?淇濇寔鍖垮悕璁块棶銆?      WEB_ADMIN_USER: universc
-      WEB_ADMIN_PASSWORD: CHANGE_ME_PASSWORD
+      # 涔嬪悗鍙湪缃戦〉 璁剧疆 鈫?璐︽埛 涓鐞?娣诲姞鍙鐨勬櫘閫氳处鎴?/ 鍒犻櫎 / 閲嶇疆瀵嗙爜)銆?      # 涓嶉厤缃垯璐︽埛绯荤粺涓嶅惎鐢?淇濇寔鍖垮悕璁块棶銆?      WEB_ADMIN_USER: ${WEB_ADMIN_USER:-universc}
+      WEB_ADMIN_PASSWORD: ${WEB_ADMIN_PASSWORD:?请在 .env 中设置}
       # 鏃跺尯,鎸夐渶淇敼
       TZ: Asia/Shanghai
 

@@ -8,6 +8,8 @@ const { getRootPath } = require('../modules/utils.js')
 
 // Windows 桌面版使用随应用分发的 7z.exe;
 // Linux/macOS(含 Docker/NAS 部署)使用系统 PATH 中的 7z(Docker 镜像内置 p7zip-full)
+// 注:-p123456 仅用于解锁带该默认密码的压缩包(Ex 下载件常见);无密码包不受影响,
+// zip 优先走内存 adm-zip 不走 7z
 const _7z = process.platform === 'win32'
   ? path.join(getRootPath(), 'resources/extraResources/7z.exe')
   : '7z'
@@ -37,15 +39,14 @@ const solveBookTypeArchive = async (filepath, TEMP_PATH, COVER_PATH, coverName) 
   imageList = imageList.sort((a, b) => a.localeCompare(b, undefined, {numeric: true, sensitivity: 'base'}))
 
   let targetFile
-  let targetFilePath
   let coverFile
-  let tempCoverPath
   let coverPath
   if (imageList.length > 8) {
     targetFile = imageList[7]
     coverFile = imageList[0]
-    await spawnPromise(_7z, ['x', '-o'+tempFolder, '-p123456', '--', filepath, targetFile])
-    await spawnPromise(_7z, ['x', '-o'+tempFolder, '-p123456', '--', filepath, coverFile])
+    // 一次 7z 调用同时解出目标页与封面页,少起一个外部进程
+    // (批量扫描新书时进程 spawn 是主要开销之一)
+    await spawnPromise(_7z, ['x', '-o'+tempFolder, '-p123456', '--', filepath, targetFile, coverFile])
   } else if (imageList.length > 0) {
     targetFile = imageList[0]
     coverFile = imageList[0]
@@ -53,11 +54,11 @@ const solveBookTypeArchive = async (filepath, TEMP_PATH, COVER_PATH, coverName) 
   } else {
     throw new Error('compression package isnot include image')
   }
-  targetFilePath = path.join(TEMP_PATH, nanoid(8) + path.extname(targetFile))
-  await fs.promises.copyFile(path.join(tempFolder, targetFile), targetFilePath)
-
-  tempCoverPath = path.join(TEMP_PATH, nanoid(8) + path.extname(coverFile))
-  await fs.promises.copyFile(path.join(tempFolder, coverFile), tempCoverPath)
+  // 直接引用解压产物做后续 hash/封面,不再复制到 TEMP 根:
+  // 这些临时文件的生命周期只到本批扫描结束(TEMP_PATH 批次间统一清理),
+  // 去掉每本 1~2 次整文件复制(写+读),扫描大库时磁盘/网络 IO 明显下降。
+  const targetFilePath = path.join(tempFolder, targetFile)
+  const tempCoverPath = path.join(tempFolder, coverFile)
 
   coverPath = coverName === undefined
     ? path.join(COVER_PATH, nanoid() + '.webp')

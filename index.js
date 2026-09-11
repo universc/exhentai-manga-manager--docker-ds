@@ -20,7 +20,7 @@ const { glob } = require('glob')
 const { prepareMangaModel, prepareMetadataModel } = require('./modules/database')
 const { translateBookTitle, translateTitle, listTitleTranslationModels, queryCharacterOrigins, analyzeTitleCharacters, extractBookInfo, extractImageText, extractImageTextWithUrl } = require('./modules/translate')
 const { prepareTemplate } = require('./modules/prepare_menu.js')
-const { getBookFilelist, geneCover, getImageListByBook, deleteImageFromBook, sha1File } = require('./fileLoader/index.js')
+const { getBookFilelist, geneCover, getImageListByBook, deleteImageFromBook } = require('./fileLoader/index.js')
 const {
   STORE_PATH, isPortable,
   TEMP_PATH, COVER_PATH, VIEWER_PATH,
@@ -39,20 +39,28 @@ let setting = prepareSetting()
 // 增量扫描目录指纹快照(存于共享数据目录;路径随环境不同,快照内部记录 library 以自校验)
 const SNAPSHOT_FILE = path.join(STORE_PATH, 'scan-snapshot.json')
 
-// 容器模式(WEB_LIBRARY 环境变量):数据目录挂载为 /data、漫画库挂载为 /library,
-// 但共享的 setting.json 可能是 Windows 桌面版写的(库路径如 Y:\01-漫画)。
-// 启动时强制容器内路径,并记录 Windows 侧路径,用于共享数据库的双向互译。
+// 容器模式(WEB_LIBRARY 环境变量):数据目录挂载为 /data、漫画库挂载为 /library。
+// 只对「Windows 盘符路径」(桌面端写进共享 setting.json 的 Y:\... 等)做跨平台映射;
+// 用户在容器内设置的合法路径(以 / 开头,如 /library/sub、/data/xxx)一律尊重,
+// 不再无条件强制回 /library,避免「库文件夹/元数据目录设置后又被重置」的问题。
 if (process.env.WEB_LIBRARY) {
   const forcedLibrary = path.resolve(process.env.WEB_LIBRARY)
-  if (/^[A-Za-z]:[\\/]/.test(setting.library || '') && setting.library !== forcedLibrary) {
-    if (!setting.externalLibraryRoot) setting.externalLibraryRoot = setting.library
+  const lib = String(setting.library || '')
+  if (/^[A-Za-z]:[\\/]/.test(lib)) {
+    // Windows 盘符:记录为外部根,并在容器内强制为挂载路径
+    if (!setting.externalLibraryRoot) setting.externalLibraryRoot = lib
+    setting.library = forcedLibrary
+  } else if (!lib || lib === '/') {
+    // 未设置 / 根目录:回退到默认挂载路径
+    setting.library = forcedLibrary
   }
-  if (/^[A-Za-z]:[\\/]/.test(setting.metadataPath || '')) {
-    if (!setting.externalMetadataPath) setting.externalMetadataPath = setting.metadataPath
-    if (!setting.externalCoverRoot) setting.externalCoverRoot = path.join(setting.metadataPath, 'cover').replace(/\//g, '\\')
+  // 元数据目录:仅 Windows 盘符时映射;容器内合法路径尊重
+  const meta = String(setting.metadataPath || '')
+  if (/^[A-Za-z]:[\\/]/.test(meta)) {
+    if (!setting.externalMetadataPath) setting.externalMetadataPath = meta
+    if (!setting.externalCoverRoot) setting.externalCoverRoot = path.join(meta, 'cover').replace(/\//g, '\\')
     setting.metadataPath = null
   }
-  setting.library = forcedLibrary
 }
 
 let collectionList = prepareCollectionList()
@@ -87,10 +95,12 @@ const getColumns = async (sequelize, tableName) => {
   await ensureColumns(Manga.sequelize, 'Mangas', {
     hiddenBook: 'BOOLEAN DEFAULT false',
     readCount: 'INTEGER DEFAULT 0',
-    title_cn: 'TEXT'
+    title_cn: 'TEXT',
+    description: 'TEXT'
   })
   await ensureColumns(Metadata.sequelize, 'Metadata', {
-    title_cn: 'TEXT'
+    title_cn: 'TEXT',
+    description: 'TEXT'
   })
   // 为已有数据库幂等补建索引,加速 filepath/hash 精确查询与文件查重(bundleSize+mtime)
   await Manga.sequelize.query('CREATE INDEX IF NOT EXISTS idx_mangas_filepath ON Mangas (filepath)')
@@ -562,6 +572,14 @@ const startRemoteProxy = (remoteServer) => new Promise((resolve) => {
         res.status(r.status)
         r.body.pipe(res)
       })
+      .catch(() => res.status(502).send('proxy error'))
+  })
+
+  // 目录浏览页:转发到 NAS,远程桌面模式也能新开页面浏览 NAS 文件夹
+  proxy.get('/browse', (req, res) => {
+    const target = remoteServer + '/browse?path=' + encodeURIComponent(String(req.query.path || ''))
+    fetch(target, { headers: nasHeaders() })
+      .then(r => { res.status(r.status).set('Content-Type', 'text/html; charset=utf-8'); r.body.pipe(res) })
       .catch(() => res.status(502).send('proxy error'))
   })
 
@@ -1107,6 +1125,17 @@ const setProgressBar = (progress) => {
   })
 }
 
+// 扫描"边扫边显示":每批新书入库后通知前端刷新,让扫到多少就显示多少,
+// 不需要等整轮扫描完成(扫描与加载互不阻塞;前端会做 900ms 节流合并)
+const sendScanBatch = () => {
+  const payload = { action: 'scan-batch' }
+  if (WEB_MODE) {
+    require('./web-electron-shim.js').broadcast('send-action', payload)
+  } else if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('send-action', payload)
+  }
+}
+
 const clearFolder = async (Folder) => {
   try {
     await fs.promises.rm(Folder, { recursive: true, force: true })
@@ -1221,10 +1250,9 @@ const processScanItem = async (ctx, filepath, type) => {
     } else {
       // this is the new file, so generate the cover(懒加载:只探测信息,封面为空)
       const id = nanoid()
-      const { targetFilePath, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null)
+      const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null)
       // 懒加载模式下 coverPath 为 null(封面按需生成),书仍然入库
       if (targetFilePath) {
-        const hash = await sha1File(targetFilePath)
         batchNewBooks.push({
           title: path.basename(filepath),
           coverPath,
@@ -1309,6 +1337,8 @@ const runScan = async () => {
         bookList.push(newBook)
       }
     }
+    // 边扫边显示:本批已入库,通知前端先刷新出这批
+    if (batchNewBooks.length) sendScanBatch()
     if (end < listLength) await clearFolder(TEMP_PATH)
     setProgressBar(end / listLength)
   }
@@ -1477,6 +1507,8 @@ const runIncrementalScan = async () => {
         bookList.push(newBook)
       }
     }
+    // 边扫边显示:本批已入库,通知前端先刷新出这批
+    if (batchNewBooks.length) sendScanBatch()
     if (end < candidates.length) await clearFolder(TEMP_PATH)
     setProgressBar(0.1 + 0.7 * (end / Math.max(1, candidates.length)))
   }
@@ -1510,10 +1542,13 @@ const runIncrementalScan = async () => {
       sendMessageToWebContents(`清理不存在的漫画失败:${e}`)
     }
   }
-  try {
-    await saveSnapshotFile(SNAPSHOT_FILE, diff.nextSnap)
-  } catch (e) {
-    console.log('save scan snapshot failed', e)
+  // 无变化时不重写快照(避免每轮都全量写 1MB+ 的 scan-snapshot.json)
+  if (candidates.length || diff.removedBooks.length) {
+    try {
+      await saveSnapshotFile(SNAPSHOT_FILE, diff.nextSnap)
+    } catch (e) {
+      console.log('save scan snapshot failed', e)
+    }
   }
   setProgressBar(-1)
   sendMessageToWebContents('Scan complete')
@@ -1575,10 +1610,9 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
       await waitViewerIdle()
       try {
         const id = nanoid()
-        const { targetFilePath, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null)
+        const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null)
         // 懒加载模式下 coverPath 为 null(封面按需生成),书仍然入库
         if (targetFilePath) {
-          const hash = await sha1File(targetFilePath)
           batchNewBooks.push({
             title: path.basename(filepath),
             coverPath,
@@ -1637,9 +1671,8 @@ ipcMain.handle('patch-local-metadata', async (event, arg) => {
         // 封面以漫画名命名(占位防并发)
         const coverName = acquireCoverName(filepath)
         try {
-          const { targetFilePath, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName)
+          const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName)
           if (targetFilePath && coverPath) {
-            const hash = await sha1File(targetFilePath)
             _.assign(book, { type, coverPath, hash, pageCount, bundleSize, mtime: mtime.toJSON(), coverHash })
             await saveBookToDatabase(book)
           } else {
@@ -1668,9 +1701,8 @@ ipcMain.handle('patch-local-metadata-by-book', async (event, book) => {
   // 封面以漫画名命名(占位防并发)
   const coverName = acquireCoverName(filepath)
   try {
-    const { targetFilePath, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName)
+    const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName)
     if (targetFilePath && coverPath) {
-      const hash = await sha1File(targetFilePath)
       await clearFolder(TEMP_PATH)
       return Promise.resolve({ coverPath, hash, pageCount, bundleSize, mtime: mtime.toJSON(), coverHash })
     }
@@ -2079,23 +2111,26 @@ const applySetting = async (receiveSetting) => {
       registerGlobalHotkey()
     }
   }
-  // 容器模式:内存中保持容器内路径,写入共享 setting.json 时用 Windows 侧路径
+  // 容器模式:只对 Windows 盘符路径做跨平台映射;容器内合法路径尊重用户设置
   let fileSetting = receiveSetting
   if (process.env.WEB_LIBRARY) {
-    receiveSetting.library = path.resolve(process.env.WEB_LIBRARY)
-    if (setting.externalCoverRoot) receiveSetting.metadataPath = null
-    fileSetting = { ...receiveSetting }
-    if (setting.externalLibraryRoot) fileSetting.library = setting.externalLibraryRoot
-    // 元数据目录:允许设置到挂载的漫画库内(如 /library/S/数据存放,可持久化);
-    // 其余情况(共享 Windows 数据库或未设置)保持强制默认
-    const libraryRoot = path.resolve(process.env.WEB_LIBRARY)
-    const metaPath = String(fileSetting.metadataPath || '')
-    if (metaPath && metaPath.startsWith(libraryRoot)) {
-      // 用户显式设置到库内目录:保留
+    const forcedLibrary = path.resolve(process.env.WEB_LIBRARY)
+    const lib = String(receiveSetting.library || '')
+    const meta = String(receiveSetting.metadataPath || '')
+    if (/^[A-Za-z]:[\\/]/.test(lib)) {
+      // 桌面端写来的 Windows 库路径:内存用容器挂载路径,落盘写 Windows 侧
+      receiveSetting.library = forcedLibrary
+      fileSetting = { ...receiveSetting, library: setting.externalLibraryRoot || lib }
     } else {
-      fileSetting.metadataPath = setting.externalMetadataPath || null
+      fileSetting = { ...receiveSetting }
+      if (!lib || lib === '/') fileSetting.library = forcedLibrary
     }
-    fileSetting.windowsLibraryRoot = setting.externalLibraryRoot || fileSetting.library
+    if (/^[A-Za-z]:[\\/]/.test(meta)) {
+      // Windows 元数据路径:落盘写 Windows 侧,内存置空回退默认
+      fileSetting.metadataPath = setting.externalMetadataPath || null
+      receiveSetting.metadataPath = null
+    }
+    if (setting.externalLibraryRoot) fileSetting.windowsLibraryRoot = setting.externalLibraryRoot
   }
   setting = receiveSetting
   if (tray && !setting.minimizeToTray && !setting.closeToTray) {
@@ -2752,6 +2787,28 @@ ipcMain.handle('rename-tag', async (event, { cat, oldName, newName } = {}) => {
       const arr = book.tags?.[cat]
       if (Array.isArray(arr) && arr.includes(oldName)) {
         book.tags[cat] = arr.map(t => (t === oldName ? newName : t))
+        await saveBookToDatabase(book)
+        count++
+      }
+    }
+    return { ok: true, count }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) }
+  }
+})
+
+// 删除标签:从全库所有漫画中移除该分类下的这个标签
+ipcMain.handle('delete-tag', async (event, { cat, name } = {}) => {
+  try {
+    if (!cat || !name) return { ok: false, error: '参数错误' }
+    const bookList = await loadBookListFromDatabase()
+    let count = 0
+    for (const book of bookList) {
+      const arr = book.tags?.[cat]
+      if (Array.isArray(arr) && arr.includes(name)) {
+        const next = arr.filter(t => t !== name)
+        if (next.length) book.tags[cat] = next
+        else delete book.tags[cat]
         await saveBookToDatabase(book)
         count++
       }
