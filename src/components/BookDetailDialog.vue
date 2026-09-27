@@ -142,7 +142,7 @@
                 <el-popover
                   effect="dark"
                   trigger="hover"
-                  :content="resolvedTranslation[key]?.[tag]?.intro || tag"
+                  :content="getDisplayTagName(setting, key, tag) || resolvedTranslation[key]?.[tag]?.intro || tag"
                   :disabled="!resolvedTranslation[key]?.[tag]?.intro"
                   placement="top-start"
                   :show-after="500"
@@ -154,7 +154,7 @@
                       type="info"
                       class="book-tag"
                       @click="$emit('searchFromTag', tag, key)"
-                    >{{resolvedTranslation[key]?.[tag]?.name || tag }}</el-tag>
+                    >{{ getDisplayTagName(setting, key, tag) || resolvedTranslation[key]?.[tag]?.name || tag }}</el-tag>
                   </template>
                 </el-popover>
               </el-descriptions-item>
@@ -200,7 +200,7 @@ import * as linkify from 'linkifyjs'
 import ContextMenu from '@imengyu/vue3-context-menu'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { isContextMenuItemEnabled, ensureBookCover, catDisplayName } from '../utils.js'
+import { isContextMenuItemEnabled, ensureBookCover, catDisplayName, getDisplayTagName } from '../utils.js'
 import  { insertLocalReadRecord } from '../utils.js'
 
 const appStore = useAppStore()

@@ -16,6 +16,7 @@
               :key="`tag-${letter}-${index}`"
               class="tag-item"
               @click="handleTagClick(item)"
+              @dblclick="openTagNameEditor(item)"
             >
               {{ formatTagText(item) }} ({{ item.count }})
             </el-tag>
@@ -23,14 +24,28 @@
         </div>
       </template>
     </div>
+    <!-- 双击标签:编辑多语言名称(中/日/英),按「目标语言标签」显示 -->
+    <el-dialog v-model="tagEditVisible" :title="$t('m.editTagNames')" width="380px" append-to-body>
+      <div class="tag-name-editor">
+        <p class="tag-edit-raw">{{ tagEditItem ? (tagEditItem.type + ' : ' + tagEditItem.name) : '' }}</p>
+        <el-input v-model="tagEditLangs['zh-CN']" size="small" :placeholder="$t('m.tagNameZh')" />
+        <el-input v-model="tagEditLangs.ja" size="small" :placeholder="$t('m.tagNameJa')" />
+        <el-input v-model="tagEditLangs.en" size="small" :placeholder="$t('m.tagNameEn')" />
+      </div>
+      <template #footer>
+        <el-button size="small" @click="tagEditVisible = false">{{ $t('m.cancel') }}</el-button>
+        <el-button size="small" type="primary" @click="saveTagNames">{{ $t('m.saveTagNames') }}</el-button>
+      </template>
+    </el-dialog>
   </el-dialog>
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, computed } from 'vue'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
+import { getDisplayTagName } from '../utils.js'
 const appStore = useAppStore()
 const { setting, resolvedTranslation, displayBookList } = storeToRefs(appStore)
 
@@ -51,9 +66,12 @@ const groupedItems = ref({})
 
 // 根据标签类型添加前缀
 const formatTagText = (item) => {
-  const displayName = setting.value.showTranslation
-    ? (resolvedTranslation.value[item.type]?.[item.name]?.name || item.name)
-    : item.name
+  // 优先使用「标签多语言名称」(按目标语言标签设置);其次翻译库名称;最后原名
+  const custom = getDisplayTagName(setting.value, item.type, item.name)
+  const displayName = custom
+    || (setting.value.showTranslation
+      ? (resolvedTranslation.value[item.type]?.[item.name]?.name || item.name)
+      : item.name)
 
   if (item.type === 'male') {
     return `m: ${displayName}`
@@ -64,6 +82,35 @@ const formatTagText = (item) => {
   return displayName
 }
 
+
+// 双击标签 → 编辑多语言名称(中/日/英)
+const tagEditVisible = ref(false)
+const tagEditItem = ref(null)
+const tagEditLangs = ref({ 'zh-CN': '', ja: '', en: '' })
+const openTagNameEditor = (item) => {
+  if (!item || !item.type || !item.name) return
+  const rec = (setting.value.tagNameLangs || {})[item.type + '::' + item.name] || {}
+  tagEditLangs.value = { 'zh-CN': rec['zh-CN'] || '', ja: rec.ja || '', en: rec.en || '' }
+  tagEditItem.value = item
+  tagEditVisible.value = true
+}
+const saveTagNames = async () => {
+  const it = tagEditItem.value
+  if (!it) return
+  if (!setting.value.tagNameLangs) setting.value.tagNameLangs = {}
+  const key = it.type + '::' + it.name
+  const lang = {
+    'zh-CN': (tagEditLangs.value['zh-CN'] || '').trim(),
+    ja: (tagEditLangs.value.ja || '').trim(),
+    en: (tagEditLangs.value.en || '').trim(),
+  }
+  if (!lang['zh-CN'] && !lang.ja && !lang.en) delete setting.value.tagNameLangs[key]
+  else setting.value.tagNameLangs[key] = { ...(setting.value.tagNameLangs[key] || {}), ...lang }
+  if (window.ipcRenderer) {
+    await window.ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+  }
+  tagEditVisible.value = false
+}
 
 const getBookInfos = () => {
   const filteredBooks = displayBookList.value.filter(book => !book.folderHide && !book.hiddenBook && !book.isCollection)

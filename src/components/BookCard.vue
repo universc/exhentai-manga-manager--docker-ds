@@ -8,11 +8,20 @@
       :title="getDisplayTitle(book)"
     >{{getDisplayTitle(book)}}</p>
     <div class="book-cover-frame">
+      <div class="book-task-mask" v-if="bookTaskChar">
+        <div class="book-task-ring"></div>
+        <span class="book-task-text">{{ bookTaskChar }}</span>
+        <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
+      </div>
       <img
         class="book-cover"
         :src="book.coverPath"
         @click="onCoverClickOnce"
         @dblclick="onCoverDblClick"
+        @touchstart.passive="startCoverPress($event)"
+        @touchend="endCoverPress"
+        @touchmove.passive="cancelCoverPress"
+        @touchcancel="cancelCoverPress"
         @contextmenu="$emit('onBookContextMenu', $event, book)"
         @load="coverLoading = false"
         @error="onCoverError"
@@ -49,7 +58,7 @@
         :color="tag.color"
         size="small"
         effect="dark"
-      >{{tag.letter}}:{{resolvedTranslation[tag.cat]?.[tag.tag]?.name || tag.tag}}</el-tag>
+      >{{tag.letter}}:{{ getDisplayTagName(setting, resolveCatKey(tag.cat), tag.tag) || resolvedTranslation[resolveCatKey(tag.cat)]?.[tag.tag]?.name || tag.tag }}</el-tag>
     </div>
     <div class="book-card-footer">
       <el-button-group class="outer-read-button-group" v-if="!setting.hideReadButton">
@@ -74,12 +83,22 @@
         :src="book.coverPath"
         @click="onCoverClickOnce"
         @dblclick="onCoverDblClick"
+        @touchstart.passive="startCoverPress($event)"
+        @touchend="endCoverPress"
+        @touchmove.passive="cancelCoverPress"
+        @touchcancel="cancelCoverPress"
         @contextmenu="$emit('onBookContextMenu', $event, book)"
         @load="coverLoading = false"
         @error="onCoverError"
       />
       <div class="cover-loading" v-if="coverLoading">
         <el-icon class="is-loading" :size="26"><Loading /></el-icon>
+      </div>
+      <!-- 任务进度遮罩:填充封面布局同样展示(旋转环 + 任务单字 + 已处理/总数) -->
+      <div class="book-task-mask" v-if="bookTaskChar">
+        <div class="book-task-ring"></div>
+        <span class="book-task-text">{{ bookTaskChar }}</span>
+        <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
       </div>
       <div class="fill-top" v-if="fillTopShown || (!setting.hideBookmarkButton && !viewerRole)">
         <el-tag class="fill-badge" size="small" v-if="!setting.hideReadCount"
@@ -117,7 +136,7 @@
             :color="tag.color"
             size="small"
             effect="dark"
-          >{{tag.letter}}:{{resolvedTranslation[tag.cat]?.[tag.tag]?.name || tag.tag}}</el-tag>
+          >{{tag.letter}}:{{ getDisplayTagName(setting, resolveCatKey(tag.cat), tag.tag) || resolvedTranslation[resolveCatKey(tag.cat)]?.[tag.tag]?.name || tag.tag }}</el-tag>
           <el-tag class="fill-badge" size="small" v-if="!setting.hidePageCount && book.pageDiff" @click="$emit('pageCountClick')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
           <el-tag class="fill-badge" size="small" v-else-if="!setting.hidePageCount" @click="$emit('pageCountClick')">{{ book.pageCount }}P</el-tag>
           <el-button-group class="outer-read-button-group" v-if="!setting.hideReadButton">
@@ -145,9 +164,19 @@ import ContextMenu from '@imengyu/vue3-context-menu'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { isContextMenuItemEnabled, ensureBookCover } from '../utils.js'
+import { isContextMenuItemEnabled, ensureBookCover, getDisplayTagName, resolveCatKey } from '../utils.js'
 const appStore = useAppStore()
+const TASK_CHARS = { translate: '翻', colorize: '色', upscale: '分', extract: '字' }
+const bookTaskProgress = computed(() => (appStore.bookTaskProgress && appStore.bookTaskProgress[props.book && props.book.id]) || null)
+const bookTaskDone = computed(() => (bookTaskProgress.value ? bookTaskProgress.value.done : 0))
+const bookTaskTotal = computed(() => (bookTaskProgress.value ? bookTaskProgress.value.total : 0))
+const bookTaskChar = computed(() => {
+  const k = appStore.bookTasks && appStore.bookTasks[props.book && props.book.id]
+  return k ? (TASK_CHARS[k] || '忙') : ''
+})
+
 const { setting, resolvedTranslation } = storeToRefs(appStore)
+const { printMessage } = appStore
 const { getDisplayTitle, isChineseTranslatedManga, saveBook, switchMark } = appStore
 
 const { t } = useI18n()
@@ -187,7 +216,7 @@ const emit = defineEmits([
   'viewThumbnails',
   // 可配置点击策略:封面 / 阅 / 读 / 页数(由设置「点击策略」决定进入 详细/内容/缩略图)
   'coverClick',
-  'coverDblClick',
+  'cover-dblclick',
   'yueClick',
   'duClick',
   'pageCountClick',
@@ -216,13 +245,39 @@ watch(() => props.book.coverPath, (v) => {
 
 // ---------- 封面单击/双击分离:双击时取消单击动作 ----------
 let coverClickTimer = null
-const onCoverClickOnce = () => {
+const onCoverClickOnce = (e) => {
+  // 长按已弹出右键菜单:抑制其后的 click,避免又进入阅读
+  if (coverLongPressed) { coverLongPressed = false; return }
+  // 双击的第二击不再触发单击动作(浏览器会把 detail 设为 2)
+  if (e && e.detail > 1) return
   clearTimeout(coverClickTimer)
-  coverClickTimer = setTimeout(() => emit('coverClick'), 240)
+  // 窗口略大于常见双击间隔,避免慢速双击被拆成两次单击
+  coverClickTimer = setTimeout(() => emit('coverClick'), 300)
 }
-const onCoverDblClick = () => {
+// ---------- 移动端:长按封面 = 右键(触发同一套上下文菜单) ----------
+let coverPressTimer = null
+let coverLongPressed = false
+const startCoverPress = (e) => {
+  const t = e && e.touches && e.touches[0]
+  if (!t) return
+  const x = t.clientX, y = t.clientY
+  clearTimeout(coverPressTimer)
+  coverPressTimer = setTimeout(() => {
+    coverPressTimer = null
+    coverLongPressed = true
+    clearTimeout(coverClickTimer)   // 取消待触发的单击
+    // 合成与右键一致的事件对象(菜单只用到 x/y)
+    emit('onBookContextMenu', { x, y, clientX: x, clientY: y, preventDefault () {} }, props.book)
+  }, 500)
+}
+const endCoverPress = () => { clearTimeout(coverPressTimer); coverPressTimer = null }   // 保留 coverLongPressed,由 onCoverClickOnce 消费
+const cancelCoverPress = () => { clearTimeout(coverPressTimer); coverPressTimer = null }
+
+const onCoverDblClick = (e) => {
+  if (e && e.preventDefault) e.preventDefault()
   clearTimeout(coverClickTimer)
-  emit('coverDblClick')
+  coverClickTimer = null
+  emit('cover-dblclick')
 }
 
 // ---------- 收藏标签:点击筛选,长按(500ms)打开简易标签编辑器 ----------
@@ -252,7 +307,11 @@ const onCollectTagContextMenu = (e, tag) => {
 const filterCollectTag = (tagObject) => {
   if (setting.value.showCollectTag) {
     const collectTag = setting.value.collectTag || []
-    return collectTag.filter(tag => tagObject[tag.cat] && tagObject[tag.cat].includes(tag.tag))
+    // 兼容:collectTag 里 cat 可能是中文显示名("角色"),而 book.tags 的键是英文("character")
+    return collectTag.filter(tag => {
+      const key = resolveCatKey(tag.cat)
+      return tagObject[key] && tagObject[key].includes(tag.tag)
+    })
   } else {
     return []
   }
@@ -282,6 +341,22 @@ const onMangaTitleContextMenu = (e, book) => {
         ipcRenderer.invoke('copy-text-to-clipboard', `${book.title_jpn || book.title}\n${book.url}\n`)
       }
     },
+    {
+      id: 'translateTitle',
+      label: t('m.translateTitle'),
+      onClick: async () => {
+        appStore.setBookTask(book.id, 'translate')
+        try {
+          const res = await ipcRenderer.invoke('translate-book-title', book)
+          if (res && res.title) printMessage('success', t('m.translateTitle') + ': ' + res.title)
+          else printMessage('warning', res?.error || t('c.titleTranslationFailed'))
+        } catch (err) {
+          printMessage('error', String(err?.message || err))
+        } finally {
+          appStore.clearBookTask(book.id)
+        }
+      }
+    },
   ].filter(item => isContextMenuItemEnabled(setting.value, 'title', item.id))
   // 全部项都被取消勾选时不弹出空白菜单
   if (items.length === 0) return
@@ -291,6 +366,39 @@ const onMangaTitleContextMenu = (e, book) => {
 </script>
 
 <style lang="stylus">
+.book-task-mask
+  position: absolute
+  inset: 0
+  display: flex
+  align-items: center
+  justify-content: center
+  background: rgba(0, 0, 0, 0.45)
+  border-radius: 4px
+  z-index: 8
+  pointer-events: none
+  .book-task-ring
+    width: 44px
+    height: 44px
+    border: 3px solid rgba(255, 255, 255, 0.25)
+    border-top-color: #fff
+    border-radius: 50%
+    animation: book-task-spin 0.9s linear infinite
+  .book-task-progress
+    position: absolute
+    margin-top: 56px
+    font-size: 12px
+    color: #fff
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6)
+  .book-task-text
+    position: absolute
+    font-size: 18px
+    font-weight: 700
+    color: #fff
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6)
+@keyframes book-task-spin
+  to
+    transform: rotate(360deg)
+
 .book-card
   display: inline-block
   width: var(--emm-cover-size, 220px)

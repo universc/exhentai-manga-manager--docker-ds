@@ -271,8 +271,8 @@
                     @pointerdown="startLongPressCollect(tag)"
                     @pointerup="cancelLongPressCollect"
                     @pointerleave="cancelLongPressCollect"
-                    @dblclick="renameTag(tag)"
-                    :title="$t('m.renameTag')"
+                    @dblclick="openTagNameEditor(tag)"
+                    :title="$t('m.editTagNames')"
                   >
                     <el-popover
                       v-if="collectedTagMap[tag.id]"
@@ -291,7 +291,7 @@
                         @update:model-value="(c) => applyTagColor(tag, c)"
                       />
                     </el-popover>
-                    {{ tag.label }}
+                    {{ tagLabelWithSets(tag) }}
                   </el-tag>
                 </div>
               </template>
@@ -332,14 +332,69 @@
               </el-form-item>
             </el-form>
           </el-col>
-          <el-col :span="24" class="setting-switch">
+          <el-col :span="5" class="setting-switch">
             <el-switch
               v-model="setting.showCollectTag"
               :active-text="$t('m.showCollectTag')"
-              @change="saveSetting"
+              @change="onShowCollectTagChange"
             />
           </el-col>
-        </el-row>
+          <el-col :span="5" class="setting-switch">
+            <el-switch
+              v-model="setting.randomTagsEnabled"
+              :active-text="$t('m.randomTagsEnabled')"
+              @change="onRandomTagsChange"
+            />
+          </el-col>
+          <el-col :span="7" class="setting-switch tag-lang-col">
+            <span class="setting-label">{{$t('m.tagTranslate')}}</span>
+            <el-select v-model="setting.tagTargetLang" size="small" class="tag-target-lang" @change="onTagLangChange">
+              <el-option :label="$t('m.langDefault')" value=""></el-option>
+              <el-option :label="$t('m.langZhCn')" value="zh-CN"></el-option>
+              <el-option :label="$t('m.langZhTw')" value="zh-TW"></el-option>
+              <el-option :label="$t('m.langEn')" value="en"></el-option>
+              <el-option :label="$t('m.langJa')" value="ja"></el-option>
+            </el-select>
+          </el-col>
+</el-row>
+        <!-- 双击标签:编辑多语言名称(中/日/英),按「目标语言标签」显示 -->
+        <el-dialog v-model="tagEditVisible" :title="$t('m.editTagNames')" width="380px" append-to-body>
+          <div class="tag-name-editor">
+            <p class="tag-edit-raw">{{ tagEditItem ? (tagEditItem.cat + ' : ' + tagEditItem.tag) : '' }}</p>
+            <el-input v-model="tagEditLangs['default']" size="small" :placeholder="$t('m.tagNameDefault')" />
+            <el-input v-model="tagEditLangs['zh-CN']" size="small" :placeholder="$t('m.tagNameZh')" />
+            <el-input v-model="tagEditLangs['zh-TW']" size="small" :placeholder="$t('m.tagNameZhTw')" />
+            <el-input v-model="tagEditLangs.ja" size="small" :placeholder="$t('m.tagNameJa')" />
+            <el-input v-model="tagEditLangs.en" size="small" :placeholder="$t('m.tagNameEn')" />
+          </div>
+          <!-- 关联标签:包含 / 被包含 -->
+          <div class="tag-relation-editor">
+            <div class="tag-relation-title">{{ $t('m.tagRelations') }}</div>
+            <div class="tag-relation-add">
+              <el-select v-model="tagRelationCat" size="small" :placeholder="$t('m.pickCategory')" style="width: 104px;">
+                <el-option v-for="c in tagRelationCats" :key="c.value" :label="c.label" :value="c.value" />
+              </el-select>
+              <el-select v-model="tagRelationPick" size="small" filterable clearable :placeholder="$t('m.pickTag')" style="width: 156px;">
+                <el-option v-for="o in tagRelationOptions" :key="o.value" :label="o.label" :value="o.value" />
+              </el-select>
+              <el-select v-model="tagRelationKind" size="small" style="width: 104px;">
+                <el-option :label="$t('m.relationContains')" value="contains"></el-option>
+                <el-option :label="$t('m.relationContainedBy')" value="containedBy"></el-option>
+              </el-select>
+              <el-button size="small" type="primary" plain :disabled="!tagRelationPick" @click="addTagRelation">{{ $t('m.addRelation') }}</el-button>
+            </div>
+            <div class="tag-relation-list">
+              <el-tag v-for="r in tagRelationList" :key="r.kind + r.key" size="small" closable class="tag-relation-item" @close="removeTagRelation(r)">
+                {{ r.kind === 'contains' ? $t('m.relationContains') : $t('m.relationContainedBy') }} · {{ r.label }}
+              </el-tag>
+              <span v-if="!tagRelationList.length" class="tag-relation-empty">—</span>
+            </div>
+          </div>
+          <template #footer>
+            <el-button size="small" @click="tagEditVisible = false">{{ $t('m.cancel') }}</el-button>
+            <el-button size="small" type="primary" @click="saveTagNames">{{ $t('m.saveTagNames') }}</el-button>
+          </template>
+        </el-dialog>
       </el-tab-pane>
       <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.advanced')" name="advanced">
         <el-row :gutter="8">
@@ -507,13 +562,7 @@
               @change="saveSetting"
             />
           </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.showTranslation"
-              :active-text="$t('m.tagTranslate')"
-              @change="handleTranslationSettingChange"
-            />
-          </el-col>
+          
           <el-col :span="6" class="setting-switch">
             <el-switch
               v-model="setting.skipDeleteConfirm"
@@ -521,13 +570,7 @@
               @change="saveSetting"
             />
           </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.disableRandomTag"
-              :active-text="$t('m.disableRandomTag')"
-              @change="saveSetting"
-            />
-          </el-col>
+          
         </el-row>
         <!-- Windows 窗口开关:开机启动 / 置顶 / 托盘 -->
         <el-row :gutter="8" v-if="showDesktopUI">
@@ -889,100 +932,94 @@
           </el-col>
         </el-row>
       </el-tab-pane>
-      <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.aiFeatures')" name="translation">
+            <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.aiFeatures')" name="translation">
         <el-row :gutter="8">
           <el-col :span="24">
             <div class="setting-line">
+              <el-divider content-position="left">{{$t('m.imageUpscale')}}</el-divider>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.titleTranslationMode')}}</span></template>
-                <el-select placeholder=" " v-model="setting.titleTranslationMode" @change="handleTranslationModeChange">
-                  <el-option :label="$t('m.titleTranslationOff')" value="off"></el-option>
-                  <el-option :label="$t('m.titleTranslationOllama')" value="ollama"></el-option>
-                  <el-option :label="$t('m.titleTranslationOpenAI')" value="openai"></el-option>
+                <template #prepend><span class="setting-label">{{$t('m.useApi')}}</span></template>
+                <el-select v-model="setting.upscaleApiProfileId" clearable placeholder=" " @change="saveSetting">
+                  <el-option v-for="p in (setting.aiApiProfiles || [])" :key="p.id" :label="p.name || p.baseUrl" :value="p.id" />
                 </el-select>
               </NameFormItem>
             </div>
           </el-col>
-          <!-- 本地 AI(Ollama):地址与模型分开填写 -->
-          <el-col :span="24" v-if="setting.titleTranslationMode === 'ollama'">
-            <div class="setting-line">
-              <el-input v-model="setting.ollamaBaseUrl" :placeholder="translationBaseUrlPlaceholder" @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.titleTranslationBaseUrl')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="24" v-if="setting.titleTranslationMode === 'ollama'">
+          <el-col :span="24">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.titleTranslationModel')}}</span></template>
-                <el-select
-                  v-model="setting.ollamaModel"
-                  filterable allow-create default-first-option
-                  :loading="modelsLoading"
-                  :placeholder="translationModelPlaceholder"
-                  @visible-change="handleModelsVisibleChange"
-                  @change="saveSetting"
-                >
-                  <el-option v-for="m in translationModelOptions" :key="m" :label="m" :value="m" />
+                <template #prepend><span class="setting-label">{{$t('m.saveMode')}}</span></template>
+                <el-select v-model="setting.upscaleSaveMode" placeholder=" " @change="saveSetting">
+                  <el-option :label="$t('m.saveModeSame')" value="same"></el-option>
+                  <el-option :label="$t('m.saveModeReplace')" value="replace"></el-option>
+                  <el-option :label="$t('m.saveModePreview')" value="preview"></el-option>
                 </el-select>
               </NameFormItem>
             </div>
           </el-col>
-          <!-- 在线 AI API:地址/模型/密钥分开填写 -->
-          <el-col :span="24" v-if="setting.titleTranslationMode === 'openai'">
-            <div class="setting-line">
-              <el-input v-model="setting.openaiBaseUrl" :placeholder="translationBaseUrlPlaceholder" @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.titleTranslationBaseUrl')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="24" v-if="setting.titleTranslationMode === 'openai'">
+          <el-col :span="24">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.titleTranslationModel')}}</span></template>
-                <el-select
-                  v-model="setting.openaiModel"
-                  filterable allow-create default-first-option
-                  :loading="modelsLoading"
-                  :placeholder="translationModelPlaceholder"
-                  @visible-change="handleModelsVisibleChange"
-                  @change="saveSetting"
-                >
-                  <el-option v-for="m in translationModelOptions" :key="m" :label="m" :value="m" />
+                <template #prepend><span class="setting-label">{{$t('m.upscaleSizeMode')}}</span></template>
+                <el-select v-model="setting.upscaleSizeMode" placeholder=" " @change="saveSetting">
+                  <el-option :label="$t('m.upscaleSizeByScale')" value="scale"></el-option>
+                  <el-option :label="$t('m.upscaleSizeByWidth')" value="width"></el-option>
                 </el-select>
               </NameFormItem>
             </div>
           </el-col>
-          <el-col :span="24" v-if="setting.titleTranslationMode === 'openai'">
+          <el-col :span="24" v-if="(setting.upscaleSizeMode || 'scale') === 'scale'">
             <div class="setting-line">
-              <el-input v-model="setting.openaiApiKey" type="password" show-password @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.titleTranslationApiKey')}}</span></template>
-              </el-input>
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.upscaleScale')}}</span></template>
+                <el-select v-model="setting.upscaleScale" placeholder=" " @change="saveSetting">
+                  <el-option :label="$t('m.upscaleScale2x')" :value="2"></el-option>
+                  <el-option :label="$t('m.upscaleScale3x')" :value="3"></el-option>
+                  <el-option :label="$t('m.upscaleScale4x')" :value="4"></el-option>
+                  <el-option label="1.5x" :value="1.5"></el-option>
+                  <el-option label="6x" :value="6"></el-option>
+                  <el-option label="8x" :value="8"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="24" v-else>
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.upscaleTargetWidth')}}</span></template>
+                <el-input-number v-model="setting.upscaleTargetWidth" :min="256" :max="16384" :step="128" @change="saveSetting" />
+              </NameFormItem>
             </div>
           </el-col>
           <el-col :span="24">
             <div class="setting-line">
-              <el-divider content-position="left">{{$t('m.titleTranslation')}}</el-divider>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line function-button-row">
-              <el-button plain :loading="testingTranslation" @click="testTitleTranslation">{{$t('m.test')}}</el-button>
+              <el-divider content-position="left">{{$t('m.imageColorize')}}</el-divider>
             </div>
           </el-col>
           <el-col :span="24">
             <div class="setting-line">
-              <el-divider content-position="left">{{$t('m.characterAnalysis')}}</el-divider>
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.useApi')}}</span></template>
+                <el-select v-model="setting.colorizeApiProfileId" clearable placeholder=" " @change="saveSetting">
+                  <el-option v-for="p in (setting.aiApiProfiles || [])" :key="p.id" :label="p.name || p.baseUrl" :value="p.id" />
+                </el-select>
+              </NameFormItem>
             </div>
           </el-col>
           <el-col :span="24">
             <div class="setting-line">
-              <el-input v-model="characterNamesInput" :placeholder="$t('m.characterNamesPlaceholder')" @keyup.enter="queryCharacterOrigins">
-                <template #prepend><span class="setting-label">{{$t('m.characterNames')}}</span></template>
-                <template #append>
-                  <el-button :loading="queryingOrigins" @click="queryCharacterOrigins">{{$t('m.queryCharacterOrigins')}}</el-button>
-                </template>
-              </el-input>
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.saveMode')}}</span></template>
+                <el-select v-model="setting.colorizeSaveMode" placeholder=" " @change="saveSetting">
+                  <el-option :label="$t('m.saveModeSame')" value="same"></el-option>
+                  <el-option :label="$t('m.saveModeReplace')" value="replace"></el-option>
+                  <el-option :label="$t('m.saveModePreview')" value="preview"></el-option>
+                </el-select>
+              </NameFormItem>
             </div>
           </el-col>
           <el-col :span="24">
@@ -991,69 +1028,136 @@
             </div>
           </el-col>
           <el-col :span="24">
-            <div class="setting-line function-button-row">
-              <el-button type="primary" plain :loading="aiProcessing" @click="aiProcessBatch(false)">{{$t('m.aiProcessBatch')}}</el-button>
-              <el-button plain :loading="aiProcessing" @click="aiProcessBatch(true)">{{$t('m.aiProcessBatchForce')}}</el-button>
-              <el-button :type="aiTaskPaused ? 'success' : 'warning'" plain :disabled="!aiProcessing" @click="toggleAiPause">
-                {{ aiTaskPaused ? $t('m.aiResume') : $t('m.aiPause') }}
-              </el-button>
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.textExtractModel')}}</span></template>
+                <el-select v-model="setting.ocrApiProfileId" clearable placeholder=" " @change="saveSetting">
+                  <el-option v-for="p in (setting.aiApiProfiles || [])" :key="p.id" :label="p.name || p.baseUrl" :value="p.id" />
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.textProcessModel')}}</span></template>
+                <el-select v-model="setting.infoProcessApiProfileId" clearable placeholder=" " @change="saveSetting">
+                  <el-option v-for="p in (setting.aiApiProfiles || [])" :key="p.id" :label="p.name || p.baseUrl" :value="p.id" />
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.tagGenCategories')}}</span></template>
+                <el-select v-model="setting.tagGenCategories" multiple collapse-tags clearable placeholder=" " @change="saveSetting">
+                  <el-option v-for="c in tagCategoryKeys" :key="c" :label="tagCategoryLabel(c)" :value="c" />
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.storyGenTypes')}}</span></template>
+                <el-select v-model="setting.storyGenTypes" placeholder=" " @change="saveSetting">
+                  <el-option :label="$t('m.storySummaryOpt')" value="summary"></el-option>
+                  <el-option :label="$t('m.storyFullOpt')" value="full"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.translateTargetLang')}}</span></template>
+                <el-select v-model="setting.translateTargetLang" placeholder=" " @change="saveSetting">
+                  <el-option :label="$t('m.langZhCn')" value="zh-CN"></el-option>
+                  <el-option :label="$t('m.langZhTw')" value="zh-TW"></el-option>
+                  <el-option :label="$t('m.langEn')" value="en"></el-option>
+                  <el-option :label="$t('m.langJa')" value="ja"></el-option>
+                  <el-option :label="$t('m.langKo')" value="ko"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.translateSaveMode')}}</span></template>
+                <el-select v-model="setting.translateSaveMode" placeholder=" " @change="saveSetting">
+                  <el-option :label="$t('m.saveToMangaFolder')" value="folder"></el-option>
+                  <el-option :label="$t('m.saveModePreview')" value="preview"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.ocrSaveMode')}}</span></template>
+                <el-select v-model="setting.ocrSaveMode" placeholder=" " @change="saveSetting">
+                  <el-option :label="$t('m.saveToMangaFolder')" value="folder"></el-option>
+                  <el-option :label="$t('m.saveNone')" value="none"></el-option>
+                </el-select>
+              </NameFormItem>
             </div>
           </el-col>
           <el-col :span="24">
             <div class="setting-line toolbar-tip">{{$t('m.aiProcessTip')}}</div>
           </el-col>
           <el-col :span="24">
-            <div class="setting-line">
-              <el-divider content-position="left">{{$t('m.imageFeatures')}}</el-divider>
-            </div>
-          </el-col>
-          <el-col :span="12" class="setting-switch">
-            <el-switch
-              v-model="setting.enableImageUpscale"
-              :active-text="$t('m.enableImageUpscale')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="12" class="setting-switch">
-            <el-switch
-              v-model="setting.enableImageOcr"
-              :active-text="$t('m.enableImageOcr')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input v-model="setting.upscaleApiUrl" :placeholder="$t('m.upscaleApiPlaceholder')" @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.upscaleApiUrl')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input v-model="setting.ocrApiUrl" :placeholder="$t('m.ocrApiPlaceholder')" @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.ocrApiUrl')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input v-model="setting.ocrApiModel" :placeholder="$t('m.ocrApiModelPlaceholder')" @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.ocrApiModel')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="24">
             <div class="setting-line toolbar-tip">{{$t('m.imageApiTip')}}</div>
           </el-col>
           <el-col :span="24">
-            <div class="setting-line translation-tip">{{$t('m.titleTranslationTip')}}</div>
+            <div class="setting-line">
+              <el-divider content-position="left">{{$t('m.apiProfiles')}}</el-divider>
+            </div>
+          </el-col>
+          <el-col :span="24" v-for="p in (setting.aiApiProfiles || [])" :key="p.id">
+            <div class="setting-line api-profile-row">
+              <el-input v-model="p.name" class="api-profile-name" :placeholder="$t('m.apiName')" @change="saveSetting" />
+              <el-input v-model="p.baseUrl" class="api-profile-url" :placeholder="$t('m.apiBaseUrl')" @change="saveSetting" />
+              <el-select
+                v-model="p.model"
+                class="api-profile-model"
+                filterable
+                allow-create
+                default-first-option
+                :placeholder="$t('m.apiModel')"
+                @change="saveSetting"
+              >
+                <el-option v-for="mid in (p.models || [])" :key="mid" :label="mid" :value="mid" />
+              </el-select>
+              <el-input v-model="p.apiKey" class="api-profile-key" type="password" show-password :placeholder="$t('m.apiKey')" @change="saveSetting" />
+              <el-button :loading="!!p._loading" @click="fetchApiModels(p)">{{$t('m.fetchModels')}}</el-button>
+              <el-button :loading="!!p._testing" @click="testApiProfile(p)">{{$t('m.testApi')}}</el-button>
+              <el-button text type="danger" @click="removeApiProfile(p.id)">{{$t('m.deleteApi')}}</el-button>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line">
+              <el-button type="primary" plain @click="addApiProfile">{{$t('m.addApi')}}</el-button>
+            </div>
           </el-col>
         </el-row>
       </el-tab-pane>
       <!-- 账户(网页版/Docker,所有登录用户可见;管理员另有账户管理/IP 控制) -->
-      <el-tab-pane v-if="isWebMode && isWebLoggedIn" :label="$t('m.accounts')" name="accounts">
+      <el-tab-pane v-if="isWebMode" :label="$t('m.accounts')" name="accounts">
         <el-row :gutter="8">
           <el-col :span="24">
+            <!-- 未登录(网页版已启用鉴权但无会话):在设置内直接登录,避免整页空白 -->
+            <template v-if="!isWebLoggedIn">
+              <div class="setting-line toolbar-tip">{{$t('m.loginSub')}}</div>
+              <div class="setting-line" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <el-input v-model="webLoginUsername" :placeholder="$t('m.loginUsername')" style="width: 200px;" @keyup.enter="doWebLogin" />
+                <el-input v-model="webLoginPassword" type="password" show-password :placeholder="$t('m.loginPassword')" style="width: 200px;" @keyup.enter="doWebLogin" />
+                <el-button type="primary" plain :loading="webLoginLoading" @click="doWebLogin">{{$t('m.loginButton')}}</el-button>
+              </div>
+              <div v-if="webLoginError" class="setting-line" style="color: #f56c6c;">{{webLoginError}}</div>
+            </template>
+            <template v-else>
             <div class="setting-line" style="display: flex; align-items: center; gap: 10px;">
               <span>{{$t('m.loginUsername')}}: <b>{{authUsername}}</b></span>
               <el-tag :type="isAdmin ? 'danger' : 'info'" size="small">{{isAdmin ? $t('m.adminRole') : $t('m.viewerRole')}}</el-tag>
@@ -1115,6 +1219,7 @@
               <el-button type="primary" plain @click="saveIpRules">{{$t('m.ipRulesSave')}}</el-button>
               <span class="setting-line toolbar-tip" style="display: inline-block; margin-left: 10px;">{{$t('m.ipRulesNote')}}</span>
             </div>
+            </template>
             </template>
           </el-col>
         </el-row>
@@ -1207,14 +1312,15 @@ import en from 'element-plus/dist/locale/en.mjs'
 
 import { version } from '../../package.json'
 import { gh_token } from '../../secret_key.json'
-import { acceleratorInfo, defaultContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, defaultUiSettings, parsePageSizes } from '../utils.js'
+import { acceleratorInfo, defaultContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions } from '../utils.js'
 import { attachInertiaScroll } from '../inertia-scroll.js'
 import NameFormItem from './NameFormItem.vue'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 const appStore = useAppStore()
-const { searchTypeList, setting, bookList, resolvedTranslation, localeFile, tagListRaw } = storeToRefs(appStore)
+const { searchTypeList, setting, bookList, resolvedTranslation, localeFile, tagListRaw ,
+} = storeToRefs(appStore)
 const { printMessage } = appStore
 
 const { t, locale } = useI18n()
@@ -1416,6 +1522,88 @@ const handleModelsVisibleChange = (visible) => {
   if (visible) loadTranslationModels()
 }
 
+// ---------- AI API 配置(可命名保存多套,各功能下拉选用) ----------
+const normApiBase = (u) => {
+  let v = String(u || '').trim().replace(/\/+$/, '')
+  if (!v) return ''
+  if (!/^https?:\/\//i.test(v)) v = 'http://' + v
+  return v
+}
+const apiHeaders = (p) => (p.apiKey ? { Authorization: 'Bearer ' + p.apiKey } : {})
+const withTimeout = (ms) => {
+  const c = new AbortController()
+  const id = setTimeout(() => c.abort(), ms)
+  return { signal: c.signal, done: () => clearTimeout(id) }
+}
+const addApiProfile = () => {
+  if (!Array.isArray(setting.value.aiApiProfiles)) setting.value.aiApiProfiles = []
+  setting.value.aiApiProfiles.push({
+    id: 'api_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name: 'API ' + (setting.value.aiApiProfiles.length + 1),
+    baseUrl: '', model: '', apiKey: '', models: [],
+  })
+  saveSetting()
+}
+const removeApiProfile = (id) => {
+  setting.value.aiApiProfiles = (setting.value.aiApiProfiles || []).filter(p => p.id !== id)
+  for (const k of ['infoApiProfileId', 'infoProcessApiProfileId', 'upscaleApiProfileId', 'colorizeApiProfileId', 'ocrApiProfileId']) {
+    if (setting.value[k] === id) setting.value[k] = ''
+  }
+  saveSetting()
+}
+const fetchApiModels = async (p) => {
+  const base = normApiBase(p.baseUrl)
+  if (!base) return printMessage('warning', t('m.apiNeedUrl'))
+  p._loading = true
+  const tm = withTimeout(12000)
+  try {
+    const res = await fetch(base + '/models', { headers: apiHeaders(p), signal: tm.signal })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const json = await res.json()
+    const list = (json.data || json.models || []).map(x => (typeof x === 'string' ? x : (x.id || x.name))).filter(Boolean)
+    if (!list.length) throw new Error('empty list')
+    p.models = list
+    if (!p.model) p.model = list[0]
+    saveSetting()
+    printMessage('success', t('m.apiModelsOk').replace('{n}', list.length))
+  } catch (e) {
+    printMessage('error', t('m.apiModelsFail') + ': ' + (e && e.message ? e.message : e))
+  } finally {
+    tm.done(); p._loading = false
+  }
+}
+const testApiProfile = async (p) => {
+  const base = normApiBase(p.baseUrl)
+  if (!base) return printMessage('warning', t('m.apiNeedUrl'))
+  p._testing = true
+  const t0 = Date.now()
+  let ok = false, detail = ''
+  try {
+    const tm = withTimeout(15000)
+    try {
+      const res = await fetch(base + '/models', { headers: apiHeaders(p), signal: tm.signal })
+      ok = res.ok; detail = 'GET /models -> HTTP ' + res.status
+    } catch (e) { detail = String(e && e.message ? e.message : e) } finally { tm.done() }
+    if (!ok) {
+      const tm2 = withTimeout(20000)
+      try {
+        const res2 = await fetch(base + '/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...apiHeaders(p) },
+          body: JSON.stringify({ model: p.model || 'gpt-4o-mini', messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
+          signal: tm2.signal,
+        })
+        ok = res2.ok; detail = 'POST /chat/completions -> HTTP ' + res2.status
+      } catch (e) { detail = String(e && e.message ? e.message : e) } finally { tm2.done() }
+    }
+    const ms = Date.now() - t0
+    if (ok) printMessage('success', t('m.apiTestOk').replace('{ms}', ms) + ' (' + detail + ')')
+    else printMessage('error', t('m.apiTestFail') + ' (' + detail + ')')
+  } finally {
+    p._testing = false
+  }
+}
+
 const handleTranslationModeChange = (mode) => {
   // 本地/在线分别填充默认地址与模型
   if (mode === 'ollama') {
@@ -1573,6 +1761,7 @@ const contextMenuGroups = computed(() => [
       { id: 'copyTitle', label: t('c.copyTitleToClipboard') },
       { id: 'copyLink', label: t('c.copyLinkToClipboard') },
       { id: 'copyTitleAndLink', label: t('c.copyTitleAndLinkToClipboard') },
+      { id: 'translateTitle', label: t('m.translateTitle') },
     ]
   },
   {
@@ -1588,6 +1777,9 @@ const contextMenuGroups = computed(() => [
       { id: 'copyTag', label: t('m.copyTagClipboard') },
       { id: 'pasteTag', label: t('m.pasteTagClipboard') },
       { id: 'getMetadataFromLink', label: t('m.getMetadataFromClipboardLink') },
+      { id: 'translateBook', label: t('m.translateBook') },
+      { id: 'upscaleBook', label: t('m.upscaleBook') },
+      { id: 'colorizeBook', label: t('m.colorizeBook') },
     ]
   },
   {
@@ -1597,6 +1789,11 @@ const contextMenuGroups = computed(() => [
       { id: 'copyImage', label: t('c.copyImageToClipboard') },
       { id: 'setCover', label: t('c.designateAsCover') },
       { id: 'deleteImage', label: t('c.deleteImage') },
+      { id: 'renameImage', label: t('m.renameImage') },
+      { id: 'upscaleImage', label: t('m.upscaleImage') },
+      { id: 'ocrImage', label: t('m.extractImageText') },
+      { id: 'translateImage', label: t('m.translateImage') },
+      { id: 'colorizeImage', label: t('m.colorize') },
     ]
   },
   {
@@ -1657,6 +1854,11 @@ onMounted(() => {
       if (res.appName === undefined) setting.value.appName = 'EX漫画管理器(exhentai-manga-manager)'
       // 右键菜单设置默认值(旧版 setting.json 没有这些键)
       if (res.contextMenuOptions === undefined) setting.value.contextMenuOptions = defaultContextMenuOptions()
+  // 新增的右键菜单项自动并入(旧配置也不会丢失新项)
+  for (const [menu, items] of Object.entries(contextMenuDefinitions)) {
+    const saved = setting.value.contextMenuOptions[menu] || []
+    setting.value.contextMenuOptions[menu] = [...new Set([...saved, ...items])]
+  }
       // 卡片显示设置默认值
       if (res.hideBookmarkButton === undefined) setting.value.hideBookmarkButton = false
       if (res.hidePageCount === undefined) setting.value.hidePageCount = false
@@ -1696,6 +1898,17 @@ onMounted(() => {
       // 图片 AI 本地模型 API(旧配置无这些键时补默认值)
       if (res.upscaleApiUrl === undefined) setting.value.upscaleApiUrl = ''
       if (res.ocrApiUrl === undefined) setting.value.ocrApiUrl = ''
+  if (!Array.isArray(res.aiApiProfiles)) setting.value.aiApiProfiles = []
+  if (res.infoApiProfileId === undefined) setting.value.infoApiProfileId = ''
+  if (res.infoProcessApiProfileId === undefined) setting.value.infoProcessApiProfileId = ''
+  if (!Array.isArray(res.infoProcessTasks)) setting.value.infoProcessTasks = ['tags', 'story', 'translate']
+  if (res.upscaleApiProfileId === undefined) setting.value.upscaleApiProfileId = ''
+  if (res.colorizeApiProfileId === undefined) setting.value.colorizeApiProfileId = ''
+  if (res.ocrApiProfileId === undefined) setting.value.ocrApiProfileId = ''
+  if (res.upscaleSaveMode === undefined) setting.value.upscaleSaveMode = 'same'
+    if (res.upscaleSizeMode === undefined) setting.value.upscaleSizeMode = 'scale'
+    if (res.upscaleTargetWidth === undefined) setting.value.upscaleTargetWidth = 2000
+  if (res.colorizeSaveMode === undefined) setting.value.colorizeSaveMode = 'same' 
       if (res.ocrApiModel === undefined) setting.value.ocrApiModel = 'qwen2.5-vl:7b'
       saveSetting()
 
@@ -1884,6 +2097,22 @@ const handleLanguageSet = async (languageCode) => {
   }
 }
 
+// 随机标签与「显示收藏标签」互斥:开启一个自动关闭另一个
+const onRandomTagsChange = (val) => {
+  if (val) setting.value.showCollectTag = false
+  saveSetting()
+}
+const onShowCollectTagChange = (val) => {
+  if (val) setting.value.randomTagsEnabled = false
+  saveSetting()
+}
+// 「语言」下拉:选具体语言即启用标签翻译(供分类名/标签名显示翻译),选「默认」则关闭
+const onTagLangChange = (val) => {
+  setting.value.showTranslation = !!val
+  if (val && typeof loadTranslationFromEhTagTranslation === 'function') loadTranslationFromEhTagTranslation()
+  saveSetting()
+}
+
 const saveSetting = _.debounce(() => {
   ipcRenderer.invoke('save-setting', _.cloneDeep(setting.value))
 }, 500)
@@ -1981,6 +2210,34 @@ const authUsername = computed(() => {
   const auth = window.__AUTH__ || {}
   return auth.username || ''
 })
+// 网页版登录(设置 → 账户:未登录时直接在此登录,避免设置页整页空白)
+const webLoginUsername = ref('')
+const webLoginPassword = ref('')
+const webLoginLoading = ref(false)
+const webLoginError = ref('')
+const doWebLogin = async () => {
+  if (!webLoginUsername.value.trim() || !webLoginPassword.value) {
+    webLoginError.value = '请输入账户与密码'
+    return
+  }
+  webLoginLoading.value = true
+  webLoginError.value = ''
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: webLoginUsername.value.trim(), password: webLoginPassword.value }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) throw new Error(data.error || '登录失败')
+    window.location.reload()
+  } catch (e) {
+    webLoginError.value = String((e && e.message) || e)
+  } finally {
+    webLoginLoading.value = false
+  }
+}
+
 // 网页版退出登录(设置 → 账户)
 const logout = () => {
   fetch('/api/auth/logout', { method: 'POST' })
@@ -2199,7 +2456,19 @@ const selectedTagCat = ref(null)
 const allTagsGroups = computed(() => {
   const groups = []
   const map = {}
+  const seen = new Set()
   for (const tag of tagListRaw.value) {
+    // 去重:同一「分类::标签」只保留一项(分类名中英混用时也能合并)
+    const catAlias = (c) => {
+      if (!c || /^[a-z]+$/.test(c)) return c
+      for (const [k, v] of Object.entries(resolvedTranslation.value || {})) {
+        if (v && v._name === c) return k
+      }
+      return c
+    }
+    const uniqKey = catAlias(tag.cat) + '::' + tag.tag
+    if (seen.has(uniqKey)) continue
+    seen.add(uniqKey)
     if (!map[tag.cat]) {
       map[tag.cat] = { cat: tag.cat, tags: [] }
       groups.push(map[tag.cat])
@@ -2211,6 +2480,140 @@ const allTagsGroups = computed(() => {
 })
 const categoryLabel = (cat) => {
   return setting.value.showTranslation ? (resolvedTranslation.value[cat]?._name || cat) : cat
+}
+// 标签名后加括号显示前 3 个所属集合(被哪些集合包含),如 光辉(碧蓝航线,女)
+const tagLabelWithSets = (tag) => {
+  if (!tag) return ''
+  const key = tag.cat + '::' + tag.tag
+  const all = setting.value.tagRelations || {}
+  const sets = []
+  for (const [k, v] of Object.entries(all)) {
+    if (k !== key && v && Array.isArray(v.contains) && v.contains.includes(key)) {
+      const nm = k.split('::')[1]
+      if (nm) sets.push(nm)
+    }
+  }
+  const direct = all[key]
+  if (direct && Array.isArray(direct.containedBy)) {
+    for (const k of direct.containedBy) { const nm = k.split('::')[1]; if (nm) sets.push(nm) }
+  }
+  const uniq = [...new Set(sets)]
+  return uniq.length ? tag.label + '(' + uniq.slice(0, 3).join(',') + ')' : tag.label
+}
+// 双击标签 → 编辑多语言名称(中/日/英),按「目标语言标签」显示
+const tagEditVisible = ref(false)
+const tagEditItem = ref(null)
+const tagEditLangs = ref({ 'default': '', 'zh-CN': '', 'zh-TW': '', ja: '', en: '' })
+const openTagNameEditor = (tag) => {
+  tagRelationPick.value = ''
+  if (!tag || !tag.cat || !tag.tag) return
+  const rec = (setting.value.tagNameLangs || {})[tag.cat + '::' + tag.tag] || {}
+  tagEditLangs.value = { 'default': rec['default'] || '', 'zh-CN': rec['zh-CN'] || '', 'zh-TW': rec['zh-TW'] || '', ja: rec.ja || '', en: rec.en || '' }
+  tagEditItem.value = tag
+  tagEditVisible.value = true
+}
+// ---------- 关联标签(包含 / 被包含) ----------
+const tagRelationPick = ref('')
+const tagRelationKind = ref('contains')
+const keyLabel = (k) => { const p = String(k).split('::'); return p.length === 2 ? categoryLabel(p[0]) + ':' + p[1] : k }
+const tagRelationCat = ref('')
+const tagRelationCats = computed(() => (allTagsGroups.value || []).map(g => ({ value: g.cat, label: categoryLabel(g.cat) })))
+const tagRelationOptions = computed(() => {
+  const it = tagEditItem.value
+  const selfKey = it ? it.cat + '::' + it.tag : ''
+  const out = []
+  for (const g of (allTagsGroups.value || [])) {
+    if (tagRelationCat.value && g.cat !== tagRelationCat.value) continue
+    for (const t of (g.tags || [])) {
+      const k = t.cat + '::' + t.tag
+      if (k === selfKey) continue
+      out.push({ value: k, label: t.tag })
+    }
+  }
+  return out
+})
+const containedByLocal = (key) => {
+  const all = setting.value.tagRelations || {}
+  const direct = all[key]
+  if (direct && Array.isArray(direct.containedBy) && direct.containedBy.length) return direct.containedBy
+  const out = []
+  for (const [k, v] of Object.entries(all)) {
+    if (k !== key && v && Array.isArray(v.contains) && v.contains.includes(key)) out.push(k)
+  }
+  return out
+}
+const tagRelationList = computed(() => {
+  const it = tagEditItem.value
+  if (!it) return []
+  const key = it.cat + '::' + it.tag
+  const rel = (setting.value.tagRelations || {})[key] || {}
+  const list = []
+  for (const k of (rel.contains || [])) list.push({ kind: 'contains', key: k, label: keyLabel(k) })
+  for (const k of containedByLocal(key)) list.push({ kind: 'containedBy', key: k, label: keyLabel(k) })
+  return list
+})
+const saveRelations = async () => {
+  if (!setting.value.tagRelations) setting.value.tagRelations = {}
+  await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+  emit('loadBookList')
+}
+const addTagRelation = async () => {
+  const it = tagEditItem.value
+  const pick = tagRelationPick.value
+  if (!it || !pick) return
+  const selfKey = it.cat + '::' + it.tag
+  if (!setting.value.tagRelations) setting.value.tagRelations = {}
+  if (tagRelationKind.value === 'contains') {
+    const rel = setting.value.tagRelations[selfKey] || {}
+    const arr = Array.isArray(rel.contains) ? rel.contains.slice() : []
+    if (!arr.includes(pick)) arr.push(pick)
+    setting.value.tagRelations[selfKey] = { ...rel, contains: arr }
+  } else {
+    const other = setting.value.tagRelations[pick] || {}
+    const arr = Array.isArray(other.contains) ? other.contains.slice() : []
+    if (!arr.includes(selfKey)) arr.push(selfKey)
+    setting.value.tagRelations[pick] = { ...other, contains: arr }
+  }
+  tagRelationPick.value = ''
+  await saveRelations()
+}
+const removeTagRelation = async (r) => {
+  const it = tagEditItem.value
+  if (!it || !r) return
+  const selfKey = it.cat + '::' + it.tag
+  if (!setting.value.tagRelations) return
+  if (r.kind === 'contains') {
+    const rel = setting.value.tagRelations[selfKey] || {}
+    const arr = (rel.contains || []).filter(k => k !== r.key)
+    if (arr.length) setting.value.tagRelations[selfKey] = { ...rel, contains: arr }
+    else delete setting.value.tagRelations[selfKey]
+  } else {
+    const other = setting.value.tagRelations[r.key] || {}
+    const arr = (other.contains || []).filter(k => k !== selfKey)
+    if (arr.length) setting.value.tagRelations[r.key] = { ...other, contains: arr }
+    else delete setting.value.tagRelations[r.key]
+  }
+  await saveRelations()
+}
+
+const saveTagNames = async () => {
+  const it = tagEditItem.value
+  if (!it) return
+  if (!setting.value.tagNameLangs) setting.value.tagNameLangs = {}
+  const key = it.cat + '::' + it.tag
+  const lang = {
+    'default': (tagEditLangs.value['default'] || '').trim(),
+    'zh-CN': (tagEditLangs.value['zh-CN'] || '').trim(),
+    'zh-TW': (tagEditLangs.value['zh-TW'] || '').trim(),
+    ja: (tagEditLangs.value.ja || '').trim(),
+    en: (tagEditLangs.value.en || '').trim(),
+  }
+  if (!lang['default'] && !lang['zh-CN'] && !lang['zh-TW'] && !lang.ja && !lang.en) delete setting.value.tagNameLangs[key]
+  else setting.value.tagNameLangs[key] = { ...(setting.value.tagNameLangs[key] || {}), ...lang }
+  await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+  tagEditVisible.value = false
+  printMessage('success', t('m.saveTagNamesDone'))
+  emit('loadBookList')
 }
 // 双击重命名标签(全库更新)
 const renameTag = async (tag) => {
@@ -2283,6 +2686,15 @@ const reloadWindow = () => {
   window.location.reload()
 }
 
+// 信息处理:可生成标签的分类(取自现有标签栏)
+const tagCategoryKeys = computed(() => {
+  const set = new Set()
+  for (const t of (tagListRaw.value || [])) { if (t && t.cat) set.add(t.cat) }
+  for (const b of (bookList.value || [])) { for (const k of Object.keys(b.tags || {})) set.add(k) }
+  return [...set]
+})
+const tagCategoryLabel = (c) => ((resolvedTranslation.value && resolvedTranslation.value[c] && resolvedTranslation.value[c]._name) || catDisplayName(c))
+
 const dialogVisibleSetting = ref(false)
 // 更新日志(关于页展示;新版本加在数组最前面)
 const changelog = [
@@ -2323,8 +2735,8 @@ const attachSettingInertiaScroll = () => {
   if (el && !settingInertiaDetach) {
     settingInertiaDetach = attachInertiaScroll(el)
   }
-  // 网页版只读账户:强制停留在「账户」页(仅此页可见,含退出登录)
-  if (viewerRole.value) {
+  // 网页版只读账户 / 未登录:强制停留在「账户」页(仅此页可见,含登录或退出登录)
+  if (viewerRole.value || (isWebMode.value && !isWebLoggedIn.value)) {
     activeSettingPanel.value = 'accounts'
   }
   // 每次打开对话框都刷新账户列表与 IP 规则(网页版管理员)

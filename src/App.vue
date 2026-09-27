@@ -83,11 +83,11 @@
     </el-row>
     <RandomTags
       ref="randomTagsRef"
-      v-if="!editTagView && !editCollectionView && !setting.disableRandomTag"
+      v-if="!editTagView && !editCollectionView && setting.randomTagsEnabled"
       @search="handleSearchString"
     />
     <el-row :gutter="20" class="book-card-area">
-      <el-col :span="24" v-if="!editTagView && !editCollectionView" class="book-card-list" :style="{height: setting.disableRandomTag ? 'calc(100vh - 96px)' : 'calc(100vh - 134px)'}">
+      <el-col :span="24" v-if="!editTagView && !editCollectionView" class="book-card-list" :style="{height: setting.randomTagsEnabled ? 'calc(100vh - 134px)' : 'calc(100vh - 96px)'}">
         <div
           v-for="(book, index) in visibleRenderedBookList"
           :key="book.id"
@@ -206,6 +206,14 @@
           <el-tag size="small" effect="dark" :color="quickTag.color">{{ quickTag.letter }}:{{ quickTag.tag }}</el-tag>
           <span class="quick-tag-raw">{{ quickTag.cat }}</span>
         </p>
+        <p class="quick-tag-line quick-tag-langs">
+          <el-input v-model="quickTagLangs['default']" size="small" :placeholder="$t('m.tagNameDefault')" />
+          <el-input v-model="quickTagLangs['zh-CN']" size="small" :placeholder="$t('m.tagNameZh')" />
+          <el-input v-model="quickTagLangs['zh-TW']" size="small" :placeholder="$t('m.tagNameZhTw')" />
+          <el-input v-model="quickTagLangs.ja" size="small" :placeholder="$t('m.tagNameJa')" />
+          <el-input v-model="quickTagLangs.en" size="small" :placeholder="$t('m.tagNameEn')" />
+          <el-button size="small" type="primary" @click="quickTagSaveLangs">{{ $t('m.saveTagNames') }}</el-button>
+        </p>
         <el-input v-model="quickTagNewName" size="small" :placeholder="$t('m.newTagName')" @keyup.enter="quickTagRename" />
       </div>
       <template #footer>
@@ -251,7 +259,7 @@ import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save1
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
-import { getWidth, fetchRecentReads, isContextMenuItemEnabled, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, parsePageSizes } from './utils.js'
+import { getWidth, fetchRecentReads, isContextMenuItemEnabled, contextMenuDefinitions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, parsePageSizes } from './utils.js'
 import { attachInertiaScroll } from './inertia-scroll.js'
 
 import Setting from './components/Setting.vue'
@@ -325,10 +333,13 @@ export default defineComponent({
       quickTag: null,
       quickTagBook: null,
       quickTagNewName: '',
+      quickTagLangs: { 'zh-CN': '', ja: '', en: '' },
     }
   },
   computed: {
     ...mapWritableState(useAppStore, [
+      'bookTasks',
+      'bookTaskPaused',
       'cat2letter',
       'keyMap',
       'categoryOption',
@@ -492,6 +503,15 @@ export default defineComponent({
     'setting.cardGapH' () { this.recomputeToolbarWidth() },
   },
   mounted () {
+    // 右键/长按菜单:把定义里的新项并入已保存配置(旧配置也不会缺新项)
+    try {
+      if (!this.setting.contextMenuOptions) this.setting.contextMenuOptions = {}
+      for (const [menu, items] of Object.entries(contextMenuDefinitions)) {
+        const saved = this.setting.contextMenuOptions[menu] || []
+        this.setting.contextMenuOptions[menu] = [...new Set([...saved, ...items])]
+      }
+      ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(this.setting)))
+    } catch (e) { /* 忽略:不影响启动 */ }
     // UI 模式初始化(自动/手机/平板/电脑)与 body 标记
     this.uiMode = localStorage.getItem('emmUiMode') || 'auto'
     this.applyUiMode()
@@ -623,6 +643,11 @@ export default defineComponent({
   },
   methods: {
     ...mapActions(useAppStore, [
+      'runBookTask',
+      'pauseBookTask',
+      'resumeBookTask',
+      'abortBookTask',
+      'isBookTaskPaused',
       'isBook',
       'isVisibleBook',
       'printMessage',
@@ -1353,6 +1378,8 @@ export default defineComponent({
       this.quickTag = tag
       this.quickTagBook = book
       this.quickTagNewName = tag.tag
+      const rec = (this.setting.tagNameLangs || {})[tag.cat + '::' + tag.tag] || {}
+      this.quickTagLangs = { 'default': rec['default'] || '', 'zh-CN': rec['zh-CN'] || '', 'zh-TW': rec['zh-TW'] || '', ja: rec.ja || '', en: rec.en || '' }
       this.quickTagDialogVisible = true
     },
     quickTagFilter () {
@@ -1361,6 +1388,20 @@ export default defineComponent({
     },
     quickTagCopy () {
       if (this.quickTag) ipcRenderer.invoke('copy-text-to-clipboard', this.quickTag.tag)
+    },
+    // 保存标签的多语言名称(中/日/英),按「目标语言标签」显示
+    async quickTagSaveLangs () {
+      const { cat, tag } = this.quickTag || {}
+      if (!cat || !tag) return
+      if (!this.setting.tagNameLangs) this.setting.tagNameLangs = {}
+      const key = cat + '::' + tag
+      const rec = this.setting.tagNameLangs[key] || {}
+      const lang = { 'default': (this.quickTagLangs['default'] || '').trim(), 'zh-CN': (this.quickTagLangs['zh-CN'] || '').trim(), 'zh-TW': (this.quickTagLangs['zh-TW'] || '').trim(), ja: (this.quickTagLangs.ja || '').trim(), en: (this.quickTagLangs.en || '').trim() }
+      if (!lang['default'] && !lang['zh-CN'] && !lang['zh-TW'] && !lang.ja && !lang.en) delete this.setting.tagNameLangs[key]
+      else this.setting.tagNameLangs[key] = { ...rec, ...lang }
+      await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(this.setting)))
+      this.printMessage('success', this.$t('m.saveTagNamesDone'))
+      this.quickTagDialogVisible = false
     },
     async quickTagRename () {
       const { cat, tag } = this.quickTag || {}
@@ -1571,7 +1612,43 @@ export default defineComponent({
             this.getMetadataFromClipboardLink(book)
           }
         },
-      ].filter(item => isContextMenuItemEnabled(this.setting, 'cover', item.id) && !(this.viewerRole && viewerWriteIds.has(item.id)))
+        {
+          id: 'translateBook',
+          label: this.$t('m.translateBook'),
+          onClick: () => { this.runBookTask(book, 'translate') }
+        },
+        {
+          id: 'pauseTask',
+          label: this.$t('m.pauseTask'),
+          onClick: () => { this.pauseBookTask(book.id) }
+        },
+        {
+          id: 'resumeTask',
+          label: this.$t('m.resumeTask'),
+          onClick: () => { this.resumeBookTask(book.id) }
+        },
+        {
+          id: 'abortTask',
+          label: this.$t('m.abortTask'),
+          onClick: () => { this.abortBookTask(book.id) }
+        },
+        {
+          id: 'upscaleBook',
+          label: this.$t('m.upscaleBook'),
+          onClick: () => { this.runBookTask(book, 'upscale') }
+        },
+        {
+          id: 'colorizeBook',
+          label: this.$t('m.colorizeBook'),
+          onClick: () => { this.runBookTask(book, 'colorize') }
+        },
+      ].filter(item => {
+        const taskRunning = !!(this.bookTasks && this.bookTasks[book.id])
+        if (item.id === 'pauseTask') return taskRunning && !this.isBookTaskPaused(book.id)
+        if (item.id === 'resumeTask') return taskRunning && this.isBookTaskPaused(book.id)
+        if (item.id === 'abortTask') return taskRunning
+        return isContextMenuItemEnabled(this.setting, 'cover', item.id) && !(this.viewerRole && viewerWriteIds.has(item.id))
+      })
       // 全部项都被取消勾选时不弹出空白菜单
       if (items.length === 0) return
       this.$contextmenu({ x: e.x, y: e.y, items })
@@ -1717,8 +1794,15 @@ export default defineComponent({
       this.$refs.BookDetailDialogRef.openBookDetail(_.sample(activeBookList))
     },
     openContentView (book) {
-      this.$refs.InternalViewerRef.showThumbnail = false
-      this.$refs.InternalViewerRef.viewManga(book)
+      const viewer = this.$refs.InternalViewerRef
+      if (!viewer || typeof viewer.viewManga !== 'function') {
+        // 阅读器未就绪(或纯网页模式)时兜底:打开详细界面,避免"双击没反应"
+        this.printMessage('warning', this.$t('m.viewerUnavailable') || 'viewer unavailable')
+        this.$refs.BookDetailDialogRef.openBookDetail(book)
+        return
+      }
+      viewer.showThumbnail = false
+      viewer.viewManga(book)
     },
     openThumbnailView (book) {
       this.$refs.InternalViewerRef.showThumbnail = true
