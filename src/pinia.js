@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { catDisplayName } from './utils.js'
+import { runBookAiTask } from './aiTasks.js'
 
 export const useAppStore = defineStore('appStore', {
   state: () => ({
@@ -56,6 +57,10 @@ export const useAppStore = defineStore('appStore', {
     setting: {},
     bookDetail: {},
     resolvedTranslation: {},
+  // 每本书当前正在执行的任务:translate / colorize / upscale / extract
+  bookTasks: {},
+  bookTaskPaused: {},
+  bookTaskAborted: {},
     bookList: [],
     displayBookList: [],
     chunkDisplayBookList: [],
@@ -175,6 +180,55 @@ export const useAppStore = defineStore('appStore', {
     },
   },
   actions: {
+    // 统一任务入口:批量 = 单次任务的复用
+    runBookTask (book, kind) {
+      const id = book && book.id
+      if (!id) return
+      const chars = { translate: '翻', colorize: '色', upscale: '分', extract: '字' }
+      this.setBookTask(id, kind)
+      this.bookTaskPaused = this.bookTaskPaused || {}
+      this.bookTaskPaused[id] = false
+      ElMessage({ message: (chars[kind] || '任务') + ' · ' + (book.title_jpn || book.title || '') + ' —— 右键可暂停/中止', type: 'info', duration: 3000 })
+      runBookAiTask(this, book, kind, (done, total) => {
+        const p = this.bookTaskProgress && this.bookTaskProgress[id]
+        if (p) p.done = done
+      }).then(res => {
+        if (res && res.ok) {
+          ElMessage({ message: (chars[kind] || '任务') + ' 完成(' + res.total + ' 张)', type: 'success', duration: 3000 })
+        } else if (res && res.error === 'aborted') {
+          ElMessage({ message: (chars[kind] || '任务') + ' 已中止', type: 'warning', duration: 3000 })
+        } else {
+          ElMessage({ message: (chars[kind] || '任务') + ' 结束:' + ((res && res.error) || '未知错误'), type: 'error', duration: 4000 })
+        }
+      })
+    },
+    setBookTask (id, kind) {
+      if (!this.bookTasks) this.bookTasks = {}
+      this.bookTasks[id] = kind
+    },
+    pauseBookTask (id) {
+      this.bookTaskPaused = this.bookTaskPaused || {}
+      this.bookTaskPaused[id] = true
+      ElMessage({ message: '已暂停,右键可继续或中止', type: 'warning', duration: 2000 })
+    },
+    resumeBookTask (id) {
+      this.bookTaskPaused = this.bookTaskPaused || {}
+      this.bookTaskPaused[id] = false
+      ElMessage({ message: '已继续', type: 'success', duration: 2000 })
+    },
+    abortBookTask (id) {
+      this.bookTaskAborted = this.bookTaskAborted || {}
+      this.bookTaskAborted[id] = true
+      this.clearBookTask(id)
+      ElMessage({ message: '已中止任务', type: 'error', duration: 2000 })
+    },
+    isBookTaskPaused (id) {
+      return !!(this.bookTaskPaused && this.bookTaskPaused[id])
+    },
+    clearBookTask (id) {
+      if (this.bookTasks) delete this.bookTasks[id]
+    },
+
     isBook (book) {
       // isCollection mean book is collection
       return !book.isCollection

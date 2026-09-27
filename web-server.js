@@ -88,6 +88,7 @@ const VIEWER_ALLOWED_CHANNELS = new Set([
   'get-locale', 'get-path-sep', 'copy-text-to-clipboard', 'copy-image-to-clipboard',
   'read-text-from-clipboard', 'update-window-title', 'switch-fullscreen',
   'set-viewer-active', 'set-progress-bar', 'extract-image-text',
+  'ai-translate-text', 'ai-save-text', 'ai-colorize-image', 'ai-list-images',
   'list-title-translation-models', 'query-character-origins', 'test-title-translation',
 ])
 

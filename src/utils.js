@@ -97,9 +97,9 @@ const fetchRecentReads = () => {
 // 每个右键菜单(菜单id)包含一组可开关的菜单项(项id)。
 // 用户可在 设置 → 右键菜单 中勾选要显示的项,保存在 setting.contextMenuOptions。
 const contextMenuDefinitions = {
-  title: ['copyTitle', 'copyLink', 'copyTitleAndLink'],
-  cover: ['getMetadata', 'resetMetadata', 'openFileLocation', 'moveFile', 'deleteFile', 'toggleHidden', 'copyTag', 'pasteTag', 'getMetadataFromLink'],
-  image: ['copyImage', 'setCover', 'deleteImage', 'renameImage', 'upscaleImage', 'ocrImage'],
+  title: ['copyTitle', 'copyLink', 'copyTitleAndLink', 'translateTitle'],
+  cover: ['getMetadata', 'resetMetadata', 'openFileLocation', 'moveFile', 'deleteFile', 'toggleHidden', 'copyTag', 'pasteTag', 'getMetadataFromLink', 'translateBook', 'upscaleBook', 'colorizeBook'],
+  image: ['copyImage', 'setCover', 'deleteImage', 'renameImage', 'upscaleImage', 'ocrImage', 'translateImage', 'colorizeImage'],
   comment: ['openLink'],
 }
 
@@ -276,6 +276,60 @@ const DEFAULT_CAT_NAMES = {
   misc: '杂项',
 }
 const catDisplayName = (key) => DEFAULT_CAT_NAMES[key] || key
+// 反向映射:中文显示名 → 英文分类键(收藏标签的历史数据可能存的是显示名,如 "角色")
+const CAT_NAME_TO_KEY = Object.fromEntries(Object.entries(DEFAULT_CAT_NAMES).map(([k, v]) => [v, k]))
+const resolveCatKey = (cat) => (DEFAULT_CAT_NAMES[cat] ? cat : (CAT_NAME_TO_KEY[cat] || cat))
+
+// ---------- 标签多语言名称:按「目标语言标签」设置显示 ----------
+// 同一标签可保存多个语言的名称,显示时按 setting.tagTargetLang 选,缺失则依次回退
+const getDisplayTagName = (setting, cat, tag) => {
+  if (!tag) return tag
+  const map = (setting && setting.tagNameLangs) || {}
+  const rec = map[cat + '::' + tag]
+  if (!rec) return null
+  const lang = (setting && setting.tagTargetLang) || ''
+  // 「默认」:优先使用默认名称,再依次回退其它语言
+  if (!lang) return rec['default'] || null
+  const order = lang === 'en'
+    ? ['en', 'default', 'zh-CN', 'zh-TW', 'ja']
+    : lang === 'ja'
+      ? ['ja', 'default', 'zh-CN', 'zh-TW', 'en']
+      : lang === 'zh-TW'
+        ? ['zh-TW', 'default', 'zh-CN', 'ja', 'en']
+        : ['zh-CN', 'default', 'zh-TW', 'ja', 'en']
+  for (const k of order) { if (rec[k]) return rec[k] }
+  return null
+}
+
+// ---------- 标签关联(包含 / 被包含) ----------
+// 结构:setting.tagRelations = { '分类::标签': { contains: ['分类2::标签2', ...] } }
+// 「被包含」由 contains 反向推导,避免双份数据不一致。
+const getTagRelations = (setting) => (setting && setting.tagRelations) || {}
+// 该标签被哪些集合包含(返回 '分类::标签' 数组,按配置顺序)
+const getContainedBy = (setting, cat, tag) => {
+  const key = cat + '::' + tag
+  const all = getTagRelations(setting)
+  const direct = all[key]
+  if (direct && Array.isArray(direct.containedBy) && direct.containedBy.length) return direct.containedBy
+  const out = []
+  for (const [k, v] of Object.entries(all)) {
+    if (k !== key && v && Array.isArray(v.contains) && v.contains.includes(key)) out.push(k)
+  }
+  return out
+}
+// 该标签包含哪些元素
+const getContains = (setting, cat, tag) => {
+  const rel = getTagRelations(setting)[cat + '::' + tag]
+  return (rel && Array.isArray(rel.contains)) ? rel.contains : []
+}
+// 标签名后加括号显示前 maxSets 个所属集合,如 光辉(碧蓝航线,女)
+const formatTagWithSets = (setting, cat, tag, maxSets = 3) => {
+  if (!tag) return tag
+  let sets = []
+  try { sets = getContainedBy(setting, cat, tag) } catch { sets = [] }
+  const names = sets.slice(0, maxSets).map(k => { const p = k.split('::'); return p[1] || k })
+  return names.length ? tag + '(' + names.join(',') + ')' : tag
+}
 
 // ---------- 每页条数 ----------
 const parsePageSizes = (raw) => {
@@ -319,10 +373,17 @@ const defaultUiSettings = () => ({
   defaultScraper: 'exhentai',
   defaultInsertEmptyPage: true,
   disableRandomTag: false,
+  // 随机标签:默认禁用,勾选后启用(与「显示收藏标签」互斥)
+  randomTagsEnabled: false,
+  // 目标语言标签:标签名按该语言显示(中/繁/英/日)
+  tagTargetLang: '',
   viewerType: 'original',
   autoNextManga: false,
   batchTagfailedBook: false,
   showCollectTag: true,
+  // 标签多语言名称:{ '分类::标签': { 'zh-CN': '', ja: '', en: '', 'zh-TW': '' } }
+  tagNameLangs: {},
+  tagRelations: {},
   onlyGetMetadataOfSelectedFolder: false,
   titleTranslationMode: 'off',
   titleTranslationBaseUrl: '',
@@ -360,8 +421,37 @@ const defaultUiSettings = () => ({
   toolbarButtons: defaultToolbarButtons(),
   customPageSizes: '12,24,42,72,500,5000,1000000',
   scrollInertiaLevel: 'medium',
-  enableImageUpscale: false,
-  enableImageOcr: false,
+  enableImageUpscale: true,
+  enableImageOcr: true,
+  enableImageColorize: true,
+  upscaleApiModel: '',
+  upscaleApiKey: '',
+  colorizeApiUrl: '',
+  colorizeApiModel: '',
+  colorizeApiKey: '',
+  ocrApiKey: '',
+  aiApiProfiles: [],
+  infoApiProfileId: '',
+  upscaleApiProfileId: '',
+  colorizeApiProfileId: '',
+  ocrApiProfileId: '',
+  imgTranslateApiProfileId: '',
+  infoProcessApiProfileId: '',
+  infoProcessTasks: ['tags', 'story', 'translate'],
+  tagGenCategories: [],
+  storyGenTypes: ['summary'],
+  translateTargetLang: 'zh-CN',
+  infoProcessSaveMode: 'same',
+  translateSaveMode: 'folder',
+  ocrSaveMode: 'folder',
+  storyGenApiProfileId: '',
+  tagGenApiProfileId: '',
+  upscaleSaveMode: 'same',
+  upscaleScale: 2,
+  // 超分输出尺寸:scale=按倍数 / width=按目标宽度(px)
+  upscaleSizeMode: 'scale',
+  upscaleTargetWidth: 2000,
+  colorizeSaveMode: 'same',
 })
 
 export {
@@ -383,7 +473,13 @@ export {
   toolbarButtonDefinitions,
   defaultToolbarButtons,
   DEFAULT_CAT_NAMES,
+  resolveCatKey,
   catDisplayName,
+  getDisplayTagName,
+  getTagRelations,
+  getContainedBy,
+  getContains,
+  formatTagWithSets,
   parsePageSizes,
   defaultUiSettings,
 }

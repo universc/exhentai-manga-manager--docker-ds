@@ -850,6 +850,30 @@ const onMangaImageContextMenu = (e, image) => {
       }
     },
     {
+      id: 'translateImage',
+      label: t('m.translateImage'),
+      onClick: async () => {
+        // 单张:文字提取 → (后续接入文字处理模型翻译)
+        try {
+          const p = (image && (image.absolutePath || image.path)) || ''
+          if (!p) return
+          const res = await ipcRenderer.invoke('extract-image-text', p)
+          const text = (res && (res.text || res.result)) || ''
+          if (text) printMessage('success', text.slice(0, 60))
+          else printMessage('warning', (res && res.error) || t('m.extractImageText'))
+        } catch (e) {
+          printMessage('error', String((e && e.message) || e))
+        }
+      }
+    },
+    {
+      id: 'colorizeImage',
+      label: t('m.colorize'),
+      onClick: () => {
+        printMessage('warning', t('m.colorization') + ': ' + t('c.featureComingSoon'))
+      }
+    },
+    {
       id: 'deleteImage',
       label: t('c.deleteImage'),
       onClick: async () => {

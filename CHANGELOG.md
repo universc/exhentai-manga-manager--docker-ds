@@ -1,3 +1,24 @@
+# 更新日志
+
+## 2026-09-28 — AI 功能改造修复批次
+
+### 修复
+- **双击封面无反应**:`emit('coverDblClick')` 与模板 `@cover-dbl-click` 事件名大小写不匹配(全项目 34 个自定义事件中唯一一个),已统一。
+- **设置页显示原始 key**(如 `m.tagTranslate`):locale 中有 9 个键错挂在 JSON 顶层而非 `m` 命名空间,已全部移入;并补齐 5 个缺失键(`m.cancel`/`c.close`/`m.colorize`/`m.viewerUnavailable`/`c.titleTranslationFailed`)。
+- **收藏标签在主界面不显示**:`collectTag` 中 `cat` 可能存的是中文显示名(`角色`),而 `book.tags` 的键是英文(`character`)。新增 `resolveCatKey()` 做反向映射兼容。
+- **标签栏出现重复标签**:按「分类::标签」唯一化,中文/英文分类名混用也能正确合并。
+- **非管理员/未登录时设置页整页空白**:现在显示「账户」页,可在设置内直接登录或退出登录。
+- **重启后服务无法启动**:`node_modules/sqlite3` 的原生模块 `node_sqlite3.node` 被 electron-builder 的打包流程删除(只剩 `.DELETE.<hash>` 标记文件),已恢复。
+
+### 新增
+- **图片超分**:新增「输出尺寸」设置 —— 按倍数放大 / 按目标宽度(px);倍数扩展为 1.5 / 2 / 3 / 4 / 6 / 8。
+- **标签多语言名称**:支持 默认 / 简体 / 繁体 / 英文 / 日文 五种名称,双击标签即可编辑,按「语言」设置显示。
+- **标签关联(包含 / 被包含)**:在标签编辑弹窗中设置;标签名后自动用括号显示前 3 个所属集合,如 `Cyrene(BB)`、`光辉(碧蓝航线,女)`。
+- **标签设置页布局**:「收藏标签」「随机标签」「语言」三个控件同排,前两者互斥(勾选哪个主界面就显示哪个,都不勾选则不显示)。
+
+### 变更
+- 「AI 基础功能」→「功能」;「目标语言标签」→「语言」;「显示收藏标签」→「收藏标签」;「随机标签默认禁用(勾选后启用)」→「随机标签」。
+
 ### Changelog
 
 All notable changes to this project will be documented in this file. Dates are displayed in UTC.

@@ -160,10 +160,41 @@ const prepareSetting = () => {
       // 惯性滚动力度:off / low / medium / high
       scrollInertiaLevel: 'medium',
       // 图片 AI 功能(阅读器右键菜单显示)
-      enableImageUpscale: false,
-      enableImageOcr: false,
+      enableImageUpscale: true,
+      enableImageOcr: true,
       // 图片 AI 本地模型 API:超分(如 Real-ESRGAN 服务)/ 文字提取(OpenAI 兼容);留空用内置或标题翻译AI配置
       upscaleApiUrl: '',
+      upscaleApiModel: '',
+      upscaleApiKey: '',
+      // 图片上色(独立 AI API)
+      enableImageColorize: true,
+      colorizeApiUrl: '',
+      colorizeApiModel: '',
+      colorizeApiKey: '',
+      ocrApiKey: '',
+      // 可命名保存多个 AI API 配置,各基础功能下拉选用
+      aiApiProfiles: [],
+      infoApiProfileId: '',
+      upscaleApiProfileId: '',
+      colorizeApiProfileId: '',
+      ocrApiProfileId: '',
+      imgTranslateApiProfileId: '',
+      // 信息处理:单独指定模型 + 选择要处理的内容
+      infoProcessApiProfileId: '',
+      infoProcessTasks: ['tags', 'story', 'translate'],
+      tagGenCategories: [],
+      storyGenTypes: ['summary'],
+      translateTargetLang: 'zh-CN',
+      infoProcessSaveMode: 'same',
+      translateSaveMode: 'folder',
+      ocrSaveMode: 'folder',
+      storyGenApiProfileId: '',
+      tagGenApiProfileId: '',
+      // 处理结果的保存位置:same=同一文件夹(另存)/ replace=替换原文件 / preview=仅预览
+      upscaleSaveMode: 'same',
+      // 本地超分倍数(2/3/4);配置了超分 API 时由 API 决定
+      upscaleScale: 2,
+      colorizeSaveMode: 'same',
       ocrApiUrl: '',
       ocrApiModel: 'qwen2.5-vl:7b',
     }

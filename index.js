@@ -2692,19 +2692,133 @@ ipcMain.handle('analyze-book-titles-characters-batch', async (event, force = fal
 })
 
 // 图片超分:优先调用本地超分 API(如 Real-ESRGAN / Waifu2x 服务),否则内置 sharp 2x 放大
+// ---------- AI:列出某本书的全部图片(供任务运行器遍历) ----------
+ipcMain.handle('ai-list-images', async (event, book = {}) => {
+  try {
+    if (!book || !book.filepath) return { ok: false, error: '缺少书籍路径' }
+    const list = await getImageListByBook(book.filepath, book.type)
+    const images = (list || []).map(x => (x && (x.absolutePath || x.path)) || x).filter(p => typeof p === 'string' && p)
+    return { ok: true, images }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+// ---------- AI:文字翻译(文字处理模型) ----------
+const resolveAiProfile = (profileId, fallback = {}) => {
+  const list = Array.isArray(setting.aiApiProfiles) ? setting.aiApiProfiles : []
+  const p = list.find(x => x && x.id === profileId)
+  if (p) return { baseUrl: p.baseUrl, model: p.model, apiKey: p.apiKey }
+  return fallback
+}
+ipcMain.handle('ai-translate-text', async (event, payload = {}) => {
+  try {
+    const text = String(payload.text || '').trim()
+    if (!text) return { ok: false, error: '无文本' }
+    const prof = resolveAiProfile(payload.profileId, { baseUrl: setting.openaiBaseUrl, model: setting.openaiModel, apiKey: setting.openaiApiKey })
+    let base = String(prof.baseUrl || '').trim().replace(/\/+$/, '')
+    if (!base) return { ok: false, error: '未配置文字处理模型' }
+    if (!/^https?:\/\//i.test(base)) base = 'http://' + base
+    const target = payload.targetLang || setting.translateTargetLang || 'zh-CN'
+    const res = await fetch(base + '/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(prof.apiKey ? { Authorization: 'Bearer ' + prof.apiKey } : {}) },
+      body: JSON.stringify({
+        model: prof.model || 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: '你是漫画翻译引擎。把用户提供的文本翻译成目标语言,只输出译文,不要解释。目标语言:' + target },
+          { role: 'user', content: text },
+        ],
+        temperature: 0.2,
+      }),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const json = await res.json()
+    const out = (json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content) || ''
+    return { ok: true, text: out.trim(), target }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+// ---------- AI:保存文本产物(漫画文件夹 / 仅预览 / 不保存) ----------
+ipcMain.handle('ai-save-text', async (event, payload = {}) => {
+  try {
+    const mode = payload.mode || 'preview'
+    if (mode !== 'folder') return { ok: true, saved: false, text: payload.text }
+    const book = payload.book || {}
+    const dir = book.type === 'folder' && book.filepath ? book.filepath : path.dirname(book.filepath || '')
+    if (!dir) return { ok: false, error: '无法确定保存目录' }
+    const name = payload.fileName || 'ai_translate.txt'
+    const out = path.join(dir, name)
+    await fs.promises.writeFile(out, String(payload.text || ''), 'utf-8')
+    return { ok: true, saved: true, path: out }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+// ---------- AI:单张上色(按保存位置写回) ----------
+ipcMain.handle('ai-colorize-image', async (event, payload = {}) => {
+  try {
+    const filepath = payload.filepath
+    if (!filepath) return { ok: false, error: '未指定图片' }
+    const prof = resolveAiProfile(payload.profileId, { baseUrl: setting.colorizeApiUrl, model: setting.colorizeApiModel, apiKey: setting.colorizeApiKey })
+    let base = String(prof.baseUrl || '').trim().replace(/\/+$/, '')
+    if (!base) return { ok: false, error: '未配置上色模型' }
+    if (!/^https?:\/\//i.test(base)) base = 'http://' + base
+    const buf = await fs.promises.readFile(filepath)
+    const res = await fetch(base + '/colorize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', ...(prof.apiKey ? { Authorization: 'Bearer ' + prof.apiKey } : {}) },
+      body: buf,
+    })
+    if (!res.ok) throw new Error('上色 API HTTP ' + res.status)
+    const ct = res.headers.get('content-type') || ''
+    let outBuf = Buffer.from(await res.arrayBuffer())
+    if (ct.includes('application/json')) {
+      const j = JSON.parse(outBuf.toString('utf-8'))
+      const b64 = (j.image || j.data || '').replace(/^data:image\/\w+;base64,/, '')
+      outBuf = Buffer.from(b64, 'base64')
+    }
+    const mode = setting.colorizeSaveMode || 'same'
+    const ext = path.extname(filepath) || '.jpg'
+    let target
+    if (mode === 'replace') {
+      const backup = filepath + '.bak'
+      try { await fs.promises.copyFile(filepath, backup) } catch (e) { /* ignore */ }
+      target = filepath
+    } else if (mode === 'preview') {
+      target = path.join(VIEWER_PATH, 'colorized_' + nanoid(8) + ext)
+    } else {
+      target = filepath.replace(new RegExp(ext + '$'), '_colorized' + ext)
+    }
+    await fs.promises.writeFile(target, outBuf)
+    return { ok: true, path: target, mode }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
 ipcMain.handle('upscale-image', async (event, filepath) => {
   try {
     if (!filepath) return { ok: false, error: '未指定图片' }
     const outPath = path.join(VIEWER_PATH, `upscaled_${nanoid(8)}.jpg`)
-    const apiUrl = (setting.upscaleApiUrl || '').trim()
+    // 超分:优先使用「功能 → 图片超分 → 使用的模型」中选择的 API 配置
+    const upProf = (Array.isArray(setting.aiApiProfiles) ? setting.aiApiProfiles : []).find(p => p && p.id === setting.upscaleApiProfileId)
+    let apiUrl = (setting.upscaleApiUrl || '').trim()
+    let apiKey = ''
+    if (upProf && upProf.baseUrl) {
+      apiUrl = String(upProf.baseUrl).trim().replace(/\/+$/, '')
+      if (!/^https?:\/\//i.test(apiUrl)) apiUrl = 'http://' + apiUrl
+      apiUrl = apiUrl + '/upscale'
+      apiKey = upProf.apiKey || ''
+    }
+    const scale = Math.min(Math.max(Number(setting.upscaleScale) || 2, 1), 8)
     if (apiUrl) {
       // 本地超分 API:POST 图片二进制 → 期望返回放大图片(二进制)或 JSON { image: base64 }
       const buf = await fs.promises.readFile(filepath)
       const res = await fetch(apiUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
+        headers: { 'Content-Type': 'application/octet-stream', ...(apiKey ? { Authorization: 'Bearer ' + apiKey } : {}), 'X-Upscale-Scale': String(scale) },
         body: buf,
-        timeout: 120000
+        timeout: 300000
       })
       if (!res.ok) throw new Error(`超分 API 请求失败: HTTP ${res.status}`)
       const resBuf = Buffer.from(await res.arrayBuffer())
@@ -2723,17 +2837,28 @@ ipcMain.handle('upscale-image', async (event, filepath) => {
         }
       }
       await sharp(imageBuf, { failOnError: false }).jpeg({ quality: 95 }).toFile(outPath)
-      return { ok: true, path: outPath }
+      return { ok: true, path: outPath, engine: 'api', scale }
     }
-    // 内置 sharp 高质量放大(2x)
+    // 内置本地超分:Lanczos3 放大 + 轻度锐化(非 AI,仅画质增强;要 AI 超分请在上方选择超分 API)
     const meta = await sharp(filepath, { failOnError: false }).metadata()
-    const width = Math.min(Math.round((meta.width || 1000) * 2), 8192)
-    const height = Math.min(Math.round((meta.height || 1400) * 2), 8192)
+    const srcW = meta.width || 1000
+    const srcH = meta.height || 1400
+    let width, height
+    if ((setting.upscaleSizeMode || 'scale') === 'width') {
+      // 按目标宽度:等比缩放到指定宽度
+      const targetW = Math.min(Math.max(Number(setting.upscaleTargetWidth) || 2000, 256), 16384)
+      width = targetW
+      height = Math.round(srcH * (targetW / srcW))
+    } else {
+      width = Math.min(Math.round(srcW * scale), 16384)
+      height = Math.min(Math.round(srcH * scale), 16384)
+    }
     await sharp(filepath, { failOnError: false })
-      .resize({ width, height })
-      .jpeg({ quality: 92 })
+      .resize({ width, height, kernel: 'lanczos3', fit: 'fill' })
+      .sharpen({ sigma: 0.8, m1: 0.6, m2: 0.4 })
+      .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
       .toFile(outPath)
-    return { ok: true, path: outPath }
+    return { ok: true, path: outPath, engine: 'local-resize', scale, width, height }
   } catch (e) {
     return { ok: false, error: String(e.message || e) }
   }
@@ -2743,6 +2868,34 @@ ipcMain.handle('upscale-image', async (event, filepath) => {
 ipcMain.handle('extract-image-text', async (event, filepath) => {
   try {
     if (!filepath) return { ok: false, error: '未指定图片' }
+    // 优先使用「功能 → 信息处理 → 文字提取模型」里选择的 API 配置(OpenAI 兼容视觉接口)
+    const prof = (Array.isArray(setting.aiApiProfiles) ? setting.aiApiProfiles : []).find(p => p && p.id === setting.ocrApiProfileId)
+    if (prof && prof.baseUrl) {
+      let base = String(prof.baseUrl).trim().replace(/\/+$/, '')
+      if (!/^https?:\/\//i.test(base)) base = 'http://' + base
+      const buf = await fs.promises.readFile(filepath)
+      const ext = (path.extname(filepath) || '.jpg').replace('.', '')
+      const dataUrl = 'data:image/' + (ext === 'png' ? 'png' : ext === 'webp' ? 'webp' : 'jpeg') + ';base64,' + buf.toString('base64')
+      const res = await fetch(base + '/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(prof.apiKey ? { Authorization: 'Bearer ' + prof.apiKey } : {}) },
+        body: JSON.stringify({
+          model: prof.model || 'qwen2.5-vl:7b',
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: '提取这张漫画图片里的全部文字,按阅读顺序输出纯文本,不要翻译、不要解释、不要多余说明;没有文字就输出空。' },
+              { type: 'image_url', image_url: { url: dataUrl } },
+            ],
+          }],
+          temperature: 0.1,
+        }),
+      })
+      if (!res.ok) throw new Error('文字提取 API HTTP ' + res.status)
+      const json = await res.json()
+      const out = (json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content) || ''
+      return { ok: true, text: String(out).trim(), via: 'profile' }
+    }
     const ocrUrl = (setting.ocrApiUrl || '').trim()
     if (ocrUrl) {
       const model = setting.ocrApiModel || setting.titleTranslationModel || 'qwen2.5-vl:7b'
