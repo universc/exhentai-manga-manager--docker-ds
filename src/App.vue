@@ -83,11 +83,11 @@
     </el-row>
     <RandomTags
       ref="randomTagsRef"
-      v-if="!editTagView && !editCollectionView && setting.randomTagsEnabled"
+      v-if="!editTagView && !editCollectionView && (setting.randomTagsEnabled || setting.showCollectTag)"
       @search="handleSearchString"
     />
     <el-row :gutter="20" class="book-card-area">
-      <el-col :span="24" v-if="!editTagView && !editCollectionView" class="book-card-list" :style="{height: setting.randomTagsEnabled ? 'calc(100vh - 134px)' : 'calc(100vh - 96px)'}">
+      <el-col :span="24" v-if="!editTagView && !editCollectionView" class="book-card-list" :style="{height: (setting.randomTagsEnabled || setting.showCollectTag) ? 'calc(100vh - 134px)' : 'calc(100vh - 96px)'}">
         <div
           v-for="(book, index) in visibleRenderedBookList"
           :key="book.id"
