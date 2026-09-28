@@ -109,6 +109,7 @@
     <el-space wrap class="book-tag-edit-buttons">
       <el-button type="primary" plain @click="addTagToGroup">{{$t('m.addGroupTag')}}</el-button>
       <el-button type="primary" @click="removeTagToGroup" plain>{{$t('m.removeGroupTag')}}</el-button>
+      <el-button type="success" plain @click="openAddTagDialog">{{$t('m.addNewTag')}}</el-button>
     </el-space>
     <el-divider content-position="left">{{$t('m.category')}}</el-divider>
     <el-select v-model="categorySelected" :placeholder="$t('m.category')" clearable>
@@ -116,7 +117,6 @@
     </el-select>
     <el-space wrap class="book-tag-edit-buttons">
       <el-button type="primary" plain @click="applyCategory">{{$t('m.apply')}}</el-button>
-      <el-button type="primary" plain @click="openAddTagDialog">{{$t('m.addNewTag')}}</el-button>
     </el-space>
     <!-- 增加标签:选类别 + 输入名称;同名标签必须指定所属集合以区分 -->
     <el-dialog v-model="addTagDialogVisible" :title="$t('m.addNewTag')" width="420px" append-to-body>
