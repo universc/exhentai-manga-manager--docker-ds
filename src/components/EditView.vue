@@ -79,6 +79,13 @@
                 </el-descriptions-item>
                 <el-descriptions-item v-for="(tagArr, key) in book.tags" :label="resolvedTranslation[key]?._name || key + ':'" :key="key">
                   <el-tag type="info" class="book-tag" v-for="tag in tagArr" :key="tag" @click="$emit('searchFromTag', tag, key)"
+                    @mousedown="startTagPress(key, tag, book)"
+                    @mouseup="cancelTagPress"
+                    @mouseleave="cancelTagPress"
+                    @touchstart.passive="startTagPress(key, tag, book)"
+                    @touchend="cancelTagPress"
+                    @touchmove.passive="cancelTagPress"
+                    :title="$t('m.editTagNames')"
                   >{{resolvedTranslation[key]?.[tag]?.name || tag }}</el-tag>
                 </el-descriptions-item>
               </el-descriptions>
@@ -109,7 +116,27 @@
     </el-select>
     <el-space wrap class="book-tag-edit-buttons">
       <el-button type="primary" plain @click="applyCategory">{{$t('m.apply')}}</el-button>
+      <el-button type="primary" plain @click="openAddTagDialog">{{$t('m.addNewTag')}}</el-button>
     </el-space>
+    <!-- 增加标签:选类别 + 输入名称;同名标签必须指定所属集合以区分 -->
+    <el-dialog v-model="addTagDialogVisible" :title="$t('m.addNewTag')" width="420px" append-to-body>
+      <div class="add-tag-form">
+        <el-select v-model="addTagForm.cat" :placeholder="$t('m.category')" style="width: 100%; margin-bottom: 10px;" @change="checkAddTagDuplicate">
+          <el-option v-for="c in tagCatOptions" :key="c" :label="c" :value="c" />
+        </el-select>
+        <el-input v-model="addTagForm.name" :placeholder="$t('m.tagNamePlaceholder')" @input="checkAddTagDuplicate" />
+        <div v-if="addTagDuplicate.length" class="add-tag-warn">
+          <p class="add-tag-warn-text">{{ $t('m.tagDuplicateHint') }}</p>
+          <el-select v-model="addTagForm.parent" filterable :placeholder="$t('m.pickParentSet')" style="width: 100%;">
+            <el-option v-for="o in tagParentOptions" :key="o.value" :label="o.label" :value="o.value" />
+          </el-select>
+        </div>
+      </div>
+      <template #footer>
+        <el-button size="small" @click="addTagDialogVisible = false">{{ $t('m.cancel') }}</el-button>
+        <el-button size="small" type="primary" :disabled="!canCreateTag" @click="createNewTag">{{ $t('m.apply') }}</el-button>
+      </template>
+    </el-dialog>
     <el-divider content-position="left">{{$t('m.metadataStatus')}}</el-divider>
     <el-select v-model="statusSelected" :placeholder="$t('m.metadataStatus')">
       <el-option v-for="status in statusOption" :value="status" :key="status" :label="status" />
@@ -178,7 +205,7 @@ const { getDisplayTitle, saveBook, printMessage, filterFolderMethod } = appStore
 
 const { t } = useI18n()
 
-const emit = defineEmits(['previewManga', 'searchFromTag', 'loadBookList', 'getBooksMetadata', 'handleRemoveBookDisplay'])
+const emit = defineEmits(['previewManga', 'searchFromTag', 'loadBookList', 'getBooksMetadata', 'handleRemoveBookDisplay', 'tagLongPress'])
 
 const visibilityMap = ref({})
 const loadBookCardContent = (id) => {
@@ -422,6 +449,106 @@ const resolveGroupTagSelected = () => {
   return tags
 }
 
+
+// ---------- 增加标签(同名必须指定所属集合) ----------
+const addTagDialogVisible = ref(false)
+const addTagForm = ref({ cat: '', name: '', parent: '' })
+const addTagDuplicate = ref([])
+const resolveCat = (c) => {
+  const MAP = { parody:'作品', character:'角色', group:'社团', artist:'作者', male:'男性', female:'女性', mixed:'混合', other:'其他', cosplayer:'Cosplay' }
+  if (MAP[c]) return c
+  for (const [k, v] of Object.entries(MAP)) if (v === c) return k
+  return c
+}
+const allTagEntries = computed(() => {
+  const out = []
+  const seen = new Set()
+  for (const b of (displayBookList.value || [])) {
+    for (const [cat, arr] of Object.entries(b.tags || {})) {
+      for (const tg of (arr || [])) {
+        const k = cat + '::' + tg
+        if (seen.has(k)) continue
+        seen.add(k)
+        out.push({ cat, tag: tg })
+      }
+    }
+  }
+  return out
+})
+const tagCatOptions = computed(() => [...new Set(allTagEntries.value.map(e => resolveCat(e.cat)))].sort())
+const tagParentOptions = computed(() => allTagEntries.value
+  .filter(e => resolveCat(e.cat) !== resolveCat(addTagForm.value.cat))
+  .map(e => ({ value: e.cat + '::' + e.tag, label: e.tag })))
+// 重名判定:同类别内,比较所有语言的名称
+const checkAddTagDuplicate = () => {
+  const name = String(addTagForm.value.name || '').trim().toLowerCase()
+  const cat = resolveCat(addTagForm.value.cat)
+  if (!name || !cat) { addTagDuplicate.value = []; return }
+  const langs = setting.value.tagNameLangs || {}
+  const hits = []
+  for (const e of allTagEntries.value) {
+    if (resolveCat(e.cat) !== cat) continue
+    if (String(e.tag).trim().toLowerCase() === name) { hits.push(e); continue }
+    const rec = langs[e.cat + '::' + e.tag] || {}
+    const names = [rec['default'], rec['zh-CN'], rec['zh-TW'], rec.ja, rec.en].filter(Boolean).map(s => String(s).trim().toLowerCase())
+    if (names.includes(name)) hits.push(e)
+  }
+  addTagDuplicate.value = hits
+  if (!hits.length) addTagForm.value.parent = ''
+}
+const canCreateTag = computed(() => !!addTagForm.value.cat && !!String(addTagForm.value.name || '').trim() && (addTagDuplicate.value.length === 0 || !!addTagForm.value.parent))
+const openAddTagDialog = () => {
+  addTagForm.value = { cat: '', name: '', parent: '' }
+  addTagDuplicate.value = []
+  addTagDialogVisible.value = true
+}
+const createNewTag = async () => {
+  if (!canCreateTag.value) return
+  const cat = resolveCat(addTagForm.value.cat)
+  const name = String(addTagForm.value.name).trim()
+  const parent = addTagForm.value.parent
+  try {
+    for (const id of selectBookList.value) {
+      const book = _.find(displayBookList.value, { id })
+      if (!book) continue
+      if (!_.has(book, 'tags')) book.tags = {}
+      if (!Array.isArray(book.tags[cat])) book.tags[cat] = []
+      if (!book.tags[cat].includes(name)) book.tags[cat].push(name)
+      // 同名标签:强制绑定所属集合(自动补上集合标签)
+      if (parent) {
+        const [pcat, ptag] = parent.split('::')
+        if (!Array.isArray(book.tags[pcat])) book.tags[pcat] = []
+        if (!book.tags[pcat].includes(ptag)) book.tags[pcat].push(ptag)
+        // 记录关联:新标签被该集合包含
+        const rel = setting.value.tagRelations || {}
+        const pk = pcat + '::' + ptag
+        const cur = rel[pk] || {}
+        const arr = Array.isArray(cur.contains) ? cur.contains.slice() : []
+        const selfKey = cat + '::' + name
+        if (!arr.includes(selfKey)) arr.push(selfKey)
+        setting.value.tagRelations = { ...rel, [pk]: { ...cur, contains: arr } }
+        try { await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value))) } catch (e) {}
+      }
+      await saveBook(book)
+    }
+    printMessage('success', t('c.addGroupTagSuccess'))
+    addTagDialogVisible.value = false
+  } catch (e) {
+    console.error(e)
+    printMessage('error', t('c.groupTagError'))
+  }
+}
+
+// 长按标签(600ms) → 打开标签多语言名称编辑(与卡片标签长按一致)
+let tagPressTimer = null
+const startTagPress = (cat, tag, book) => {
+  clearTimeout(tagPressTimer)
+  tagPressTimer = setTimeout(() => {
+    tagPressTimer = null
+    emit('tagLongPress', { tag: { id: cat + ':' + tag, cat, tag, letter: cat }, book })
+  }, 600)
+}
+const cancelTagPress = () => { if (tagPressTimer) { clearTimeout(tagPressTimer); tagPressTimer = null } }
 
 const updateTagsLoading = ref(false)
 const addTagToGroup = async () => {

@@ -131,6 +131,7 @@
         @load-book-list="loadBookList"
         @get-books-metadata="(bookList, gap, callback) => $refs.SearchDialogRef.getBooksMetadata(bookList, gap, callback)"
         @handle-remove-book-display="handleRemoveBookDisplay"
+        @tag-long-press="openQuickTagEdit"
       />
     </el-row>
     <el-row class="pagination-bar">
