@@ -1312,7 +1312,7 @@ import en from 'element-plus/dist/locale/en.mjs'
 
 import { version } from '../../package.json'
 import { gh_token } from '../../secret_key.json'
-import { acceleratorInfo, defaultContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions } from '../utils.js'
+import { acceleratorInfo, defaultContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey } from '../utils.js'
 import { attachInertiaScroll } from '../inertia-scroll.js'
 import NameFormItem from './NameFormItem.vue'
 
@@ -2098,13 +2098,17 @@ const handleLanguageSet = async (languageCode) => {
 }
 
 // 随机标签与「显示收藏标签」互斥:开启一个自动关闭另一个
+// 立即落盘(绕过 500ms 防抖):这两个开关直接影响主界面,丢失会让人误以为"没生效"
+const saveSettingNow = () => {
+  try { ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value))) } catch (e) {}
+}
 const onRandomTagsChange = (val) => {
   if (val) setting.value.showCollectTag = false
-  saveSetting()
+  saveSettingNow()
 }
 const onShowCollectTagChange = (val) => {
   if (val) setting.value.randomTagsEnabled = false
-  saveSetting()
+  saveSettingNow()
 }
 // 「语言」下拉:选具体语言即启用标签翻译(供分类名/标签名显示翻译),选「默认」则关闭
 const onTagLangChange = (val) => {
@@ -2458,15 +2462,8 @@ const allTagsGroups = computed(() => {
   const map = {}
   const seen = new Set()
   for (const tag of tagListRaw.value) {
-    // 去重:同一「分类::标签」只保留一项(分类名中英混用时也能合并)
-    const catAlias = (c) => {
-      if (!c || /^[a-z]+$/.test(c)) return c
-      for (const [k, v] of Object.entries(resolvedTranslation.value || {})) {
-        if (v && v._name === c) return k
-      }
-      return c
-    }
-    const uniqKey = catAlias(tag.cat) + '::' + tag.tag
+    // 去重:同一「分类::标签」只保留一项;分类名中英混用(角色/character)统一后合并
+    const uniqKey = resolveCatKey(tag.cat) + '::' + tag.tag
     if (seen.has(uniqKey)) continue
     seen.add(uniqKey)
     if (!map[tag.cat]) {
