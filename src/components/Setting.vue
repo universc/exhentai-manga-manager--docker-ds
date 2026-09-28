@@ -2466,12 +2466,14 @@ const allTagsGroups = computed(() => {
     const uniqKey = resolveCatKey(tag.cat) + '::' + tag.tag
     if (seen.has(uniqKey)) continue
     seen.add(uniqKey)
-    if (!map[tag.cat]) {
-      map[tag.cat] = { cat: tag.cat, tags: [] }
-      groups.push(map[tag.cat])
+    // 分组同样按英文分类名归一:「parody」与「作品」合并为一个分组,避免出现两个同名分组
+    const normCat = resolveCatKey(tag.cat)
+    if (!map[normCat]) {
+      map[normCat] = { cat: normCat, tags: [] }
+      groups.push(map[normCat])
     }
     const labelTail = setting.value.showTranslation ? (resolvedTranslation.value[tag.cat]?.[tag.tag]?.name || tag.tag) : tag.tag
-    map[tag.cat].tags.push({ id: tag.id, cat: tag.cat, tag: tag.tag, letter: tag.letter, label: labelTail })
+    map[normCat].tags.push({ id: tag.id, cat: tag.cat, tag: tag.tag, letter: tag.letter, label: labelTail })
   }
   return groups
 })
