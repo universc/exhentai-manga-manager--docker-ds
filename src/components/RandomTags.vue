@@ -31,7 +31,7 @@ import TagList from './TagList.vue'
 import { useAppStore } from '../pinia.js'
 import { storeToRefs } from 'pinia'
 const appStore = useAppStore()
-const { tagList } = storeToRefs(appStore)
+const { tagList, setting } = storeToRefs(appStore)
 
 const { t } = useI18n()
 
@@ -42,8 +42,18 @@ const randomTags = ref([])
 const tagListRef = ref(null)
 const tagListTitle = ref('')
 
+// 勾「收藏标签」→ 显示自己收藏的标签;勾「随机标签」→ 显示随机标签
+const buildTags = () => {
+  if (setting.value.showCollectTag) {
+    return (setting.value.collectTag || []).map(t => ({
+      value: `${t.letter || t.cat}:"${t.tag}"$`,
+      label: `${t.letter || t.cat}:${t.tag}`
+    }))
+  }
+  return _.sampleSize(tagList.value, 24)
+}
 const reloadRandomTags = () => {
-  randomTags.value = _.sampleSize(tagList.value, 24)
+  randomTags.value = buildTags()
 }
 
 const handleTagClick = (value) => {
@@ -67,6 +77,9 @@ defineExpose({
 watch(tagList, () => {
   reloadRandomTags()
 }, { immediate: false })
+
+watch(() => setting.value.showCollectTag, () => { reloadRandomTags() })
+watch(() => setting.value.collectTag, () => { reloadRandomTags() }, { deep: true })
 
 reloadRandomTags()
 </script>

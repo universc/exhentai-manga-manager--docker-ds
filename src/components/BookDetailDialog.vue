@@ -117,6 +117,7 @@
             </div>
             <el-space wrap class="tag-edit-buttons">
               <el-button @click="addTagCat">{{$t('m.addCategory')}}</el-button>
+              <el-button type="success" @click="openAddNewTagDialog">{{$t('m.addNewTag')}}</el-button>
               <el-button @click="$emit('getBookInfo')">{{$t('m.getTagbyUrl')}}</el-button>
               <el-button :loading="queryingOrigins" @click="queryBookOrigins">{{$t('m.queryCharacterOrigins')}}</el-button>
               <el-button :loading="analyzingTitle" @click="analyzeBookTitleCharacters">{{$t('m.translateTitle')}}</el-button>
@@ -126,6 +127,25 @@
               <el-button @click="copyTagClipboard(bookDetail)">{{$t('m.copyTagClipboard')}}</el-button>
               <el-button @click="pasteTagClipboard(bookDetail)">{{$t('m.pasteTagClipboard')}}</el-button>
             </el-space>
+            <!-- 增加标签:选类别 + 输入名称;同类别内重名(含跨语言名称)必须指定所属集合 -->
+            <el-dialog v-model="newTagDialogVisible" :title="$t('m.addNewTag')" width="420px" append-to-body>
+              <div class="add-tag-form">
+                <el-select v-model="newTagCat" :placeholder="$t('m.category')" style="width: 100%; margin-bottom: 10px;" @change="checkNewTagDup">
+                  <el-option v-for="c in categoryOption" :key="c" :label="c" :value="c" />
+                </el-select>
+                <el-input v-model="newTagName" :placeholder="$t('m.tagNamePlaceholder')" @input="checkNewTagDup" />
+                <div v-if="newTagDups.length" class="add-tag-warn">
+                  <p class="add-tag-warn-text">{{ $t('m.tagDuplicateHint') }}</p>
+                  <el-select v-model="newTagParent" filterable :placeholder="$t('m.pickParentSet')" style="width: 100%;">
+                    <el-option v-for="o in newTagParentOptions" :key="o.value" :label="o.label" :value="o.value" />
+                  </el-select>
+                </div>
+              </div>
+              <template #footer>
+                <el-button size="small" @click="newTagDialogVisible = false">{{ $t('m.cancel') }}</el-button>
+                <el-button size="small" type="primary" :disabled="!canCreateNewTag" @click="createNewTagHere">{{ $t('m.apply') }}</el-button>
+              </template>
+            </el-dialog>
           </div>
           <div v-else>
             <el-descriptions :column="1">
@@ -200,7 +220,7 @@ import * as linkify from 'linkifyjs'
 import ContextMenu from '@imengyu/vue3-context-menu'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { isContextMenuItemEnabled, ensureBookCover, catDisplayName, getDisplayTagName } from '../utils.js'
+import { isContextMenuItemEnabled, ensureBookCover, catDisplayName, getDisplayTagName, resolveCatKey } from '../utils.js'
 import  { insertLocalReadRecord } from '../utils.js'
 
 const appStore = useAppStore()
@@ -295,6 +315,75 @@ const removeBookTag = (key, value) => {
   const cur = [...(bookDetail.value?.tags?.[key] || [])].filter(t => t !== value)
   applyTags(key, cur)
 }
+// ---------- 新增标签:同类别内重名(含跨语言名称)必须指定所属集合 ----------
+const newTagDialogVisible = ref(false)
+const newTagCat = ref('')
+const newTagName = ref('')
+const newTagParent = ref('')
+const newTagDups = ref([])
+const allTagEntriesBDD = computed(() => {
+  const out = []; const seen = new Set()
+  for (const b of (displayBookList.value || [])) {
+    for (const [cat, arr] of Object.entries(b.tags || {})) {
+      for (const tg of (arr || [])) {
+        const k = resolveCatKey(cat) + '::' + tg
+        if (seen.has(k)) continue
+        seen.add(k)
+        out.push({ cat, tag: tg })
+      }
+    }
+  }
+  return out
+})
+const newTagParentOptions = computed(() => allTagEntriesBDD.value
+  .filter(e => resolveCatKey(e.cat) !== resolveCatKey(newTagCat.value))
+  .map(e => ({ value: e.cat + '::' + e.tag, label: e.tag })))
+const checkNewTagDup = () => {
+  const name = String(newTagName.value || '').trim().toLowerCase()
+  const cat = resolveCatKey(newTagCat.value)
+  if (!name || !cat) { newTagDups.value = []; return }
+  const langs = setting.value.tagNameLangs || {}
+  const hits = []
+  for (const e of allTagEntriesBDD.value) {
+    if (resolveCatKey(e.cat) !== cat) continue
+    if (String(e.tag).trim().toLowerCase() === name) { hits.push(e); continue }
+    const rec = langs[e.cat + '::' + e.tag] || {}
+    const names = [rec['default'], rec['zh-CN'], rec['zh-TW'], rec.ja, rec.en].filter(Boolean).map(s => String(s).trim().toLowerCase())
+    if (names.includes(name)) hits.push(e)
+  }
+  newTagDups.value = hits
+  if (!hits.length) newTagParent.value = ''
+}
+const canCreateNewTag = computed(() => !!newTagCat.value && !!String(newTagName.value || '').trim() && (newTagDups.value.length === 0 || !!newTagParent.value))
+const openAddNewTagDialog = () => {
+  newTagCat.value = ''; newTagName.value = ''; newTagParent.value = ''; newTagDups.value = []
+  newTagDialogVisible.value = true
+}
+const createNewTagHere = async () => {
+  if (!canCreateNewTag.value) return
+  const cat = resolveCatKey(newTagCat.value)
+  const name = String(newTagName.value).trim()
+  if (!bookDetail.value.tags) bookDetail.value.tags = {}
+  if (!Array.isArray(bookDetail.value.tags[cat])) bookDetail.value.tags[cat] = []
+  if (!bookDetail.value.tags[cat].includes(name)) bookDetail.value.tags[cat].push(name)
+  if (newTagParent.value) {
+    const [pcat, ptag] = newTagParent.value.split('::')
+    if (!Array.isArray(bookDetail.value.tags[pcat])) bookDetail.value.tags[pcat] = []
+    if (!bookDetail.value.tags[pcat].includes(ptag)) bookDetail.value.tags[pcat].push(ptag)
+    const rel = setting.value.tagRelations || {}
+    const pk = pcat + '::' + ptag
+    const cur = rel[pk] || {}
+    const arr = Array.isArray(cur.contains) ? cur.contains.slice() : []
+    const selfKey = cat + '::' + name
+    if (!arr.includes(selfKey)) arr.push(selfKey)
+    setting.value.tagRelations = { ...rel, [pk]: { ...cur, contains: arr } }
+    try { window.ipcRenderer?.invoke('save-setting', JSON.parse(JSON.stringify(setting.value))) } catch (e) {}
+  }
+  await saveBookTags(bookDetail.value)
+  printMessage('success', t('m.addNewTag'))
+  newTagDialogVisible.value = false
+}
+
 const addNewTag = (key) => {
   const kw = String(tagSearch.value[key] || '').trim()
   if (!kw) return
@@ -510,10 +599,12 @@ const editTags = () => {
     _.forEach(bookList.value.map(b => b.tags), (tagObject) => {
       _.forIn(tagObject, (tagArray, tagCat) => {
         if (_.isArray(tagArray)) {
-          if (_.has(tempTagGroup, tagCat)) {
-            tagArray.forEach(tag => tempTagGroup[tagCat].add(tag))
+          // 分类名归一:库中同时存在 parody/作品、character/角色 时合并为同一个标签栏
+          const catKey = resolveCatKey(tagCat)
+          if (_.has(tempTagGroup, catKey)) {
+            tagArray.forEach(tag => tempTagGroup[catKey].add(tag))
           } else {
-            tempTagGroup[tagCat] = new Set(tagArray)
+            tempTagGroup[catKey] = new Set(tagArray)
           }
         }
       })
