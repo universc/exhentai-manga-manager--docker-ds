@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
-import { catDisplayName } from './utils.js'
+import { catDisplayName, resolveCatKey } from './utils.js'
 import { runBookAiTask } from './aiTasks.js'
 
 export const useAppStore = defineStore('appStore', {
@@ -119,7 +119,16 @@ export const useAppStore = defineStore('appStore', {
         })
       }))
       .flattenDeep().value()
-      const uniqedTagArray = [...new Set(tagArray)].sort()
+      // 去重键用英文分类名,使「角色##X」与「character##X」合并为一条(避免下拉/标签栏重复)
+      const seen = new Set()
+      const uniqedTagArray = []
+      for (const combinedTag of tagArray.sort()) {
+        const parts = _.split(combinedTag, '##')
+        const dedupeKey = resolveCatKey(parts[0]) + '##' + parts[1]
+        if (seen.has(dedupeKey)) continue
+        seen.add(dedupeKey)
+        uniqedTagArray.push(combinedTag)
+      }
       return uniqedTagArray.map(combinedTag => {
         const tagArray = _.split(combinedTag, '##')
         const letter = state.cat2letter[tagArray[0]] ? state.cat2letter[tagArray[0]] : tagArray[0]
