@@ -1,0 +1,22 @@
+# 二进制文件:禁止行尾转换(CRLF<->LF 转换会破坏 png/ico/exe 等文件,
+# 曾导致 public/icon.ico 少一个字节、NSIS 打包报 unable to read icon)
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.exe binary
+*.dll binary
+*.node binary
+*.zip binary
+*.gz binary
+*.tar.gz binary
+*.sqlite binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary
+*.7z binary
+*.rar binary
