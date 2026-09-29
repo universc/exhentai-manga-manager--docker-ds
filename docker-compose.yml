@@ -1,44 +1,43 @@
 # ============================================================
-# exhentai-manga-manager 缃戦〉鐗?- Docker Compose 閰嶇疆
+# exhentai-manga-manager 网页版 - Docker Compose 配置
 #
-# 鐢ㄦ硶:
-#   1. 鎶婃暣涓」鐩枃浠跺す浼犲埌椋炵墰 NAS(渚嬪 /vol1/1000/docker/exhentai-manga-manager)
-#   2. 淇敼涓嬫柟 volumes 涓殑婕敾搴?鏁版嵁鐩綍涓轰綘 NAS 涓婄殑瀹為檯璺緞
-#   3. SSH 鐧诲綍 NAS 鍚庢墽琛? docker compose up -d --build
-#   4. 娴忚鍣ㄨ闂?http://NAS鐨処P:10000
+# 用法:
+#   1. 把整个项目文件夹传到飞牛 NAS(例如 /vol1/1000/docker/exhentai-manga-manager)
+#   2. 修改下方 volumes 中的漫画库/数据目录为你 NAS 上的实际路径
+#   3. SSH 登录 NAS 后执行: docker compose up -d --build
+#   4. 浏览器访问 http://NAS的IP:10000
 #
-# 鎴栧湪椋炵墰 fnOS 鐨?搴旂敤鍟嗗簵 鈫?鑷畾涔夊簲鐢ㄤ腑绮樿创鏈枃浠?闇€鍏堟墜鍔ㄦ瀯寤洪暅鍍?
-# 璇﹁ docker/README.md 鏂规 B)銆?#
-# 鏈満宸查儴缃茬殑璺緞(鎸夐渶淇敼):
-#   鏁版嵁鐩綍: /vol3/1000/01/01-婕敾/S/鏁版嵁瀛樻斁 鈫?瀹瑰櫒 /data
-#   婕敾搴?   /vol3/1000/01/01-婕敾             鈫?瀹瑰櫒 /library
+# 本机已部署的路径(按需修改):
+#   数据目录: /vol3/1000/01/01-漫画/S/数据存放 -> 容器 /data
+#   漫画库:   /vol3/1000/01/01-漫画             -> 容器 /library
 # ============================================================
 services:
   exhentai-manga-manager:
     build: .
-    image: exhentai-manga-manager:1.10.0
+    image: exhentai-manga-manager:1.10.1
     container_name: exhentai-manga-manager
     restart: unless-stopped
 
     ports:
-      # 缃戦〉绠＄悊鐣岄潰(鐢佃剳/鎵嬫満娴忚鍣ㄨ闂?
+      # 网页管理界面(电脑/手机浏览器访问)
       - "10000:10000"
 
     environment:
-      # 鏁版嵁鐩綍(璁剧疆銆乻qlite 鏁版嵁搴撱€佸皝闈€侀槄璇荤紦瀛樸€佹棩蹇?
+      # 数据目录(设置、sqlite 数据库、封面、阅读缓存、日志)
       WEB_DATA_DIR: /data
-      # 榛樿婕敾搴撹矾寰?棣栨鍚姩浼氬啓鍏?setting.json;
-      # 涔嬪悗鍙湪缃戦〉 璁剧疆 鈫?婕敾搴?涓敼涓?/library 涓嬬殑浠绘剰瀛愮洰褰?      LIBRARY_DIR: /library
-      # 瀹瑰櫒妯″紡:寮哄埗搴撹矾寰勪负 /library,骞跺吋瀹?Windows 鍏变韩鏁版嵁搴撶殑璺緞浜掕瘧
+      # 默认漫画库路径:首次启动会写入 setting.json
+      LIBRARY_DIR: /library
+      # 容器模式:强制库路径为 /library,并兼容 Windows 共享数据库的路径互译
       WEB_LIBRARY: /library
       WEB_PORT: "10000"
-      # 璐︽埛绯荤粺:棣栨鍚姩鏃剁敤浠ヤ笅鍙橀噺鍒涘缓绠＄悊鍛樿处鎴?
-      # 涔嬪悗鍙湪缃戦〉 璁剧疆 鈫?璐︽埛 涓鐞?娣诲姞鍙鐨勬櫘閫氳处鎴?/ 鍒犻櫎 / 閲嶇疆瀵嗙爜)銆?      # 涓嶉厤缃垯璐︽埛绯荤粺涓嶅惎鐢?淇濇寔鍖垮悕璁块棶銆?      WEB_ADMIN_USER: ${WEB_ADMIN_USER:-universc}
+      # 账户系统:首次启动时用以下变量创建管理员账户
+      WEB_ADMIN_USER: ${WEB_ADMIN_USER:-universc}
       WEB_ADMIN_PASSWORD: ${WEB_ADMIN_PASSWORD:?请在 .env 中设置}
-      # 鏃跺尯,鎸夐渶淇敼
+      # 时区,按需修改
       TZ: Asia/Shanghai
 
     volumes:
-      # 鏁版嵁鎸佷箙鍖?鏁版嵁搴?灏侀潰/璁剧疆)
-      - /vol3/1000/01/01-婕敾/S/鏁版嵁瀛樻斁:/data
-      # 婕敾搴?      - /vol3/1000/01/01-婕敾:/library
+      # 数据持久化(数据库/封面/设置)
+      - /vol3/1000/01/01-漫画/S/数据存放:/data
+      # 漫画库
+      - /vol3/1000/01/01-漫画:/library

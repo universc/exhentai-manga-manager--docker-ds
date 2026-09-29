@@ -2074,6 +2074,9 @@ ipcMain.handle('load-setting', async (event, arg) => {
 
 // 应用设置变更并写入本地 setting.json(本地模式 IPC 与远程模式本地代理共用)
 const applySetting = async (receiveSetting) => {
+  // 防丢配置(关键):前端启动时可能只回传了部分键(例如 App.vue 只回传 contextMenuOptions),
+  // 绝不能把它当成完整配置整份替换 —— 先与内存中的现有设置合并,前端没传的键一律保留原值。
+  receiveSetting = { ...setting, ...(receiveSetting || {}) }
   if (receiveSetting.proxy) {
     await session.defaultSession.setProxy({
       mode: 'fixed_servers',
@@ -2111,26 +2114,31 @@ const applySetting = async (receiveSetting) => {
       registerGlobalHotkey()
     }
   }
-  // 容器模式:只对 Windows 盘符路径做跨平台映射;容器内合法路径尊重用户设置
-  let fileSetting = receiveSetting
+  // 容器模式:只对 Windows 盘符路径做跨平台映射;容器内合法路径尊重用户设置。
+  // 此时 receiveSetting 已是「现有设置 + 本次提交」的完整对象,落盘内容默认就是它。
+  let fileSetting = { ...receiveSetting }
   if (process.env.WEB_LIBRARY) {
     const forcedLibrary = path.resolve(process.env.WEB_LIBRARY)
     const lib = String(receiveSetting.library || '')
     const meta = String(receiveSetting.metadataPath || '')
     if (/^[A-Za-z]:[\\/]/.test(lib)) {
       // 桌面端写来的 Windows 库路径:内存用容器挂载路径,落盘写 Windows 侧
+      if (!receiveSetting.externalLibraryRoot) receiveSetting.externalLibraryRoot = lib
       receiveSetting.library = forcedLibrary
-      fileSetting = { ...receiveSetting, library: setting.externalLibraryRoot || lib }
+      fileSetting = { ...receiveSetting, library: receiveSetting.externalLibraryRoot }
     } else {
+      // 容器内合法路径(以 / 开头)尊重用户设置;空/根目录才回退默认挂载路径
+      if (!lib || lib === '/') receiveSetting.library = forcedLibrary
       fileSetting = { ...receiveSetting }
-      if (!lib || lib === '/') fileSetting.library = forcedLibrary
     }
     if (/^[A-Za-z]:[\\/]/.test(meta)) {
       // Windows 元数据路径:落盘写 Windows 侧,内存置空回退默认
-      fileSetting.metadataPath = setting.externalMetadataPath || null
+      if (!receiveSetting.externalMetadataPath) receiveSetting.externalMetadataPath = meta
+      if (!receiveSetting.externalCoverRoot) receiveSetting.externalCoverRoot = path.join(meta, 'cover').replace(/\//g, '\\')
+      fileSetting = { ...fileSetting, metadataPath: receiveSetting.externalMetadataPath }
       receiveSetting.metadataPath = null
     }
-    if (setting.externalLibraryRoot) fileSetting.windowsLibraryRoot = setting.externalLibraryRoot
+    if (receiveSetting.externalLibraryRoot) fileSetting.windowsLibraryRoot = receiveSetting.externalLibraryRoot
   }
   setting = receiveSetting
   if (tray && !setting.minimizeToTray && !setting.closeToTray) {

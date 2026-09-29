@@ -111,6 +111,8 @@
   (漫画库、数据目录通过 SMB/NAS 共享),封面路径自动互译(Windows 盘符/UNC ↔ 容器内路径),
   封面清理按文件名统一对比,不再误删另一端引用的封面
 - **Docker/NAS 部署增强**:账户系统、封面懒加载在网页版同样生效(详见 [docker/README.md](docker/README.md))
+- **接口鉴权加固(v1.10.1)**:`/api/file`、`/api/list-dir`、`/browse` 在启用账户系统后必须登录才能访问
+- **修复「设置反复丢失」(v1.10.1)**:早期版本每次打开页面会把 `setting.json` 覆盖成残缺文件,现已修复(详见 [CHANGELOG.md](CHANGELOG.md))
 
 ## Thanks
 本项目受到了诸多开源项目的帮助

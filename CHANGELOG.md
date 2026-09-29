@@ -1,3 +1,32 @@
+## v1.10.1 (docker-ds fork) — 2026-09-30
+
+### 修复
+- **「设置反复丢失」定位并修复(严重)**。根因是两处叠加,缺一不可:
+  1. **前端抢跑**:`src/App.vue` 的 `mounted()` 在 `load-setting` **之前**就调用了 `save-setting`。
+     此时 Pinia 里的 `setting` 还是初始的 `{}`,只被塞进了 `contextMenuOptions`,
+     于是每次打开页面/启动客户端都会把一个只有 1~2 个键的对象发给后端(该段代码由 v1.9.8 批次引入,
+     因此「之前的版本没问题」)。
+  2. **后端整份替换**:`index.js` 的 `applySetting()` 用 `setting = receiveSetting` /
+     `fileSetting = receiveSetting` 把收到的局部对象**当成完整配置整份落盘**,这次请求里没带的键全部丢弃。
+  两者叠加的结果:每次打开页面/重启容器后,`setting.json` 被清成
+  `{"contextMenuOptions": {…}, "library": "/library"}`(NAS 上残留的 `setting.json.broken-20260930` 即实证),
+  漫画库路径、Cookie、主题、工具栏、每页数量、AI 配置等全部丢失。
+  **修复**:后端 `applySetting` 开头先做 `receiveSetting = { ...setting, ...(receiveSetting || {}) }`
+  (前端没传的键一律保留原值),内存与落盘都使用合并后的完整对象;前端把「右键菜单合并保存」移到
+  `load-setting` 拿到完整设置**之后**,且只在确有新增菜单项时才保存。
+- **容器内漫画库/元数据目录被重置**:`applySetting` 的容器分支会用局部对象覆盖 `fileSetting`
+  (Linux 路径分支下先前的合并被丢弃),已一并修正;空/根目录才回退 `WEB_LIBRARY`。
+
+### 安全
+- **`/api/file`、`/api/list-dir`、`/browse` 增加登录鉴权**:启用账户系统(`WEB_ADMIN_USER`)后,
+  未登录访问一律返回 401。此前这三个接口可被匿名访问,**局域网内任何人都能直接拉取封面、整库图片与目录列表**。
+  白名单 IP 免登录(视为管理员)不受影响;未配置 `WEB_ADMIN_USER` 时账户系统未启用,行为与旧版一致。
+  `/api/events`、`/api/ipc/*` 原本已有鉴权,本次一并审计确认。
+
+### 变更
+- 版本号 1.10.0 → **1.10.1**;Docker 镜像 tag 同步为 `exhentai-manga-manager:1.10.1`。
+- 维护文档补充:该「设置丢失」已写入 `项目说明-AI维护指南.md` 的高频坑列表,避免回归。
+
 # 更新日志
 
 ## v1.10.0 (docker-ds fork) — 2026-09-29

@@ -504,15 +504,6 @@ export default defineComponent({
     'setting.cardGapH' () { this.recomputeToolbarWidth() },
   },
   mounted () {
-    // 右键/长按菜单:把定义里的新项并入已保存配置(旧配置也不会缺新项)
-    try {
-      if (!this.setting.contextMenuOptions) this.setting.contextMenuOptions = {}
-      for (const [menu, items] of Object.entries(contextMenuDefinitions)) {
-        const saved = this.setting.contextMenuOptions[menu] || []
-        this.setting.contextMenuOptions[menu] = [...new Set([...saved, ...items])]
-      }
-      ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(this.setting)))
-    } catch (e) { /* 忽略:不影响启动 */ }
     // UI 模式初始化(自动/手机/平板/电脑)与 body 标记
     this.uiMode = localStorage.getItem('emmUiMode') || 'auto'
     this.applyUiMode()
@@ -548,6 +539,23 @@ export default defineComponent({
     ipcRenderer.invoke('load-setting')
     .then(async (res) => {
       this.setting = res
+      // 右键/长按菜单:把定义里的新项并入已保存配置(旧配置也不会缺新项)。
+      // 必须在 load-setting 拿到完整设置之后再合并保存 —— 否则会把启动时的空 setting
+      // 当成完整配置写回,导致用户全部设置被清空(历史 bug:每次打开页面都会丢设置)。
+      try {
+        if (!res.contextMenuOptions) res.contextMenuOptions = {}
+        let contextMenuChanged = false
+        for (const [menu, items] of Object.entries(contextMenuDefinitions)) {
+          const saved = res.contextMenuOptions[menu] || []
+          const merged = [...new Set([...saved, ...items])]
+          if (merged.length !== saved.length) contextMenuChanged = true
+          res.contextMenuOptions[menu] = merged
+        }
+        this.setting = res
+        if (contextMenuChanged && !this.viewerRole) {
+          ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(res)))
+        }
+      } catch (e) { /* 忽略:不影响启动 */ }
       // 新版本自动把「增量扫描」按钮补进工具栏(紧跟手动扫描;之后可在设置中拖出)
       if (Array.isArray(res.toolbarButtons) && !res.toolbarButtons.includes('incrementalScan')) {
         const list = [...res.toolbarButtons]
