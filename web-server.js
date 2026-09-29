@@ -56,6 +56,17 @@ const sessionOf = (req) => {
   }
   return auth.getSession(parseCookies(req)[TOKEN_COOKIE])
 }
+// 统一登录校验:启用账户系统后,/api/file(封面与阅读图片)、/api/list-dir(目录列表)、
+// /browse(目录浏览页)等都不能匿名访问 —— 未登录一律 401。
+// 说明:白名单 IP 在 sessionOf 里已被视为管理员,所以白名单用户不受影响;
+//       未配置 WEB_ADMIN_USER 时账户系统未启用,auth.isEnabled() 为 false,行为与旧版一致。
+const requireLogin = (req, res, next) => {
+  if (auth.isEnabled() && !sessionOf(req)) {
+    return res.status(401).send('Unauthorized: 请先登录后再访问')
+  }
+  next()
+}
+
 const setSessionCookie = (res, token) => {
   res.setHeader('Set-Cookie', `${TOKEN_COOKIE}=${token}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`)
 }
@@ -238,7 +249,7 @@ const allowedRoots = () => {
   return roots.map(p => path.resolve(p))
 }
 
-app.get('/api/file', (req, res) => {
+app.get('/api/file', requireLogin, (req, res) => {
   const raw = String(req.query.path || '')
   // 前端 img 标签可能自带 ?id= 缓存参数,去掉
   const clean = raw.split('?id=')[0]
@@ -259,7 +270,7 @@ app.get('/api/file', (req, res) => {
 })
 
 // ---------- 目录列表(网页版文件夹/文件选择器) ----------
-app.get('/api/list-dir', (req, res) => {
+app.get('/api/list-dir', requireLogin, (req, res) => {
   let p = String(req.query.path || '')
   if (!p) {
     p = process.platform === 'win32' ? 'C:\\' : '/'
@@ -282,8 +293,7 @@ app.get('/api/list-dir', (req, res) => {
 })
 
 // ---------- 目录浏览页(网页版「打开所在目录」:新标签页打开 NAS 文件夹) ----------
-app.get('/browse', (req, res) => {
-  if (auth.isEnabled() && !sessionOf(req)) return res.status(401).send('Unauthorized')
+app.get('/browse', requireLogin, (req, res) => {
   const roots = allowedRoots()
   if (!roots.length) return res.status(400).send('未配置可浏览目录')
   let target = path.resolve(String(req.query.path || roots[0]))

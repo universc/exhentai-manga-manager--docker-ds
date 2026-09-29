@@ -172,6 +172,7 @@ docker compose up -d --build
 3. **远程代理**:新增桌面通道记得在代理加本地拦截;代理只监听 127.0.0.1
 4. **密码存储**:scrypt 加盐哈希(modules/auth.js),任何地方不得明文存密码
 5. **数据目录**:setting.json 用原子写入(tmp + rename);别在数据目录外硬编码路径
+6. **文件/目录接口鉴权**:`/api/file`、`/api/list-dir`、`/browse` 必须带 `requireLogin` 中间件(1.10.1 起)。新增任何读取文件系统或数据目录的路由时,一律挂上它;公开路由只允许 `/api/info`、`/api/auth/*` 与登录页面本身
 
 ## 11. 常见修改点速查
 
@@ -194,6 +195,7 @@ docker compose up -d --build
 | 1.8.x | Docker 账户系统(admin/viewer)+ 权限拦截 + 设置脱敏 |
 | 1.9.x | 退出登录入口、viewer 界面精简、IP 黑白名单、手机平板响应式、界面模式切换按钮 |
 | 1.9.3 | **远程桌面模式重构**:本地界面 + 本地代理转发 NAS;设置界面与本地一致(无账户栏);登录框「使用本地模式」按钮;托盘菜单最小化到托盘 |
+| 1.10.1(修复) | ①**修复「设置反复丢失」**:save-setting 与现有设置合并、前端不再在 load-setting 之前保存空设置;②`/api/file`、`/api/list-dir`、`/browse` 增加登录鉴权 |
 
 ## 13. 常见坑
 
@@ -202,3 +204,4 @@ docker compose up -d --build
 - **viewer 看不到漫画**:load-setting 必须在 VIEWER_ALLOWED_CHANNELS(历史 bug,勿回归)
 - **远程模式设置不生效**:检查代理是否拦截了该通道;设置类通道(load/save-setting)是本地处理的
 - **白名单失效**:iprules.json 被网页端保存操作覆盖;保存前先读回确认
+- **设置反复丢失(高频坑,已修)**:根因是两处叠加 —— ① `src/App.vue` 的 `mounted()` 在 `load-setting` 之前就用还空着的 pinia `setting` 调 `save-setting`(载荷只有 `contextMenuOptions`);② `index.js` 的 `applySetting` 用 `setting = receiveSetting` 整份替换。结果每次打开页面/重启后 setting.json 被清成 `{"contextMenuOptions":...,"library":"/library"}`(NAS 上残留的 `setting.json.broken-20260930` 就是实证)。修复:① `applySetting` 开头 `receiveSetting = { ...setting, ...(receiveSetting || {}) }` 先合并;② 前端把 contextMenuOptions 的合并保存移到 `load-setting` 之后。**以后任何保存设置的路径,都不能让局部对象整份覆盖 setting。**
