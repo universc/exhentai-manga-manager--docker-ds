@@ -260,7 +260,7 @@ import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save1
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
-import { getWidth, fetchRecentReads, isContextMenuItemEnabled, contextMenuDefinitions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, parsePageSizes } from './utils.js'
+import { getWidth, fetchRecentReads, isContextMenuItemEnabled, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, parsePageSizes } from './utils.js'
 import { attachInertiaScroll } from './inertia-scroll.js'
 
 import Setting from './components/Setting.vue'
@@ -539,20 +539,14 @@ export default defineComponent({
     ipcRenderer.invoke('load-setting')
     .then(async (res) => {
       this.setting = res
-      // 右键/长按菜单:把定义里的新项并入已保存配置(旧配置也不会缺新项)。
-      // 必须在 load-setting 拿到完整设置之后再合并保存 —— 否则会把启动时的空 setting
-      // 当成完整配置写回,导致用户全部设置被清空(历史 bug:每次打开页面都会丢设置)。
+      // 右键/长按菜单:只把「本版本新增」的项并入已保存配置。
+      // 必须用 mergeContextMenuOptions —— 无条件把定义里的全部项并回去,
+      // 会把用户取消勾选的项恢复成默认全选(历史 bug)。
       try {
-        if (!res.contextMenuOptions) res.contextMenuOptions = {}
-        let contextMenuChanged = false
-        for (const [menu, items] of Object.entries(contextMenuDefinitions)) {
-          const saved = res.contextMenuOptions[menu] || []
-          const merged = [...new Set([...saved, ...items])]
-          if (merged.length !== saved.length) contextMenuChanged = true
-          res.contextMenuOptions[menu] = merged
-        }
+        const mergedMenuOptions = mergeContextMenuOptions(res.contextMenuOptions)
+        res.contextMenuOptions = mergedMenuOptions.options
         this.setting = res
-        if (contextMenuChanged && !this.viewerRole) {
+        if (mergedMenuOptions.changed && !this.viewerRole) {
           ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(res)))
         }
       } catch (e) { /* 忽略:不影响启动 */ }

@@ -14,7 +14,7 @@
 services:
   exhentai-manga-manager:
     build: .
-    image: exhentai-manga-manager:1.10.1
+    image: exhentai-manga-manager:1.10.2
     container_name: exhentai-manga-manager
     restart: unless-stopped
 

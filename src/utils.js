@@ -119,6 +119,48 @@ const isContextMenuItemEnabled = (setting, menuId, itemId) => {
   return options[menuId].includes(itemId)
 }
 
+// 右键菜单项「版本迁移」合并 —— 只并入本版本真正新增的项,绝不动用户取消的勾选。
+// 历史 bug:之前用 [...new Set([...saved, ...items])] 无条件把定义里的全部项并回去,
+// 结果用户取消勾选的菜单项每次打开软件都被"恢复默认全选"(App.vue 启动时还会把这份全选结果写回服务器)。
+// 判定依据:localStorage 记录的「上次界面定义过的项 id」。
+//   - 无记录(首次运行 / 清了浏览器数据):完全信任已保存值,不做任何并入;
+//   - 有记录:只并入 (当前定义 − 上次定义) 的差集;
+//   - 某分组从未保存过(undefined):用默认全量。
+// 记录跟随「界面版本」,桌面客户端与网页版各自独立、互不干扰。
+const CONTEXT_MENU_KNOWN_KEY = 'emmContextMenuKnown'
+const mergeContextMenuOptions = (options) => {
+  const result = { ...(options || {}) }
+  let changed = false
+  let known = null
+  try {
+    const raw = localStorage.getItem(CONTEXT_MENU_KNOWN_KEY)
+    if (raw) known = new Set(JSON.parse(raw))
+  } catch (e) {
+    known = null
+  }
+  const currentIds = []
+  for (const [menu, items] of Object.entries(contextMenuDefinitions)) {
+    for (const id of items) currentIds.push(id)
+    const saved = Array.isArray(result[menu]) ? result[menu] : null
+    if (saved === null) {
+      result[menu] = [...items]
+      changed = true
+      continue
+    }
+    if (known) {
+      const brandNew = items.filter(id => !known.has(id))
+      if (brandNew.length) {
+        result[menu] = [...new Set([...saved, ...brandNew])]
+        changed = true
+      }
+    }
+  }
+  try {
+    localStorage.setItem(CONTEXT_MENU_KNOWN_KEY, JSON.stringify(currentIds))
+  } catch (e) { /* 忽略:隐私模式下写不了 localStorage 也不影响使用 */ }
+  return { options: result, changed }
+}
+
 // ---------- 封面懒加载 ----------
 // 封面缺失(空路径)或加载失败时,请求主进程按需生成封面(以漫画名命名)并更新路径。
 // 网页版(Docker)经 web-ipc 桥转发,返回的 coverPath 会被改写为 /api/file?path=...。
@@ -462,6 +504,7 @@ export {
   contextMenuDefinitions,
   defaultContextMenuOptions,
   isContextMenuItemEnabled,
+  mergeContextMenuOptions,
   ensureBookCover,
   toAssetUrl,
   customFontStyles,

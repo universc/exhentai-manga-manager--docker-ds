@@ -1312,7 +1312,7 @@ import en from 'element-plus/dist/locale/en.mjs'
 
 import { version } from '../../package.json'
 import { gh_token } from '../../secret_key.json'
-import { acceleratorInfo, defaultContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey } from '../utils.js'
+import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey } from '../utils.js'
 import { attachInertiaScroll } from '../inertia-scroll.js'
 import NameFormItem from './NameFormItem.vue'
 
@@ -1852,13 +1852,15 @@ onMounted(() => {
       if (res.openaiApiKey === undefined) setting.value.openaiApiKey = res.titleTranslationApiKey || ''
       // 应用名称默认值
       if (res.appName === undefined) setting.value.appName = 'EX漫画管理器(exhentai-manga-manager)'
-      // 右键菜单设置默认值(旧版 setting.json 没有这些键)
+      // 右键菜单设置:旧配置没有这个键时用默认全量;
+      // 已有配置只并入「本版本新增」的项,绝不把用户取消勾选的项加回来
+      // (历史 bug:每次打开设置都会变回全选)
       if (res.contextMenuOptions === undefined) setting.value.contextMenuOptions = defaultContextMenuOptions()
-  // 新增的右键菜单项自动并入(旧配置也不会丢失新项)
-  for (const [menu, items] of Object.entries(contextMenuDefinitions)) {
-    const saved = setting.value.contextMenuOptions[menu] || []
-    setting.value.contextMenuOptions[menu] = [...new Set([...saved, ...items])]
-  }
+      {
+        const mergedMenuOptions = mergeContextMenuOptions(setting.value.contextMenuOptions)
+        setting.value.contextMenuOptions = mergedMenuOptions.options
+        if (mergedMenuOptions.changed && !viewerRole.value) saveSetting()
+      }
       // 卡片显示设置默认值
       if (res.hideBookmarkButton === undefined) setting.value.hideBookmarkButton = false
       if (res.hidePageCount === undefined) setting.value.hidePageCount = false
