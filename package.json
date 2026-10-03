@@ -55,7 +55,12 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/sqlite3/**",
+      "node_modules/sharp/**"
+    ]
   },
   "dependencies": {
     "adm-zip": "^0.5.9",
