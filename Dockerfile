@@ -67,8 +67,11 @@ FROM node:18-bookworm-slim AS runtime
 
 # 7z:rar / 7z / cb7 / cbr 等压缩包的解压、封面生成、删页功能必需
 # (Linux 下 fileLoader/archive.js 改用系统 PATH 中的 7z)
+# libvulkan1 + mesa-vulkan-drivers:本地超分模型(Real-ESRGAN / waifu2x 的 ncnn-vulkan 版)
+# 需要 Vulkan 运行时;NAS 容器没有 GPU 时用 mesa 自带的 lavapipe 做 CPU 软件渲染
+# libgomp1 是 ncnn 的 OpenMP 运行时依赖
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends p7zip-full \
+    && apt-get install -y --no-install-recommends p7zip-full libvulkan1 mesa-vulkan-drivers libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -226,7 +226,7 @@
 import { ref, onMounted, computed, nextTick, watch, onUnmounted, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Close, Loading } from '@element-plus/icons-vue'
-import { ElLoading, ElMessageBox } from 'element-plus'
+import { ElLoading, ElMessage, ElMessageBox } from 'element-plus'
 import ContextMenu from '@imengyu/vue3-context-menu'
 import { attachInertiaScroll } from '../inertia-scroll.js'
 
@@ -891,9 +891,9 @@ const onMangaImageContextMenu = (e, image) => {
     // 只读账户:隐藏写操作(设封面/重命名/超分/OCR/删除图片)
     if (viewerRole.value && ['setCover', 'renameImage', 'upscaleImage', 'ocrImage', 'deleteImage'].includes(item.id)) return false
     if (!isContextMenuItemEnabled(setting.value, 'image', item.id)) return false
-    // 超分/提取文字需在 AI功能 设置中启用
-    if (item.id === 'upscaleImage' && !setting.value.enableImageUpscale) return false
-    if (item.id === 'ocrImage' && !setting.value.enableImageOcr) return false
+    // 注:历史上这里还有 enableImageUpscale / enableImageOcr 两道开关,但设置界面里
+    // 从来没有对应的 UI(只有历史副本 src/Setting.vue 里有),默认 false 导致「超分图片」
+    // 「提取文字」无论怎么勾选都不会出现。现在显示与否只由「设置 → 高级 → 右键菜单」决定。
     return true
   })
   // 全部项都被取消勾选时不弹出空白菜单
@@ -941,8 +941,22 @@ const upscaleViewerImage = async (image) => {
   try {
     const res = await ipcRenderer.invoke('upscale-image', image.filepath)
     if (res?.ok) {
-      image.filepath = res.path
-      printMessage('success', t('c.upscaleDone'))
+      if (res.mode === 'preview') {
+        // 仅预览:把阅读器里这张图替换成超分结果(临时文件)
+        image.filepath = res.path
+        printMessage('success', t('c.upscaleDone') + '(仅预览,未写入文件)')
+      } else if (res.mode === 'replace') {
+        image.filepath = res.path
+        printMessage('success', '已替换原文件' + (res.note ? ':' + res.note : ''))
+      } else {
+        // 另存到文件夹:原图不动。提示里给出完整路径(网页版再给一个可点击的目录入口),
+        // 否则用户不知道文件落在哪,会以为「没有保存」。
+        const savePath = res.savePath || res.path
+        const html = '已保存到:<br><code style="word-break:break-all">' + savePath + '</code>'
+          + (res.note ? '<br><span style="color:#e6a23c">' + res.note + '</span>' : '')
+          + (window.__WEB_MODE__ ? '<br><a href="/browse?path=' + encodeURIComponent(savePath) + '" target="_blank" style="color:#409eff">打开所在目录</a>' : '')
+        ElMessage({ dangerouslyUseHTMLString: true, message: html, type: 'success', duration: 8000, showClose: true })
+      }
     } else {
       printMessage('error', res?.error || t('c.upscaleFailed'))
     }

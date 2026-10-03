@@ -82,6 +82,12 @@ if [ ! -f "$DATA_DIR/setting.json" ]; then
   "toolbarButtons": ["folderTree", "search", "shuffle", "manualScan", "incrementalScan", "batchMetadata", "tagAnalysis", "manageCollection", "manageTag", "viewerSwitch", "themeSwitch"],
   "customPageSizes": "12,24,42,72,500,5000,1000000",
   "scrollInertiaLevel": "medium",
+  "localUpscaleEngine": "",
+  "localUpscaleOptions": {
+    "realesrgan": { "model": "realesrgan-x4plus", "scale": 4, "tileSize": 0, "gpuId": 0, "tta": false },
+    "waifu2x": { "model": "models-cunet", "scale": 2, "noiseLevel": 0, "tileSize": 0, "gpuId": 0, "tta": false }
+  },
+  "localModelMirror": "",
   "enableImageUpscale": false,
   "enableImageOcr": false
 }

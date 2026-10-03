@@ -30,6 +30,7 @@ const {
 } = require('./modules/init_folder_setting.js')
 const { findSameFile } = require('./fileLoader/folder.js')
 const { inventoryLibrary, diffInventory, snapshotFromInventory, loadSnapshotFile, saveSnapshotFile, archiveTypeOf } = require('./fileLoader/incremental.js')
+const localModels = require('./modules/localModels.js')
 
 const WEB_MODE = process.env.WEB_MODE === '1'
 
@@ -38,6 +39,12 @@ let setting = prepareSetting()
 
 // 增量扫描目录指纹快照(存于共享数据目录;路径随环境不同,快照内部记录 library 以自校验)
 const SNAPSHOT_FILE = path.join(STORE_PATH, 'scan-snapshot.json')
+
+// 本地超分模型目录:<数据目录>/models/upscale/<模型 id>
+localModels.init(STORE_PATH)
+// 下载走用户配置的代理,或镜像前缀(国内直连 GitHub 大文件经常被重置)
+localModels.setProxy(setting.proxy || process.env.HTTPS_PROXY || process.env.https_proxy || '')
+localModels.setMirror(setting.localModelMirror || '')
 
 // 容器模式(WEB_LIBRARY 环境变量):数据目录挂载为 /data、漫画库挂载为 /library。
 // 只对「Windows 盘符路径」(桌面端写进共享 setting.json 的 Y:\... 等)做跨平台映射;
@@ -2083,6 +2090,9 @@ const applySetting = async (receiveSetting) => {
       proxyRules: receiveSetting.proxy
     })
   }
+  // 本地模型下载同步使用代理 / 镜像前缀
+  localModels.setProxy(receiveSetting.proxy || process.env.HTTPS_PROXY || process.env.https_proxy || '')
+  localModels.setMirror(receiveSetting.localModelMirror || '')
   if (receiveSetting.metadataPath !== setting.metadataPath) {
     // metadataPath 可能为 undefined/null/空(前端缺键或用户清空):回退默认数据目录
     const target = receiveSetting.metadataPath || STORE_PATH
@@ -2804,11 +2814,153 @@ ipcMain.handle('ai-colorize-image', async (event, payload = {}) => {
     return { ok: false, error: String((e && e.message) || e) }
   }
 })
+// ---------- 本地超分模型(Real-ESRGAN / waifu2x)管理 ----------
+// 模型下载/解压/删除都是真实文件操作;进度通过 'local-model-progress' 事件推送
+// (桌面版走 webContents.send,网页版走 SSE,前端统一用 ipcRenderer.on 接收)
+const sendLocalModelProgress = (payload) => {
+  if (WEB_MODE) {
+    require('./web-electron-shim.js').broadcast('local-model-progress', payload)
+  } else if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('local-model-progress', payload)
+  }
+}
+
+ipcMain.handle('local-model-list', async () => ({
+  ok: true,
+  platform: localModels.PLATFORM,
+  modelsRoot: path.dirname(localModels.installDirOf('__placeholder__')),
+  current: String(setting.localUpscaleEngine || ''),
+  models: localModels.list(),
+}))
+
+ipcMain.handle('local-model-download', async (event, id) => {
+  if (localModels.tasks.has(id)) return { ok: false, error: '该模型正在下载中' }
+  const started = localModels.list().some(m => m.id === id)
+  if (!started) return { ok: false, error: '未知的模型: ' + id }
+  sendLocalModelProgress({ id, phase: 'start', percent: 0, message: '准备下载…' })
+  // 后台执行,立即返回让前端显示进度
+  setImmediate(async () => {
+    const res = await localModels.download(id, (prog) => sendLocalModelProgress({ id, ...prog }))
+    if (res.ok) {
+      sendLocalModelProgress({ id, phase: 'installed', percent: 100, message: '安装完成' })
+    } else if (res.cancelled) {
+      sendLocalModelProgress({ id, phase: 'cancelled', percent: 0, message: '已取消' })
+    } else {
+      sendLocalModelProgress({ id, phase: 'error', percent: 0, message: res.error || '下载失败', error: res.error || '' })
+    }
+  })
+  return { ok: true, started: true }
+})
+
+ipcMain.handle('local-model-cancel', async (event, id) => localModels.cancel(id))
+
+ipcMain.handle('local-model-delete', async (event, id) => {
+  const res = localModels.remove(id)
+  // 删掉的正好是当前选用的引擎:顺带清空选择,避免超分时报「未安装」
+  if (res.ok && String(setting.localUpscaleEngine || '') === id) {
+    setting.localUpscaleEngine = ''
+    persistSetting()
+  }
+  return res
+})
+
+ipcMain.handle('local-model-open-dir', async (event, id) => {
+  const dir = localModels.installDirOf(id || '')
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    const err = await shell.openPath(dir)
+    return { ok: !err, error: err || '' }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+// ---------- 超分结果的落盘 ----------
+// 保存方式(setting.upscaleSaveMode):
+//   preview 仅预览(留在 viewer 临时目录)
+//   same    另存到原图所在目录(文件名加 _upscaled;压缩包内的图解压产物是临时的,
+//           这种情况统一存到 <数据目录>/upscaled/)
+//   replace 覆盖原文件(先备份 .bak;压缩包内的图无法回写,退化为另存)
+const uniquePath = (p) => {
+  if (!fs.existsSync(p)) return p
+  const ext = path.extname(p)
+  const stem = p.slice(0, p.length - ext.length)
+  for (let n = 2; n < 1000; n++) {
+    const cand = stem + ' (' + n + ')' + ext
+    if (!fs.existsSync(cand)) return cand
+  }
+  return p
+}
+
+// 按目标扩展名转存(保持原图格式,避免把 png 存成 jpg 掉透明通道)
+const writeImageAs = async (srcImage, targetPath) => {
+  const ext = path.extname(targetPath).toLowerCase()
+  const pipe = sharp(srcImage, { failOnError: false })
+  if (ext === '.png') await pipe.png().toFile(targetPath)
+  else if (ext === '.webp') await pipe.webp({ quality: 95 }).toFile(targetPath)
+  else if (ext === '.avif') await pipe.avif({ quality: 60 }).toFile(targetPath)
+  else await pipe.jpeg({ quality: 95, chromaSubsampling: '4:4:4' }).toFile(targetPath)
+}
+
+const isTempImage = (p) => p.startsWith(VIEWER_PATH + path.sep) || p.startsWith(TEMP_PATH + path.sep)
+
+// 文件名后缀:原名_<模型>_<倍数>x(如 10_waifu2x_2x.jpg),便于一眼看出是超分产物
+const safeFileTag = (v) => String(v || '').replace(/[^A-Za-z0-9._-]/g, '') || 'upscale'
+const fmtScale = (v) => {
+  const n = Number(v)
+  if (!Number.isFinite(n) || n <= 0) return '2'
+  return String(Math.round(n * 100) / 100)
+}
+
+const persistUpscaled = async (srcFilepath, tmpOutPath, meta = {}) => {
+  const mode = String(setting.upscaleSaveMode || 'same')
+  const suffix = '_' + safeFileTag(meta.engineName) + '_' + fmtScale(meta.scale) + 'x'
+  if (mode === 'preview') {
+    return { mode, saved: false, path: tmpOutPath, savePath: '', note: '仅预览,未写入文件' }
+  }
+  const ext = path.extname(srcFilepath) || '.jpg'
+  const fromArchive = isTempImage(srcFilepath)
+  if (mode === 'replace' && !fromArchive) {
+    try { await fs.promises.copyFile(srcFilepath, srcFilepath + '.bak') } catch (e) {}
+    await writeImageAs(tmpOutPath, srcFilepath)
+    await fs.promises.rm(tmpOutPath, { force: true }).catch(() => {})
+    return { mode: 'replace', saved: true, path: srcFilepath, savePath: srcFilepath, note: '已替换原文件(旧文件备份为 .bak)' }
+  }
+  let target, note = ''
+  if (fromArchive) {
+    // 压缩包里的图:解压产物是临时的,统一存到数据目录下的 upscaled/
+    const dir = path.join(STORE_PATH, 'upscaled')
+    await fs.promises.mkdir(dir, { recursive: true })
+    target = path.join(dir, path.basename(srcFilepath, ext) + suffix + ext)
+    if (mode === 'replace') note = '原图在压缩包内,无法替换,已另存'
+  } else {
+    const dir = path.dirname(srcFilepath)
+    const stem = path.basename(srcFilepath, ext)
+    target = path.join(dir, stem + suffix + ext)
+  }
+  target = uniquePath(target)
+  await writeImageAs(tmpOutPath, target)
+  await fs.promises.rm(tmpOutPath, { force: true }).catch(() => {})
+  return { mode, saved: true, path: target, savePath: target, note }
+}
+
+// 列出某个模型可用的权重(已安装时)
+ipcMain.handle('local-model-weights', async (event, id) => ({
+  ok: true,
+  id,
+  weights: localModels.listWeights(id),
+  schema: localModels.OPTION_SCHEMA[id] || [],
+  options: Object.assign({}, localModels.defaultOptionsOf(id), (setting.localUpscaleOptions || {})[id] || {}),
+}))
 ipcMain.handle('upscale-image', async (event, filepath) => {
   try {
     if (!filepath) return { ok: false, error: '未指定图片' }
-    const outPath = path.join(VIEWER_PATH, `upscaled_${nanoid(8)}.jpg`)
-    // 超分:优先使用「功能 → 图片超分 → 使用的模型」中选择的 API 配置
+    const srcStat = await fs.promises.stat(filepath).catch(() => null)
+    if (!srcStat || !srcStat.isFile()) return { ok: false, error: '找不到原图: ' + filepath }
+    const tmpOut = path.join(TEMP_PATH, 'upscale_' + nanoid(8) + '.png')
+
+    // 引擎优先级:本地模型 > API 服务 > 内置 Lanczos
+    const localEngine = String(setting.localUpscaleEngine || '')
     const upProf = (Array.isArray(setting.aiApiProfiles) ? setting.aiApiProfiles : []).find(p => p && p.id === setting.upscaleApiProfileId)
     let apiUrl = (setting.upscaleApiUrl || '').trim()
     let apiKey = ''
@@ -2818,22 +2970,32 @@ ipcMain.handle('upscale-image', async (event, filepath) => {
       apiUrl = apiUrl + '/upscale'
       apiKey = upProf.apiKey || ''
     }
-    const scale = Math.min(Math.max(Number(setting.upscaleScale) || 2, 1), 8)
-    if (apiUrl) {
-      // 本地超分 API:POST 图片二进制 → 期望返回放大图片(二进制)或 JSON { image: base64 }
+    // API / 内置缩放用的倍数(输出尺寸与倍数已从设置界面移除,这里保留旧字段做兼容)
+    const legacyScale = Math.min(Math.max(Number(setting.upscaleScale) || 2, 1), 8)
+    let engine = ''
+    let engineName = ''      // 文件名里用的引擎短名
+    let scaleUsed = 2        // 文件名里用的倍数
+
+    if (localEngine) {
+      // 参数来自「本地模型」里该模型自己的设置
+      const opts = Object.assign({}, localModels.defaultOptionsOf(localEngine), (setting.localUpscaleOptions || {})[localEngine] || {})
+      await localModels.runUpscale(localEngine, filepath, tmpOut, opts)
+      engine = 'local:' + localEngine
+      engineName = localEngine
+      scaleUsed = Number(opts.scale) || (localEngine === 'realesrgan' ? 4 : 2)
+    } else if (apiUrl) {
       const buf = await fs.promises.readFile(filepath)
       const res = await fetch(apiUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream', ...(apiKey ? { Authorization: 'Bearer ' + apiKey } : {}), 'X-Upscale-Scale': String(scale) },
+        headers: { 'Content-Type': 'application/octet-stream', ...(apiKey ? { Authorization: 'Bearer ' + apiKey } : {}), 'X-Upscale-Scale': String(legacyScale) },
         body: buf,
         timeout: 300000
       })
-      if (!res.ok) throw new Error(`超分 API 请求失败: HTTP ${res.status}`)
+      if (!res.ok) throw new Error('超分 API 请求失败: HTTP ' + res.status)
       const resBuf = Buffer.from(await res.arrayBuffer())
       const contentType = res.headers.get('content-type') || ''
       let imageBuf = resBuf
       if (!contentType.includes('image/') && resBuf.length && resBuf[0] !== 0xFF && resBuf[0] !== 0x89) {
-        // 尝试 JSON 响应 { image: base64 }
         try {
           const data = JSON.parse(resBuf.toString('utf-8'))
           const b64 = data.image || data.base64 || data.data
@@ -2844,29 +3006,32 @@ ipcMain.handle('upscale-image', async (event, filepath) => {
           throw new Error('超分 API 响应格式不正确(需返回图片二进制或 {image: base64})')
         }
       }
-      await sharp(imageBuf, { failOnError: false }).jpeg({ quality: 95 }).toFile(outPath)
-      return { ok: true, path: outPath, engine: 'api', scale }
-    }
-    // 内置本地超分:Lanczos3 放大 + 轻度锐化(非 AI,仅画质增强;要 AI 超分请在上方选择超分 API)
-    const meta = await sharp(filepath, { failOnError: false }).metadata()
-    const srcW = meta.width || 1000
-    const srcH = meta.height || 1400
-    let width, height
-    if ((setting.upscaleSizeMode || 'scale') === 'width') {
-      // 按目标宽度:等比缩放到指定宽度
-      const targetW = Math.min(Math.max(Number(setting.upscaleTargetWidth) || 2000, 256), 16384)
-      width = targetW
-      height = Math.round(srcH * (targetW / srcW))
+      await sharp(imageBuf, { failOnError: false }).png().toFile(tmpOut)
+      engine = 'api'
+      engineName = 'api'
+      scaleUsed = legacyScale
     } else {
-      width = Math.min(Math.round(srcW * scale), 16384)
-      height = Math.min(Math.round(srcH * scale), 16384)
+      // 内置:Lanczos3 放大 2 倍 + 轻度锐化(非 AI)
+      const meta = await sharp(filepath, { failOnError: false }).metadata()
+      const srcW = meta.width || 1000
+      const srcH = meta.height || 1400
+      await sharp(filepath, { failOnError: false })
+        .resize({ width: Math.round(srcW * 2), height: Math.round(srcH * 2), kernel: 'lanczos3', fit: 'fill' })
+        .sharpen({ sigma: 0.8, m1: 0.6, m2: 0.4 })
+        .png()
+        .toFile(tmpOut)
+      engine = 'local-resize'
+      engineName = 'lanczos'
+      scaleUsed = 2
     }
-    await sharp(filepath, { failOnError: false })
-      .resize({ width, height, kernel: 'lanczos3', fit: 'fill' })
-      .sharpen({ sigma: 0.8, m1: 0.6, m2: 0.4 })
-      .jpeg({ quality: 95, chromaSubsampling: '4:4:4' })
-      .toFile(outPath)
-    return { ok: true, path: outPath, engine: 'local-resize', scale, width, height }
+
+    const persisted = await persistUpscaled(filepath, tmpOut, { engineName, scale: scaleUsed })
+    let width = 0, height = 0
+    try {
+      const m = await sharp(persisted.path, { failOnError: false }).metadata()
+      width = m.width || 0; height = m.height || 0
+    } catch (e) {}
+    return { ok: true, engine, path: persisted.path, savePath: persisted.savePath, saved: persisted.saved, mode: persisted.mode, note: persisted.note, width, height }
   } catch (e) {
     return { ok: false, error: String(e.message || e) }
   }

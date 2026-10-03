@@ -942,9 +942,19 @@
           <el-col :span="24">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.useApi')}}</span></template>
-                <el-select v-model="setting.upscaleApiProfileId" clearable placeholder=" " @change="saveSetting">
-                  <el-option v-for="p in (setting.aiApiProfiles || [])" :key="p.id" :label="p.name || p.baseUrl" :value="p.id" />
+                <template #prepend><span class="setting-label">使用的模型</span></template>
+                <el-select v-model="upscaleEngine" clearable placeholder=" ">
+                  <el-option-group label="本地模型(离线运行,需先下载)">
+                    <el-option
+                      v-for="m in localModels"
+                      :key="'up-' + m.id"
+                      :label="m.name + (m.installed ? '' : '(未安装)')"
+                      :value="'local:' + m.id"
+                      :disabled="!m.installed" />
+                  </el-option-group>
+                  <el-option-group label="API 服务">
+                    <el-option v-for="p in (setting.aiApiProfiles || [])" :key="'api-' + p.id" :label="p.name || p.baseUrl" :value="'api:' + p.id" />
+                  </el-option-group>
                 </el-select>
               </NameFormItem>
             </div>
@@ -958,40 +968,6 @@
                   <el-option :label="$t('m.saveModeReplace')" value="replace"></el-option>
                   <el-option :label="$t('m.saveModePreview')" value="preview"></el-option>
                 </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.upscaleSizeMode')}}</span></template>
-                <el-select v-model="setting.upscaleSizeMode" placeholder=" " @change="saveSetting">
-                  <el-option :label="$t('m.upscaleSizeByScale')" value="scale"></el-option>
-                  <el-option :label="$t('m.upscaleSizeByWidth')" value="width"></el-option>
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24" v-if="(setting.upscaleSizeMode || 'scale') === 'scale'">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.upscaleScale')}}</span></template>
-                <el-select v-model="setting.upscaleScale" placeholder=" " @change="saveSetting">
-                  <el-option :label="$t('m.upscaleScale2x')" :value="2"></el-option>
-                  <el-option :label="$t('m.upscaleScale3x')" :value="3"></el-option>
-                  <el-option :label="$t('m.upscaleScale4x')" :value="4"></el-option>
-                  <el-option label="1.5x" :value="1.5"></el-option>
-                  <el-option label="6x" :value="6"></el-option>
-                  <el-option label="8x" :value="8"></el-option>
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24" v-else>
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.upscaleTargetWidth')}}</span></template>
-                <el-input-number v-model="setting.upscaleTargetWidth" :min="256" :max="16384" :step="128" @change="saveSetting" />
               </NameFormItem>
             </div>
           </el-col>
@@ -1140,6 +1116,80 @@
             <div class="setting-line">
               <el-button type="primary" plain @click="addApiProfile">{{$t('m.addApi')}}</el-button>
             </div>
+          </el-col>
+
+          <!-- 本地模型:下载到本机后离线推理,不需要 API 服务 -->
+          <el-col :span="24">
+            <div class="setting-line">
+              <el-divider content-position="left">本地模型</el-divider>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line toolbar-tip">本地模型直接在本机运行,下载后离线可用。下载完成后,在<div style="display:inline;color:#409eff;margin:0 4px;">图片超分 → 使用的模型</div>里选择即可。</div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">下载源</span></template>
+                <el-input v-model="setting.localModelMirror" placeholder="留空用 GitHub 官方地址;国内可填镜像前缀,如 https://ghproxy.net/" @change="saveSetting" />
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line toolbar-tip">下载失败时:可在 设置 → 常用 → 代理 里填本机代理(会用于模型下载),或在上面填镜像前缀。当前代理:{{ setting.proxy || "未设置" }}</div>
+          </el-col>
+          <el-col :span="24" v-for="m in localModels" :key="m.id">
+            <div class="setting-line api-profile-row local-model-row">
+              <span class="local-model-name">{{ m.name }}</span>
+              <el-tag :type="m.installed ? 'success' : 'info'" size="small">{{ m.installed ? '已安装 ' + m.installedSizeText : '未安装' }}</el-tag>
+              <template v-if="m.downloading">
+                <el-progress :percentage="m.percent || 0" :stroke-width="14" style="width: 180px;" />
+                <span class="local-model-status">{{ m.message }}</span>
+                <el-button text type="danger" @click="cancelLocalModel(m.id)">取消</el-button>
+              </template>
+              <template v-else>
+                <span class="local-model-status">{{ m.desc }}</span>
+                <span style="flex: 1;"></span>
+                <el-button type="primary" plain @click="downloadLocalModel(m.id)">{{ m.installed ? '重新下载' : '下载' }}</el-button>
+                <el-button text :disabled="!m.installed" @click="openLocalModelDir(m.id)">打开目录</el-button>
+                <el-button text type="danger" :disabled="!m.installed" @click="deleteLocalModel(m.id)">删除</el-button>
+              </template>
+            </div>
+            <!-- 该模型自己的参数(权重/倍数/降噪/分块/显卡等),schema 由后端 OPTION_SCHEMA 提供 -->
+            <div v-if="m.installed && localModelMeta[m.id] && (localModelMeta[m.id].schema || []).length" class="local-model-options">
+              <div class="local-model-option" v-for="f in localModelMeta[m.id].schema" :key="f.key">
+                <span class="local-model-option-label">{{ f.label }}</span>
+                <el-select
+                  v-if="f.type === 'weights'"
+                  class="local-model-option-control"
+                  :model-value="localModelOptions(m.id)[f.key]"
+                  @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)"
+                  filterable allow-create default-first-option>
+                  <el-option v-for="w in (localModelMeta[m.id].weights || [])" :key="w" :label="w" :value="w" />
+                </el-select>
+                <el-select
+                  v-else-if="f.type === 'select'"
+                  class="local-model-option-control"
+                  :model-value="localModelOptions(m.id)[f.key]"
+                  @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)">
+                  <el-option v-for="o in f.options" :key="String(o)" :label="String(o)" :value="o" />
+                </el-select>
+                <el-input-number
+                  v-else-if="f.type === 'number'"
+                  class="local-model-option-control"
+                  :model-value="localModelOptions(m.id)[f.key]"
+                  :min="f.min" :max="f.max"
+                  @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)" />
+                <el-switch
+                  v-else-if="f.type === 'bool'"
+                  :model-value="localModelOptions(m.id)[f.key]"
+                  @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)" />
+                <span class="local-model-option-hint">{{ f.hint }}</span>
+              </div>
+            </div>
+            <div v-if="m.installed && !(localModelMeta[m.id] && (localModelMeta[m.id].schema || []).length)" class="setting-line toolbar-tip">该模型没有额外参数</div>
+            <div v-if="m.error" class="setting-line" style="color: #f56c6c;">{{ m.error }}</div>
+            <div v-else-if="!m.available" class="setting-line" style="color: #e6a23c;">{{ m.unavailableReason }}</div>
           </el-col>
         </el-row>
       </el-tab-pane>
@@ -1551,6 +1601,150 @@ const removeApiProfile = (id) => {
   }
   saveSetting()
 }
+
+// ---------- 本地模型(Real-ESRGAN / waifu2x) ----------
+// 下载/删除都由主进程做真实文件操作;进度通过 'local-model-progress' 事件推送
+// (桌面版走 webContents.send,网页版走 SSE,前端统一用 ipcRenderer.on 接收)
+const localModels = ref([])
+let localModelListenerBound = false
+
+const normalizeLocalModels = (list) => (list || []).map(m => Object.assign({}, m, {
+  percent: 0, message: '', error: '', downloading: !!m.downloading,
+}))
+
+// 每个模型自己的参数(schema + 已安装的可用权重),由主进程 local-model-weights 提供
+const localModelMeta = ref({})
+const localModelOptions = (id) => {
+  if (!setting.value.localUpscaleOptions) setting.value.localUpscaleOptions = {}
+  if (!setting.value.localUpscaleOptions[id]) setting.value.localUpscaleOptions[id] = {}
+  return setting.value.localUpscaleOptions[id]
+}
+const setLocalModelOption = (id, key, val) => {
+  localModelOptions(id)[key] = val
+  saveSetting()
+}
+const loadLocalModelMeta = async () => {
+  const meta = {}
+  for (const m of localModels.value) {
+    if (!m.installed) continue
+    try {
+      const r = await ipcRenderer.invoke('local-model-weights', m.id)
+      if (r && r.ok) {
+        meta[m.id] = { weights: r.weights || [], schema: r.schema || [] }
+        // 补齐缺失项(旧配置升级后新增的参数)
+        const opts = localModelOptions(m.id)
+        for (const f of (r.schema || [])) {
+          if (opts[f.key] === undefined) opts[f.key] = (r.options && r.options[f.key] !== undefined) ? r.options[f.key] : f.default
+        }
+      }
+    } catch (e) { /* 忽略:旧服务端没有该通道 */ }
+  }
+  localModelMeta.value = meta
+}
+
+const loadLocalModels = async () => {
+  try {
+    const res = await ipcRenderer.invoke('local-model-list')
+    if (res && res.ok) {
+      localModels.value = normalizeLocalModels(res.models)
+      loadLocalModelMeta()
+    }
+  } catch (e) {
+    // 旧版服务端没有该通道:静默忽略,不影响设置页其它功能
+  }
+}
+
+const bindLocalModelProgress = () => {
+  if (localModelListenerBound) return
+  localModelListenerBound = true
+  ipcRenderer.on('local-model-progress', (event, payload) => {
+    if (!payload || !payload.id) return
+    const m = localModels.value.find(x => x.id === payload.id)
+    if (!m) return
+    if (payload.phase === 'start') {
+      m.downloading = true; m.percent = 0; m.message = '准备下载…'; m.error = ''
+    } else if (payload.phase === 'download' || payload.phase === 'extract') {
+      m.downloading = true
+      m.percent = payload.percent || 0
+      m.message = payload.message || ''
+    } else if (payload.phase === 'installed' || payload.phase === 'cancelled') {
+      m.downloading = false; m.percent = 0; m.message = ''
+      loadLocalModels()
+    } else if (payload.phase === 'error') {
+      m.downloading = false; m.percent = 0; m.message = ''
+      m.error = payload.error || payload.message || '下载失败'
+    }
+  })
+}
+
+const downloadLocalModel = async (id) => {
+  const m = localModels.value.find(x => x.id === id)
+  if (m) { m.error = ''; m.message = '准备下载…' }
+  try {
+    const res = await ipcRenderer.invoke('local-model-download', id)
+    if (!res || !res.ok) {
+      if (m) m.message = ''
+      printMessage('error', (res && res.error) || '下载启动失败')
+    }
+  } catch (e) {
+    if (m) m.message = ''
+    printMessage('error', String((e && e.message) || e))
+  }
+}
+
+const cancelLocalModel = async (id) => {
+  try { await ipcRenderer.invoke('local-model-cancel', id) } catch (e) { /* 忽略 */ }
+}
+
+const deleteLocalModel = async (id) => {
+  const m = localModels.value.find(x => x.id === id)
+  const name = m ? m.name : id
+  try {
+    await ElMessageBox.confirm('确定删除本地模型「' + name + '」?已下载的文件会被移除,之后可以重新下载。', '删除模型', {
+      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+    })
+  } catch (e) { return }
+  try {
+    const res = await ipcRenderer.invoke('local-model-delete', id)
+    if (res && res.ok) {
+      printMessage('success', '已删除 ' + name)
+      loadLocalModels()
+    } else {
+      printMessage('error', (res && res.error) || '删除失败')
+    }
+  } catch (e) {
+    printMessage('error', String((e && e.message) || e))
+  }
+}
+
+const openLocalModelDir = async (id) => {
+  try { await ipcRenderer.invoke('local-model-open-dir', id) } catch (e) { /* 忽略 */ }
+}
+
+// 超分引擎选择:一个下拉同时承载「本地模型」与「API 服务」,内部用前缀区分,
+// 分别落到 localUpscaleEngine / upscaleApiProfileId 两个键(保持数据结构不变,兼容旧配置)
+const upscaleEngine = computed({
+  get () {
+    const local = setting.value.localUpscaleEngine
+    if (local) return 'local:' + local
+    const api = setting.value.upscaleApiProfileId
+    if (api) return 'api:' + api
+    return ''
+  },
+  set (val) {
+    if (!val) {
+      setting.value.localUpscaleEngine = ''
+      setting.value.upscaleApiProfileId = ''
+    } else if (val.startsWith('local:')) {
+      setting.value.localUpscaleEngine = val.slice(6)
+      setting.value.upscaleApiProfileId = ''
+    } else if (val.startsWith('api:')) {
+      setting.value.upscaleApiProfileId = val.slice(4)
+      setting.value.localUpscaleEngine = ''
+    }
+    saveSetting()
+  },
+})
 const fetchApiModels = async (p) => {
   const base = normApiBase(p.baseUrl)
   if (!base) return printMessage('warning', t('m.apiNeedUrl'))
@@ -1829,6 +2023,9 @@ onMounted(() => {
       // 网页版:管理员打开设置时加载账户列表与 IP 规则
       loadAccountList()
       loadIpRules()
+      // 本地模型:加载模型清单,并监听下载进度(桌面版/网页版同一条事件通道)
+      bindLocalModelProgress()
+      loadLocalModels()
       // 桌面版:同步运行模式(本地/网页)与数据目录显示
       syncRunMode()
       loadDataPath()
@@ -1905,6 +2102,8 @@ onMounted(() => {
   if (res.infoProcessApiProfileId === undefined) setting.value.infoProcessApiProfileId = ''
   if (!Array.isArray(res.infoProcessTasks)) setting.value.infoProcessTasks = ['tags', 'story', 'translate']
   if (res.upscaleApiProfileId === undefined) setting.value.upscaleApiProfileId = ''
+  if (res.localUpscaleEngine === undefined) setting.value.localUpscaleEngine = ''
+  if (res.localUpscaleOptions === undefined) setting.value.localUpscaleOptions = {}
   if (res.colorizeApiProfileId === undefined) setting.value.colorizeApiProfileId = ''
   if (res.ocrApiProfileId === undefined) setting.value.ocrApiProfileId = ''
   if (res.upscaleSaveMode === undefined) setting.value.upscaleSaveMode = 'same'
@@ -2774,6 +2973,17 @@ defineExpose({
 </script>
 
 <style lang="stylus">
+
+/* 本地模型行(设置 → 功能 → 本地模型) */
+.local-model-options { margin: 0 0 10px 0; padding: 6px 10px; border-radius: 6px; background: rgba(127, 127, 127, 0.07); }
+.local-model-option { display: flex; align-items: center; gap: 10px; padding: 4px 0; flex-wrap: wrap; }
+.local-model-option-label { min-width: 78px; font-size: 13px; color: #606266; }
+.local-model-option-control { width: 190px; }
+.local-model-option-hint { font-size: 12px; color: #a0a4ab; }
+.local-model-row { align-items: center; gap: 10px; flex-wrap: wrap; }
+.local-model-name { font-weight: 600; min-width: 96px; }
+.local-model-status { color: #909399; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46%; }
+
 .setting-title
   margin:0
   text-align: center

@@ -164,6 +164,16 @@ const prepareSetting = () => {
       enableImageOcr: true,
       // 图片 AI 本地模型 API:超分(如 Real-ESRGAN 服务)/ 文字提取(OpenAI 兼容);留空用内置或标题翻译AI配置
       upscaleApiUrl: '',
+      // 本地超分模型(Real-ESRGAN / waifu2x):在 设置 → 功能 → 本地模型 中下载后选用;
+      // 留空则走「使用 API」或内置 Lanczos 缩放
+      localUpscaleEngine: '',
+      // 本地超分模型各自的参数(权重/倍数/降噪/分块/显卡…),UI 见 设置 → 功能 → 本地模型
+      localUpscaleOptions: {
+        realesrgan: { model: 'realesrgan-x4plus', scale: 4, tileSize: 0, gpuId: 0, tta: false },
+        waifu2x: { model: 'models-cunet', scale: 2, noiseLevel: 0, tileSize: 0, gpuId: 0, tta: false },
+      },
+      // 本地模型下载源前缀(留空=GitHub 官方;国内可填镜像,如 https://ghproxy.net/) 
+      localModelMirror: '',
       upscaleApiModel: '',
       upscaleApiKey: '',
       // 图片上色(独立 AI API)
