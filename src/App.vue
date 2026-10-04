@@ -3,7 +3,7 @@
     <!-- 网页版账户登录(启用账户系统且未登录时显示) -->
     <LoginDialog />
     <div id="progressbar" :class="{ indeterminate: scanning && progress <= 0 }" :style="{ width: progress + '%' }"></div>
-    <el-button class="fullscreen-button" circle :icon="FullScreen" size="large" @click="switchFullscreen"></el-button>
+    <el-button v-if="setting.showFullscreenButton !== false" class="fullscreen-button" circle :icon="FullScreen" size="large" @click="switchFullscreen"></el-button>
     <el-row :gutter="20" class="book-search-bar">
       <el-col :span="24">
         <div class="toolbar-flex" :style="toolbarWidth ? { width: toolbarWidth + 'px' } : {}">
@@ -260,7 +260,7 @@ import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save1
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
-import { getWidth, fetchRecentReads, isContextMenuItemEnabled, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, parsePageSizes } from './utils.js'
+import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, parsePageSizes } from './utils.js'
 import { attachInertiaScroll } from './inertia-scroll.js'
 
 import Setting from './components/Setting.vue'
@@ -393,10 +393,17 @@ export default defineComponent({
         manageTag: { icon: TagGroup, titleKey: 'm.manageTag', loading: false, action: () => this.$refs.EditViewRef.enterEditTagView() },
         viewerSwitch: { icon: MdBook, titleKey: 'm.viewerSwitch', loading: false, action: () => this.switchViewerType() },
         themeSwitch: { icon: MdColorPalette, titleKey: 'm.themeSwitch', loading: false, action: () => this.switchTheme() },
+        fullscreen: { icon: FullScreen, titleKey: 'm.fullscreenButton', loading: false, action: () => this.switchFullscreen() },
       }
-      const order = this.setting?.toolbarButtons && this.setting.toolbarButtons.length
+      // 显示哪些按钮由 toolbarButtons 决定;排列顺序由 toolbarButtonOrder(含隐藏项的完整顺序)决定,
+      // 没拖过排序时用定义顺序 —— 隐藏的项留在原位,不会因为取消勾选就被挤到末尾。
+      const enabledButtons = Array.isArray(this.setting?.toolbarButtons) && this.setting.toolbarButtons.length
         ? this.setting.toolbarButtons
         : defaultToolbarButtons()
+      const fullOrder = Array.isArray(this.setting?.toolbarButtonOrder) && this.setting.toolbarButtonOrder.length
+        ? this.setting.toolbarButtonOrder
+        : defaultToolbarButtons()
+      const order = fullOrder.filter(id => enabledButtons.includes(id))
       // 只读账户:隐藏写操作类按钮(扫描/批量元数据/合集编辑/标签编辑),服务端同样会拦截
       const viewerBlock = new Set(['manualScan', 'incrementalScan', 'batchMetadata', 'manageCollection', 'manageTag'])
       return order.filter(id => map[id] && !(this.viewerRole && viewerBlock.has(id))).map(id => map[id])
@@ -711,12 +718,7 @@ export default defineComponent({
       return 'home'
     },
     resolveKey (event) {
-      let next, prev
-      if (this.setting.reverseLeftRight) {
-        ;({ next, prev } = this.keyMap.reverse)
-      } else {
-        ;({ next, prev } = this.keyMap.normal)
-      }
+      // 阅读器里的翻页键由 InternalViewer.handleViewerKey 统一处理(按阅读方向)
       const currentUIValue = this.currentUI()
       const bookEachLine = Math.floor(getWidth(document.querySelector('.book-card-area div:first-child'), 'width') / getWidth(document.querySelector('.book-card'), 'full'))
       if (currentUIValue !== 'inputing') {
@@ -738,44 +740,11 @@ export default defineComponent({
           this.$refs.InternalViewerRef.showThumbnail = !this.$refs.InternalViewerRef.showThumbnail
         }
         if (currentUIValue === 'viewer-content') {
-          if (this.$refs.InternalViewerRef.imageStyleType === 'single' || this.$refs.InternalViewerRef.imageStyleType === 'double') {
-            if (event.key === next || event.key === 'ArrowDown' || event.key === ' ') {
-              this.$refs.InternalViewerRef.currentImageIndex += 1
-            } else if (event.key === prev || event.key === 'ArrowUp') {
-              this.$refs.InternalViewerRef.currentImageIndex -= 1
-            } else if (event.key === 'Home') {
-              this.$refs.InternalViewerRef.currentImageIndex = 0
-            } else if (event.key === 'End') {
-              if (this.$refs.InternalViewerRef.imageStyleType === 'single') {
-                this.$refs.InternalViewerRef.currentImageIndex = this.$refs.InternalViewerRef.viewerImageList.length - 1
-              } else if (this.$refs.InternalViewerRef.imageStyleType === 'double') {
-                this.$refs.InternalViewerRef.currentImageIndex = this.$refs.InternalViewerRef.viewerImageListDouble.length - 1
-              }
-            }
-            if (this.$refs.InternalViewerRef.imageStyleType === 'double') {
-              if (event.key === "/") {
-                this.$refs.InternalViewerRef.insertEmptyPageIndex = this.$refs.InternalViewerRef.currentImageIndex
-                this.$refs.InternalViewerRef.insertEmptyPage = !this.$refs.InternalViewerRef.insertEmptyPage
-              }
-            }
-          } else if (this.$refs.InternalViewerRef.imageStyleType === 'scroll') {
-            if (event.key === prev || event.key === 'ArrowUp') {
-              if (event.ctrlKey) {
-                document.querySelector('.viewer-drawer .el-drawer__body').scrollBy(0, - window.innerHeight / 10)
-              } else {
-                document.querySelector('.viewer-drawer .el-drawer__body').scrollBy(0, - window.innerHeight / 1.2)
-              }
-            } else if (event.key === next || event.key === 'ArrowDown' || event.key === ' ') {
-              if (event.ctrlKey) {
-                document.querySelector('.viewer-drawer .el-drawer__body').scrollBy(0, window.innerHeight / 10)
-              } else {
-                document.querySelector('.viewer-drawer .el-drawer__body').scrollBy(0, window.innerHeight / 1.2)
-              }
-            } else if (event.key === 'Home') {
-              document.querySelector('.viewer-drawer .el-drawer__body').scrollTop = 0
-            } else if (event.key === 'End') {
-              document.querySelector('.viewer-drawer .el-drawer__body').scrollTop = document.querySelector('.viewer-drawer .el-drawer__body').scrollHeight
-            }
+          // 翻页 / 滚动 / 缩放全部交给阅读器按「阅读方向」处理(InternalViewer.handleViewerKey)。
+          // 旧实现滚的是 .el-drawer__body,而真正滚动的是 .drawer-viewer-body,卷轴下键盘等于没反应。
+          if (this.$refs.InternalViewerRef.handleViewerKey &&
+              this.$refs.InternalViewerRef.handleViewerKey(event)) {
+            return
           }
         }
       } else if (currentUIValue === 'viewer-comicread') {
@@ -1547,6 +1516,20 @@ export default defineComponent({
         this.$refs.SearchDialogRef.getBookInfo(book)
       }
     },
+    // 封面右键:恢复本书目录里所有 .bak 备份(超分出错时回滚;没有备份的图片不动)
+    async restoreBookBakFiles (book) {
+      try {
+        await ElMessageBox.confirm(this.$t('c.restoreBookBakConfirm'), this.$t('c.restoreBookBak'), { type: 'warning' })
+      } catch (e) { return }
+      const res = await ipcRenderer.invoke('restore-book-bak-files', book)
+      if (res && res.ok) {
+        if (res.restored > 0) this.printMessage('success', this.$t('c.restoreBookBakDone', { n: res.restored }))
+        else this.printMessage('info', this.$t('c.restoreBookBakNone'))
+      } else {
+        this.printMessage('error', (res && res.error) || '恢复失败')
+      }
+    },
+
     onBookContextMenu (e, book) {
       e.preventDefault()
       // 只读账户:隐藏封面右键菜单中的写操作(获取/重置元数据、移动、删除、隐藏、粘贴标签等)
@@ -1641,6 +1624,11 @@ export default defineComponent({
           onClick: () => { this.runBookTask(book, 'upscale') }
         },
         {
+          id: 'restoreBookBak',
+          label: this.$t('c.restoreBookBak'),
+          onClick: () => { this.restoreBookBakFiles(book) }
+        },
+        {
           id: 'colorizeBook',
           label: this.$t('m.colorizeBook'),
           onClick: () => { this.runBookTask(book, 'colorize') }
@@ -1654,7 +1642,8 @@ export default defineComponent({
       })
       // 全部项都被取消勾选时不弹出空白菜单
       if (items.length === 0) return
-      this.$contextmenu({ x: e.x, y: e.y, items })
+      // 顺序按设置里的「右键菜单」完整顺序(拖动排序后立即生效)
+      this.$contextmenu({ x: e.x, y: e.y, items: sortContextMenuItems(this.setting, 'cover', items) })
     },
 
     // ---------- UI 模式适配(自动/手机/平板/电脑) ----------

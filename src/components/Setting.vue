@@ -190,54 +190,125 @@
               </NameFormItem>
             </div>
           </el-col>
+          <!-- 阅读器:选择类设置在上,开关两列并排在下(与「高级」页一致) -->
           <el-col :span="24">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.viewerEndAction')}}</span></template>
+                <el-select v-model="setting.viewerEndAction" placeholder=" " @change="saveSetting">
+                  <el-option :label="$t('m.viewerEndActionNone')" value="none"></el-option>
+                  <el-option :label="$t('m.viewerEndActionExit')" value="exit"></el-option>
+                  <el-option :label="$t('m.viewerEndActionNext')" value="next"></el-option>
+                  <el-option :label="$t('m.viewerEndActionRandom')" value="random"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="12">
             <div class="setting-line">
               <el-input v-model.number="setting.thumbnailColumn" @change="saveSetting">
                 <template #prepend><span class="setting-label">{{$t('m.thumbnailColumn')}}</span></template>
               </el-input>
             </div>
           </el-col>
-          <el-col :span="24">
+          <el-col :span="12">
             <div class="setting-line">
               <el-input v-model.number="setting.widthLimit" :placeholder="$t('m.widthLimitInfo')" @change="saveSetting">
                 <template #prepend><span class="setting-label">{{$t('m.widthLimit')}}</span></template>
               </el-input>
             </div>
           </el-col>
-          <el-col :span="24" class="setting-switch">
-            <el-switch
-              v-model="setting.hidePageNumber"
-              :active-text="$t('m.hidePageNumber')"
-              @change="saveSetting"
-            />
+          <el-col :span="12">
+            <div class="setting-line">
+              <el-input v-model.number="setting.viewerImageGap" :placeholder="$t('m.viewerImageGapPlaceholder')" @change="saveSetting">
+                <template #prepend><span class="setting-label">{{$t('m.viewerImageGap')}}</span></template>
+              </el-input>
+            </div>
           </el-col>
-          <el-col :span="24" class="setting-switch">
-            <el-switch
-              v-model="setting.keepReadingProgress"
-              :active-text="$t('m.keepReadingProgress')"
-              @change="saveSetting"
-            />
+          <el-col :span="12">
+            <div class="setting-line">
+              <el-input v-model.number="setting.viewerThumbnailGap" :placeholder="$t('m.viewerThumbnailGapPlaceholder')" @change="saveSetting">
+                <template #prepend><span class="setting-label">{{$t('m.viewerThumbnailGap')}}</span></template>
+              </el-input>
+            </div>
           </el-col>
-          <el-col :span="24" class="setting-switch">
-            <el-switch
-              v-model="setting.reverseLeftRight"
-              :active-text="$t('m.reverseLeftRight')"
-              @change="saveSetting"
-            />
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.viewerToolbarHover" :active-text="$t('m.viewerToolbarHover')" @change="saveSetting" />
           </el-col>
-          <el-col :span="24" class="setting-switch">
-            <el-switch
-              v-model="setting.autoNextManga"
-              :active-text="$t('m.autoNextManga')"
-              @change="saveSetting"
-            />
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.viewerToolbarClick" :active-text="$t('m.viewerToolbarClick')" @change="saveSetting" />
           </el-col>
-          <el-col :span="24" class="setting-switch">
-            <el-switch
-              v-model="setting.defaultInsertEmptyPage"
-              :active-text="$t('m.defaultInsertEmptyPage')"
-              @change="saveSetting"
-            />
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.viewerEndTip" :active-text="$t('m.viewerEndTip')" @change="saveSetting" />
+          </el-col>
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.viewerButtonTips" :active-text="$t('m.viewerButtonTips')" @change="saveSetting" />
+          </el-col>
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.autoUpscale" :active-text="$t('m.autoUpscale')" @change="saveSetting" />
+          </el-col>
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.hidePageNumber" :active-text="$t('m.hidePageNumber')" @change="saveSetting" />
+          </el-col>
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.keepReadingProgress" :active-text="$t('m.keepReadingProgress')" @change="saveSetting" />
+          </el-col>
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.reverseLeftRight" :active-text="$t('m.reverseLeftRight')" @change="saveSetting" />
+          </el-col>
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.defaultInsertEmptyPage" :active-text="$t('m.defaultInsertEmptyPage')" @change="saveSetting" />
+          </el-col>
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.showNextMangaButtons" :active-text="$t('m.showNextMangaButtons')" @change="saveSetting" />
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-hint">{{$t('m.viewerToolbarHoverHint')}}</div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-hint">{{$t('m.viewerToolbarClickHint')}}</div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-hint">{{$t('m.viewerEndTipHint')}}</div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-hint">{{$t('m.autoUpscaleHint')}}</div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-hint">{{$t('m.hidePageNumberHint')}}</div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-hint">{{$t('m.keepReadingProgressHint')}}</div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-hint">{{$t('m.reverseLeftRightHint')}}</div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-hint">{{$t('m.thumbnailColumnHint')}}</div>
+          </el-col>
+          <!-- 阅读时设置栏里显示哪些按钮:点击切换显示、按住拖动排序(退出按钮固定常驻,不在这里) -->
+          <el-col :span="24">
+            <div class="setting-line">
+              <div class="context-menu-title">{{$t('m.viewerToolbarButtons')}}</div>
+              <draggable
+                :model-value="orderedViewerToolbarItems"
+                @update:model-value="onViewerToolbarReorder"
+                item-key="id"
+                animation="200"
+                class="context-menu-sort-list"
+              >
+                <template #item="{ element }">
+                  <div
+                    class="context-menu-sort-item"
+                    :class="{ 'context-menu-sort-item-off': !isViewerToolbarChecked(element.id) }"
+                  >
+                    <span class="drag-handle">⠿</span>
+                    <span class="context-menu-sort-label" @click="toggleViewerToolbar(element.id, !isViewerToolbarChecked(element.id))">{{ $t(element.labelKey) }}</span>
+                  </div>
+                </template>
+              </draggable>
+            </div>
+            <div class="setting-hint">{{$t('m.viewerToolbarButtonsHint')}}</div>
           </el-col>
         </el-row>
       </el-tab-pane>
@@ -570,6 +641,13 @@
               @change="saveSetting"
             />
           </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.showFullscreenButton"
+              :active-text="$t('m.showFullscreenButton')"
+              @change="saveSetting"
+            />
+          </el-col>
           
         </el-row>
         <!-- Windows 窗口开关:开机启动 / 置顶 / 托盘 -->
@@ -626,6 +704,7 @@
             />
           </el-col>
         </el-row>
+
 
         <!-- ================= 卡片样式 ================= -->
         <div class="advanced-section-title">{{$t('m.cardStyle')}}</div>
@@ -690,7 +769,7 @@
         </el-row>
         <!-- 封面大小(整体百分比,宽高等比)/ 封面宽度 / 封面高度 -->
         <el-row :gutter="8">
-          <el-col :span="8">
+          <el-col :span="12">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverSize')}}</span></template>
@@ -698,7 +777,7 @@
               </NameFormItem>
             </div>
           </el-col>
-          <el-col :span="8">
+          <el-col :span="12">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverWidth')}}</span></template>
@@ -706,7 +785,7 @@
               </NameFormItem>
             </div>
           </el-col>
-          <el-col :span="8">
+          <el-col :span="12">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverHeight')}}</span></template>
@@ -740,42 +819,28 @@
         <el-row :gutter="8">
           <el-col :span="24">
             <div class="setting-line">
-              <div class="toolbar-section-label">{{$t('m.toolbarShown')}}</div>
-              <draggable v-model="toolbarButtonsShown" item-key="id" animation="200" class="toolbar-sort-list" @change="saveToolbarButtons">
-                <template #item="{element}">
-                  <div class="toolbar-sort-item">
+              <draggable
+                :model-value="orderedToolbarItems"
+                @update:model-value="onToolbarReorder"
+                item-key="id"
+                animation="200"
+                class="context-menu-sort-list"
+              >
+                <template #item="{ element }">
+                  <div
+                    class="context-menu-sort-item"
+                    :class="{ 'context-menu-sort-item-off': !toolbarButtonsShown.includes(element.id) }"
+                  >
                     <span class="drag-handle">⠿</span>
-                    <el-icon :size="15" class="toolbar-item-icon"><component :is="toolbarIconMap[element]" /></el-icon>
-                    <span class="toolbar-sort-label">{{$t(toolbarLabelKey(element))}}</span>
-                    <el-button text type="danger" size="small" class="toolbar-remove-btn" @click="removeToolbarButton(element)">✕</el-button>
+                    <span class="context-menu-sort-label" @click="toggleToolbarItem(element.id, !toolbarButtonsShown.includes(element.id))">
+                      <el-icon :size="14" class="toolbar-item-icon"><component :is="toolbarIconMap[element.id]" /></el-icon>
+                      {{$t(toolbarLabelKey(element.id))}}
+                    </span>
                   </div>
                 </template>
               </draggable>
             </div>
-          </el-col>
-          <el-col :span="24" v-if="toolbarButtonsAvailable.length">
-            <div class="setting-line">
-              <div class="toolbar-section-label">{{$t('m.toolbarHidden')}}</div>
-              <div class="toolbar-hidden-list">
-                <el-tag
-                  v-for="btn in toolbarButtonsAvailable"
-                  :key="btn.id"
-                  class="toolbar-hidden-tag"
-                  closable
-                  @close="addToolbarButton(btn.id)"
-                >
-                  <el-icon :size="14" style="vertical-align: -2px; margin-right: 3px;"><component :is="toolbarIconMap[btn.id]" /></el-icon>{{$t(btn.labelKey)}}
-                </el-tag>
-              </div>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-button plain @click="resetToolbarButtons">{{$t('m.contextMenuReset')}}</el-button>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line toolbar-tip">{{$t('m.toolbarTip')}}</div>
+            <div class="setting-hint">{{$t('m.toolbarButtonsHint')}}</div>
           </el-col>
         </el-row>
 
@@ -839,18 +904,30 @@
           </el-col>
         </el-row>
 
-        <!-- 右键菜单自定义 -->
+        <!-- 右键菜单自定义:拖动排序 + 点击 ✕ 取消 / 点击标签加回 -->
         <div class="advanced-section-title">{{$t('m.contextMenu')}}</div>
+        <div class="setting-hint">{{$t('m.contextMenuSortHint')}}</div>
         <el-row :gutter="8">
           <el-col :span="24" v-for="group in contextMenuGroups" :key="group.id">
             <div class="setting-line context-menu-group">
               <div class="context-menu-title">{{ group.title }}</div>
-              <el-checkbox-group
-                :model-value="setting.contextMenuOptions?.[group.id]"
-                @update:model-value="(val) => updateContextMenuOptions(group.id, val)"
+              <draggable
+                :model-value="orderedMenuItems(group)"
+                @update:model-value="(val) => onMenuReorder(group.id, val)"
+                item-key="id"
+                animation="200"
+                class="context-menu-sort-list"
               >
-                <el-checkbox v-for="item in group.items" :key="item.id" :value="item.id" :label="item.id">{{ item.label }}</el-checkbox>
-              </el-checkbox-group>
+                <template #item="{ element }">
+                  <div
+                    class="context-menu-sort-item"
+                    :class="{ 'context-menu-sort-item-off': !isMenuChecked(group, element.id) }"
+                  >
+                    <span class="drag-handle">⠿</span>
+                    <span class="context-menu-sort-label" @click="toggleMenuItem(group.id, element.id, !isMenuChecked(group, element.id))">{{ element.label }}</span>
+                  </div>
+                </template>
+              </draggable>
             </div>
           </el-col>
         </el-row>
@@ -959,6 +1036,7 @@
               </NameFormItem>
             </div>
           </el-col>
+            <div class="setting-hint">{{$t('m.localModelComicReadHint')}}</div>
           <el-col :span="24">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="110px">
@@ -969,6 +1047,43 @@
                   <el-option :label="$t('m.saveModePreview')" value="preview"></el-option>
                 </el-select>
               </NameFormItem>
+            </div>
+          </el-col>
+          <!-- 过滤设置:阈值 + 「启用过滤」开关(开关与自动超分并排放在下面) -->
+          <el-col :span="24">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.upscaleFilter')}}</span></template>
+                <div class="upscale-filter-row">
+                  <el-input-number
+                    v-model="setting.upscaleSkipWidth"
+                    :min="0" :max="20000" :step="100" :disabled="!setting.upscaleSkipHighRes"
+                    size="small" controls-position="right" @change="saveSetting" />
+                  <span class="upscale-filter-sep">×</span>
+                  <el-input-number
+                    v-model="setting.upscaleSkipHeight"
+                    :min="0" :max="20000" :step="100" :disabled="!setting.upscaleSkipHighRes"
+                    size="small" controls-position="right" @change="saveSetting" />
+                  <span class="upscale-filter-unit">px</span>
+                </div>
+              </NameFormItem>
+            </div>
+            <div class="setting-hint">{{$t('m.upscaleFilterHint')}}</div>
+          </el-col>
+          <!-- 两个开关并排:启用过滤 / 自动超分(阅读) -->
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.upscaleSkipHighRes" :active-text="$t('m.upscaleSkipHighRes')" @change="saveSetting" />
+          </el-col>
+          <el-col :span="12" class="setting-switch">
+            <el-switch v-model="setting.autoUpscale" :active-text="$t('m.autoUpscaleSection')" @change="saveSetting" />
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-hint">{{$t('m.autoUpscaleHint')}}</div>
+          </el-col>
+          <!-- 清理超分替换原文件时留下的 .bak 备份 -->
+          <el-col :span="24">
+            <div class="setting-line">
+              <el-button type="danger" plain size="small" @click="deleteAllBakFiles">{{$t('m.deleteAllBak')}}</el-button>
             </div>
           </el-col>
           <el-col :span="24">
@@ -1327,16 +1442,16 @@
               </el-collapse-item>
             </el-collapse>
           </div>
-          <img src="/icon.png" class="about-logo">
+          <img :src="appIcon" class="about-logo">
           <!-- 致谢:大肥鱼 / universc -->
           <el-divider />
           <div class="credits-section">
             <div class="credit-person">
-              <img :src="'credits/dayu.png'" class="credit-avatar" alt="大肥鱼" />
+              <img :src="dayuAvatar" class="credit-avatar" alt="大肥鱼" />
               <a href="https://www.deepseek.com/" target="_blank" rel="noopener noreferrer">大肥鱼</a>
             </div>
             <div class="credit-person">
-              <img :src="'credits/universc.png'" class="credit-avatar" alt="universc" />
+              <img :src="universcAvatar" class="credit-avatar" alt="universc" />
               <a href="https://space.bilibili.com/315660852" target="_blank" rel="noopener noreferrer">universc</a>
             </div>
           </div>
@@ -1348,12 +1463,15 @@
 </template>
 
 <script setup>
+import dayuAvatar from '../assets/dayu.png'
+import appIcon from '../assets/icon.png'
+import universcAvatar from '../assets/universc.png'
 import { ref, onMounted, h, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox } from 'element-plus'
 import draggable from 'vuedraggable'
 import { MdRefresh, MdSync, MdShuffle, MdCodeDownload, MdBook, MdColorPalette } from '@vicons/ionicons4'
-import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
+import { TreeViewAlt, CicsSystemGroup, TagGroup, Maximize } from '@vicons/carbon'
 import { Search32Filled, ArrowTrendingLines20Filled } from '@vicons/fluent'
 
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
@@ -1420,6 +1538,7 @@ const toolbarIconMap = {
   manageTag: TagGroup,
   viewerSwitch: MdBook,
   themeSwitch: MdColorPalette,
+  fullscreen: Maximize,
 }
 const toolbarButtonsShown = computed({
   get: () => {
@@ -1448,9 +1567,27 @@ const removeToolbarButton = (id) => {
 const saveToolbarButtons = () => {
   saveSetting()
 }
-const resetToolbarButtons = () => {
-  setting.value.toolbarButtons = defaultToolbarButtons()
+// 工具栏按钮:一个列表包含全部(已显示在前),点击切换显示、长按拖动排序
+// 列表顺序:拖过就按拖出来的完整顺序(隐藏项留在原地),没拖过就按定义顺序
+const orderedToolbarItems = computed(() => {
+  const saved = setting.value.toolbarButtonOrder
+  const ids = Array.isArray(saved) && saved.length ? saved : toolbarButtonDefinitions.map(b => b.id)
+  const map = new Map(toolbarButtonDefinitions.map(b => [b.id, b]))
+  const out = ids.map(id => map.get(id)).filter(Boolean)
+  for (const b of toolbarButtonDefinitions) if (!ids.includes(b.id)) out.push(b)
+  return out
+})
+const onToolbarReorder = (list) => {
+  const ids = list.map(b => b.id)
+  setting.value.toolbarButtonOrder = ids
+  // 主界面工具栏的排列只取「已显示」的那些,顺序沿用完整顺序
+  const shownSet = new Set(toolbarButtonsShown.value)
+  toolbarButtonsShown.value = ids.filter(id => shownSet.has(id))
   saveSetting()
+}
+const toggleToolbarItem = (id, enable) => {
+  if (enable) addToolbarButton(id)
+  else removeToolbarButton(id)
 }
 
 // 每页条数:追加逗号,方便输入
@@ -1745,6 +1882,69 @@ const upscaleEngine = computed({
     saveSetting()
   },
 })
+// 自动超分用的模型:空 = 跟随「图片超分」设置
+const autoUpscaleEngine = computed({
+  get: () => setting.value.autoUpscaleEngine || '',
+  set: (val) => {
+    setting.value.autoUpscaleEngine = val || ''
+    saveSetting()
+  },
+})
+
+// ---------- 阅读时设置栏显示哪些按钮(可勾选 + 拖动排序) ----------
+// 阅读时设置栏里可配置的按钮:「退出」固定常驻右上角,不在这里
+const VIEWER_TOOLBAR_ITEMS = [
+  { id: 'scroll', labelKey: 'm.viewerBtnScroll' },
+  { id: 'singleDouble', labelKey: 'm.viewerBtnSingleDouble' },
+  { id: 'direction', labelKey: 'm.viewerBtnDirection' },
+  { id: 'fit', labelKey: 'm.viewerBtnFit' },
+  { id: 'zoom', labelKey: 'm.viewerBtnZoom' },
+  { id: 'thumbnail', labelKey: 'm.thumbnail' },
+  { id: 'sidebar', labelKey: 'm.showSidebar' },
+  { id: 'pin', labelKey: 'm.pinToolbar' },
+]
+// 旧配置里没有这些核心按钮时补上(否则升级后它们会从设置栏消失)
+const VIEWER_TOOLBAR_CORE = ['scroll', 'singleDouble', 'direction', 'fit', 'zoom']
+// 旧配置里的 zoomIn / zoomOut 归一成 zoom
+const normalizeViewerToolbarId = (id) => (id === 'zoomIn' || id === 'zoomOut' ? 'zoom' : id)
+// 空数组 = 全部显示(与阅读器里的判断保持一致)
+const viewerToolbarIds = () => {
+  const list = setting.value.viewerToolbarButtons
+  // 旧配置里的 zoomIn / zoomOut 归一成 zoom,否则取消勾选「缩放」不生效
+  const base = Array.isArray(list) && list.length
+    ? list.map(normalizeViewerToolbarId)
+    : VIEWER_TOOLBAR_ITEMS.map(i => i.id)
+  return [...new Set(base)]
+}
+const isViewerToolbarChecked = (id) => viewerToolbarIds().includes(id)
+// 同上:隐藏的按钮留在原地,不会跑到末尾
+const orderedViewerToolbarItems = computed(() => {
+  const saved = setting.value.viewerToolbarOrder
+  const ids = Array.isArray(saved) && saved.length ? saved : VIEWER_TOOLBAR_ITEMS.map(i => i.id)
+  const map = new Map(VIEWER_TOOLBAR_ITEMS.map(i => [i.id, i]))
+  const out = ids.map(id => map.get(id)).filter(Boolean)
+  for (const item of VIEWER_TOOLBAR_ITEMS) if (!ids.includes(item.id)) out.push(item)
+  return out
+})
+const onViewerToolbarReorder = (list) => {
+  const ids = list.map(i => i.id).map(normalizeViewerToolbarId)
+  setting.value.viewerToolbarOrder = ids
+  // 阅读时显示哪些按钮 = 已勾选项(按完整顺序排列)
+  const checkedSet = new Set(viewerToolbarIds())
+  setting.value.viewerToolbarButtons = ids.filter(id => checkedSet.has(id))
+  saveSetting()
+}
+const toggleViewerToolbar = (id, enable) => {
+  let ids = [...viewerToolbarIds()]
+  if (enable) { if (!ids.includes(id)) ids.push(id) } else { ids = ids.filter(x => x !== id) }
+  setting.value.viewerToolbarButtons = ids
+  // 同时写一份完整顺序:既能记住位置,也让「一个都不勾」与「从未配置」区分开
+  if (!Array.isArray(setting.value.viewerToolbarOrder) || !setting.value.viewerToolbarOrder.length) {
+    setting.value.viewerToolbarOrder = VIEWER_TOOLBAR_ITEMS.map(i => i.id)
+  }
+  saveSetting()
+}
+
 const fetchApiModels = async (p) => {
   const base = normApiBase(p.baseUrl)
   if (!base) return printMessage('warning', t('m.apiNeedUrl'))
@@ -1914,6 +2114,26 @@ const toggleAiPause = async () => {
 }
 
 // ---------- 恢复全部默认 ----------
+// 图片超分:删除漫画库中所有 .bak 备份(超分「替换原文件」时留下的旧文件)
+const deleteAllBakFiles = async () => {
+  try {
+    await ElMessageBox.confirm(t('c.deleteBakConfirm'), t('m.deleteAllBak'), { type: 'warning' })
+  } catch (e) {
+    return
+  }
+  try {
+    const res = await ipcRenderer.invoke('delete-all-bak-files')
+    if (res && res.ok) {
+      if (res.count) printMessage('success', t('c.deleteBakDone', { n: res.count }))
+      else printMessage('info', t('c.deleteBakNone'))
+    } else {
+      printMessage('error', (res && res.error) || t('c.deleteBakNone'))
+    }
+  } catch (e) {
+    printMessage('error', String((e && e.message) || e))
+  }
+}
+
 const resetAllSettings = async () => {
   try {
     await ElMessageBox.confirm(t('c.resetAllWarning'), t('m.resetAll'), {
@@ -1973,6 +2193,8 @@ const contextMenuGroups = computed(() => [
       { id: 'getMetadataFromLink', label: t('m.getMetadataFromClipboardLink') },
       { id: 'translateBook', label: t('m.translateBook') },
       { id: 'upscaleBook', label: t('m.upscaleBook') },
+      { id: 'restoreBookBak', label: t('c.restoreBookBak') },
+      { id: 'deleteBookBak', label: t('c.deleteBookBak') },
       { id: 'colorizeBook', label: t('m.colorizeBook') },
     ]
   },
@@ -1988,6 +2210,7 @@ const contextMenuGroups = computed(() => [
       { id: 'ocrImage', label: t('m.extractImageText') },
       { id: 'translateImage', label: t('m.translateImage') },
       { id: 'colorizeImage', label: t('m.colorize') },
+      { id: 'imageProperties', label: t('m.imageProperties') },
     ]
   },
   {
@@ -2002,6 +2225,43 @@ const contextMenuGroups = computed(() => [
 const updateContextMenuOptions = (menuId, val) => {
   if (!setting.value.contextMenuOptions) setting.value.contextMenuOptions = defaultContextMenuOptions()
   setting.value.contextMenuOptions[menuId] = val
+  saveSetting()
+}
+
+// ---------- 右键菜单:拖动排序 / 取消 / 加回 ----------
+// contextMenuOptions[menuId] 同时承载「显示了哪些项」与「顺序」;
+// 设置页只列出该组已勾选的项(可拖动),未勾选的项以标签形式放在下面,点一下就加回来。
+const menuItemIds = (group) => {
+  const saved = setting.value.contextMenuOptions?.[group.id]
+  return Array.isArray(saved) ? saved : group.items.map(i => i.id)
+}
+const isMenuChecked = (group, itemId) => menuItemIds(group).includes(itemId)
+// 列表顺序 = 用户拖出来的完整顺序(隐藏的项留在原地,不会被挤到后面)
+const orderedMenuItems = (group) => {
+  const saved = setting.value.contextMenuOrder?.[group.id]
+  // 还没拖动过 → 用定义顺序:所有项(含隐藏的)都保持在原位
+  if (!Array.isArray(saved) || !saved.length) return group.items
+  const map = new Map(group.items.map(i => [i.id, i]))
+  const ordered = saved.map(id => map.get(id)).filter(Boolean)
+  for (const item of group.items) if (!saved.includes(item.id)) ordered.push(item)
+  return ordered
+}
+const onMenuReorder = (groupId, list) => {
+  if (!setting.value.contextMenuOrder) setting.value.contextMenuOrder = {}
+  setting.value.contextMenuOrder[groupId] = list.map(i => i.id)
+  saveSetting()
+}
+const toggleMenuItem = (groupId, itemId, enable) => {
+  const group = contextMenuGroups.value.find(g => g.id === groupId)
+  if (!group) return
+  let ids = [...menuItemIds(group)]
+  if (enable) {
+    if (!ids.includes(itemId)) ids.push(itemId)
+  } else {
+    ids = ids.filter(id => id !== itemId)
+  }
+  if (!setting.value.contextMenuOptions) setting.value.contextMenuOptions = defaultContextMenuOptions()
+  setting.value.contextMenuOptions[groupId] = ids
   saveSetting()
 }
 
@@ -2036,6 +2296,38 @@ onMounted(() => {
       if (res.defaultScraper === undefined) setting.value.defaultScraper = 'exhentai'
       if (res.defaultInsertEmptyPage === undefined) setting.value.defaultInsertEmptyPage = true
       if (res.viewerType === undefined) setting.value.viewerType = 'original'
+      // 阅读器浮层设置栏 / 阅读结束行为 / 自动超分(旧配置没有这些键)
+      if (res.viewerToolbarHover === undefined) setting.value.viewerToolbarHover = true
+      if (res.viewerToolbarClick === undefined) setting.value.viewerToolbarClick = true
+      if (res.viewerEndAction === undefined) setting.value.viewerEndAction = 'none'
+      if (res.autoUpscale === undefined) setting.value.autoUpscale = false
+      if (res.autoUpscaleRatio === undefined) setting.value.autoUpscaleRatio = 1.05
+      if (res.autoUpscaleEngine === undefined) setting.value.autoUpscaleEngine = ''
+      if (res.autoUpscaleSaveMode === undefined) setting.value.autoUpscaleSaveMode = 'preview'
+      if (res.readingDirection === undefined) setting.value.readingDirection = 'vertical'
+      if (res.scrollDoubleMode === undefined) setting.value.scrollDoubleMode = false
+      if (!Array.isArray(res.viewerToolbarButtons)) setting.value.viewerToolbarButtons = []
+      if (!Array.isArray(res.viewerToolbarOrder)) setting.value.viewerToolbarOrder = []
+      // 「退出」按钮已固定常驻:从旧配置里去掉;核心按钮缺失时补上(升级不丢按钮)
+      if (Array.isArray(setting.value.viewerToolbarButtons) && setting.value.viewerToolbarButtons.length) {
+        const list = [...new Set(setting.value.viewerToolbarButtons.map(normalizeViewerToolbarId).filter(id => id !== 'exit'))]
+        for (const id of VIEWER_TOOLBAR_CORE) if (!list.includes(id)) list.push(id)
+        setting.value.viewerToolbarButtons = list
+      }
+      if (Array.isArray(setting.value.viewerToolbarOrder) && setting.value.viewerToolbarOrder.length) {
+        const list = [...new Set(setting.value.viewerToolbarOrder.map(normalizeViewerToolbarId).filter(id => id !== 'exit'))]
+        for (const id of VIEWER_TOOLBAR_CORE) if (!list.includes(id)) list.push(id)
+        setting.value.viewerToolbarOrder = list
+      }
+      if (res.showNextMangaButtons === undefined) setting.value.showNextMangaButtons = true
+      if (res.viewerImageGap === undefined) setting.value.viewerImageGap = 0
+      if (res.viewerThumbnailGap === undefined) setting.value.viewerThumbnailGap = 0
+      if (res.viewerButtonTips === undefined) setting.value.viewerButtonTips = true
+      if (!Array.isArray(res.toolbarButtonOrder)) setting.value.toolbarButtonOrder = []
+      if (res.viewerEndTip === undefined) setting.value.viewerEndTip = true
+      if (res.showFullscreenButton === undefined) setting.value.showFullscreenButton = true
+      // 「自动跳转到下一本」已并入「阅读完成后」:老配置里开着的话迁移成打开下一本
+      if (res.viewerEndAction === undefined && res.autoNextManga === true) setting.value.viewerEndAction = 'next'
       // 标题翻译设置默认值(旧版 setting.json 没有这些键)
       if (res.titleTranslationMode === undefined) setting.value.titleTranslationMode = 'off'
       if (res.titleTranslationBaseUrl === undefined) setting.value.titleTranslationBaseUrl = ''
@@ -2053,6 +2345,7 @@ onMounted(() => {
       // 已有配置只并入「本版本新增」的项,绝不把用户取消勾选的项加回来
       // (历史 bug:每次打开设置都会变回全选)
       if (res.contextMenuOptions === undefined) setting.value.contextMenuOptions = defaultContextMenuOptions()
+      if (!res.contextMenuOrder || typeof res.contextMenuOrder !== 'object') setting.value.contextMenuOrder = {}
       {
         const mergedMenuOptions = mergeContextMenuOptions(setting.value.contextMenuOptions)
         setting.value.contextMenuOptions = mergedMenuOptions.options
@@ -2109,6 +2402,10 @@ onMounted(() => {
   if (res.upscaleSaveMode === undefined) setting.value.upscaleSaveMode = 'same'
     if (res.upscaleSizeMode === undefined) setting.value.upscaleSizeMode = 'scale'
     if (res.upscaleTargetWidth === undefined) setting.value.upscaleTargetWidth = 2000
+    // 超分过滤设置(旧配置没有这些键):默认开启,阈值 1200×2000
+    if (res.upscaleSkipHighRes === undefined) setting.value.upscaleSkipHighRes = true
+    if (res.upscaleSkipWidth === undefined) setting.value.upscaleSkipWidth = 1200
+    if (res.upscaleSkipHeight === undefined) setting.value.upscaleSkipHeight = 2000
   if (res.colorizeSaveMode === undefined) setting.value.colorizeSaveMode = 'same' 
       if (res.ocrApiModel === undefined) setting.value.ocrApiModel = 'qwen2.5-vl:7b'
       saveSetting()
@@ -2899,6 +3196,68 @@ const dialogVisibleSetting = ref(false)
 // 更新日志(关于页展示;新版本加在数组最前面)
 const changelog = [
   {
+    version: 'v1.13.0',
+    summary: '自动超分修复 + 图片/缩略图间距 + 阅读完成后随机下一本 + 全屏按钮 + 界面整理',
+    items: [
+      '【新增】图片间距 / 缩略图间距(设置 → 内置阅读器,默认 0 = 紧贴)',
+      '【新增】阅读完成后 →「打开下一本(随机)」',
+      '【新增】设置 → 高级 → 工具栏按钮:全屏按钮(可勾选、可拖动排序)',
+      '【新增】内置阅读器每一项设置都配了说明(对着渲染矩阵写的)',
+      '【修复】自动超分:按「图片超分 → 保存位置」执行(替换原文件会生成 .bak);超分完立即显示;分页模式也能触发;全程无提示',
+      '【修复】关于页致谢头像与 logo 不显示(原图在仓库里被行尾转换损坏,已换成打包资源 + 新头像)',
+      '【修复】设置栏「缩放」取消勾选不生效;设置栏按钮拖动排序不生效;工具栏缩略图按钮点了没反应;隐藏页码管不住缩略图页码',
+      '【界面】放大 / 缩小合并为一项「缩放」;卷轴 / 单双按钮去掉蓝色高亮;退出按钮固定右上角不参与配置',
+      '【界面】点击弹出设置栏的区域由中央 1/4 改为中央 1/5;底部「上一本 / 随机 / 下一本」隐藏 0%、鼠标到底部才显示',
+      '【界面】设置 → 内置阅读器重排:选择项置顶、开关两列并排;高级页删除「恢复默认」、卡片样式分开、小字统一',
+      '【文案】「双页模式默认在首页插入空白页」→「双页模式单独封面」;「自动超分放大」→「自动超分」',
+      '【说明】ComicRead 的「无损放大」用的就是 Real-ESRGAN(网页版);本地模型已内置同一个模型,装好即可通用',
+    ]
+  },
+  {
+    version: 'v1.12.0',
+    summary: '阅读器渲染矩阵重做 + 缩放/适应全局生效 + 设置界面整理',
+    items: [
+      '【阅读器渲染矩阵】12 种组合(卷轴开/关 × 单页/双页 × 上下/左右/右左)全部按矩阵重做,并逐条实测核对',
+      '【全局缩放】➖ / ➕ 在分页单页、分页双页、纵向卷轴、横向整排下都显示、都生效(0.3×~3×,步进 10%);Ctrl+滚轮以鼠标位置为锚点缩放',
+      '【全局适应】适应窗口 / 宽度 / 高度在所有模式下都有实际效果(旧版卷轴下点了没反应)',
+      '【横向右左】整排反向、进入时贴最右并随图片加载保持贴边、滚轮反向、到底判定改看左端、当前页取最右那张',
+      '【键盘】翻页 / 滚动 / 缩放全部由阅读器按「阅读方向」处理(旧版卷轴下键盘滚的是不滚动的容器,等于没反应);PageDown / PageUp 仍为主界面切书',
+      '【分页双页】右左时视觉顺序改为 N+1、N(第 1 页在右);横图独占一屏',
+      '【设置栏】按钮顺序与显隐完全由设置决定:可拖动排序、点击显隐;放大 / 缩小合并为一项「缩放」;卷轴 / 单双按钮去掉蓝色高亮',
+      '【设置栏】退出按钮固定常驻右上角,不参与调整;新增「设置栏(顶部弹出)」「设置栏(点击弹出)」开关与说明',
+      '【缩略图】修复工具栏缩略图按钮点了没反应;点击缩略图精确跳转并高亮反馈;隐藏页码同时管住缩略图里的页码',
+      '【阅读器】底部「上一本 / 随机 / 下一本」可在设置里启用或隐藏',
+      '【设置】本地阅读器页重排:选择项置顶、开关两列并排、缩略图列数与限制图像宽度移到「阅读完成后」下方',
+      '【文案】「双页模式默认在首页插入空白页」改为「双页模式单独封面」;「自动超分放大」改为「自动超分」;各设置小字按实际行为重写',
+      '【设置】高级页:右键菜单 / 工具栏按钮小字统一为「拖动调整顺序;单击启用/取消显示」;删除工具栏「恢复默认」按钮;卡片样式中封面大小 / 封面宽度 / 封面高度分开排列',
+      '【修复】横向卷轴当前页判定、右左贴边、分页双页左右顺序、卷轴键盘失效、缩略图点击无反应等一批问题',
+      '【其它】阅读结束行为(不处理 / 退出 / 下一本)、最后一页提示、自动超分(只用于显示)、.bak 备份清理',
+    ]
+  },
+  {
+    version: 'v1.11.0',
+    summary: '阅读器性能重构(实测 11.9 倍)+ ComicRead 卡死修复',
+    items: [
+      '缩略图改为按需生成 + 后台限流 + 持久缓存:不开侧栏就不生成,重复打开直接命中缓存',
+      '主循环改预读窗口(并行准备、按顺序推送),不再被缩略图抢占线程池',
+      '切书/关闭阅读器后旧任务立即取消,临时目录改为只清 24 小时前的文件',
+      '网页版/远程模式:阅读器生成的图走长缓存,来回滚动不再重传整张图',
+      '本地直读默认不再对超宽图重编码(实测 300 页可省约 60 秒)',
+      '前端:滚动时的列表重渲染次数大幅下降,侧栏高亮复杂度从 O(n²) 降到 O(1)',
+      '修复 ComicRead 退出后后台扫描/获取元数据永久卡住;补上阅读进度保存与恢复',
+    ]
+  },
+  {
+    version: 'v1.10.4',
+    summary: '图片右键「属性」+ 超分「过滤设置」',
+    items: [
+      '阅读器图片右键新增「属性」:名称 / 大小 / 分辨率 / 编码(含通道数与位深) / 修改时间 / 路径',
+      '「属性」可在 设置 → 高级 → 右键菜单 里勾选;网页版只读账户也能查看',
+      '超分新增「过滤设置」:图片宽和高都 ≥ 阈值(默认 1200×2000)时跳过超分,不生成任何文件',
+      '过滤在超分入口统一判定,单张超分与全本超分同样生效;全本结束提示会显示跳过张数',
+    ]
+  },
+  {
     version: 'v1.10.0',
     summary: 'AI 功能改造修复批次:双击封面 / 收藏标签 / 标签去重 / 超分尺寸 / 标签多语言 / 标签关联',
     items: [
@@ -3273,6 +3632,45 @@ defineExpose({
     color: var(--el-text-color-secondary)
     font-size: 12px
     text-align: left
+  // 右键菜单排序:已显示的项可拖动,未显示的项是标签
+  // 设置界面内的按钮 / 标签 / 拖拽项一律不可选中,避免拖动时把文字框选成蓝色
+  .el-button, .el-tag, .el-switch__label, .el-checkbox, .context-menu-sort-item, .context-menu-title, .setting-label
+    user-select: none
+  // 菜单项 / 设置栏按钮:点击切换显示,直接拖动排序(⿻ 手柄或整项都可以)
+  .context-menu-sort-list
+    display: flex
+    flex-wrap: wrap
+    gap: 8px
+    margin-top: 6px
+  .context-menu-sort-item
+    display: flex
+    align-items: center
+    gap: 6px
+    padding: 4px 12px
+    cursor: grab
+    .drag-handle
+      color: var(--el-text-color-secondary)
+      cursor: grab
+    .context-menu-sort-label
+      display: inline-flex
+      align-items: center
+      gap: 3px
+      cursor: pointer
+    border: solid 1px var(--el-border-color)
+    border-radius: 16px
+    background-color: var(--el-fill-color-light)
+    color: var(--el-text-color-primary)
+    font-size: 13px
+    cursor: pointer
+    user-select: none
+    transition: box-shadow .2s ease, opacity .2s ease
+    &:hover
+      box-shadow: 0 2px 8px rgba(0, 0, 0, .1)
+  // 已隐藏的项:灰色(点击可重新启用)
+  .context-menu-sort-item-off
+    opacity: .45
+    color: var(--el-text-color-secondary)
+    background-color: transparent
   // 自定义主题面板
   .custom-theme-panel
     border: solid 1px var(--el-border-color)
@@ -3302,6 +3700,17 @@ defineExpose({
           flex: 1
         .el-color-picker
           flex: 0 0 auto
+  // 超分过滤设置(开关 + 宽×高阈值)
+  .upscale-filter-row
+    display: flex
+    align-items: center
+    flex-wrap: wrap
+    gap: 8px
+    .upscale-filter-sep, .upscale-filter-unit
+      font-size: 12px
+      color: var(--el-text-color-secondary)
+    .el-input-number
+      width: 120px
   // 恢复全部默认
   .reset-all-row
     margin-top: 18px

@@ -31,8 +31,14 @@ temp
 
 .vscode
 devtools
+# 前端构建临时目录(esbuild 需要把 TEMP 指到这里,否则会报 Access is denied)
+.build-tmp
 # 发布物:现成镜像包/安装包体积大,不入库
 docker-镜像
 *.tar.gz
 # 本地环境变量(含密码,不要提交)
 .env
+# 本地临时目录(阅读器验证脚手架 / esbuild 临时文件)
+.tmp/
+# 重建前的构建产物备份(用于对比排查)
+dist.bak-*/

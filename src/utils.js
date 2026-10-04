@@ -98,8 +98,8 @@ const fetchRecentReads = () => {
 // 用户可在 设置 → 右键菜单 中勾选要显示的项,保存在 setting.contextMenuOptions。
 const contextMenuDefinitions = {
   title: ['copyTitle', 'copyLink', 'copyTitleAndLink', 'translateTitle'],
-  cover: ['getMetadata', 'resetMetadata', 'openFileLocation', 'moveFile', 'deleteFile', 'toggleHidden', 'copyTag', 'pasteTag', 'getMetadataFromLink', 'translateBook', 'upscaleBook', 'colorizeBook'],
-  image: ['copyImage', 'setCover', 'deleteImage', 'renameImage', 'upscaleImage', 'ocrImage', 'translateImage', 'colorizeImage'],
+  cover: ['getMetadata', 'resetMetadata', 'openFileLocation', 'moveFile', 'deleteFile', 'toggleHidden', 'copyTag', 'pasteTag', 'getMetadataFromLink', 'translateBook', 'upscaleBook', 'restoreBookBak', 'deleteBookBak', 'colorizeBook'],
+  image: ['copyImage', 'setCover', 'deleteImage', 'renameImage', 'upscaleImage', 'restoreImageBak', 'ocrImage', 'translateImage', 'colorizeImage', 'imageProperties'],
   comment: ['openLink'],
 }
 
@@ -117,6 +117,20 @@ const isContextMenuItemEnabled = (setting, menuId, itemId) => {
   const options = setting?.contextMenuOptions
   if (!options || !options[menuId]) return true
   return options[menuId].includes(itemId)
+}
+
+// 按用户在「设置 → 高级 → 右键菜单」里拖动的顺序排列菜单项。
+// contextMenuOptions[menuId] 既是「勾选了哪些」也是「顺序」;没有配置过就保持定义顺序。
+const sortContextMenuItems = (setting, menuId, items) => {
+  // 优先用「完整顺序」(隐藏项也留在原位),老配置回退到「已启用列表」的顺序
+  const order = setting?.contextMenuOrder?.[menuId] || setting?.contextMenuOptions?.[menuId]
+  if (!Array.isArray(order) || !order.length) return items
+  const rank = new Map(order.map((id, index) => [id, index]))
+  return [...items].sort((a, b) => {
+    const ra = rank.has(a.id) ? rank.get(a.id) : Number.MAX_SAFE_INTEGER
+    const rb = rank.has(b.id) ? rank.get(b.id) : Number.MAX_SAFE_INTEGER
+    return ra - rb
+  })
 }
 
 // 右键菜单项「版本迁移」合并 —— 只并入本版本真正新增的项,绝不动用户取消的勾选。
@@ -285,6 +299,7 @@ const toolbarButtonDefinitions = [
   { id: 'manageTag', labelKey: 'm.manageTag' },
   { id: 'viewerSwitch', labelKey: 'm.viewerSwitch' },
   { id: 'themeSwitch', labelKey: 'm.themeSwitch' },
+  { id: 'fullscreen', labelKey: 'm.fullscreenButton' },
 ]
 const defaultToolbarButtons = () => toolbarButtonDefinitions.map(b => b.id)
 
@@ -438,6 +453,8 @@ const defaultUiSettings = () => ({
   openaiModel: 'deepseek-chat',
   openaiApiKey: '',
   contextMenuOptions: defaultContextMenuOptions(),
+  // 右键菜单项的完整显示顺序(与「启用与否」分开存,这样隐藏的项会留在原地而不是被挤到后面)
+  contextMenuOrder: {},
   hideBookmarkButton: false,
   hidePageCount: false,
   hideReadCount: false,
@@ -490,6 +507,39 @@ const defaultUiSettings = () => ({
   tagGenApiProfileId: '',
   upscaleSaveMode: 'same',
   upscaleScale: 2,
+  // 超分过滤:图片宽和高都 ≥ 阈值(默认 1200×2000)时跳过超分,避免对已经足够清晰的图白跑一次
+  upscaleSkipHighRes: true,
+  upscaleSkipWidth: 1200,
+  upscaleSkipHeight: 2000,
+  // 内置阅读器:浮层设置栏的弹出方式与阅读结束行为
+  viewerToolbarHover: true,   // 鼠标移到屏幕顶部(1/22)时弹出设置栏
+  viewerToolbarClick: true,   // 点击画面中央 1/4 区域时弹出设置栏
+  viewerEndAction: 'none',    // 阅读完成后:none=不处理 / exit=退出阅读器 / next=打开下一本 / random=打开随机一本
+  viewerEndTip: true,         // 到最后一页时给一次提示
+  // 自动超分放大:图片被放大显示时自动超分(仅用于显示,不落盘)
+  autoUpscale: false,
+  autoUpscaleRatio: 1.05,          // 显示尺寸超过原图这个倍数时触发自动超分
+  autoUpscaleEngine: '',           // 自动超分用的模型:空=跟随「图片超分」;local:<id> / api:<profileId>
+  autoUpscaleSaveMode: 'preview',  // 自动超分的保存方式:preview=只用于显示(默认,不落盘)
+  // 阅读方向:vertical=上下(卷轴) / ltr=左右 / rtl=右左(日漫)
+  readingDirection: 'vertical',
+  // 卷轴模式下是否并排显示两页(和 ComicRead 的卷轴双页一致)
+  scrollDoubleMode: false,
+  // 阅读时设置栏里显示哪些按钮(顺序即数组顺序;留空=全部显示;「退出」按钮固定常驻不在此列)
+  viewerToolbarButtons: [],
+  // 阅读器底部「上一本 / 随机 / 下一本」按钮是否显示
+  showNextMangaButtons: true,
+  // 阅读器里图片之间的距离(px)与缩略图之间的距离(px),0 = 紧贴
+  viewerImageGap: 0,
+  viewerThumbnailGap: 0,
+  // 点设置栏按钮时是否弹一句用法提示(可在 设置 → 内置阅读器 里关掉)
+  viewerButtonTips: true,
+  // 设置栏按钮的完整顺序(含隐藏项;空=定义顺序)
+  viewerToolbarOrder: [],
+  // 主界面工具栏按钮的完整顺序(含隐藏项;空=定义顺序)
+  toolbarButtonOrder: [],
+  // 界面:是否显示右上角的方框全屏按钮
+  showFullscreenButton: true,
   // 超分输出尺寸:scale=按倍数 / width=按目标宽度(px)
   upscaleSizeMode: 'scale',
   upscaleTargetWidth: 2000,
@@ -504,6 +554,7 @@ export {
   contextMenuDefinitions,
   defaultContextMenuOptions,
   isContextMenuItemEnabled,
+  sortContextMenuItems,
   mergeContextMenuOptions,
   ensureBookCover,
   toAssetUrl,

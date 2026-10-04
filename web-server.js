@@ -96,11 +96,12 @@ const throttleFail = (username) => {
 const VIEWER_ALLOWED_CHANNELS = new Set([
   'load-setting', 'load-book-list', 'get-folder-tree', 'load-collection-list', 'load-manga-image-list',
   'open-url', 'show-file', 'open-local-book', 'get-default-manga-reader',
-  'get-locale', 'get-path-sep', 'copy-text-to-clipboard', 'copy-image-to-clipboard',
+  'get-locale', 'get-path-sep', 'copy-text-to-clipboard', 'copy-image-to-clipboard', 'image-file-info',
   'read-text-from-clipboard', 'update-window-title', 'switch-fullscreen',
   'set-viewer-active', 'set-progress-bar', 'extract-image-text',
   'ai-translate-text', 'ai-save-text', 'ai-colorize-image', 'ai-list-images',
   'list-title-translation-models', 'query-character-origins', 'test-title-translation',
+  'request-thumbnails',
 ])
 
 // viewer 读取设置时抹掉敏感信息(cookie / API 密钥 / 代理)
@@ -258,14 +259,22 @@ app.get('/api/file', requireLogin, (req, res) => {
   const ok = roots.some(root => p === root || p.startsWith(root + path.sep))
   if (!ok) return res.status(403).send('Forbidden')
   if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).send('Not found')
-  // 封面文件(共享 cover 目录,文件名稳定)→ 允许长缓存,滚动浏览提速;
-  // 阅读用临时图(viewer 缓存/漫画库原图)→ 不缓存,避免旧图错乱
+  // 缓存策略分三档(1.11.0):
+  //  ① 封面(共享 cover 目录,文件名稳定)→ 长缓存;
+  //  ② 阅读器自己生成的图(缩略图/缩放缓存/改名副本,文件名唯一且内容不会变)→ immutable 永久缓存:
+  //     同一页来回滚动 = 零请求,这是网页版/远程模式最直接的提速点;
+  //  ③ 其它(漫画库原图、压缩包解压产物:文件名可能在不同漫画间重名,内容也可能被超分替换)
+  //     → 强制校验;Express sendFile 自带 ETag/Last-Modified,内容没变会返回 304,不再重传整张图。
+  //     注意:这一档绝不能发 immutable,否则超分替换原文件后会一直显示旧图。
   const coverDir = path.join(STORE_PATH, 'cover')
   const isCover = p.startsWith(coverDir + path.sep)
+  const isGeneratedImage = /^(thumb_|rsz_|resized_|rename_)/.test(path.basename(p))
   res.sendFile(p, {
     headers: isCover
       ? { 'Cache-Control': 'public, max-age=86400' }
-      : { 'Cache-Control': 'no-store' }
+      : isGeneratedImage
+        ? { 'Cache-Control': 'public, max-age=31536000, immutable' }
+        : { 'Cache-Control': 'private, max-age=0, must-revalidate' }
   })
 })
 

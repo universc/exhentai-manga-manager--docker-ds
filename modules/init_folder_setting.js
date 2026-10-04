@@ -204,6 +204,18 @@ const prepareSetting = () => {
       upscaleSaveMode: 'same',
       // 本地超分倍数(2/3/4);配置了超分 API 时由 API 决定
       upscaleScale: 2,
+      // 超分过滤:图片的宽和高都 ≥ 阈值时跳过超分(默认 1200×2000);阈值填 0 表示该方向不限制
+      upscaleSkipHighRes: true,
+      upscaleSkipWidth: 1200,
+      upscaleSkipHeight: 2000,
+      // 内置阅读器:浮层设置栏的弹出方式 / 阅读结束行为 / 自动超分放大
+      viewerToolbarHover: true,
+      viewerToolbarClick: true,
+      viewerEndAction: 'none',
+      viewerEndTip: true,
+      autoUpscale: false,
+      autoUpscaleRatio: 1.05,
+      showFullscreenButton: true,
       colorizeSaveMode: 'same',
       ocrApiUrl: '',
       ocrApiModel: 'qwen2.5-vl:7b',

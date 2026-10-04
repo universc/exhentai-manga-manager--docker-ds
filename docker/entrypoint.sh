@@ -88,6 +88,16 @@ if [ ! -f "$DATA_DIR/setting.json" ]; then
     "waifu2x": { "model": "models-cunet", "scale": 2, "noiseLevel": 0, "tileSize": 0, "gpuId": 0, "tta": false }
   },
   "localModelMirror": "",
+  "upscaleSkipHighRes": true,
+  "upscaleSkipWidth": 1200,
+  "upscaleSkipHeight": 2000,
+  "viewerToolbarHover": true,
+  "viewerToolbarClick": true,
+  "viewerEndAction": "none",
+  "viewerEndTip": true,
+  "autoUpscale": false,
+  "autoUpscaleRatio": 1.05,
+  "showFullscreenButton": true,
   "enableImageUpscale": false,
   "enableImageOcr": false
 }

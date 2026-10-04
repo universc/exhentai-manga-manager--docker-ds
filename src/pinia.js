@@ -203,7 +203,12 @@ export const useAppStore = defineStore('appStore', {
         if (p) p.done = done
       }).then(res => {
         if (res && res.ok) {
-          ElMessage({ message: (chars[kind] || '任务') + ' 完成(' + res.total + ' 张)', type: 'success', duration: 3000 })
+          // 超分:命中「过滤设置」的图片会被后端跳过,这里单独统计,避免用户以为没执行
+          const skipped = Array.isArray(res.results)
+            ? res.results.filter(r => r && r.res && r.res.skipped).length
+            : 0
+          const extra = skipped ? ',跳过 ' + skipped + ' 张(已达过滤阈值)' : ''
+          ElMessage({ message: (chars[kind] || '任务') + ' 完成(' + res.total + ' 张' + extra + ')', type: 'success', duration: skipped ? 5000 : 3000 })
         } else if (res && res.error === 'aborted') {
           ElMessage({ message: (chars[kind] || '任务') + ' 已中止', type: 'warning', duration: 3000 })
         } else {

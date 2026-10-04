@@ -164,7 +164,7 @@ import ContextMenu from '@imengyu/vue3-context-menu'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { isContextMenuItemEnabled, ensureBookCover, getDisplayTagName, resolveCatKey } from '../utils.js'
+import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, getDisplayTagName, resolveCatKey } from '../utils.js'
 const appStore = useAppStore()
 const TASK_CHARS = { translate: '翻', colorize: '色', upscale: '分', extract: '字' }
 const bookTaskProgress = computed(() => (appStore.bookTaskProgress && appStore.bookTaskProgress[props.book && props.book.id]) || null)
@@ -360,7 +360,8 @@ const onMangaTitleContextMenu = (e, book) => {
   ].filter(item => isContextMenuItemEnabled(setting.value, 'title', item.id))
   // 全部项都被取消勾选时不弹出空白菜单
   if (items.length === 0) return
-  ContextMenu.showContextMenu({ x: e.x, y: e.y, items })
+  // 顺序按「设置 → 高级 → 右键菜单」里拖动后的顺序
+  ContextMenu.showContextMenu({ x: e.x, y: e.y, items: sortContextMenuItems(setting.value, 'title', items) })
 }
 
 </script>
