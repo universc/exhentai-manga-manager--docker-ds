@@ -40,7 +40,7 @@
         </div>
       </div>
       <div class="drawer-viewer-body"
-        :class="{ 'viewer-horizontal-scroll': isHorizontalScroll }"
+        :class="{ 'viewer-horizontal-scroll': isHorizontalScroll, 'viewer-paged': isPaging, 'viewer-zoomed': isZoomedIn }"
         ref="drawerViewerBody"
         @wheel.stop="handleBodyWheel"
         @scroll="handleBodyScroll"
@@ -732,6 +732,10 @@ const imageStyleFitLabel = computed(() => t({
 }[imageStyleFit.value] || 'm.fitWindow'))
 // 设置栏里的数值 = 全局缩放(对全部模式生效)
 const viewerZoomLabel = computed(() => Math.round(viewerZoom.value * 100) + '%')
+// 分页模式(单页 / 双页):用于关闭「没放大时的滚动条」
+const isPaging = computed(() => imageStyleType.value === 'single' || imageStyleType.value === 'double')
+// 是否已放大(>100%):放大后才允许分页容器滚动
+const isZoomedIn = computed(() => viewerZoom.value > 1.001)
 const currentImageId = ref('')
 const insertEmptyPage = ref(true)
 const insertEmptyPageIndex = ref(0)
@@ -1351,8 +1355,9 @@ const onImagePanEnd = () => {
   panState = null
 }
 
-// 点击画面中央「1/5 面积」唤出设置栏(半边 0.5/√5),其余区域按「方向」翻页(只有分页模式翻页)
-const TOOLBAR_CLICK_ZONE_HALF = 0.5 / Math.sqrt(5)
+// 点击画面「中央 1/5」唤出设置栏:指**宽度**占 1/5 的中央竖带(左右各 40% 仍是翻页区),
+// 其余区域按「方向」翻页(只有分页模式翻页)
+const TOOLBAR_CLICK_ZONE_HALF = 0.1
 const handleViewerAreaClick = (event) => {
   if (Date.now() < suppressClickUntil) return
   const el = drawerViewerBody.value
@@ -1362,10 +1367,9 @@ const handleViewerAreaClick = (event) => {
       : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
     const x = event.clientX - rect.left
     const y = event.clientY - rect.top
-    // 中央「1/5 面积」区域:边长 = 1/√5 ≈ 0.447,半边 = 0.5/√5 ≈ 0.224
+    // 中央「宽度 1/5」竖带:横向半边 = 0.1,纵向不限制(整个高度都算中央区)
     const halfW = rect.width * TOOLBAR_CLICK_ZONE_HALF
-    const halfH = rect.height * TOOLBAR_CLICK_ZONE_HALF
-    if (Math.abs(x - rect.width / 2) <= halfW && Math.abs(y - rect.height / 2) <= halfH) {
+    if (Math.abs(x - rect.width / 2) <= halfW) {
       // 点击中央:唤出设置栏;再点一次收起(悬停唤出的那一套不受影响)
       toolbarClickLocked.value = !toolbarClickLocked.value
       return
@@ -1981,6 +1985,10 @@ defineExpose({
   showViewerSide,
   toggleSidebar,
   clickedThumbId,
+  // 便于自动化验证
+  isPaging,
+  isZoomedIn,
+  toolbarClickLocked,
 })
 </script>
 
@@ -2063,6 +2071,13 @@ defineExpose({
 .drawer-viewer-body.viewer-horizontal-scroll
   overflow-x: auto
   overflow-y: hidden
+
+// 分页(单页 / 双页):没放大时内容正好一屏,不该出现滚动条;放大后才允许滚动
+.drawer-viewer-body.viewer-paged
+  overflow: hidden
+
+.drawer-viewer-body.viewer-paged.viewer-zoomed
+  overflow: auto
 
 // 分页:一屏一张 / 两张。图片用 auto margin 居中,放大超出屏幕时也不会被顶到滚动区外
 .viewer-paging

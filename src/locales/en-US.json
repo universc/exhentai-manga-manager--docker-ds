@@ -501,7 +501,7 @@
     "viewerToolbarHover": "Toolbar (hover at top)",
     "viewerToolbarHoverHint": "Toolbar (hover at top): slides out when the cursor enters the top 1/22 of the screen, hides after leaving the top 1/20.",
     "viewerToolbarClick": "Toolbar (click)",
-    "viewerToolbarClickHint": "Toolbar (click): clicking the central 1/5 area shows the toolbar (that area no longer turns pages); the left/right sides still turn pages.",
+    "viewerToolbarClickHint": "Toolbar (click to show): clicking the central 1/5 of the width opens the toolbar (full height counts as the centre strip, and it no longer turns pages); the left and right 40% still turn pages.",
     "viewerEndAction": "After finishing the book",
     "viewerEndActionNext": "Open the next book",
     "viewerEndActionRandom": "Open a random manga",
