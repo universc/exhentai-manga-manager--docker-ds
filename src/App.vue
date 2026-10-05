@@ -255,6 +255,7 @@
 
 <script>
 import { defineComponent } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { Setting as SettingIcon, FullScreen, Edit } from '@element-plus/icons-vue'
 import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular } from '@vicons/fluent'
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
@@ -1520,13 +1521,31 @@ export default defineComponent({
     async restoreBookBakFiles (book) {
       try {
         await ElMessageBox.confirm(this.$t('c.restoreBookBakConfirm'), this.$t('c.restoreBookBak'), { type: 'warning' })
+      } catch (e) { return } // 用户取消
+      try {
+        const res = await ipcRenderer.invoke('restore-book-bak-files', book)
+        if (res && res.ok) {
+          if (res.restored > 0) this.printMessage('success', this.$t('c.restoreBookBakDone', { n: res.restored }))
+          else this.printMessage('info', this.$t('c.restoreBookBakNone'))
+        } else {
+          this.printMessage('error', (res && res.error) || this.$t('c.restoreBookBakFail'))
+        }
+      } catch (err) {
+        this.printMessage('error', this.$t('c.restoreBookBakFail') + ': ' + ((err && err.message) || err))
+      }
+    },
+
+    // 封面右键:删除本书目录里的 .bak 备份(这个入口一直只写在菜单配置里,没接上处理函数)
+    async deleteBookBakFiles (book) {
+      try {
+        await ElMessageBox.confirm(this.$t('c.deleteBookBakConfirm'), this.$t('c.deleteBookBak'), { type: 'warning' })
       } catch (e) { return }
-      const res = await ipcRenderer.invoke('restore-book-bak-files', book)
-      if (res && res.ok) {
-        if (res.restored > 0) this.printMessage('success', this.$t('c.restoreBookBakDone', { n: res.restored }))
-        else this.printMessage('info', this.$t('c.restoreBookBakNone'))
-      } else {
-        this.printMessage('error', (res && res.error) || '恢复失败')
+      try {
+        const res = await ipcRenderer.invoke('delete-book-bak-files', book)
+        if (res && res.ok) this.printMessage('success', this.$t('c.deleteBookBakDone', { n: res.count || 0 }))
+        else this.printMessage('error', (res && res.error) || this.$t('c.restoreBookBakFail'))
+      } catch (err) {
+        this.printMessage('error', this.$t('c.restoreBookBakFail') + ': ' + ((err && err.message) || err))
       }
     },
 
@@ -1622,6 +1641,11 @@ export default defineComponent({
           id: 'upscaleBook',
           label: this.$t('m.upscaleBook'),
           onClick: () => { this.runBookTask(book, 'upscale') }
+        },
+        {
+          id: 'deleteBookBak',
+          label: this.$t('c.deleteBookBak'),
+          onClick: () => { this.deleteBookBakFiles(book) }
         },
         {
           id: 'restoreBookBak',

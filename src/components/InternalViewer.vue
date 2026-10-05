@@ -1474,7 +1474,13 @@ const onMangaImageContextMenu = (e, image) => {
       id: 'restoreImageBak',
       label: t('c.restoreImageBak'),
       onClick: async () => {
-        const res = await ipcRenderer.invoke('restore-image-bak', image.filepath)
+        let res = null
+        try {
+          res = await ipcRenderer.invoke('restore-image-bak', image.filepath)
+        } catch (err) {
+          ElMessage({ message: t('c.restoreBookBakFail') + ': ' + ((err && err.message) || err), type: 'error', duration: 3000 })
+          return
+        }
         if (res && res.ok) {
           // 让这张图重新加载(内容已换回原图)
           setImageLoaded(image.id, false)

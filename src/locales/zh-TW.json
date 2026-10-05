@@ -652,6 +652,8 @@
     "restoreBookBakConfirm": "將把本書目錄裡所有 .bak 備份還原回原檔名(超分出錯時用來回復)。沒有備份的圖片不會被改動。確定繼續?",
     "restoreBookBakDone": "已還原 {n} 張圖片的原圖",
     "restoreBookBakNone": "本書目錄裡沒有找到 .bak 備份,未做任何改動",
+    "restoreBookBakFail": "操作失敗",
+    "deleteBookBakDone": "已刪除 {n} 個 .bak 備份",
     "deleteBakDone": "已刪除 {n} 個 .bak 備份檔",
     "deleteBakNone": "沒有找到 .bak 備份檔",
     "imagePropertiesFailed": "取得圖片屬性失敗",

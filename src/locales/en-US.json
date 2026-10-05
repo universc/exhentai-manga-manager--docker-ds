@@ -652,6 +652,8 @@
     "restoreBookBakConfirm": "All .bak backups in this book folder will be restored over the current files (used to roll back a bad upscale). Images without a backup are left untouched. Continue?",
     "restoreBookBakDone": "Restored {n} image(s) from backup",
     "restoreBookBakNone": "No .bak backup found in this book folder - nothing was changed",
+    "restoreBookBakFail": "Operation failed",
+    "deleteBookBakDone": "Deleted {n} .bak backup(s)",
     "deleteBakDone": "Deleted {n} .bak backup file(s)",
     "deleteBakNone": "No .bak backup file found",
     "imagePropertiesFailed": "Failed to read image properties",

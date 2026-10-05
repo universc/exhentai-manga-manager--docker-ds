@@ -652,6 +652,8 @@
     "restoreBookBakConfirm": "将把本书目录里所有 .bak 备份还原回原文件名(超分出错时用来回滚)。没有备份的图片不会被改动。确定继续?",
     "restoreBookBakDone": "已恢复 {n} 张图片的原图",
     "restoreBookBakNone": "本书目录里没有找到 .bak 备份,未做任何改动",
+    "restoreBookBakFail": "操作失败",
+    "deleteBookBakDone": "已删除 {n} 个 .bak 备份",
     "deleteBakDone": "已删除 {n} 个 .bak 备份文件",
     "deleteBakNone": "没有找到 .bak 备份文件",
     "imagePropertiesFailed": "获取图片属性失败",
