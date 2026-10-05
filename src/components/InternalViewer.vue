@@ -62,7 +62,7 @@
               >
                 <img
                   v-if="loadedImages[image.id]"
-                  :src="`${image.filepath}?id=${image.id}`"
+                  :src="imageSrc(image)"
                   class="viewer-image" draggable="false"
                   :style="{height: frameStyle(image, 'horizontal').height}"
                   @mousedown="onImagePanStart"
@@ -88,7 +88,7 @@
                 >
                   <img
                     v-if="loadedImages[image.id]"
-                    :src="`${image.filepath}?id=${image.id}`"
+                    :src="imageSrc(image)"
                     class="viewer-image" draggable="false"
                     :style="{height: frameStyle(image, 'scrollSingle').height}"
                     @mousedown="onImagePanStart"
@@ -116,7 +116,7 @@
                   >
                     <img
                       v-if="loadedImages[image.id]"
-                      :src="`${image.filepath}?id=${image.id}`"
+                      :src="imageSrc(image)"
                       class="viewer-image" draggable="false"
                       :style="{height: frameStyle(image, 'scrollDouble').height}"
                       @mousedown="onImagePanStart"
@@ -137,7 +137,7 @@
             <div class="image-frame" v-if="viewerImageList.length > 0">
               <div class="viewer-image-frame" :style="frameStyle(viewerImageList[currentImageIndex], 'single')">
                 <img
-                  :src="`${viewerImageList[currentImageIndex]?.filepath}?id=${viewerImageList[currentImageIndex]?.id}`"
+                  :src="imageSrc(viewerImageList[currentImageIndex])"
                   class="viewer-image" draggable="false"
                   :style="{height: frameStyle(viewerImageList[currentImageIndex], 'single').height}"
                   @mousedown="onImagePanStart"
@@ -147,12 +147,12 @@
               </div>
               <div class="viewer-image-page" v-if="!setting.hidePageNumber">{{currentImageIndex + 1}} of {{viewerImageList.length}}</div>
               <img
-                :src="`${viewerImageList[currentImageIndex - 1]?.filepath}?id=${viewerImageList[currentImageIndex - 1]?.id}`"
+                :src="imageSrc(viewerImageList[currentImageIndex - 1])"
                 class="viewer-image-preload"
                 v-if="currentImageIndex > 1"
               />
               <img
-                :src="`${viewerImageList[currentImageIndex + 1]?.filepath}?id=${viewerImageList[currentImageIndex + 1]?.id}`"
+                :src="imageSrc(viewerImageList[currentImageIndex + 1])"
                 class="viewer-image-preload"
                 v-if="currentImageIndex < viewerImageList.length - 1"
               />
@@ -165,7 +165,7 @@
                 <img
                   v-for="image in viewerImageListDouble[currentImageIndex]?.page"
                   :key="image.id"
-                  :src="`${image.filepath}?id=${image.id}`"
+                  :src="imageSrc(image)"
                   class="viewer-image" draggable="false"
                   :style="{height: frameStyle(image, 'double').height}"
                   @mousedown="onImagePanStart"
@@ -177,14 +177,14 @@
               <div v-if="currentImageIndex > 1">
                 <img
                   v-for="image in viewerImageListDouble[currentImageIndex - 1]?.page" :key="image.id"
-                  :src="`${image.filepath}?id=${image.id}`"
+                  :src="imageSrc(image)"
                   class="viewer-image-preload"
                 />
               </div>
               <div v-if="currentImageIndex < viewerImageListDouble.length - 1">
                 <img
                   v-for="image in viewerImageListDouble[currentImageIndex + 1]?.page" :key="image.id"
-                  :src="`${image.filepath}?id=${image.id}`"
+                  :src="imageSrc(image)"
                   class="viewer-image-preload"
                 />
               </div>
@@ -731,6 +731,24 @@ const imageStyleFitLabel = computed(() => t({
   window: 'm.fitWindow',
 }[imageStyleFit.value] || 'm.fitWindow'))
 // 设置栏里的数值 = 全局缩放(对全部模式生效)
+// ---------- 图片 URL 版本号 ----------
+// 超分「替换原文件」后路径不变,URL 也就没变:
+//   · 网页版的图片是 Http 资源(/api/file?path=...),浏览器会一直用缓存,页面看不到新图;
+//   · 本地 file:// 在 Electron 里同样可能命中缓存。
+// 所以这里维护一个 id → 版本号的表,超分完成后 +1,让 URL 变化从而强制重新拉取。
+const imageVersion = ref({})
+const bumpImageVersion = (id) => {
+  imageVersion.value = { ...imageVersion.value, [id]: Date.now() }
+}
+// 统一的图片 src:兼容「磁盘路径」与「网页版 URL」两种形态
+const imageSrc = (image) => {
+  if (!image || !image.filepath) return ''
+  const base = String(image.filepath)
+  const sep = base.includes('?') ? '&' : '?'
+  const ver = imageVersion.value[image.id]
+  return base + sep + 'id=' + image.id + (ver ? '&v=' + ver : '')
+}
+
 const viewerZoomLabel = computed(() => Math.round(viewerZoom.value * 100) + '%')
 // 分页模式(单页 / 双页):用于关闭「没放大时的滚动条」
 const isPaging = computed(() => imageStyleType.value === 'single' || imageStyleType.value === 'double')
@@ -1657,11 +1675,18 @@ const upscaleViewerImage = async (image) => {
         return
       }
       if (res.mode === 'preview') {
-        // 仅预览:把阅读器里这张图替换成超分结果(临时文件)
-        image.filepath = res.path
+        // 仅预览:把阅读器里这张图换成超分结果(临时文件)。
+        // 网页版的 filepath 是 /api/file?path=... 的 URL,磁盘路径要转成 URL 才能显示。
+        image.filepath = window.__WEB_MODE__
+          ? '/api/file?path=' + encodeURIComponent(res.path)
+          : res.path
+        bumpImageVersion(image.id)
         printMessage('success', t('c.upscaleDone') + '(仅预览,未写入文件)')
       } else if (res.mode === 'replace') {
-        image.filepath = res.path
+        // 替换原文件:路径本来就没变;网页版绝不能拿磁盘路径覆盖 URL,否则图片再也加载不出来。
+        // 统一换 URL 版本号,保证浏览器重新拉取(否则会一直命中缓存,看不到超分效果)。
+        if (!window.__WEB_MODE__) image.filepath = res.path
+        bumpImageVersion(image.id)
         printMessage('success', '已替换原文件' + (res.note ? ':' + res.note : ''))
       } else {
         // 另存到文件夹:原图不动。提示里给出完整路径(网页版再给一个可点击的目录入口),
@@ -1909,7 +1934,11 @@ const runAutoUpscaleQueue = async () => {
           // 静默替换:不弹任何提示,超分完立刻显示超分后的图(尺寸一并更新,排版跟着重算)
           if (res.width) image.width = res.width
           if (res.height) image.height = res.height
-          image.filepath = res.path
+          // 网页版的 filepath 是 /api/file?path=... 的 URL,用磁盘路径覆盖它就再也加载不出来了
+          // (桌面版 filepath 本来就是磁盘路径,替换原文件时路径也没变,只有「另存」才需要更新)
+          if (!window.__WEB_MODE__) image.filepath = res.path
+          // 无论哪种模式都换一个 URL 版本号:替换原文件后 URL 不变会命中缓存,页面看不到超分效果
+          bumpImageVersion(image.id)
           frameStyleCache.clear()
           console.log('[auto-upscale]', image.id, res.width + 'x' + res.height)
         }
