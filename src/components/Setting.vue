@@ -1480,7 +1480,7 @@ import en from 'element-plus/dist/locale/en.mjs'
 
 import { version } from '../../package.json'
 import { gh_token } from '../../secret_key.json'
-import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey } from '../utils.js'
+import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey , markContextMenuItemDisabled } from '../utils.js'
 import { attachInertiaScroll } from '../inertia-scroll.js'
 import NameFormItem from './NameFormItem.vue'
 
@@ -2262,6 +2262,8 @@ const toggleMenuItem = (groupId, itemId, enable) => {
   }
   if (!setting.value.contextMenuOptions) setting.value.contextMenuOptions = defaultContextMenuOptions()
   setting.value.contextMenuOptions[groupId] = ids
+  // 本版新增项:记住用户是否显式取消过(取消后不再默认恢复显示)
+  markContextMenuItemDisabled(itemId, !enable)
   saveSetting()
 }
 
@@ -3210,14 +3212,13 @@ const changelog = [
       '【设置栏】新增「按钮操作提示」:点按钮弹一句当前状态与用法(可在设置里关掉)',
       '【阅读器】新增「图片间距」「缩略图间距」(默认 0);「双页模式单独封面」;隐藏页码同时管住缩略图页码',
       '【阅读器】底部「上一本 / 随机 / 下一本」可隐藏(默认隐藏,鼠标移到画面底部才出现);「阅读完成后」新增「打开下一本(随机)」',
-      '【界面】设置 → 本地阅读器重排;关于页致谢头像与图标修复;高级页删除「恢复默认」、卡片样式分开、小字统一',
+      '【界面】设置 → 本地阅读器重排;高级页删除「恢复默认」、卡片样式分开、小字统一',
       '【修复】工具栏缩略图按钮点了没反应、设置栏缩放取消勾选不生效、点击弹出区域改中央 1/5、右键菜单拖动排序等一批问题',
       '【新增】图片间距 / 缩略图间距(设置 → 内置阅读器,默认 0 = 紧贴)',
       '【新增】阅读完成后 →「打开下一本(随机)」',
       '【新增】设置 → 高级 → 工具栏按钮:全屏按钮(可勾选、可拖动排序)',
       '【新增】内置阅读器每一项设置都配了说明(对着渲染矩阵写的)',
       '【修复】自动超分:按「图片超分 → 保存位置」执行(替换原文件会生成 .bak);超分完立即显示;分页模式也能触发;全程无提示',
-      '【修复】关于页致谢头像与 logo 不显示(原图在仓库里被行尾转换损坏,已换成打包资源 + 新头像)',
       '【修复】设置栏「缩放」取消勾选不生效;设置栏按钮拖动排序不生效;工具栏缩略图按钮点了没反应;隐藏页码管不住缩略图页码',
       '【界面】放大 / 缩小合并为一项「缩放」;卷轴 / 单双按钮去掉蓝色高亮;退出按钮固定右上角不参与配置',
       '【界面】点击弹出设置栏的区域由中央 1/4 改为中央 1/5;底部「上一本 / 随机 / 下一本」隐藏 0%、鼠标到底部才显示',

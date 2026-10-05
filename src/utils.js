@@ -112,26 +112,35 @@ const defaultContextMenuOptions = () => {
   return result
 }
 
-// 本版本新增的右键菜单项:用户的旧配置里没有它们时也默认显示。
-// (只有用户**显式取消**过 —— 也就是它已经写进「已知项」记录 —— 才不再自动恢复)
+// 本版本新增的右键菜单项:旧配置里没有它们,用户也没机会取消过 → 默认显示。
+// 用户一旦在设置里显式取消,就写进独立的「已取消」标记,之后不再自动恢复。
+// (不能用「已知项」记录判断:那个记录在上一版运行时就已经把新项写进去了,会导致兜底永远失效)
 const CONTEXT_MENU_NEW_ITEMS = ['restoreImageBak', 'restoreBookBak']
-const readKnownContextMenuIds = () => {
+const CONTEXT_MENU_DISABLED_KEY = 'emmContextMenuDisabledNew'
+const readDisabledNewItems = () => {
   try {
-    const raw = localStorage.getItem(CONTEXT_MENU_KNOWN_KEY)
-    return raw ? new Set(JSON.parse(raw)) : null
+    const raw = localStorage.getItem(CONTEXT_MENU_DISABLED_KEY)
+    return raw ? new Set(JSON.parse(raw)) : new Set()
   } catch (e) {
-    return null
+    return new Set()
   }
+}
+// 用户在设置里取消 / 恢复某个新增项时调用
+const markContextMenuItemDisabled = (itemId, disabled) => {
+  if (!CONTEXT_MENU_NEW_ITEMS.includes(itemId)) return
+  try {
+    const set = readDisabledNewItems()
+    if (disabled) set.add(itemId)
+    else set.delete(itemId)
+    localStorage.setItem(CONTEXT_MENU_DISABLED_KEY, JSON.stringify([...set]))
+  } catch (e) { /* 隐私模式下写不了也不影响 */ }
 }
 // 判断某个右键菜单项是否启用(未配置过则默认启用)
 const isContextMenuItemEnabled = (setting, menuId, itemId) => {
   const options = setting?.contextMenuOptions
   if (!options || !options[menuId]) return true
   if (options[menuId].includes(itemId)) return true
-  if (CONTEXT_MENU_NEW_ITEMS.includes(itemId)) {
-    const known = readKnownContextMenuIds()
-    if (!known || !known.has(itemId)) return true
-  }
+  if (CONTEXT_MENU_NEW_ITEMS.includes(itemId) && !readDisabledNewItems().has(itemId)) return true
   return false
 }
 
@@ -570,6 +579,7 @@ export {
   contextMenuDefinitions,
   defaultContextMenuOptions,
   isContextMenuItemEnabled,
+  markContextMenuItemDisabled,
   sortContextMenuItems,
   mergeContextMenuOptions,
   ensureBookCover,

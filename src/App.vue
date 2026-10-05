@@ -1523,7 +1523,8 @@ export default defineComponent({
         await ElMessageBox.confirm(this.$t('c.restoreBookBakConfirm'), this.$t('c.restoreBookBak'), { type: 'warning' })
       } catch (e) { return } // 用户取消
       try {
-        const res = await ipcRenderer.invoke('restore-book-bak-files', book)
+        // 只传纯对象:Vue 响应式对象没法结构化克隆(会报 An object could not be cloned)
+        const res = await ipcRenderer.invoke('restore-book-bak-files', { filepath: book.filepath, id: book.id })
         if (res && res.ok) {
           if (res.restored > 0) this.printMessage('success', this.$t('c.restoreBookBakDone', { n: res.restored }))
           else this.printMessage('info', this.$t('c.restoreBookBakNone'))
@@ -1541,7 +1542,7 @@ export default defineComponent({
         await ElMessageBox.confirm(this.$t('c.deleteBookBakConfirm'), this.$t('c.deleteBookBak'), { type: 'warning' })
       } catch (e) { return }
       try {
-        const res = await ipcRenderer.invoke('delete-book-bak-files', book)
+        const res = await ipcRenderer.invoke('delete-book-bak-files', { filepath: book.filepath, id: book.id })
         if (res && res.ok) this.printMessage('success', this.$t('c.deleteBookBakDone', { n: res.count || 0 }))
         else this.printMessage('error', (res && res.error) || this.$t('c.restoreBookBakFail'))
       } catch (err) {
