@@ -501,7 +501,7 @@
     "viewerToolbarHover": "设置栏(顶部弹出)",
     "viewerToolbarHoverHint": "设置栏(顶部弹出):鼠标移到上方 1/22 屏幕高度处自动弹出,移开 1/20 后自动隐藏。",
     "viewerToolbarClick": "设置栏(点击弹出)",
-    "viewerToolbarClickHint": "设置栏(点击弹出):点击画面中央 1/5 区域弹出设置栏(该区域不再翻页);左右两侧仍然点击翻页。",
+    "viewerToolbarClickHint": "设置栏(点击弹出):点击画面**中央 1/5 宽度**的竖带弹出设置栏(整屏高度都算中央区,该区域不再翻页);左右两侧各 40% 仍然点击翻页。",
     "viewerEndAction": "阅读完成后",
     "viewerEndActionNext": "打开下一本",
     "viewerEndActionRandom": "打开下一本(随机)",

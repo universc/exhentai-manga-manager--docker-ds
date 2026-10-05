@@ -501,7 +501,7 @@
     "viewerToolbarHover": "設定列(頂部彈出)",
     "viewerToolbarHoverHint": "設定列(頂部彈出):滑鼠移到上方 1/22 螢幕高度處自動彈出,移開 1/20 後自動隱藏。",
     "viewerToolbarClick": "設定列(點擊彈出)",
-    "viewerToolbarClickHint": "設定列(點擊彈出):點擊畫面中央 1/5 區域彈出設定列(該區域不再翻頁);左右兩側仍然點擊翻頁。",
+    "viewerToolbarClickHint": "設定列(點擊彈出):點擊畫面**中央 1/5 寬度**的豎帶彈出設定列(整屏高度都算中央區,該區域不再翻頁);左右兩側各 40% 仍然點擊翻頁。",
     "viewerEndAction": "閱讀完成後",
     "viewerEndActionNext": "開啟下一本",
     "viewerEndActionRandom": "開啟下一本(隨機)",
