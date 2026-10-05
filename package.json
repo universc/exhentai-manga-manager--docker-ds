@@ -54,7 +54,13 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "allowElevation": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "exhentai-manga-manager",
+      "deleteAppDataOnUninstall": false
     },
     "asarUnpack": [
       "**/*.node",

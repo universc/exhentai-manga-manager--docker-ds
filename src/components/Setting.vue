@@ -2207,6 +2207,7 @@ const contextMenuGroups = computed(() => [
       { id: 'deleteImage', label: t('c.deleteImage') },
       { id: 'renameImage', label: t('m.renameImage') },
       { id: 'upscaleImage', label: t('m.upscaleImage') },
+      { id: 'restoreImageBak', label: t('c.restoreImageBak') },
       { id: 'ocrImage', label: t('m.extractImageText') },
       { id: 'translateImage', label: t('m.translateImage') },
       { id: 'colorizeImage', label: t('m.colorize') },
@@ -3237,6 +3238,40 @@ const changelog = [
       '「属性」可在 设置 → 高级 → 右键菜单 里勾选;网页版只读账户也能查看',
       '超分新增「过滤设置」:图片宽和高都 ≥ 阈值(默认 1200×2000)时跳过超分,不生成任何文件',
       '过滤在超分入口统一判定,单张超分与全本超分同样生效;全本结束提示会显示跳过张数',
+    ]
+  },
+  {
+    version: 'v1.10.3',
+    summary: '本地超分模型(Real-ESRGAN / waifu2x)+ 超分结果落盘 + 一批修复',
+    items: [
+      '【新增】本地超分模型:设置 → 功能 → 本地模型,下载后完全离线运行(带进度、可取消、可删除、可打开目录)',
+      '【新增】可用权重自动扫描;每个模型有自己的参数(权重 / 放大倍数 / 降噪等级 / 分块 / GPU / TTA),以后加模型前端零改动',
+      '【新增】下载支持走「常用 → 代理」或填镜像前缀(国内直连 GitHub 大文件会被重置)',
+      '【新增】Docker / NAS 同样可用:镜像加入 libvulkan1 + mesa-vulkan-drivers,无 GPU 时用 lavapipe 做 CPU 软件渲染',
+      '【新增】超分结果落盘:保存方式支持「同一文件夹(另存)/ 替换原文件(旧文件备份为 .bak)/ 仅预览」,另存文件名格式 原名_模型_倍数',
+      '【修复】「保存到文件夹」从来没有真正生效(upscaleSaveMode 在后端从未被读取,结果永远只写到预览临时目录)',
+      '【修复】阅读器图片右键的「超分图片」「提取文字」永远不显示(额外依赖了两个从来没有开关的配置项)',
+      '【变更】「图片超分」移除「输出尺寸」与「超分倍数」:不同引擎能力不同,倍数改为每个本地模型自己的参数',
+    ]
+  },
+  {
+    version: 'v1.10.2',
+    summary: '修复右键菜单勾选每次打开都变回默认(全选)',
+    items: [
+      '【修复】右键菜单 / 长按菜单的勾选每次打开软件都变回默认(全选)',
+      '【根因】加载设置时的「自动并入」写法把定义里的全部菜单项无条件并回已保存值,App.vue 启动时又把这份全选结果写回服务器',
+      '【修复】改为 mergeContextMenuOptions():只并入 (当前定义 − 上次定义) 的真正新增项;没有记录时完全信任已保存值',
+      '【注意】受影响用户需要重新设置一次右键菜单 —— 被覆盖掉的勾选无法自动还原',
+    ]
+  },
+  {
+    version: 'v1.10.1',
+    summary: '修复「设置反复丢失」(严重) + 接口鉴权加固',
+    items: [
+      '【修复】「设置反复丢失」:前端在加载设置之前就保存了空设置,后端又把收到的局部对象当完整配置整份落盘,两者叠加导致 setting.json 每次打开页面都被清空',
+      '【修复】后端 applySetting 先合并再落盘:前端没传的键一律保留原值;前端把「右键菜单合并保存」移到拿到完整设置之后',
+      '【修复】容器内漫画库 / 元数据目录被重置(容器分支会用局部对象覆盖 fileSetting)',
+      '【安全】/api/file、/api/list-dir、/browse 增加登录鉴权:启用账户系统后未登录访问一律 401',
     ]
   },
   {
