@@ -112,11 +112,27 @@ const defaultContextMenuOptions = () => {
   return result
 }
 
+// 本版本新增的右键菜单项:用户的旧配置里没有它们时也默认显示。
+// (只有用户**显式取消**过 —— 也就是它已经写进「已知项」记录 —— 才不再自动恢复)
+const CONTEXT_MENU_NEW_ITEMS = ['restoreImageBak', 'restoreBookBak']
+const readKnownContextMenuIds = () => {
+  try {
+    const raw = localStorage.getItem(CONTEXT_MENU_KNOWN_KEY)
+    return raw ? new Set(JSON.parse(raw)) : null
+  } catch (e) {
+    return null
+  }
+}
 // 判断某个右键菜单项是否启用(未配置过则默认启用)
 const isContextMenuItemEnabled = (setting, menuId, itemId) => {
   const options = setting?.contextMenuOptions
   if (!options || !options[menuId]) return true
-  return options[menuId].includes(itemId)
+  if (options[menuId].includes(itemId)) return true
+  if (CONTEXT_MENU_NEW_ITEMS.includes(itemId)) {
+    const known = readKnownContextMenuIds()
+    if (!known || !known.has(itemId)) return true
+  }
+  return false
 }
 
 // 按用户在「设置 → 高级 → 右键菜单」里拖动的顺序排列菜单项。
