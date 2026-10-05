@@ -302,7 +302,13 @@ const defaultOptionsOf = (id) => {
 
 // ---------- 运行超分 ----------
 // 返回 { ok, log } 或抛错;调用方负责把 outputPath 再按需缩放到目标尺寸
-const runUpscale = (id, inputPath, outputPath, options = {}) => {
+//
+// ⚠️ 不要直接调用 runUpscaleInner:必须走下面的 runUpscale(带全局串行锁)。
+// ncnn-vulkan 是按「分块(tile)」处理的,分块依赖显存。当阅读器的自动超分、
+// 封面右键的全本超分、图片右键的单张超分同时触发时,会有多个模型进程抢同一块 GPU,
+// 分块数据互相挤占就会错乱 —— 表现为整张图出现**规则网格状接缝**(用户实际遇到过)。
+// GPU 本身是串行的,多进程并不会更快,所以这里直接串行化。
+const runUpscaleInner = (id, inputPath, outputPath, options = {}) => {
   const def = definitionOf(id)
   if (!def) return Promise.reject(new Error('未知的模型: ' + id))
   const exeName = def.exe[PLATFORM] || def.exe.linux
@@ -360,6 +366,20 @@ const runUpscale = (id, inputPath, outputPath, options = {}) => {
     })
   })
 }
+// ---------- 全局串行队列 ----------
+// 保证同一时刻只有一个模型进程在跑(避免多进程争用 GPU 导致分块错乱)。
+// 排队失败也不会阻断后续任务。
+let upscaleChain = Promise.resolve()
+const withUpscaleLock = (task) => {
+  const run = upscaleChain.then(task, task)
+  upscaleChain = run.then(() => undefined, () => undefined)
+  return run
+}
+
+// 对外的 runUpscale:串行执行
+const runUpscale = (id, inputPath, outputPath, options = {}) =>
+  withUpscaleLock(() => runUpscaleInner(id, inputPath, outputPath, options))
+
 module.exports = {
   MODELS,
   PLATFORM,
