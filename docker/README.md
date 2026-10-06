@@ -35,6 +35,18 @@
 
 ## 二、快速开始
 
+> **最快的方式(推荐)**:镜像已经发布到 Docker Hub,不需要构建、也不用导入 tar.gz:
+>
+> ```bash
+> sudo docker pull universc/exhentai-manga-manager--docker-ds:1.10.6
+> sudo docker tag  universc/exhentai-manga-manager--docker-ds:1.10.6 exhentai-manga-manager:1.10.6
+> sudo docker compose up -d
+> ```
+>
+> 飞牛【Docker】→【镜像仓库】搜 `exhentai-manga-manager--docker-ds` 也能找到
+> (双短横线是跟 GitHub 仓库名保持一致,不是笔误)。国内直连 Docker Hub 会超时
+> (`Get "https://registry-1.docker.io/v2/": context deadline exceeded`),先挂加速源(实测 `docker.1ms.run` 可用)。
+
 ### 方案 A(推荐,无需命令):导入现成镜像
 
 项目根目录的 `docker-镜像/` 文件夹里已有构建好的镜像文件
