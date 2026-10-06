@@ -586,8 +586,30 @@ const onMangaTitleContextMenu = (e, book) => {
       flex-wrap: wrap
       justify-content: center
       align-items: center
-      gap: 4px 5px
-      // 元素尽可能挤在一排;放不下自动换行,换出的行居中
+      gap: 3px 3px
+      // 元素尽可能挤在一排;放不下才换行(230px 卡片也要能放下 页数/阅/读/标签/评分)
+      .fill-badge
+        padding: 0 3px
+        height: 18px
+        line-height: 16px
+        font-size: 11px
+      .book-collect-tag
+        padding: 0 3px
+        height: 18px
+        line-height: 16px
+        font-size: 11px
+      .outer-read-button-group
+        .el-button
+          padding: 0 4px
+          min-height: 18px
+          height: 18px
+          font-size: 11px
+          margin-left: 0
+      .el-rate
+        height: 16px
+        .el-rate__icon
+          font-size: 15px
+          margin-right: 0
   // 透明徽标(阅读数/页数/状态):半透明黑底 + 白字,无白底
   .fill-badge
     flex: 0 0 auto

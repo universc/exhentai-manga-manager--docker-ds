@@ -282,9 +282,28 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
     },
   }
 
+  // 网页版没有 Electron 的 webFrame,界面缩放用 CSS zoom 实现
+  // (每级 ×1.2,和桌面端同一套换算;level 允许小数,所以设置里的百分比能精确还原)
+  const ZOOM_STEP = 1.2
+  const zoomKey = 'emmWebZoomLevel'
+  const readZoomLevel = () => {
+    const v = Number(localStorage.getItem(zoomKey))
+    return Number.isFinite(v) ? v : 0
+  }
+  const applyZoomLevel = (level) => {
+    const lv = Number(level)
+    if (!Number.isFinite(lv)) return
+    localStorage.setItem(zoomKey, String(lv))
+    const factor = Math.pow(ZOOM_STEP, lv)
+    // zoom 会同时影响布局尺寸,比 transform: scale 更接近桌面端的缩放行为
+    document.documentElement.style.zoom = String(factor)
+    document.documentElement.style.setProperty('--emm-web-zoom', String(factor))
+  }
+  // 启动时恢复上次的缩放
+  try { if (readZoomLevel() !== 0) applyZoomLevel(readZoomLevel()) } catch (e) { /* 忽略 */ }
   window.electronFunction = {
-    'get-zoom-level': () => 0,
-    'set-zoom-level': () => {},
+    'get-zoom-level': () => readZoomLevel(),
+    'set-zoom-level': (level) => applyZoomLevel(level),
     'insert-css': (css) => {
       const style = document.createElement('style')
       style.textContent = css
