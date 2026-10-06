@@ -34,8 +34,18 @@ COPY package.json package-lock.json ./
 # 但用 ELECTRON_SKIP_BINARY_DOWNLOAD 跳过其 ~100MB 二进制下载(网页版用不到桌面运行时)。
 # 注意:显式安装 electron 时不能再带 --omit=dev,否则 npm 会因为它属于 devDependencies
 # 而把它一并省略,导致容器内 require.resolve('electron') 失败(MODULE_NOT_FOUND)。
+# 注意:千万不要写成 "npm ci --omit=dev && npm install --no-save electron@26.2.3" ——
+# 后半句不带 --omit=dev 的 npm install 会把整棵 devDependencies 重新装回来,
+# 实测白进镜像约 830MB(@tensorflow 281MB / @vicons 129MB / app-builder-bin 121MB /
+# element-plus 47MB / typescript 30MB …),镜像从 ~570MB 涨到 1.41GB。
+# 正确做法:在临时目录里单独装这一个包,再把缺少的包合并进 /app/node_modules。
 RUN npm ci --omit=dev \
-    && ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install --no-save electron@26.2.3
+    && mkdir -p /tmp/electron-install \
+    && cd /tmp/electron-install \
+    && npm init -y >/dev/null 2>&1 \
+    && ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install --no-save --no-package-lock electron@26.2.3 \
+    && cp -an /tmp/electron-install/node_modules/. /app/node_modules/ \
+    && rm -rf /tmp/electron-install
 
 # ---------- Stage 2: 构建前端 ----------
 FROM node:18-bookworm-slim AS build
