@@ -350,6 +350,8 @@ const toolbarButtonDefinitions = [
   { id: 'themeSwitch', labelKey: 'm.themeSwitch' },
   { id: 'fullscreen', labelKey: 'm.fullscreenButton' },
   { id: 'sortSelect', labelKey: 'm.toolbarSortSelect' },
+  // 设置按钮:可以拖动排序,但不能隐藏(常驻)
+  { id: 'setting', labelKey: 'm.setting' },
   { id: 'uiMode', labelKey: 'm.toolbarUiMode' },
 ]
 const defaultToolbarButtons = () => toolbarButtonDefinitions.map(b => b.id)
@@ -358,6 +360,8 @@ const defaultToolbarButtons = () => toolbarButtonDefinitions.map(b => b.id)
 // 「显式关掉」记在设置项 toolbarButtonsHidden 里(不是只看 toolbarButtons 缺不缺 ——
 // 老配置本来就缺这几项,分不清「没有」和「被关掉」)
 const TOOLBAR_NEW_ITEMS = ['searchInput', 'searchButton', 'sortSelect', 'uiMode']
+// 常驻元素:能拖动排序,但永远显示(设置列表里点击不生效)
+const TOOLBAR_ALWAYS_ITEMS = ['setting']
 // 补齐老配置里缺失的新元素;返回值只决定「显示与否」,排列顺序另由 toolbarButtonOrder 决定
 const ensureToolbarButtons = (list, hidden) => {
   // list 缺失(旧配置没这个键)才用默认全开;空数组 = 用户把按钮全关了,尊重
@@ -637,6 +641,7 @@ export {
   toolbarButtonDefinitions,
   defaultToolbarButtons,
   TOOLBAR_NEW_ITEMS,
+  TOOLBAR_ALWAYS_ITEMS,
   ensureToolbarButtons,
   DEFAULT_CAT_NAMES,
   resolveCatKey,

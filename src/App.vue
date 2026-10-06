@@ -57,7 +57,7 @@
                 @click="toggleSortDirection"
               >{{ sortDirection === 'asc' ? '↑' : '↓' }}</el-button>
             </div>
-            <!-- UI 模式切换(仅 NAS 网页版浏览器):自动 → 手机 → 平板 → 电脑 -->
+            <!-- UI 模式切换:自动 → 手机 → 平板 → 电脑(桌面客户端与网页版都有) -->
             <el-button v-else-if="id === 'uiMode'" :icon="uiModeIcon" plain @click="switchUiMode" :title="$t('m.switchUiMode') + ': ' + $t(uiModeLabelKey)"></el-button>
             <!-- 可自定义的界面按钮 -->
             <el-button
@@ -78,9 +78,8 @@
             <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.exitCollectionView()" :icon="MdExit" :title="$t('m.exit')"></el-button>
             <el-button type="primary" plain v-if="editTagView" @click="$refs.EditViewRef.exitEditTagView()" :icon="MdExit" :title="$t('m.exit')"></el-button>
           </div>
-          <!-- 设置按钮:始终保留(网页版只读账户进入后仅显示「账户」页,可退出登录) -->
-          <el-button :icon="SettingIcon" plain @click="$refs.SettingRef.dialogVisibleSetting = true" :title="$t('m.setting')"></el-button>
-          <!-- 上下文按钮(仅桌面客户端):本地模式=打开库文件夹;服务器模式=服务器配置 -->
+          <!-- 设置按钮已并入上面的排序序列(常驻,不可隐藏) -->
+          <!-- 上下文按钮(仅 Win 远程桌面模式) = 服务器配置 -->
           <el-button v-if="showContextButton" :icon="contextButton.icon" plain @click="contextButton.action()" :title="$t(contextButton.titleKey)"></el-button>
         </div>
       </el-col>
@@ -265,7 +264,7 @@ import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save1
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
-import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, parsePageSizes } from './utils.js'
+import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, parsePageSizes } from './utils.js'
 import { attachInertiaScroll } from './inertia-scroll.js'
 
 import Setting from './components/Setting.vue'
@@ -399,6 +398,7 @@ export default defineComponent({
         viewerSwitch: { icon: MdBook, titleKey: 'm.viewerSwitch', loading: false, action: () => this.switchViewerType() },
         themeSwitch: { icon: MdColorPalette, titleKey: 'm.themeSwitch', loading: false, action: () => this.switchTheme() },
         fullscreen: { icon: FullScreen, titleKey: 'm.fullscreenButton', loading: false, action: () => this.switchFullscreen() },
+        setting: { icon: SettingIcon, titleKey: 'm.setting', loading: false, action: () => { this.$refs.SettingRef.dialogVisibleSetting = true } },
       }
     },
     // 工具栏元素的显示顺序 —— 搜索框/搜索按钮/排序框/界面模式切换 与普通按钮一起排序
@@ -411,7 +411,7 @@ export default defineComponent({
       const savedOrder = Array.isArray(this.setting?.toolbarButtonOrder) ? this.setting.toolbarButtonOrder : []
       const base = savedOrder.length ? savedOrder.slice() : defaultToolbarButtons()
       const head = ['searchInput', 'searchButton']
-      const tail = ['sortSelect', 'uiMode']
+      const tail = ['sortSelect', 'setting', 'uiMode']
       // 老配置的排序里还没有新元素(用户新版里没拖过)→ 按默认位置摆放
       const hasNew = savedOrder.some(id => TOOLBAR_NEW_ITEMS.includes(id))
       const fullOrder = hasNew
@@ -422,11 +422,11 @@ export default defineComponent({
       const viewerBlock = new Set(['manualScan', 'incrementalScan', 'batchMetadata', 'manageCollection', 'manageTag'])
       // ⚠️ 搜索框/搜索按钮/排序框不是 toolbarButtonMap 里的普通按钮(模板里各有一段 v-if 分支),
       //    不能被 map[id] 判空挡掉,必须单独放行
-      const plainItems = new Set(['searchInput', 'searchButton', 'sortSelect'])
+      const plainItems = new Set(['searchInput', 'searchButton', 'sortSelect', 'uiMode'])
       return fullOrder.filter(id => {
-        if (!enabledButtons.includes(id)) return false
+        // 常驻元素(设置按钮)不参与「显示/隐藏」判断,永远显示
+        if (!TOOLBAR_ALWAYS_ITEMS.includes(id) && !enabledButtons.includes(id)) return false
         if (plainItems.has(id)) return true
-        if (id === 'uiMode') return this.isWebMode && !this.isRemoteDesktop
         return !!map[id] && !(this.viewerRole && viewerBlock.has(id))
       })
     },
@@ -471,16 +471,13 @@ export default defineComponent({
     uiModeLabelKey () {
       return 'm.uiMode' + (this.uiMode.charAt(0).toUpperCase() + this.uiMode.slice(1))
     },
-    // 工具栏上下文按钮:本地模式=打开库文件夹;Win 服务器模式=服务器配置;网页版(浏览器)不显示
+    // 工具栏上下文按钮:仅 Win 远程桌面模式保留「服务器配置」
+    // (本地模式的「打开库文件夹」按钮已删除,该位置改回界面模式按钮,见 toolbarButtonDefinitions 的 uiMode)
     contextButton () {
-      const isLocalMode = !this.isWebMode && !this.setting?.remoteServer
-      return isLocalMode
-        ? { icon: MdFolderOpen, titleKey: 'm.openLibraryFolder', action: () => this.openLibraryFolder() }
-        : { icon: MdCloudDone, titleKey: 'm.serverConfig', action: () => this.openServerConfig() }
+      return { icon: MdCloudDone, titleKey: 'm.serverConfig', action: () => this.openServerConfig() }
     },
     showContextButton () {
-      // 网页版浏览器不显示;桌面客户端(本地/服务器模式)显示
-      return !this.isWebMode || this.isRemoteDesktop
+      return this.isRemoteDesktop
     },
     // 自定义每页显示条数选项(逗号分隔;始终包含当前每页数量,避免选择栏失效)
     pageSizeOptions () {

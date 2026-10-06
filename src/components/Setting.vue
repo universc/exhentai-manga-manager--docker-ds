@@ -896,12 +896,13 @@
                 <template #item="{ element }">
                   <div
                     class="context-menu-sort-item"
-                    :class="{ 'context-menu-sort-item-off': !toolbarButtonsShown.includes(element.id) }"
+                    :class="{ 'context-menu-sort-item-off': !isToolbarItemShown(element.id) }"
                   >
                     <span class="drag-handle">⠿</span>
-                    <span class="context-menu-sort-label" @click="toggleToolbarItem(element.id, !toolbarButtonsShown.includes(element.id))">
+                    <span class="context-menu-sort-label" @click="toggleToolbarItem(element.id, !isToolbarItemShown(element.id))">
                       <el-icon :size="14" class="toolbar-item-icon"><component :is="toolbarIconMap[element.id]" /></el-icon>
                       {{$t(toolbarLabelKey(element.id))}}
+                      <span v-if="TOOLBAR_ALWAYS_ITEMS.includes(element.id)" class="toolbar-item-always">{{$t('m.toolbarAlwaysShown')}}</span>
                     </span>
                   </div>
                 </template>
@@ -1548,7 +1549,7 @@ import en from 'element-plus/dist/locale/en.mjs'
 
 import { version } from '../../package.json'
 import { gh_token } from '../../secret_key.json'
-import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey , markContextMenuItemDisabled } from '../utils.js'
+import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey , markContextMenuItemDisabled } from '../utils.js'
 import { attachInertiaScroll } from '../inertia-scroll.js'
 import NameFormItem from './NameFormItem.vue'
 
@@ -1658,8 +1659,7 @@ const orderedToolbarItems = computed(() => {
   const map = new Map(toolbarButtonDefinitions.map(b => [b.id, b]))
   const out = ids.map(id => map.get(id)).filter(Boolean)
   for (const b of toolbarButtonDefinitions) if (!ids.includes(b.id)) out.push(b)
-  // 界面模式切换按钮只在网页版浏览器里存在,桌面模式不列出来
-  return out.filter(b => b.id !== 'uiMode' || isWebMode.value)
+  return out
 })
 const onToolbarReorder = (list) => {
   const ids = list.map(b => b.id)
@@ -1669,7 +1669,10 @@ const onToolbarReorder = (list) => {
   toolbarButtonsShown.value = ids.filter(id => shownSet.has(id))
   saveSetting()
 }
+// 常驻元素(设置按钮)只能排在某个位置,不能关掉
+const isToolbarItemShown = (id) => TOOLBAR_ALWAYS_ITEMS.includes(id) || toolbarButtonsShown.value.includes(id)
 const toggleToolbarItem = (id, enable) => {
+  if (TOOLBAR_ALWAYS_ITEMS.includes(id)) return
   if (enable) addToolbarButton(id)
   else removeToolbarButton(id)
 }
@@ -3812,6 +3815,14 @@ defineExpose({
         cursor: grab
       .toolbar-item-icon
         color: var(--el-color-primary)
+      // 常驻元素(设置按钮)的标记:能排序但不能关
+      .toolbar-item-always
+        margin-left: 6px
+        padding: 0 4px
+        font-size: 11px
+        border: 1px solid var(--el-border-color-lighter)
+        border-radius: 3px
+        color: var(--el-text-color-secondary)
       .toolbar-sort-label
         font-size: 13px
       .toolbar-remove-btn

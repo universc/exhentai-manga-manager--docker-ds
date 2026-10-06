@@ -119,6 +119,7 @@
     "toolbarSearchButton": "搜索按钮",
     "toolbarSortSelect": "排序框",
     "toolbarUiMode": "界面模式框",
+    "toolbarAlwaysShown": "常驻",
     "themeAlphaHint": "颜色支持调透明度:点开颜色选择器,拖动右侧的透明度滑块(0 = 全透明)",
     "externalViewer": "外置阅读器",
     "general": "常用",

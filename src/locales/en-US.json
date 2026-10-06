@@ -119,6 +119,7 @@
     "toolbarSearchButton": "Search button",
     "toolbarSortSelect": "Sort/Filter box",
     "toolbarUiMode": "UI mode box",
+    "toolbarAlwaysShown": "Always",
     "themeAlphaHint": "Colors support alpha: open the color picker and drag the alpha slider (0 = fully transparent)",
     "externalViewer": "External Viewer",
     "general": "General",
