@@ -7,63 +7,69 @@
     <el-row :gutter="20" class="book-search-bar">
       <el-col :span="24">
         <div class="toolbar-flex" :style="toolbarWidth ? { width: toolbarWidth + 'px' } : {}">
-          <!-- 搜索输入框与搜索按钮(固定在左侧) -->
-          <el-autocomplete
-            :model-value="searchString"
-            :fetch-suggestions="querySearch"
-            @keyup.enter="searchBook"
-            @change="handleSearchStringChange"
-            @input="handleInput"
-            clearable
-            :trigger-on-focus="false"
-            class="search-input"
-          >
-            <template #default="{ item }">
-              <span class="autocomplete-label">{{ item.label }}</span>
-              <span class="autocomplete-value">{{ item.value }}</span>
-            </template>
-          </el-autocomplete>
-          <el-button type="primary" :icon="Search32Filled" plain @click="searchBook" :title="$t('m.search')"></el-button>
-          <!-- 可自定义的界面按钮(顺序/显示项在 设置 → 高级 → 工具栏按钮 中调整;设置按钮始终保留) -->
-          <el-button
-            v-for="btn in visibleToolbarButtons"
-            :key="btn.id"
-            type="primary"
-            :icon="btn.icon"
-            plain
-            :title="$t(btn.titleKey)"
-            :loading="btn.loading"
-            @click="btn.action()"
-          ></el-button>
-          <!-- 排序/筛选:方向由箭头单独切换 -->
-          <div class="sort-select-wrap">
-            <el-select class="sort-select" :placeholder="$t('m.sort_filter')" clearable v-model="sortBaseValue">
-              <el-option-group :label="$t('m.filter')">
-                <el-option :label="$t('m.all')" value=""></el-option>
-                <el-option :label="$t('m.bookmarkOnly')" value="mark"></el-option>
-                <el-option :label="$t('m.collectionOnly')" value="collection"></el-option>
-                <el-option :label="$t('m.hiddenOnly')" value="hidden"></el-option>
-                <el-option :label="$t('m.recentReadOnly')" value="recentRead"></el-option>
-              </el-option-group>
-              <el-option-group :label="$t('m.sort')">
-                <el-option :label="$t('m.shuffle')" value="shuffle"></el-option>
-                <el-option :label="$t('m.addTime')" value="addTime"></el-option>
-                <el-option :label="$t('m.mtime')" value="mtime"></el-option>
-                <el-option :label="$t('m.postTime')" value="postTime"></el-option>
-                <el-option :label="$t('m.rating')" value="rating"></el-option>
-                <el-option :label="$t('m.readCount')" value="readCount"></el-option>
-                <el-option :label="$t('m.artist')" value="artist"></el-option>
-                <el-option :label="$t('m.title')" value="title"></el-option>
-                <el-option :label="$t('m.page')" value="page"></el-option>
-              </el-option-group>
-            </el-select>
+          <!-- 工具栏元素:显示项与排列顺序都在 设置 → 高级 → 工具栏按钮 里调整(设置按钮始终保留) -->
+          <template v-for="id in toolbarOrderIds" :key="id">
+            <!-- 搜索输入框 -->
+            <el-autocomplete
+              v-if="id === 'searchInput'"
+              :model-value="searchString"
+              :fetch-suggestions="querySearch"
+              @keyup.enter="searchBook"
+              @change="handleSearchStringChange"
+              @input="handleInput"
+              clearable
+              :trigger-on-focus="false"
+              class="search-input"
+            >
+              <template #default="{ item }">
+                <span class="autocomplete-label">{{ item.label }}</span>
+                <span class="autocomplete-value">{{ item.value }}</span>
+              </template>
+            </el-autocomplete>
+            <!-- 搜索按钮 -->
+            <el-button v-else-if="id === 'searchButton'" type="primary" :icon="Search32Filled" plain @click="searchBook" :title="$t('m.search')"></el-button>
+            <!-- 排序/筛选:方向由箭头单独切换 -->
+            <div v-else-if="id === 'sortSelect'" class="sort-select-wrap">
+              <el-select class="sort-select" :placeholder="$t('m.sort_filter')" clearable v-model="sortBaseValue">
+                <el-option-group :label="$t('m.filter')">
+                  <el-option :label="$t('m.all')" value=""></el-option>
+                  <el-option :label="$t('m.bookmarkOnly')" value="mark"></el-option>
+                  <el-option :label="$t('m.collectionOnly')" value="collection"></el-option>
+                  <el-option :label="$t('m.hiddenOnly')" value="hidden"></el-option>
+                  <el-option :label="$t('m.recentReadOnly')" value="recentRead"></el-option>
+                </el-option-group>
+                <el-option-group :label="$t('m.sort')">
+                  <el-option :label="$t('m.shuffle')" value="shuffle"></el-option>
+                  <el-option :label="$t('m.addTime')" value="addTime"></el-option>
+                  <el-option :label="$t('m.mtime')" value="mtime"></el-option>
+                  <el-option :label="$t('m.postTime')" value="postTime"></el-option>
+                  <el-option :label="$t('m.rating')" value="rating"></el-option>
+                  <el-option :label="$t('m.readCount')" value="readCount"></el-option>
+                  <el-option :label="$t('m.artist')" value="artist"></el-option>
+                  <el-option :label="$t('m.title')" value="title"></el-option>
+                  <el-option :label="$t('m.page')" value="page"></el-option>
+                </el-option-group>
+              </el-select>
+              <el-button
+                class="sort-dir-btn"
+                plain
+                :title="sortDirection === 'asc' ? $t('m.sortAsc') : $t('m.sortDesc')"
+                @click="toggleSortDirection"
+              >{{ sortDirection === 'asc' ? '↑' : '↓' }}</el-button>
+            </div>
+            <!-- UI 模式切换(仅 NAS 网页版浏览器):自动 → 手机 → 平板 → 电脑 -->
+            <el-button v-else-if="id === 'uiMode'" :icon="uiModeIcon" plain @click="switchUiMode" :title="$t('m.switchUiMode') + ': ' + $t(uiModeLabelKey)"></el-button>
+            <!-- 可自定义的界面按钮 -->
             <el-button
-              class="sort-dir-btn"
+              v-else-if="toolbarButtonMap[id]"
+              type="primary"
+              :icon="toolbarButtonMap[id].icon"
               plain
-              :title="sortDirection === 'asc' ? $t('m.sortAsc') : $t('m.sortDesc')"
-              @click="toggleSortDirection"
-            >{{ sortDirection === 'asc' ? '↑' : '↓' }}</el-button>
-          </div>
+              :title="$t(toolbarButtonMap[id].titleKey)"
+              :loading="toolbarButtonMap[id].loading"
+              @click="toolbarButtonMap[id].action()"
+            ></el-button>
+          </template>
           <!-- 合集/标签编辑按钮(仅编辑视图显示;管理入口已并入可自定义工具栏按钮) -->
           <div class="edit-btn-group">
             <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.addCollection()" :icon="Collections24Regular" :title="$t('m.addCollection')"></el-button>
@@ -76,8 +82,6 @@
           <el-button :icon="SettingIcon" plain @click="$refs.SettingRef.dialogVisibleSetting = true" :title="$t('m.setting')"></el-button>
           <!-- 上下文按钮(仅桌面客户端):本地模式=打开库文件夹;服务器模式=服务器配置 -->
           <el-button v-if="showContextButton" :icon="contextButton.icon" plain @click="contextButton.action()" :title="$t(contextButton.titleKey)"></el-button>
-          <!-- UI 模式切换(仅 NAS 网页版浏览器):自动 → 手机 → 平板 → 电脑 -->
-          <el-button v-if="isWebMode && !isRemoteDesktop" :icon="uiModeIcon" plain @click="switchUiMode" :title="$t('m.switchUiMode') + ': ' + $t(uiModeLabelKey)"></el-button>
         </div>
       </el-col>
     </el-row>
@@ -261,7 +265,7 @@ import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save1
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
-import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, parsePageSizes } from './utils.js'
+import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, parsePageSizes } from './utils.js'
 import { attachInertiaScroll } from './inertia-scroll.js'
 
 import Setting from './components/Setting.vue'
@@ -381,9 +385,9 @@ export default defineComponent({
         }
       }
     },
-    // 可自定义的工具栏按钮(顺序 = 显示顺序;搜索按钮与设置按钮固定,不在此列)
-    visibleToolbarButtons () {
-      const map = {
+    // 可自定义的工具栏元素:图标 / 悬浮说明 / 动作(显示顺序由 toolbarOrderIds 决定)
+    toolbarButtonMap () {
+      return {
         folderTree: { icon: TreeViewAlt, titleKey: 'm.folderTree', loading: false, action: () => this.$refs.FolderTreeRef.openFolderTree() },
         shuffle: { icon: MdShuffle, titleKey: 'm.shuffle', loading: false, action: () => this.shuffleBook() },
         manualScan: { icon: MdRefresh, titleKey: 'm.manualScan', loading: this.buttonLoadBookListLoading || this.scanning, action: () => this.loadBookList(true) },
@@ -396,18 +400,31 @@ export default defineComponent({
         themeSwitch: { icon: MdColorPalette, titleKey: 'm.themeSwitch', loading: false, action: () => this.switchTheme() },
         fullscreen: { icon: FullScreen, titleKey: 'm.fullscreenButton', loading: false, action: () => this.switchFullscreen() },
       }
-      // 显示哪些按钮由 toolbarButtons 决定;排列顺序由 toolbarButtonOrder(含隐藏项的完整顺序)决定,
-      // 没拖过排序时用定义顺序 —— 隐藏的项留在原位,不会因为取消勾选就被挤到末尾。
-      const enabledButtons = Array.isArray(this.setting?.toolbarButtons) && this.setting.toolbarButtons.length
-        ? this.setting.toolbarButtons
-        : defaultToolbarButtons()
-      const fullOrder = Array.isArray(this.setting?.toolbarButtonOrder) && this.setting.toolbarButtonOrder.length
-        ? this.setting.toolbarButtonOrder
-        : defaultToolbarButtons()
-      const order = fullOrder.filter(id => enabledButtons.includes(id))
+    },
+    // 工具栏元素的显示顺序 —— 搜索框/搜索按钮/排序框/界面模式切换 与普通按钮一起排序
+    // 显示哪些由 toolbarButtons 决定(ensureToolbarButtons 补齐老配置里没有的新元素),
+    // 排列顺序由 toolbarButtonOrder(含隐藏项的完整顺序)决定;没拖过排序时按默认顺序,
+    // 其中新元素固定在默认位置(搜索框/搜索按钮在最前,排序框/界面模式切换在最后)。
+    toolbarOrderIds () {
+      const map = this.toolbarButtonMap
+      const enabledButtons = ensureToolbarButtons(this.setting?.toolbarButtons, this.setting?.toolbarButtonsHidden)
+      const savedOrder = Array.isArray(this.setting?.toolbarButtonOrder) ? this.setting.toolbarButtonOrder : []
+      const base = savedOrder.length ? savedOrder.slice() : defaultToolbarButtons()
+      const head = ['searchInput', 'searchButton']
+      const tail = ['sortSelect', 'uiMode']
+      // 老配置的排序里还没有新元素(用户新版里没拖过)→ 按默认位置摆放
+      const hasNew = savedOrder.some(id => TOOLBAR_NEW_ITEMS.includes(id))
+      const fullOrder = hasNew
+        ? base
+        : [...head, ...base.filter(id => !head.includes(id) && !tail.includes(id)), ...tail]
+      for (const id of defaultToolbarButtons()) if (!fullOrder.includes(id)) fullOrder.push(id)
       // 只读账户:隐藏写操作类按钮(扫描/批量元数据/合集编辑/标签编辑),服务端同样会拦截
       const viewerBlock = new Set(['manualScan', 'incrementalScan', 'batchMetadata', 'manageCollection', 'manageTag'])
-      return order.filter(id => map[id] && !(this.viewerRole && viewerBlock.has(id))).map(id => map[id])
+      return fullOrder.filter(id => {
+        if (!enabledButtons.includes(id)) return false
+        if (id === 'uiMode') return this.isWebMode && !this.isRemoteDesktop
+        return !!map[id] && !(this.viewerRole && viewerBlock.has(id))
+      })
     },
     // 网页版标志(Vue 模板不能直接访问 window,需经 computed)
     isWebMode () {

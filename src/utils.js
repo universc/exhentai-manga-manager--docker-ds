@@ -241,12 +241,32 @@ const customFontStyles = [
   { value: 'PingFang SC, Hiragino Sans GB, sans-serif', labelKey: 'm.fontStylePingFang' },
 ]
 
-// 应用自定义主题(背景色/背景图/字号/字色/字体/主色调)
+// 取颜色的 alpha(支持 #rgb / #rrggbb / #rgba / #rrggbbaa / rgb() / rgba() / hsl() / hsla())
+const colorAlpha = (color) => {
+  const c = String(color == null ? '' : color).trim()
+  let m = c.match(/^rgba?\(([^)]+)\)$/i) || c.match(/^hsla?\(([^)]+)\)$/i)
+  if (m) {
+    const parts = m[1].split(',')
+    return parts.length === 4 ? Number(parts[3]) : 1
+  }
+  m = c.match(/^#([0-9a-fA-F]{8})$/)
+  if (m) return parseInt(m[1].slice(6, 8), 16) / 255
+  m = c.match(/^#([0-9a-fA-F]{4})$/)
+  if (m) return parseInt(m[1].slice(3, 4), 16) / 15
+  return 1
+}
+
+// 应用自定义主题(背景色/背景图/字号/字色/字体/主色调,颜色支持调透明度)
 const applyCustomTheme = (setting) => {
   if (typeof document === 'undefined') return
   const root = document.documentElement
   const s = setting || {}
-  root.style.setProperty('--emm-custom-bg', s.themeCustomBg || '')
+  const bg = s.themeCustomBg || ''
+  root.style.setProperty('--emm-custom-bg', bg)
+  // 背景色带透明度时,让弹层/卡片也用同一个半透明色 —— 否则弹层仍是不透明背景,看不出透明效果
+  const translucent = colorAlpha(bg) < 0.999
+  root.style.setProperty('--emm-custom-panel-bg', translucent ? bg : '')
+  root.style.setProperty('--emm-custom-card-bg', translucent ? bg : '')
   const bgImage = toAssetUrl(s.themeCustomBgImage)
   root.style.setProperty('--emm-custom-bg-image', bgImage ? `url("${bgImage}")` : '')
   root.style.setProperty('--emm-custom-font-size', s.themeCustomFontSize ? s.themeCustomFontSize + 'px' : '')
@@ -312,8 +332,12 @@ const applyCoverStyle = (setting) => {
 }
 
 // ---------- 工具栏按钮 ----------
-// 可自定义的界面按钮(设置按钮与搜索按钮始终保留,不在此列)
+// 可自定义的界面元素:顺序即默认排列顺序(设置按钮始终保留,不在此列)。
+// searchInput / searchButton / sortSelect / uiMode 是后来加入排序的固定元素,
+// 老配置里没有它们,由 ensureToolbarButtons() 兜底补上(只有用户显式取消后才不再出现)
 const toolbarButtonDefinitions = [
+  { id: 'searchInput', labelKey: 'm.toolbarSearchInput' },
+  { id: 'searchButton', labelKey: 'm.toolbarSearchButton' },
   { id: 'folderTree', labelKey: 'm.folderTree' },
   { id: 'shuffle', labelKey: 'm.shuffle' },
   { id: 'manualScan', labelKey: 'm.manualScan' },
@@ -325,8 +349,26 @@ const toolbarButtonDefinitions = [
   { id: 'viewerSwitch', labelKey: 'm.viewerSwitch' },
   { id: 'themeSwitch', labelKey: 'm.themeSwitch' },
   { id: 'fullscreen', labelKey: 'm.fullscreenButton' },
+  { id: 'sortSelect', labelKey: 'm.toolbarSortSelect' },
+  { id: 'uiMode', labelKey: 'm.toolbarUiMode' },
 ]
 const defaultToolbarButtons = () => toolbarButtonDefinitions.map(b => b.id)
+
+// 后来新增、老配置里不存在的工具栏元素:升级后默认仍然显示,只有用户显式关掉才隐藏
+// 「显式关掉」记在设置项 toolbarButtonsHidden 里(不是只看 toolbarButtons 缺不缺 ——
+// 老配置本来就缺这几项,分不清「没有」和「被关掉」)
+const TOOLBAR_NEW_ITEMS = ['searchInput', 'searchButton', 'sortSelect', 'uiMode']
+// 补齐老配置里缺失的新元素;返回值只决定「显示与否」,排列顺序另由 toolbarButtonOrder 决定
+const ensureToolbarButtons = (list, hidden) => {
+  // list 缺失(旧配置没这个键)才用默认全开;空数组 = 用户把按钮全关了,尊重
+  if (!Array.isArray(list)) return defaultToolbarButtons()
+  const off = Array.isArray(hidden) ? hidden : []
+  const out = list.filter(id => toolbarButtonDefinitions.some(b => b.id === id))
+  for (const b of toolbarButtonDefinitions) {
+    if (!out.includes(b.id) && TOOLBAR_NEW_ITEMS.includes(b.id) && !off.includes(b.id)) out.push(b.id)
+  }
+  return out
+}
 
 // ---------- 内置标签分类中文名(兜底) ----------
 // 标签分类的中文名原本依赖 EhTagTranslation 在线词库(setting.showTranslation);
@@ -503,6 +545,8 @@ const defaultUiSettings = () => ({
   themeCustomFontStyle: '',
   customIconPath: '',
   toolbarButtons: defaultToolbarButtons(),
+  // 用户显式关掉的「后加入」工具栏元素(搜索框/搜索按钮/排序框/界面模式框)
+  toolbarButtonsHidden: [],
   customPageSizes: '12,24,42,72,500,5000,1000000',
   scrollInertiaLevel: 'medium',
   enableImageUpscale: true,
@@ -592,6 +636,8 @@ export {
   DEFAULT_APP_NAME,
   toolbarButtonDefinitions,
   defaultToolbarButtons,
+  TOOLBAR_NEW_ITEMS,
+  ensureToolbarButtons,
   DEFAULT_CAT_NAMES,
   resolveCatKey,
   catDisplayName,

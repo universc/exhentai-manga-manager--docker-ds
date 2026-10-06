@@ -242,7 +242,7 @@
           </template>
         </el-dialog>
       </el-tab-pane>
-      <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.internalViewer')" name="internalViewer">
+      <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.readerSettings')" name="internalViewer">
         <el-row :gutter="8">
           <el-col :span="24">
             <div class="setting-line">
@@ -379,7 +379,7 @@
           </el-col>
         </el-row>
       </el-tab-pane>
-      <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.collectTag')" name="collectTag">
+      <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.tagSettings')" name="collectTag">
         <el-row :gutter="8">
           <!-- 当前库中的全部标签:分类在上,标签在下;点击收藏、色点改色、双击重命名 -->
           <el-col :span="24" class="setting-line collect-tag">
@@ -916,24 +916,25 @@
         <el-row :gutter="8">
           <el-col :span="24">
             <div class="custom-theme-panel">
+              <div class="setting-hint">{{$t('m.themeAlphaHint')}}</div>
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomBg')}}</span>
                 <div class="theme-value">
-                  <el-color-picker v-model="setting.themeCustomBg" :show-alpha="false" @change="handleCustomThemeChange" />
+                  <el-color-picker v-model="setting.themeCustomBg" :show-alpha="true" @change="handleCustomThemeChange" />
                   <el-button v-if="setting.themeCustomBg" size="small" text type="danger" @click="clearThemeColor('bg')">{{$t('m.clear')}}</el-button>
                 </div>
               </div>
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomPrimary')}}</span>
                 <div class="theme-value">
-                  <el-color-picker v-model="setting.themeCustomPrimary" :show-alpha="false" @change="handleCustomThemeChange" />
+                  <el-color-picker v-model="setting.themeCustomPrimary" :show-alpha="true" @change="handleCustomThemeChange" />
                   <el-button v-if="setting.themeCustomPrimary && setting.themeCustomPrimary !== '#409EFF'" size="small" text type="danger" @click="resetThemeColor('primary')">{{$t('m.clear')}}</el-button>
                 </div>
               </div>
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomFontColor')}}</span>
                 <div class="theme-value">
-                  <el-color-picker v-model="setting.themeCustomFontColor" :show-alpha="false" @change="handleCustomThemeChange" />
+                  <el-color-picker v-model="setting.themeCustomFontColor" :show-alpha="true" @change="handleCustomThemeChange" />
                   <el-button v-if="setting.themeCustomFontColor" size="small" text type="danger" @click="clearThemeColor('font')">{{$t('m.clear')}}</el-button>
                 </div>
               </div>
@@ -1537,7 +1538,7 @@ import { ref, onMounted, h, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import draggable from 'vuedraggable'
-import { MdRefresh, MdSync, MdShuffle, MdCodeDownload, MdBook, MdColorPalette } from '@vicons/ionicons4'
+import { MdRefresh, MdSync, MdShuffle, MdCodeDownload, MdBook, MdColorPalette, MdPhonePortrait, MdFunnel } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup, Maximize } from '@vicons/carbon'
 import { Search32Filled, ArrowTrendingLines20Filled } from '@vicons/fluent'
 
@@ -1547,7 +1548,7 @@ import en from 'element-plus/dist/locale/en.mjs'
 
 import { version } from '../../package.json'
 import { gh_token } from '../../secret_key.json'
-import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey , markContextMenuItemDisabled } from '../utils.js'
+import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey , markContextMenuItemDisabled } from '../utils.js'
 import { attachInertiaScroll } from '../inertia-scroll.js'
 import NameFormItem from './NameFormItem.vue'
 
@@ -1594,8 +1595,11 @@ const translationEnabled = computed(() => {
 
 // ---------- 工具栏按钮自定义 ----------
 const toolbarIconMap = {
+  searchInput: Search32Filled,
+  searchButton: Search32Filled,
+  sortSelect: MdFunnel,
+  uiMode: MdPhonePortrait,
   folderTree: TreeViewAlt,
-  search: Search32Filled,
   shuffle: MdShuffle,
   manualScan: MdRefresh,
   incrementalScan: MdSync,
@@ -1609,8 +1613,9 @@ const toolbarIconMap = {
 }
 const toolbarButtonsShown = computed({
   get: () => {
-    const list = setting.value.toolbarButtons
-    return (Array.isArray(list) && list.length) ? list : defaultToolbarButtons()
+    // ensureToolbarButtons:老配置里没有的新元素(搜索框/排序框等)默认算作已显示,
+    // 与主界面工具栏的判断保持一致,否则设置里显示未勾选、界面上却还在
+    return ensureToolbarButtons(setting.value.toolbarButtons, setting.value.toolbarButtonsHidden)
   },
   set: (val) => {
     setting.value.toolbarButtons = val
@@ -1622,13 +1627,24 @@ const toolbarLabelKey = (id) => {
 const toolbarButtonsAvailable = computed(() => {
   return toolbarButtonDefinitions.filter(b => !toolbarButtonsShown.value.includes(b.id))
 })
+// 新元素(搜索框/搜索按钮/排序框/界面模式框)在旧配置里不存在,单看 toolbarButtons 分不清
+// 「老配置没这一项」和「用户主动关掉」,所以显式关掉时在 toolbarButtonsHidden 里记一笔(随设置保存)
+const markToolbarItemHidden = (id, hidden) => {
+  if (!TOOLBAR_NEW_ITEMS.includes(id)) return
+  const list = Array.isArray(setting.value.toolbarButtonsHidden) ? setting.value.toolbarButtonsHidden : []
+  setting.value.toolbarButtonsHidden = hidden
+    ? Array.from(new Set([...list, id]))
+    : list.filter(x => x !== id)
+}
 const addToolbarButton = (id) => {
   if (!id || toolbarButtonsShown.value.includes(id)) return
   toolbarButtonsShown.value = [...toolbarButtonsShown.value, id]
+  markToolbarItemHidden(id, false)
   saveSetting()
 }
 const removeToolbarButton = (id) => {
   toolbarButtonsShown.value = toolbarButtonsShown.value.filter(b => b !== id)
+  markToolbarItemHidden(id, true)
   saveSetting()
 }
 const saveToolbarButtons = () => {
@@ -1642,7 +1658,8 @@ const orderedToolbarItems = computed(() => {
   const map = new Map(toolbarButtonDefinitions.map(b => [b.id, b]))
   const out = ids.map(id => map.get(id)).filter(Boolean)
   for (const b of toolbarButtonDefinitions) if (!ids.includes(b.id)) out.push(b)
-  return out
+  // 界面模式切换按钮只在网页版浏览器里存在,桌面模式不列出来
+  return out.filter(b => b.id !== 'uiMode' || isWebMode.value)
 })
 const onToolbarReorder = (list) => {
   const ids = list.map(b => b.id)
@@ -2454,7 +2471,8 @@ onMounted(() => {
       if (res.themeCustomFontColor === undefined) setting.value.themeCustomFontColor = ''
       if (res.themeCustomFontStyle === undefined) setting.value.themeCustomFontStyle = ''
       if (res.customIconPath === undefined) setting.value.customIconPath = ''
-      if (res.toolbarButtons === undefined) setting.value.toolbarButtons = defaultToolbarButtons()
+      if (!Array.isArray(res.toolbarButtonsHidden)) setting.value.toolbarButtonsHidden = []
+      setting.value.toolbarButtons = ensureToolbarButtons(res.toolbarButtons, res.toolbarButtonsHidden)
       if (res.customPageSizes === undefined) setting.value.customPageSizes = '12,24,42,72,500,5000,1000000'
       if (res.scrollInertiaLevel === undefined) setting.value.scrollInertiaLevel = 'medium'
       if (res.enableImageUpscale === undefined) setting.value.enableImageUpscale = false
