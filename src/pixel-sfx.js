@@ -36,6 +36,8 @@ const SOUNDS = {
   rate: () => { tone({ from: 900, to: 1350, dur: 0.05 }); tone({ from: 1350, to: 1900, dur: 0.07, gain: 0.03, delay: 0.05 }) },
   mark: () => { tone({ from: 680, to: 1150, dur: 0.07 }); tone({ from: 1250, to: 1750, dur: 0.09, gain: 0.032, delay: 0.06 }) },
   page: () => tone({ type: 'triangle', from: 540, to: 280, dur: 0.09, gain: 0.04 }),
+  // 任务完成(超分 / 翻译 / 扫描等):一小段上行的三音琶音
+  done: () => { tone({ from: 700, to: 700, dur: 0.06 }); tone({ from: 950, to: 950, dur: 0.06, delay: 0.09 }); tone({ from: 1250, to: 1750, dur: 0.16, gain: 0.05, delay: 0.18 }) },
   open: () => tone({ from: 620, to: 1240, dur: 0.12 }),
 }
 export const playPixelSfx = (kind) => {
@@ -49,12 +51,14 @@ const SFX_SELECTOR = 'button, .el-button, .book-card, .el-switch, .el-checkbox, 
 export const attachPixelSfx = () => {
   if (typeof document === 'undefined') return () => {}
   const clickHandler = (e) => {
+    if (e.button && e.button !== 0) return
     const t = e.target
-    if (!t || typeof t.closest !== 'function') return
+    // 任何点击都要有声音;只有下面几类换成专属音效
+    if (!t || typeof t.closest !== 'function') { playPixelSfx('click'); return }
     if (t.closest('.el-rate')) { playPixelSfx('rate'); return }
     if (t.closest('.book-card-mark, .fill-mark')) { playPixelSfx('mark'); return }
     if (t.closest('.viewer-drawer')) { playPixelSfx('page'); return }
-    if (t.closest(SFX_SELECTOR)) playPixelSfx('click')
+    playPixelSfx('click')
   }
   const keyHandler = (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return

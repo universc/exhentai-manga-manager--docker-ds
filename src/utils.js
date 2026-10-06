@@ -350,6 +350,9 @@ const applyPixelTheme = (setting) => {
   const hant = String(setting?.language || '') === 'zh-TW'
   root.style.setProperty('--emm-pixel-font', hant ? "'EmmPixelHant', 'EmmPixel'" : "'EmmPixel', 'EmmPixelHant'")
   // 自动主题:按当前显示的漫画封面取色,改卡片框/按钮/按钮内颜色/主色调(颜色由 App.vue 写进变量)
+  // 只有「像素风格开着 + 清晰度 > 0」时才隐藏未处理的封面(清晰度 0 = 不做像素化,封面要正常显示)
+  const coverLevel = Number(setting?.pixelCoverLevel)
+  root.classList.toggle('theme-pixel-covers', !!setting?.pixelTheme && Number.isFinite(coverLevel) && coverLevel > 0)
   const autoOn = !!setting?.pixelTheme && setting?.autoTheme !== false
   root.classList.toggle('theme-auto', autoOn)
   if (!autoOn) {
@@ -642,6 +645,11 @@ const defaultUiSettings = () => ({
   pixelSfx: true,
   // 封面像素化强度:0 = 完全不处理封面,越大降采样越狠(块越大)
   pixelCoverLevel: 60,
+  // 像素画参数(参考 image2pixel.app):块大小 / 颜色数量 / 显示网格 / 算法
+  pixelBlockSize: 4,
+  pixelColorCount: 32,
+  pixelShowGrid: false,
+  pixelAlgorithm: 'average',
   // 自动主题:按当前显示的漫画封面取色,联动卡片框/按钮/按钮内颜色/主色调(像素风格开启时自动打开)
   autoTheme: false,
   customIconPath: '',

@@ -165,6 +165,27 @@
                       />
                     </div>
                     <div class="setting-hint">{{$t('m.pixelCoverLevelHint')}}</div>
+                    <div class="setting-line" style="margin-top:8px">
+                      <span class="setting-label">{{$t('m.pixelBlockSize')}}</span>
+                      <el-slider v-model="setting.pixelBlockSize" :min="2" :max="20" :step="1" :disabled="!setting.pixelTheme || !setting.pixelCoverLevel" style="width:130px;margin-left:10px" @change="saveSetting" />
+                    </div>
+                    <div class="setting-line" style="margin-top:8px">
+                      <span class="setting-label">{{$t('m.pixelColorCount')}}</span>
+                      <el-slider v-model="setting.pixelColorCount" :min="2" :max="64" :step="2" :disabled="!setting.pixelTheme || !setting.pixelCoverLevel" style="width:130px;margin-left:10px" @change="saveSetting" />
+                    </div>
+                    <div class="setting-line" style="margin-top:8px">
+                      <span class="setting-label">{{$t('m.pixelAlgorithm')}}</span>
+                      <el-select v-model="setting.pixelAlgorithm" size="small" style="width:150px;margin-left:10px" :disabled="!setting.pixelTheme || !setting.pixelCoverLevel" @change="saveSetting">
+                        <el-option :label="$t('m.pixelAlgoAverage')" value="average" />
+                        <el-option :label="$t('m.pixelAlgoCenter')" value="center" />
+                        <el-option :label="$t('m.pixelAlgoDither')" value="dither" />
+                        <el-option :label="$t('m.pixelAlgoNone')" value="none" />
+                      </el-select>
+                    </div>
+                    <div class="setting-line" style="margin-top:8px">
+                      <el-switch v-model="setting.pixelShowGrid" :disabled="!setting.pixelTheme || !setting.pixelCoverLevel" @change="saveSetting" />
+                      <span class="setting-label" style="margin-left:10px">{{$t('m.pixelShowGrid')}}</span>
+                    </div>
                   </el-popover>
                 </div>
               </NameFormItem>
@@ -2584,6 +2605,10 @@ onMounted(() => {
       // 自动主题:像素风格打开时默认开启;封面清晰度默认 60
       if (res.autoTheme === undefined) setting.value.autoTheme = !!res.pixelTheme
       if (res.pixelCoverLevel === undefined) setting.value.pixelCoverLevel = 60
+      if (res.pixelBlockSize === undefined) setting.value.pixelBlockSize = 4
+      if (res.pixelColorCount === undefined) setting.value.pixelColorCount = 32
+      if (res.pixelShowGrid === undefined) setting.value.pixelShowGrid = false
+      if (res.pixelAlgorithm === undefined) setting.value.pixelAlgorithm = 'average'
       if (res.themeCustomButtonBg === undefined) setting.value.themeCustomButtonBg = ''
       if (res.themeCustomFontItalic === undefined) setting.value.themeCustomFontItalic = false
       if (res.themeCustomFontUnderline === undefined) setting.value.themeCustomFontUnderline = false

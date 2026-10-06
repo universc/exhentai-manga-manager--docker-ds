@@ -267,7 +267,7 @@ import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
 import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, parsePageSizes } from './utils.js'
 import { extractCoverColors, pixelateToDataUrl } from './cover-color.js'
-import { attachPixelSfx } from './pixel-sfx.js'
+import { attachPixelSfx, playPixelSfx } from './pixel-sfx.js'
 import { attachInertiaScroll } from './inertia-scroll.js'
 
 import Setting from './components/Setting.vue'
@@ -439,6 +439,11 @@ export default defineComponent({
         return !!map[id] && !(this.viewerRole && viewerBlock.has(id))
       })
     },
+    // 正在跑的任务数量(超分/翻译等):减少到 0 时播放完成音效
+    bookTaskCount () {
+      const store = useAppStore()
+      return Object.keys(store.bookTasks || {}).length
+    },
     // 网页版标志(Vue 模板不能直接访问 window,需经 computed)
     isWebMode () {
       return !!window.__WEB_MODE__
@@ -555,12 +560,20 @@ export default defineComponent({
       })
     },
     'setting.pixelSfx' () { this.syncPixelSfx() },
+    // 任务减少(完成/中断)时来一段完成音效
+    bookTaskCount (val, old) {
+      if (typeof old === 'number' && val < old) playPixelSfx('done')
+    },
     'setting.autoTheme' () {
       applyPixelTheme(this.setting)
       this.lastAutoThemeCover = null
       this.$nextTick(() => this.applyAutoTheme())
     },
     'setting.pixelCoverLevel' () { this.$nextTick(() => this.applyPixelCovers()) },
+    'setting.pixelBlockSize' () { this.$nextTick(() => this.applyPixelCovers()) },
+    'setting.pixelColorCount' () { this.$nextTick(() => this.applyPixelCovers()) },
+    'setting.pixelAlgorithm' () { this.$nextTick(() => this.applyPixelCovers()) },
+    'setting.pixelShowGrid' () { this.$nextTick(() => this.applyPixelCovers()) },
     // 卡片列表变化(翻页/排序/搜索/扫描)后重算混合背景 + 重新像素化封面
     visibleRenderedBookList () {
       this.$nextTick(() => {
@@ -685,6 +698,10 @@ export default defineComponent({
       this.applyPixelCovers()
       this.applyAutoTheme()
     })
+    // 首屏封面是懒加载的:过一会儿再补几次,避免「不滚动就一直不像素化」
+    setTimeout(() => this.applyPixelCovers(), 700)
+    setTimeout(() => this.applyPixelCovers(), 1800)
+    setTimeout(() => this.applyPixelCovers(), 3500)
     ipcRenderer.on('send-action', async (event, arg) => {
       switch (arg.action) {
         case 'setting':
@@ -901,13 +918,20 @@ export default defineComponent({
             delete el.dataset.pixelOriginal
             delete el.dataset.pixelDone
             delete el.dataset.pixelWidth
+            delete el.dataset.pixelSig
+            const host = el.closest('.book-cover-frame') || el.closest('.book-card')
+            if (host) { delete host.dataset.pixelGrid; host.style.removeProperty('--pixel-cols'); host.style.removeProperty('--pixel-rows') }
           }
           el.style.removeProperty('opacity')
         }
         return
       }
-      const clamped = Math.min(100, Math.max(1, level))
-      const targetWidth = Math.max(24, Math.round(120 - (clamped / 100) * 96))
+      // 像素画参数(参考 image2pixel.app)
+      const blockSize = Math.max(2, Math.min(20, Math.round(Number(this.setting?.pixelBlockSize) || 4)))
+      const colorCount = Math.max(0, Math.min(64, Math.round(Number(this.setting?.pixelColorCount) || 0)))
+      const algorithm = this.setting?.pixelAlgorithm || 'average'
+      const showGrid = !!this.setting?.pixelShowGrid
+      const pixelSig = blockSize + '/' + colorCount + '/' + algorithm
       const area = document.querySelector('.book-card-area')
       const areaRect = area ? area.getBoundingClientRect() : null
       let processed = 0
@@ -917,25 +941,46 @@ export default defineComponent({
           const r = el.getBoundingClientRect()
           if (r.bottom < areaRect.top - 300 || r.top > areaRect.bottom + 300) continue
         }
+        // 图片可能还没加载完(懒加载),加载完成后再补一次,免得「不动就不处理」
+        if (!el.dataset.pixelHooked) {
+          el.dataset.pixelHooked = '1'
+          el.addEventListener('load', () => this.applyPixelCovers(), { once: true })
+        }
         const cur = el.currentSrc || el.src
         if (!cur || cur.startsWith('data:')) continue
         if (el.dataset.pixelFailed) continue
-        // 同一个清晰度已经处理过就不重复处理,免得滚动时反复闪
-        if (el.dataset.pixelDone && el.dataset.pixelWidth === String(targetWidth)) continue
+        // 同一套参数已经处理过就不重复处理,免得滚动时反复闪
+        if (el.dataset.pixelDone && el.dataset.pixelSig === pixelSig) continue
         // 先把原图藏起来,处理完再显示 —— 否则会「先看到原图,再变成像素图」
         el.style.opacity = '0'
-        let dataUrl = await pixelateToDataUrl(cur, targetWidth)
+        let res = await pixelateToDataUrl(cur, { blockSize, colorCount, algorithm })
+        let dataUrl = res && res.dataUrl
         if (!dataUrl) {
-          try { dataUrl = await ipcRenderer.invoke('pixelate-cover', cur, targetWidth) } catch (e) { dataUrl = null }
+          // 主进程兜底:只能按块大小降采样(nativeImage 不做量化与网格)
+          const fallbackWidth = Math.max(16, Math.round(240 / blockSize))
+          try { dataUrl = await ipcRenderer.invoke('pixelate-cover', cur, fallbackWidth) } catch (e) { dataUrl = null }
         }
         if (!dataUrl) {
           el.dataset.pixelFailed = '1'
           el.style.removeProperty('opacity')
           continue
         }
+        // 显示网格:行列数写进外层容器,网格由 CSS 覆盖层画(inset + repeating-linear-gradient)
+        const host = el.closest('.book-cover-frame') || el.closest('.book-card')
+        if (host) {
+          if (showGrid && res) {
+            host.dataset.pixelGrid = res.cols + 'x' + res.rows
+            host.style.setProperty('--pixel-cols', res.cols)
+            host.style.setProperty('--pixel-rows', res.rows)
+          } else {
+            delete host.dataset.pixelGrid
+            host.style.removeProperty('--pixel-cols')
+            host.style.removeProperty('--pixel-rows')
+          }
+        }
         el.dataset.pixelOriginal = cur
         el.dataset.pixelDone = '1'
-        el.dataset.pixelWidth = String(targetWidth)
+        el.dataset.pixelSig = pixelSig
         el.src = dataUrl
         el.style.removeProperty('opacity')
         processed++
@@ -962,18 +1007,20 @@ export default defineComponent({
       if (!colors) return
       const toHex = (c) => '#' + c.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
       const shade = (c, k) => c.map((v) => Math.round(v * k))
+      const lighten = (c, k) => c.map((v) => Math.round(v + (255 - v) * k))
       const vivid = colors.vivid || colors.average
       const avg = colors.average
-      // 按钮/卡片底色统一压暗,文字按背景亮度取「黑或白」,保证对比明显
-      const btnBg = shade(avg, 0.55)
-      const btnLum = 0.299 * btnBg[0] + 0.587 * btnBg[1] + 0.114 * btnBg[2]
-      const btnText = btnLum > 140 ? '#1a1a1a' : '#ffffff'
-      const cardBg = shade(avg, 0.32)
+      // 用户要求:底色取浅色、文字取深色 —— 底色统一提亮,文字固定深色,对比稳定
+      const btnBg = lighten(avg, 0.55)
+      const cardBg = lighten(avg, 0.68)
+      const btnText = '#1a1a1a'
+      const cardText = '#1f1f1f'
       const root = document.documentElement.style
       root.setProperty('--emm-auto-primary', toHex(vivid))
       root.setProperty('--emm-auto-primary-dark', toHex(shade(vivid, 0.7)))
       root.setProperty('--emm-auto-card-bg', `rgba(${cardBg[0]}, ${cardBg[1]}, ${cardBg[2]}, 0.45)`)
       root.setProperty('--emm-auto-card-border', toHex(shade(vivid, 0.65)))
+      root.setProperty('--emm-auto-card-text', cardText)
       root.setProperty('--emm-auto-button-bg', `rgba(${btnBg[0]}, ${btnBg[1]}, ${btnBg[2]}, 0.6)`)
       root.setProperty('--emm-auto-button-text', btnText)
     },
@@ -2360,9 +2407,6 @@ html.theme-pixel
   //    而给 book-cover-frame 加 overflow: hidden 又会把右上角的收藏按钮裁掉。
   .book-card-list img, .book-cover, .book-cover-fill
     image-rendering: pixelated
-  // 换好像素图之前一律隐藏,避免「先看到原图再变像素」;处理失败(data-pixel-failed)的照常显示
-  .book-card-list img:not([data-pixel-done]):not([data-pixel-failed])
-    opacity: 0 !important
   // 按钮:粗像素风(2px 硬边框 + 左上亮/右下暗的内阴影,像老游戏按钮)
   .el-button
     box-sizing: border-box !important
@@ -2395,13 +2439,6 @@ html.theme-pixel
       height: 8px
       background-color: var(--el-color-primary)
       animation: pixel-chase 1.4s steps(8, end) infinite
-  // 卡片上的任务转圈:方块绕着卡片边框跑
-  .book-task-ring
-    width: 10px !important
-    height: 10px !important
-    border: none !important
-    background-color: #ffffff
-    animation: pixel-chase 1.8s steps(10, end) infinite !important
   // 收藏按钮:像素风小方块 + 像素心(mask),原书签 SVG 变透明占位
   .book-card-mark
     right: 3px !important
@@ -2520,6 +2557,62 @@ html.theme-custom
     left: 0
     top: 0
 
+// ============ 任务动画:像素小人在跑(超分/翻译等,替代转圈与均衡器) ============
+.book-task-runner
+  position: absolute
+  left: 50%
+  top: 50%
+  width: 16px
+  height: 20px
+  margin: -10px 0 0 -8px
+  &::before
+    content: ''
+    position: absolute
+    left: 4px
+    top: 0
+    width: 8px
+    height: 8px
+    background-color: #ffffff
+    box-shadow: 0 8px 0 0 #ffffff, -4px 9px 0 0 #ffffff, 8px 9px 0 0 #ffffff
+    animation: runner-bob .45s steps(2, end) infinite alternate
+  &::after
+    content: ''
+    position: absolute
+    left: 4px
+    top: 14px
+    width: 3px
+    height: 4px
+    background-color: #ffffff
+    box-shadow: 5px 0 0 0 #ffffff
+    animation: runner-legs .45s steps(2, end) infinite alternate
+
+@keyframes runner-bob
+  from
+    transform: translateY(0)
+  to
+    transform: translateY(-2px)
+
+@keyframes runner-legs
+  from
+    box-shadow: 5px 0 0 0 #ffffff
+  to
+    box-shadow: 3px -2px 0 0 #ffffff
+
+// 封面像素化进行中:先隐藏原图,换好像素图(data-pixel-done)或处理失败(data-pixel-failed)才显示
+// 只在「像素风格开启 + 清晰度 > 0」时生效(清晰度为 0 时不做像素化,封面照常显示)
+html.theme-pixel-covers
+  .book-card-list img:not([data-pixel-done]):not([data-pixel-failed])
+    opacity: 0 !important
+  // 显示网格:在封面外层叠一层网格线(行列数由 JS 写进 --pixel-cols/--pixel-rows)
+  .book-cover-frame[data-pixel-grid], .book-card[data-pixel-grid]
+    position: relative
+    &::after
+      content: ''
+      position: absolute
+      inset: 0
+      pointer-events: none
+      background-image: repeating-linear-gradient(to right, rgba(0, 0, 0, .35) 0 1px, transparent 1px calc(100% / var(--pixel-cols, 60))), repeating-linear-gradient(to bottom, rgba(0, 0, 0, .35) 0 1px, transparent 1px calc(100% / var(--pixel-rows, 80)))
+
 // ============ 音乐律动加载动画(4 根柱子上下跳,替代转圈) ============
 .emm-eq
   display: inline-flex
@@ -2585,6 +2678,10 @@ html.theme-auto
   .book-card
     background-color: var(--emm-auto-card-bg, var(--el-bg-color-overlay)) !important
     border-color: var(--emm-auto-card-border, var(--el-border-color)) !important
+    // 浅底色配深色文字,保证看得清
+    color: var(--emm-auto-card-text, #1f1f1f) !important
+    .book-title, .fill-title, .book-status-tag
+      color: var(--emm-auto-card-text, #1f1f1f) !important
   .el-button
     background-color: var(--emm-auto-button-bg, var(--el-button-bg-color)) !important
     border-color: var(--emm-auto-card-border, var(--el-border-color)) !important
