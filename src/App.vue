@@ -58,7 +58,7 @@
               >{{ sortDirection === 'asc' ? '↑' : '↓' }}</el-button>
             </div>
             <!-- UI 模式切换:自动 → 手机 → 平板 → 电脑(桌面客户端与网页版都有) -->
-            <el-button v-else-if="id === 'uiMode'" :icon="uiModeIcon" plain @click="switchUiMode" :title="$t('m.switchUiMode') + ': ' + $t(uiModeLabelKey)"></el-button>
+            <el-button v-else-if="id === 'uiMode'" type="primary" :icon="uiModeIcon" plain @click="switchUiMode" :title="$t('m.switchUiMode') + ': ' + $t(uiModeLabelKey)"></el-button>
             <!-- 可自定义的界面按钮 -->
             <el-button
               v-else-if="toolbarButtonMap[id]"
@@ -2156,6 +2156,10 @@ html.theme-custom
     --el-button-hover-bg-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
     --el-button-active-bg-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
     --el-button-disabled-bg-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
+    // 设置 / 界面模式等描边按钮的图标与文字统一用主色调(避免被自定义字体色染成纯白)
+    --el-button-text-color: var(--el-color-primary)
+    --el-button-hover-text-color: var(--el-color-primary)
+    --el-button-active-text-color: var(--el-color-primary)
     // stylus 会把 color-mix(in srgb, ...) 的 in 当语法解析,必须用 unquote 原样输出
     // 搜索框 / 排序框 / plain 按钮统一用「按钮框内颜色」
     .el-input__wrapper, .el-select__wrapper, .el-textarea__inner
@@ -2210,7 +2214,8 @@ html.theme-custom
   justify-content: flex-end
 
 .book-card-frame
-  min-width: calc(var(--emm-cover-size, 220px) + 14px)
+  // 卡片框最小宽度 = 卡片宽度 + 左右间距 —— 以前固定 +14px,所以间距调到 0 也贴不到一起
+  min-width: calc(var(--emm-cover-size, 220px) + var(--emm-card-gap-h, 0px) * 2)
   display: inline-block
 
 // 逐排加载哨兵(占位一行,进入视口即触发下一排加载)

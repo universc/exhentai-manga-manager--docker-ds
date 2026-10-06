@@ -840,7 +840,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.uiZoom')}}</span></template>
-                <el-input-number v-model="uiZoomPercent" :min="50" :max="300" :step="10" controls-position="right" />
+                <el-input-number v-model="uiZoomPercent" :min="50" :max="300" :step="10" controls-position="right" placeholder="100" />
               </NameFormItem>
             </div>
           </el-col>
@@ -848,7 +848,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverWidth')}}</span></template>
-                <el-input-number v-model="setting.coverWidth" :min="80" :max="800" :step="10" controls-position="right" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.coverWidth" :min="80" :max="800" :step="10" controls-position="right" placeholder="220" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -856,7 +856,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverHeight')}}</span></template>
-                <el-input-number v-model="setting.coverHeight" :min="100" :max="1200" :step="10" controls-position="right" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.coverHeight" :min="100" :max="1200" :step="10" controls-position="right" placeholder="360" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -867,7 +867,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.cardGapV')}}</span></template>
-                <el-input-number v-model="setting.cardGapV" :min="0" :max="40" :step="2" controls-position="right" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.cardGapV" :min="0" :max="40" :step="2" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -875,7 +875,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.cardGapH')}}</span></template>
-                <el-input-number v-model="setting.cardGapH" :min="0" :max="40" :step="2" controls-position="right" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.cardGapH" :min="0" :max="40" :step="2" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -956,7 +956,7 @@
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomFontSize')}}</span>
                 <div class="theme-value">
-                  <el-input-number v-model="setting.themeCustomFontSize" :min="1" :max="999" size="small" controls-position="right" @change="handleCustomThemeChange" />
+                  <el-input-number v-model="setting.themeCustomFontSize" :min="1" :max="999" size="small" controls-position="right" placeholder="14" @change="handleCustomThemeChange" />
                 </div>
               </div>
               <div class="theme-row">
@@ -970,9 +970,7 @@
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomFontWeight')}}</span>
                 <div class="theme-value">
-                  <el-select v-model="setting.themeCustomFontWeight" size="small" placeholder=" " @change="handleCustomThemeChange">
-                    <el-option v-for="w in fontWeightOptions" :key="w.value" :label="w.label || $t('m.themeFontWeightDefault')" :value="w.value" />
-                  </el-select>
+                  <el-input-number v-model="setting.themeCustomFontWeight" :min="100" :max="900" :step="100" size="small" controls-position="right" placeholder="400" @change="handleCustomThemeChange" />
                 </div>
               </div>
               <div class="theme-row">
@@ -1732,14 +1730,30 @@ const handleAppNameChange = () => {
 }
 
 // ---------- 自定义主题 / 图标 ----------
+// 输入框被清空(没填数字)时回填默认值,不让设置项变成空的
+const fillNumberDefault = (key, def, min, max) => {
+  const v = Number(setting.value[key])
+  if (!Number.isFinite(v) || String(setting.value[key]).trim() === '') {
+    setting.value[key] = def
+    return
+  }
+  if (v < min || v > max) setting.value[key] = Math.min(max, Math.max(min, v))
+}
 const handleCustomThemeChange = () => {
+  fillNumberDefault('themeCustomFontSize', 14, 1, 999)
+  fillNumberDefault('themeCustomFontWeight', '', 100, 900)
+  if (setting.value.themeCustomFontWeight === '' || setting.value.themeCustomFontWeight === null) setting.value.themeCustomFontWeight = ''
   if (setting.value.theme === 'custom') {
     applyCustomTheme(setting.value)
   }
   saveSetting()
 }
-// 封面尺寸 / 间距
+// 封面尺寸 / 间距(清空即回到默认:宽 220、高 360、间距 6)
 const handleCoverStyleChange = () => {
+  fillNumberDefault('coverWidth', 220, 80, 800)
+  fillNumberDefault('coverHeight', 360, 100, 1200)
+  fillNumberDefault('cardGapV', 6, 0, 40)
+  fillNumberDefault('cardGapH', 6, 0, 40)
   applyCoverStyle(setting.value)
   saveSetting()
 }
@@ -1754,7 +1768,9 @@ const zoomPercentRef = ref(readZoomPercent())
 const uiZoomPercent = computed({
   get: () => zoomPercentRef.value,
   set: (val) => {
-    const p = Number(val)
+    // 清空输入框 → 回到 100%
+    const raw = String(val == null ? '' : val).trim()
+    let p = raw === '' ? 100 : Number(raw)
     if (!Number.isFinite(p) || p < 20 || p > 800) return
     // setZoomLevel 支持小数,直接用对数换算,百分比才能精确还原
     try { electronFunction['set-zoom-level'](Math.log(p / 100) / Math.log(ZOOM_STEP)) } catch (e) {}
