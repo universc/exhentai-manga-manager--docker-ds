@@ -1976,22 +1976,22 @@ body.emm-mobile
   // 所以列宽要按「内容可用宽 = 100vw - 卡片区留白 - gutter 内边距」反推,
   // 否则算出来的列宽实际放不下 N 列,flex 会把每行折成 1 列(手机出现"单列大图")。
   // 只能用纯 calc(sass 会把 min()/clamp() 提前折叠成常数,导致列宽公式失效)
-  --emm-cover-size: calc((100vw - 70px) / 2)
+  // 卡片宽度 = min(设置里的卡片宽度, 该屏宽下能放下的列宽)
+  // 以前这里直接写死列宽,导致设置里的「卡片大小/卡片宽度」在手机、平板上完全无效
+  --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 70px) / 2))")
   @media (min-width: 600px)
-    --emm-cover-size: calc((100vw - 100px) / 3)
+    --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 100px) / 3))")
   @media (min-width: 900px)
-    --emm-cover-size: calc((100vw - 130px) / 4)
+    --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 130px) / 4))")
   @media (min-width: 1200px)
-    --emm-cover-size: calc((100vw - 170px) / 5)
-  // 手动指定模式时覆盖列数:手机强制 2 列,平板强制 3 列
+    --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 170px) / 5))")
+  // 手动指定模式:手机最多 2 列,平板最多 3 列(仍不超过设置值)
   &.emm-phone
-    --emm-cover-size: calc((100vw - 70px) / 2) !important
+    --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 70px) / 2))") !important
   &.emm-tablet
-    --emm-cover-size: calc((100vw - 100px) / 3) !important
-  // 移动端:卡片间距统一,上下/左右可独立覆盖;封面高度随列宽自动
-  --emm-card-gap-v: 6px
-  --emm-card-gap-h: 6px
-  --emm-cover-height: calc(var(--emm-cover-size) * 1.5 + 36px)
+    --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 100px) / 3))") !important
+  // 卡片高度同理:不超过设置值(以前写死,设了也没用);卡片间距不再覆盖,设置里调多少就是多少
+  --emm-cover-height: unquote("min(var(--emm-card-height, 360px), calc(var(--emm-cover-size) * 1.5 + 36px))")
   // 工具栏:搜索框独占一行,按钮自动换行
   .book-search-bar
     padding: 0 8px
@@ -2120,6 +2120,11 @@ body.emm-mobile
 html.theme-custom
   background-color: var(--emm-custom-bg, #ffffff)
   background-image: var(--emm-custom-bg-image, none)
+  // 让 Element Plus 组件(按钮/输入框/标签等)的字号也跟着自定义字号走
+  --el-font-size-base: var(--emm-custom-font-size, 14px)
+  --el-font-size-small: calc(var(--emm-custom-font-size, 14px) - 2px)
+  --el-font-size-large: calc(var(--emm-custom-font-size, 14px) + 4px)
+  --el-font-size-extra-large: calc(var(--emm-custom-font-size, 14px) + 6px)
   background-size: cover
   background-position: center
   background-attachment: fixed
@@ -2131,19 +2136,32 @@ html.theme-custom
     font-family: var(--emm-custom-font-family, inherit)
     font-weight: var(--emm-custom-font-weight, normal)
     font-style: var(--emm-custom-font-italic, normal)
-    text-decoration: var(--emm-custom-font-decoration, none)
+    text-decoration-line: var(--emm-custom-font-decoration, none)
+  // 下划线不会传播到绝对定位的后代(卡片上的浮层文字就是),所以每个元素都显式带上
+  #app *
+    text-decoration-line: var(--emm-custom-font-decoration, none)
   // 弹层/卡片背景跟随背景色(半透明)增强沉浸感
   .el-dialog, .el-drawer, .el-message-box
     background-color: var(--emm-custom-panel-bg, var(--el-bg-color-overlay))
   .book-card
     background-color: var(--emm-custom-card-bg, var(--el-bg-color-overlay))
+  // 按钮框内颜色(未单独设置时按背景色自动混合)
+  .el-button.is-plain
+    background-color: var(--emm-custom-button-bg, var(--el-fill-color-blank))
   // 工具栏:输入框 / 下拉框 / plain 按钮跟随自定义背景色,否则深色背景下会是一块白
   .toolbar-flex
+    // 直接覆盖 Element Plus 变量 —— 工具栏里的界面模式按钮、设置按钮、排序框、搜索框
+    // 全部由这些变量驱动,不依赖各控件选择器的优先级(以前界面模式框就是漏在这里)
+    --el-fill-color-blank: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
+    --el-button-bg-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
+    --el-button-hover-bg-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
+    --el-button-active-bg-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
+    --el-button-disabled-bg-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
     // stylus 会把 color-mix(in srgb, ...) 的 in 当语法解析,必须用 unquote 原样输出
     .el-input__wrapper, .el-select__wrapper, .el-textarea__inner
       background-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
     .el-button.is-plain
-      background-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
+      background-color: var(--emm-custom-button-bg, unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)"))
 .autocomplete-value
   margin-left: 2em
   float: right

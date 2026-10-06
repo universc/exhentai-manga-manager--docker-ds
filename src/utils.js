@@ -279,7 +279,9 @@ const applyCustomTheme = (setting) => {
   // 背景色带透明度时,让弹层/卡片也用同一个半透明色 —— 否则弹层仍是不透明背景,看不出透明效果
   const translucent = colorAlpha(bg) < 0.999
   root.style.setProperty('--emm-custom-panel-bg', translucent ? bg : '')
-  root.style.setProperty('--emm-custom-card-bg', translucent ? bg : '')
+  // 卡片框内颜色 / 按钮框内颜色:单独设置优先;没设时若背景是半透明,就跟着背景色走
+  root.style.setProperty('--emm-custom-card-bg', s.themeCustomCardBg || (translucent ? bg : ''))
+  root.style.setProperty('--emm-custom-button-bg', s.themeCustomButtonBg || (translucent ? bg : ''))
   const bgImage = toAssetUrl(s.themeCustomBgImage)
   root.style.setProperty('--emm-custom-bg-image', bgImage ? `url("${bgImage}")` : '')
   const fontSize = Number(s.themeCustomFontSize)
@@ -287,7 +289,9 @@ const applyCustomTheme = (setting) => {
   root.style.setProperty('--emm-custom-font-color', s.themeCustomFontColor || '')
   root.style.setProperty('--emm-custom-font-family', s.themeCustomFontStyle || '')
   // 经典文字效果:加粗 / 倾斜 / 下划线
-  root.style.setProperty('--emm-custom-font-weight', s.themeCustomFontBold ? '700' : '')
+  // 字重:优先用「粗细」下拉;兼容旧配置里的「加粗」开关
+  const weight = s.themeCustomFontWeight ? String(s.themeCustomFontWeight) : (s.themeCustomFontBold ? '700' : '')
+  root.style.setProperty('--emm-custom-font-weight', weight)
   root.style.setProperty('--emm-custom-font-italic', s.themeCustomFontItalic ? 'italic' : '')
   root.style.setProperty('--emm-custom-font-decoration', s.themeCustomFontUnderline ? 'underline' : '')
   // 主色调(ELEMENT PLUS 变量)
@@ -304,7 +308,7 @@ const applyCustomTheme = (setting) => {
 // 自定义主题的变量是直接写在 <html> 内联样式上的,内联优先级高于主题类 ——
 // 从「自定义」切到别的主题时必须逐个清掉,否则主色调 / 字号 / 字体颜色会一直赖着不走
 const CUSTOM_THEME_VARS = [
-  '--emm-custom-bg', '--emm-custom-panel-bg', '--emm-custom-card-bg', '--emm-custom-bg-image',
+  '--emm-custom-bg', '--emm-custom-panel-bg', '--emm-custom-card-bg', '--emm-custom-button-bg', '--emm-custom-bg-image',
   '--emm-custom-font-size', '--emm-custom-font-color', '--emm-custom-font-family',
   '--emm-custom-font-weight', '--emm-custom-font-italic', '--emm-custom-font-decoration',
   '--el-color-primary', '--el-color-primary-light-3', '--el-color-primary-light-5',
@@ -358,7 +362,13 @@ const applyCoverStyle = (setting) => {
   const gapV = Number(s.cardGapV) >= 0 ? Number(s.cardGapV) : oldGap
   const gapH = Number(s.cardGapH) >= 0 ? Number(s.cardGapH) : oldGap
   root.style.setProperty('--emm-cover-size', size + 'px')
-  root.style.setProperty('--emm-cover-height', height + 'px')
+  // 高度:只有用户真的调过(不等于默认 360)才写变量 —— 否则经典布局的卡片高度
+  // 会被 min-height 强行拉到 360px,小卡片(窄卡片)会多出一大块空白
+  const heightCustom = Number(s.coverHeight) > 0 && Number(s.coverHeight) !== 360
+  root.style.setProperty('--emm-cover-height', heightCustom ? height + 'px' : '')
+  // 用户设置的原始宽高:移动端布局用它和「自适应列宽」取较小值(App.vue body.emm-mobile)
+  root.style.setProperty('--emm-card-width', size + 'px')
+  root.style.setProperty('--emm-card-height', height + 'px')
   root.style.setProperty('--emm-card-gap-v', gapV + 'px')
   root.style.setProperty('--emm-card-gap-h', gapH + 'px')
   // 兼容旧引用
@@ -582,8 +592,11 @@ const defaultUiSettings = () => ({
   themeCustomFontColor: '',
   themeCustomFontStyle: '',
   themeCustomFontBold: false,
+  themeCustomFontWeight: '',
   themeCustomFontItalic: false,
   themeCustomFontUnderline: false,
+  themeCustomCardBg: '',
+  themeCustomButtonBg: '',
   customIconPath: '',
   toolbarButtons: defaultToolbarButtons(),
   // 用户显式关掉的「后加入」工具栏元素(搜索框/搜索按钮/排序框/界面模式框)

@@ -403,6 +403,8 @@ const onMangaTitleContextMenu = (e, book) => {
 .book-card
   display: inline-block
   width: var(--emm-cover-size, 220px)
+  // 「卡片高度」在经典布局下按最小高度生效(填充封面布局是固定高度,见 .fill-cover)
+  min-height: var(--emm-cover-height, auto)
   padding-bottom: 4px
   border: solid 1px var(--el-border-color)
   border-radius: 6px
@@ -443,7 +445,8 @@ const onMangaTitleContextMenu = (e, book) => {
   height: 36px
   overflow-y: hidden
   margin: 8px 6px
-  font-size: 14px
+  // 跟随自定义主题的字体大小(--emm-custom-font-size 只在该主题下存在,其它主题回退 14px)
+  font-size: var(--emm-custom-font-size, 14px)
   cursor: pointer
   line-height: 18px
 .book-card-mark, .book-card-language, .book-card-pagecount
@@ -542,7 +545,7 @@ const onMangaTitleContextMenu = (e, book) => {
       min-width: 0
       margin: 0
       color: #fff
-      font-size: 13px
+      font-size: calc(var(--emm-custom-font-size, 14px) - 1px)
       line-height: 1.4
       cursor: pointer
       text-shadow: 0 1px 2px rgba(0, 0, 0, .85)

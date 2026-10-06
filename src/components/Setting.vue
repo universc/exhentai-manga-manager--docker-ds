@@ -840,7 +840,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverSize')}}</span></template>
-                <el-input-number v-model="coverSizePercent" :min="50" :max="200" :step="5" controls-position="right" />
+                <el-input-number v-model="coverSizePercent" :min="10" :max="400" :step="5" controls-position="right" />
               </NameFormItem>
             </div>
           </el-col>
@@ -848,7 +848,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverWidth')}}</span></template>
-                <el-input-number v-model="setting.coverWidth" :min="120" :max="400" :step="10" controls-position="right" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.coverWidth" :min="80" :max="800" :step="10" controls-position="right" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -856,7 +856,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverHeight')}}</span></template>
-                <el-input-number v-model="setting.coverHeight" :min="160" :max="640" :step="10" controls-position="right" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.coverHeight" :min="100" :max="1200" :step="10" controls-position="right" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -940,6 +940,20 @@
                 </div>
               </div>
               <div class="theme-row">
+                <span class="theme-label">{{$t('m.themeCustomCardBg')}}</span>
+                <div class="theme-value">
+                  <el-color-picker v-model="setting.themeCustomCardBg" :show-alpha="true" @change="handleCustomThemeChange" />
+                  <el-button v-if="setting.themeCustomCardBg" size="small" text type="danger" @click="clearThemeColor('card')">{{$t('m.clear')}}</el-button>
+                </div>
+              </div>
+              <div class="theme-row">
+                <span class="theme-label">{{$t('m.themeCustomButtonBg')}}</span>
+                <div class="theme-value">
+                  <el-color-picker v-model="setting.themeCustomButtonBg" :show-alpha="true" @change="handleCustomThemeChange" />
+                  <el-button v-if="setting.themeCustomButtonBg" size="small" text type="danger" @click="clearThemeColor('button')">{{$t('m.clear')}}</el-button>
+                </div>
+              </div>
+              <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomFontSize')}}</span>
                 <div class="theme-value">
                   <el-input-number v-model="setting.themeCustomFontSize" :min="1" :max="999" size="small" controls-position="right" @change="handleCustomThemeChange" />
@@ -954,9 +968,16 @@
                 </div>
               </div>
               <div class="theme-row">
+                <span class="theme-label">{{$t('m.themeCustomFontWeight')}}</span>
+                <div class="theme-value">
+                  <el-select v-model="setting.themeCustomFontWeight" size="small" placeholder=" " @change="handleCustomThemeChange">
+                    <el-option v-for="w in fontWeightOptions" :key="w.value" :label="$t(w.labelKey)" :value="w.value" />
+                  </el-select>
+                </div>
+              </div>
+              <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeFontEffect')}}</span>
                 <div class="theme-value">
-                  <el-checkbox v-model="setting.themeCustomFontBold" @change="handleCustomThemeChange">{{$t('m.themeFontBold')}}</el-checkbox>
                   <el-checkbox v-model="setting.themeCustomFontItalic" @change="handleCustomThemeChange">{{$t('m.themeFontItalic')}}</el-checkbox>
                   <el-checkbox v-model="setting.themeCustomFontUnderline" @change="handleCustomThemeChange">{{$t('m.themeFontUnderline')}}</el-checkbox>
                 </div>
@@ -1729,8 +1750,8 @@ const coverSizePercent = computed({
   set: (val) => {
     const k = Number(val) / 100
     if (!Number.isFinite(k) || k <= 0) return
-    const w = Math.min(400, Math.max(120, Math.round((Number(setting.value.coverWidth) || 220) * k / 10) * 10))
-    const h = Math.min(640, Math.max(160, Math.round((Number(setting.value.coverHeight) || 360) * k / 10) * 10))
+    const w = Math.min(800, Math.max(80, Math.round((Number(setting.value.coverWidth) || 220) * k / 10) * 10))
+    const h = Math.min(1200, Math.max(100, Math.round((Number(setting.value.coverHeight) || 360) * k / 10) * 10))
     setting.value.coverWidth = w
     setting.value.coverHeight = h
     handleCoverStyleChange()
@@ -1740,8 +1761,21 @@ const coverSizePercent = computed({
 const clearThemeColor = (kind) => {
   if (kind === 'bg') setting.value.themeCustomBg = ''
   if (kind === 'font') setting.value.themeCustomFontColor = ''
+  if (kind === 'card') setting.value.themeCustomCardBg = ''
+  if (kind === 'button') setting.value.themeCustomButtonBg = ''
   handleCustomThemeChange()
 }
+// 字体粗细(经典字重档位)
+const fontWeightOptions = [
+  { value: '', labelKey: 'm.themeFontWeightDefault' },
+  { value: '300', labelKey: 'm.themeFontWeightLight' },
+  { value: '400', labelKey: 'm.themeFontWeightNormal' },
+  { value: '500', labelKey: 'm.themeFontWeightMedium' },
+  { value: '600', labelKey: 'm.themeFontWeightSemiBold' },
+  { value: '700', labelKey: 'm.themeFontWeightBold' },
+  { value: '800', labelKey: 'm.themeFontWeightExtraBold' },
+  { value: '900', labelKey: 'm.themeFontWeightBlack' },
+]
 const resetThemeColor = (kind) => {
   if (kind === 'primary') setting.value.themeCustomPrimary = '#409EFF'
   handleCustomThemeChange()
@@ -2482,6 +2516,10 @@ onMounted(() => {
       if (res.themeCustomFontColor === undefined) setting.value.themeCustomFontColor = ''
       if (res.themeCustomFontStyle === undefined) setting.value.themeCustomFontStyle = ''
       if (res.themeCustomFontBold === undefined) setting.value.themeCustomFontBold = false
+      // 旧的「加粗」开关迁移成「粗细」下拉
+      if (res.themeCustomFontWeight === undefined) setting.value.themeCustomFontWeight = res.themeCustomFontBold ? '700' : ''
+      if (res.themeCustomCardBg === undefined) setting.value.themeCustomCardBg = ''
+      if (res.themeCustomButtonBg === undefined) setting.value.themeCustomButtonBg = ''
       if (res.themeCustomFontItalic === undefined) setting.value.themeCustomFontItalic = false
       if (res.themeCustomFontUnderline === undefined) setting.value.themeCustomFontUnderline = false
       if (res.customIconPath === undefined) setting.value.customIconPath = ''
