@@ -702,6 +702,9 @@ export default defineComponent({
     // passive:滚轮事件不阻塞浏览器默认滚动,消除滚轮卡顿感
     window.addEventListener('wheel', this.resolveWheel, { passive: true })
     window.addEventListener('mousedown', this.resolveMouseDown)
+    // 主界面防复制:拦复制/剪切/开始选择/拖拽
+    this.antiCopyHandler = (e) => this.onAntiCopy(e)
+    for (const ev of ['copy', 'cut', 'selectstart', 'dragstart']) document.addEventListener(ev, this.antiCopyHandler, true)
     // 像素风点击音效(仅像素风格开启时挂载)+ 混合背景首次取色
     this.syncPixelSfx()
     this.$nextTick(() => {
@@ -753,6 +756,10 @@ export default defineComponent({
     window.removeEventListener('wheel', this.resolveWheel)
     window.removeEventListener('mousedown', this.resolveMouseDown)
     if (this.pixelSfxDetach) { this.pixelSfxDetach(); this.pixelSfxDetach = null }
+    if (this.antiCopyHandler) {
+      for (const ev of ['copy', 'cut', 'selectstart', 'dragstart']) document.removeEventListener(ev, this.antiCopyHandler, true)
+      this.antiCopyHandler = null
+    }
     clearTimeout(this.mixBgTimer)
   },
   methods: {
@@ -1060,6 +1067,15 @@ export default defineComponent({
       root.setProperty('--emm-auto-card-text', cardText)
       root.setProperty('--emm-auto-button-bg', `rgba(${btnBg[0]}, ${btnBg[1]}, ${btnBg[2]}, 0.6)`)
       root.setProperty('--emm-auto-button-text', btnText)
+    },
+    // ---------- 主界面防复制(卡片区/工具栏/随机标签;输入框与搜索框照常可用) ----------
+    antiCopyTarget (t) {
+      if (!t || typeof t.closest !== 'function') return false
+      if (t.closest('input, textarea, [contenteditable="true"], .el-input, .el-textarea, .el-select')) return false
+      return !!(t.closest('.book-card-area') || t.closest('.toolbar-flex') || t.closest('.random-tags') || t.closest('.render-sentinel'))
+    },
+    onAntiCopy (e) {
+      if (this.antiCopyTarget(e.target)) e.preventDefault()
     },
     resolveWheel (event) {
       if (event.ctrlKey) {
@@ -2413,6 +2429,13 @@ body.emm-mobile
   font-display: swap
   src: url('./assets/fonts/fusion-pixel-12px-proportional-zh_hant.woff2') format('woff2')
   unicode-range: U+2E80-2EFF, U+3000-303F, U+31C0-31EF, U+3200-32FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FF65, U+FFA0-FFEF
+
+// 主界面防复制:卡片区/工具栏/随机标签不可选中,输入框(含搜索框)保持可选
+.book-card-area, .book-card-area *, .random-tags, .random-tags *, .toolbar-flex .el-button
+  user-select: none
+  -webkit-user-drag: none
+.toolbar-flex .search-input, .toolbar-flex .el-input, .toolbar-flex .el-input__inner, .book-card-area input, .book-card-area textarea
+  user-select: text !important
 
 // 像素风格(高级主题):自带像素字体、方角硬边、图片真像素化(降采样)、方块动画
 html.theme-pixel

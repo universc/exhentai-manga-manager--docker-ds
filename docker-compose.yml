@@ -36,6 +36,10 @@ services:
       # 时区,按需修改
       TZ: Asia/Shanghai
 
+    # Intel 核显直通(Real-ESRGAN 走 Vulkan,没有这段就只能在 CPU/llvmpipe 上跑)
+    devices:
+      - /dev/dri:/dev/dri
+
     volumes:
       # 数据持久化(数据库/封面/设置)
       - /vol3/1000/01/01-漫画/S/数据存放:/data
