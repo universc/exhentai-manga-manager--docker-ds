@@ -420,8 +420,12 @@ export default defineComponent({
       for (const id of defaultToolbarButtons()) if (!fullOrder.includes(id)) fullOrder.push(id)
       // 只读账户:隐藏写操作类按钮(扫描/批量元数据/合集编辑/标签编辑),服务端同样会拦截
       const viewerBlock = new Set(['manualScan', 'incrementalScan', 'batchMetadata', 'manageCollection', 'manageTag'])
+      // ⚠️ 搜索框/搜索按钮/排序框不是 toolbarButtonMap 里的普通按钮(模板里各有一段 v-if 分支),
+      //    不能被 map[id] 判空挡掉,必须单独放行
+      const plainItems = new Set(['searchInput', 'searchButton', 'sortSelect'])
       return fullOrder.filter(id => {
         if (!enabledButtons.includes(id)) return false
+        if (plainItems.has(id)) return true
         if (id === 'uiMode') return this.isWebMode && !this.isRemoteDesktop
         return !!map[id] && !(this.viewerRole && viewerBlock.has(id))
       })
