@@ -591,6 +591,9 @@ export default defineComponent({
       if (this.setting.theme === 'custom') {
         document.documentElement.classList.add('theme-custom')
         applyCustomTheme(this.setting)
+      } else {
+        // 非自定义主题:确保上一次会话/上一次切换留下的自定义变量不残留
+        clearCustomTheme()
       }
       applyFavicon(this.setting)
       this.recomputeToolbarWidth()
@@ -1976,22 +1979,21 @@ body.emm-mobile
   // 所以列宽要按「内容可用宽 = 100vw - 卡片区留白 - gutter 内边距」反推,
   // 否则算出来的列宽实际放不下 N 列,flex 会把每行折成 1 列(手机出现"单列大图")。
   // 只能用纯 calc(sass 会把 min()/clamp() 提前折叠成常数,导致列宽公式失效)
-  // 卡片宽度 = min(设置里的卡片宽度, 该屏宽下能放下的列宽)
-  // 以前这里直接写死列宽,导致设置里的「卡片大小/卡片宽度」在手机、平板上完全无效
-  --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 70px) / 2))")
+  // 卡片宽度:用户调过就用他的值(--emm-card-width),没调过才按屏宽自适应列宽。
+  // 以前这里直接写死列宽(还带 !important),设置里的宽/高在手机、平板上完全无效。
+  --emm-cover-size: var(--emm-card-width, calc((100vw - 70px) / 2))
   @media (min-width: 600px)
-    --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 100px) / 3))")
+    --emm-cover-size: var(--emm-card-width, calc((100vw - 100px) / 3))
   @media (min-width: 900px)
-    --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 130px) / 4))")
+    --emm-cover-size: var(--emm-card-width, calc((100vw - 130px) / 4))
   @media (min-width: 1200px)
-    --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 170px) / 5))")
-  // 手动指定模式:手机最多 2 列,平板最多 3 列(仍不超过设置值)
+    --emm-cover-size: var(--emm-card-width, calc((100vw - 170px) / 5))
+  // 手动指定模式:手机 2 列,平板 3 列
   &.emm-phone
-    --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 70px) / 2))") !important
+    --emm-cover-size: var(--emm-card-width, calc((100vw - 70px) / 2)) !important
   &.emm-tablet
-    --emm-cover-size: unquote("min(var(--emm-card-width, 220px), calc((100vw - 100px) / 3))") !important
-  // 卡片高度同理:不超过设置值(以前写死,设了也没用);卡片间距不再覆盖,设置里调多少就是多少
-  --emm-cover-height: unquote("min(var(--emm-card-height, 360px), calc(var(--emm-cover-size) * 1.5 + 36px))")
+    --emm-cover-size: var(--emm-card-width, calc((100vw - 100px) / 3)) !important
+  // 卡片高度、卡片间距都不再覆盖 —— 设置里调多少就是多少
   // 工具栏:搜索框独占一行,按钮自动换行
   .book-search-bar
     padding: 0 8px
@@ -2120,11 +2122,8 @@ body.emm-mobile
 html.theme-custom
   background-color: var(--emm-custom-bg, #ffffff)
   background-image: var(--emm-custom-bg-image, none)
-  // 让 Element Plus 组件(按钮/输入框/标签等)的字号也跟着自定义字号走
-  --el-font-size-base: var(--emm-custom-font-size, 14px)
-  --el-font-size-small: calc(var(--emm-custom-font-size, 14px) - 2px)
-  --el-font-size-large: calc(var(--emm-custom-font-size, 14px) + 4px)
-  --el-font-size-extra-large: calc(var(--emm-custom-font-size, 14px) + 6px)
+  // 注意:不要动 --el-font-size-*,自定义字号只影响正文/卡片文字,
+  // 按钮(含框内图标)必须保持原始尺寸
   background-size: cover
   background-position: center
   background-attachment: fixed
@@ -2158,8 +2157,9 @@ html.theme-custom
     --el-button-active-bg-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
     --el-button-disabled-bg-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
     // stylus 会把 color-mix(in srgb, ...) 的 in 当语法解析,必须用 unquote 原样输出
+    // 搜索框 / 排序框 / plain 按钮统一用「按钮框内颜色」
     .el-input__wrapper, .el-select__wrapper, .el-textarea__inner
-      background-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
+      background-color: var(--emm-custom-button-bg, unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)"))
     .el-button.is-plain
       background-color: var(--emm-custom-button-bg, unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)"))
 .autocomplete-value

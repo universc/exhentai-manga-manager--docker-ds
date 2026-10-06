@@ -232,13 +232,12 @@ const toAssetUrl = (path) => {
 }
 
 // 字体样式映射
-// ⚠️ 只列**开源 / 免费商用**字体(思源、霞鹜文楷、更纱黑体、阿里巴巴普惠体、鸿蒙、MiSans、OPPO Sans、得意黑)
-// 与各平台的通用字体族;微软雅黑、宋体、黑体、苹方、冬青黑体、华文系列等商业授权字体一律不列,
-// 它们要显示也得用户本机另行安装,列出来只会引导用户去用受限字体。
-// 这些字体都需要用户自己装,没装时按后面的 sans-serif / serif / monospace 兜底。
+// 分四组:① 开源/免费商用中文字体 ② 开源日文字体 ③ 各系统通用的西文字体(web-safe,引用本机已装字体)
+// ④ 通用字体族。微软雅黑、宋体、黑体、苹方、冬青黑体、华文系列等**商业授权中文字体**一律不列。
+// 未安装的字体由后面的 sans-serif / serif / monospace 兜底。
 const customFontStyles = [
   { value: '', labelKey: 'm.fontStyleDefault' },
-  // —— 开源 / 免费商用 ——
+  // ① 开源 / 免费商用(中文)
   { value: 'Source Han Sans SC, Noto Sans SC, 思源黑体, sans-serif', labelKey: 'm.fontStyleNoto' },
   { value: 'Source Han Serif SC, Noto Serif SC, 思源宋体, serif', labelKey: 'm.fontStyleNotoSerif' },
   { value: 'LXGW WenKai, LXGW WenKai Screen, 霞鹜文楷, serif', labelKey: 'm.fontStyleLXGW' },
@@ -248,7 +247,20 @@ const customFontStyles = [
   { value: 'MiSans, 小米兰亭 Pro, sans-serif', labelKey: 'm.fontStyleMiSans' },
   { value: 'OPPO Sans, OPPO Sans SC, sans-serif', labelKey: 'm.fontStyleOPPO' },
   { value: 'Smiley Sans, 得意黑, sans-serif', labelKey: 'm.fontStyleSmiley' },
-  // —— 系统通用字体族(由系统映射到本机默认字体,不含厂商字体名)——
+  // ② 日文(思源日文版为开源;Meiryo / Yu Gothic 是 Windows 自带日文字体)
+  { value: 'Noto Sans JP, 思源黑体 JP, sans-serif', labelKey: 'm.fontStyleNotoSansJP' },
+  { value: 'Noto Serif JP, 思源宋体 JP, serif', labelKey: 'm.fontStyleNotoSerifJP' },
+  { value: 'Meiryo, メイリオ, sans-serif', labelKey: 'm.fontStyleMeiryo' },
+  { value: 'Yu Gothic, 游ゴシック, sans-serif', labelKey: 'm.fontStyleYuGothic' },
+  // ③ 通用西文字体(Windows / macOS 都自带,无需下载)
+  { value: 'Arial, Helvetica, sans-serif', labelKey: 'm.fontStyleArial' },
+  { value: 'Verdana, Geneva, sans-serif', labelKey: 'm.fontStyleVerdana' },
+  { value: 'Tahoma, Geneva, sans-serif', labelKey: 'm.fontStyleTahoma' },
+  { value: 'Trebuchet MS, sans-serif', labelKey: 'm.fontStyleTrebuchet' },
+  { value: 'Georgia, serif', labelKey: 'm.fontStyleGeorgia' },
+  { value: 'Times New Roman, Times, serif', labelKey: 'm.fontStyleTimes' },
+  { value: 'Courier New, monospace', labelKey: 'm.fontStyleCourier' },
+  // ④ 通用字体族(由系统映射到本机默认字体)
   { value: 'sans-serif', labelKey: 'm.fontStyleSans' },
   { value: 'serif', labelKey: 'm.fontStyleSerif' },
   { value: 'ui-monospace, monospace', labelKey: 'm.fontStyleMono' },
@@ -362,13 +374,15 @@ const applyCoverStyle = (setting) => {
   const gapV = Number(s.cardGapV) >= 0 ? Number(s.cardGapV) : oldGap
   const gapH = Number(s.cardGapH) >= 0 ? Number(s.cardGapH) : oldGap
   root.style.setProperty('--emm-cover-size', size + 'px')
-  // 高度:只有用户真的调过(不等于默认 360)才写变量 —— 否则经典布局的卡片高度
-  // 会被 min-height 强行拉到 360px,小卡片(窄卡片)会多出一大块空白
+  // 宽 / 高:只有用户真调过(不等于默认值)才写变量,没调过时由各布局自己算
+  //   --emm-card-width  : 移动端布局用它代替「按屏宽自适应的列宽」(App.vue body.emm-mobile)
+  //   --emm-card-height : 卡片整体高度(填充封面 / 纯封面布局直接用)
+  //   --emm-cover-height: 经典布局的封面图高度 = 卡片高度 - 标题等固定区域(约 84px)
+  const widthCustom = Number(s.coverWidth) > 0 && Number(s.coverWidth) !== 220
   const heightCustom = Number(s.coverHeight) > 0 && Number(s.coverHeight) !== 360
-  root.style.setProperty('--emm-cover-height', heightCustom ? height + 'px' : '')
-  // 用户设置的原始宽高:移动端布局用它和「自适应列宽」取较小值(App.vue body.emm-mobile)
-  root.style.setProperty('--emm-card-width', size + 'px')
-  root.style.setProperty('--emm-card-height', height + 'px')
+  root.style.setProperty('--emm-card-width', widthCustom ? size + 'px' : '')
+  root.style.setProperty('--emm-card-height', heightCustom ? height + 'px' : '')
+  root.style.setProperty('--emm-cover-height', heightCustom ? Math.max(60, height - 84) + 'px' : '')
   root.style.setProperty('--emm-card-gap-v', gapV + 'px')
   root.style.setProperty('--emm-card-gap-h', gapH + 'px')
   // 兼容旧引用

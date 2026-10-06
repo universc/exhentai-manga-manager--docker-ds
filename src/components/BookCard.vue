@@ -403,8 +403,6 @@ const onMangaTitleContextMenu = (e, book) => {
 .book-card
   display: inline-block
   width: var(--emm-cover-size, 220px)
-  // 「卡片高度」在经典布局下按最小高度生效(填充封面布局是固定高度,见 .fill-cover)
-  min-height: var(--emm-cover-height, auto)
   padding-bottom: 4px
   border: solid 1px var(--el-border-color)
   border-radius: 6px
@@ -470,7 +468,8 @@ const onMangaTitleContextMenu = (e, book) => {
 .book-cover
   border-radius: 4px
   width: 100%
-  height: calc((var(--emm-cover-size, 220px) - 20px) * 1.415)
+  // 「卡片高度」设置 → 封面高度(--emm-cover-height 由 applyCoverStyle 按 卡片高度-84px 算好)
+  height: var(--emm-cover-height, calc((var(--emm-cover-size, 220px) - 20px) * 1.415))
   object-fit: cover
   display: block
 .book-card-footer
@@ -482,7 +481,7 @@ const onMangaTitleContextMenu = (e, book) => {
   .book-cover-frame
     width: calc(var(--emm-cover-size, 220px) - 2px)
     .book-cover
-      height: calc((var(--emm-cover-size, 220px) - 2px) * 1.415)
+      height: var(--emm-card-height, calc((var(--emm-cover-size, 220px) - 2px) * 1.415))
       border-radius: 5px
   .book-card-mark, .book-card-language, .book-card-pagecount, .book-title, .book-card-footer, .collect-tag
     display: none
@@ -504,8 +503,8 @@ const onMangaTitleContextMenu = (e, book) => {
 // ============ 填充封面布局(设置「填充封面」打开后;经典布局不受影响) ============
 // 封面铺满整卡,所有信息为透明浮层(无白底块),上/下缘黑色渐变兜底保证可读
 .book-card.fill-cover
-  // 高度来自「封面高度」设置(经典布局不受影响,高度由内容自适应)
-  height: var(--emm-cover-height, calc(var(--emm-cover-size, 220px) * 1.5 + 36px))
+  // 高度来自「卡片高度」设置
+  height: var(--emm-card-height, calc(var(--emm-cover-size, 220px) * 1.5 + 36px))
   padding: 0
   overflow: hidden
   background: #2b2d31

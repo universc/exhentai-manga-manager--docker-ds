@@ -839,8 +839,8 @@
           <el-col :span="12">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
-                <template #prepend><span class="setting-label">{{$t('m.coverSize')}}</span></template>
-                <el-input-number v-model="coverSizePercent" :min="10" :max="400" :step="5" controls-position="right" />
+                <template #prepend><span class="setting-label">{{$t('m.uiZoom')}}</span></template>
+                <el-input-number v-model="uiZoomPercent" :min="50" :max="300" :step="10" controls-position="right" />
               </NameFormItem>
             </div>
           </el-col>
@@ -971,7 +971,7 @@
                 <span class="theme-label">{{$t('m.themeCustomFontWeight')}}</span>
                 <div class="theme-value">
                   <el-select v-model="setting.themeCustomFontWeight" size="small" placeholder=" " @change="handleCustomThemeChange">
-                    <el-option v-for="w in fontWeightOptions" :key="w.value" :label="$t(w.labelKey)" :value="w.value" />
+                    <el-option v-for="w in fontWeightOptions" :key="w.value" :label="w.label || $t('m.themeFontWeightDefault')" :value="w.value" />
                   </el-select>
                 </div>
               </div>
@@ -1564,7 +1564,7 @@
 import dayuAvatar from '../assets/dayu.png'
 import appIcon from '../assets/icon.png'
 import universcAvatar from '../assets/universc.png'
-import { ref, onMounted, h, computed } from 'vue'
+import { ref, onMounted, h, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import draggable from 'vuedraggable'
@@ -1743,19 +1743,27 @@ const handleCoverStyleChange = () => {
   applyCoverStyle(setting.value)
   saveSetting()
 }
-// 封面大小(整体百分比):显示当前宽相对基准 220px 的比例;
-// 调整时宽度与高度(填充卡片高)按当前比例等比缩放
-const coverSizePercent = computed({
-  get: () => Math.round((Number(setting.value.coverWidth) || 220) / 220 * 100),
+// 界面缩放:和 Ctrl + 鼠标滚轮是同一套(Electron 的 zoom level,每级 ×1.2)
+//   百分比 = 1.2^level,反解 level = log(百分比 / 100) / log(1.2)
+const ZOOM_STEP = 1.2
+const zoomPercentOf = (level) => Math.round(Math.pow(ZOOM_STEP, Number(level) || 0) * 100)
+const readZoomPercent = () => {
+  try { return zoomPercentOf(electronFunction['get-zoom-level']()) } catch (e) { return 100 }
+}
+const zoomPercentRef = ref(readZoomPercent())
+const uiZoomPercent = computed({
+  get: () => zoomPercentRef.value,
   set: (val) => {
-    const k = Number(val) / 100
-    if (!Number.isFinite(k) || k <= 0) return
-    const w = Math.min(800, Math.max(80, Math.round((Number(setting.value.coverWidth) || 220) * k / 10) * 10))
-    const h = Math.min(1200, Math.max(100, Math.round((Number(setting.value.coverHeight) || 360) * k / 10) * 10))
-    setting.value.coverWidth = w
-    setting.value.coverHeight = h
-    handleCoverStyleChange()
+    const p = Number(val)
+    if (!Number.isFinite(p) || p < 20 || p > 800) return
+    // setZoomLevel 支持小数,直接用对数换算,百分比才能精确还原
+    try { electronFunction['set-zoom-level'](Math.log(p / 100) / Math.log(ZOOM_STEP)) } catch (e) {}
+    zoomPercentRef.value = p
   }
+})
+// Ctrl+滚轮 改过缩放后,再打开设置时同步显示当前的百分比
+watch(dialogVisibleSetting, (visible) => {
+  if (visible) zoomPercentRef.value = readZoomPercent()
 })
 // 清空主题颜色
 const clearThemeColor = (kind) => {
@@ -1766,16 +1774,8 @@ const clearThemeColor = (kind) => {
   handleCustomThemeChange()
 }
 // 字体粗细(经典字重档位)
-const fontWeightOptions = [
-  { value: '', labelKey: 'm.themeFontWeightDefault' },
-  { value: '300', labelKey: 'm.themeFontWeightLight' },
-  { value: '400', labelKey: 'm.themeFontWeightNormal' },
-  { value: '500', labelKey: 'm.themeFontWeightMedium' },
-  { value: '600', labelKey: 'm.themeFontWeightSemiBold' },
-  { value: '700', labelKey: 'm.themeFontWeightBold' },
-  { value: '800', labelKey: 'm.themeFontWeightExtraBold' },
-  { value: '900', labelKey: 'm.themeFontWeightBlack' },
-]
+// 字体粗细:直接给数字档位(100–900),'' = 默认不设置
+const fontWeightOptions = ['', '100', '200', '300', '400', '500', '600', '700', '800', '900'].map(v => ({ value: v, label: v }))
 const resetThemeColor = (kind) => {
   if (kind === 'primary') setting.value.themeCustomPrimary = '#409EFF'
   handleCustomThemeChange()
