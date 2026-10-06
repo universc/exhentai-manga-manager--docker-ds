@@ -427,6 +427,8 @@
     "clickActionDetail": "详细界面",
     "clickActionContent": "内容界面",
     "clickActionThumbnail": "缩略图",
+    "clickTitle": "单击标题",
+    "clickActionNone": "无效果",
     "editInfo": "编辑信息",
     "viewInfo": "查看信息",
     "dragToSortHint": "拖动可调整顺序",

@@ -427,6 +427,8 @@
     "clickActionDetail": "Detail page",
     "clickActionContent": "Reader (content)",
     "clickActionThumbnail": "Reader thumbnails",
+    "clickTitle": "Click title",
+    "clickActionNone": "Do nothing",
     "editInfo": "Edit info",
     "viewInfo": "View info",
     "dragToSortHint": "Drag to reorder",

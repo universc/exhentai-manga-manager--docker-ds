@@ -3,7 +3,7 @@
     <!-- ================= 经典卡片布局(默认;原版布局原样保留) ================= -->
     <template v-if="!fillCover">
     <p class="book-title" v-if="!setting.hideTitle"
-      @click="$emit('openBookDetail')"
+      @click="$emit('titleClick')"
       @contextmenu="onMangaTitleContextMenu($event, book)"
       :title="getDisplayTitle(book)"
     >{{getDisplayTitle(book)}}</p>
@@ -109,7 +109,7 @@
           @click="$emit('handleSearchString', `:count=${book.readCount}`)"
         >{{book.readCount}}</el-tag>
         <p class="fill-title" v-if="!setting.hideTitle"
-          @click="$emit('openBookDetail')"
+          @click="$emit('titleClick')"
           @contextmenu="onMangaTitleContextMenu($event, book)"
           :title="getDisplayTitle(book)"
         >{{getDisplayTitle(book)}}</p>

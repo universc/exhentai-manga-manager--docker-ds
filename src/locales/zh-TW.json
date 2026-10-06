@@ -427,6 +427,8 @@
     "clickActionDetail": "詳細介面",
     "clickActionContent": "內容介面",
     "clickActionThumbnail": "縮圖",
+    "clickTitle": "單擊標題",
+    "clickActionNone": "無效果",
     "editInfo": "編輯資訊",
     "viewInfo": "檢視資訊",
     "dragToSortHint": "拖曳可調整順序",

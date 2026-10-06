@@ -422,12 +422,12 @@ const applyCoverStyle = (setting) => {
 // searchInput / searchButton / sortSelect / uiMode 是后来加入排序的固定元素,
 // 老配置里没有它们,由 ensureToolbarButtons() 兜底补上(只有用户显式取消后才不再出现)
 const toolbarButtonDefinitions = [
+  { id: 'folderTree', labelKey: 'm.folderTree' },
   { id: 'searchInput', labelKey: 'm.toolbarSearchInput' },
   { id: 'searchButton', labelKey: 'm.toolbarSearchButton' },
-  { id: 'folderTree', labelKey: 'm.folderTree' },
   { id: 'shuffle', labelKey: 'm.shuffle' },
-  { id: 'manualScan', labelKey: 'm.manualScan' },
   { id: 'incrementalScan', labelKey: 'm.incrementalScan' },
+  { id: 'manualScan', labelKey: 'm.manualScan' },
   { id: 'batchMetadata', labelKey: 'm.batchGetMetadata' },
   { id: 'tagAnalysis', labelKey: 'm.tagAnalysis' },
   { id: 'manageCollection', labelKey: 'm.manageCollection' },
@@ -567,8 +567,12 @@ const defaultUiSettings = () => ({
   widthLimit: undefined,
   directEnter: 'detail',
   // 点击策略:detail=详细界面 / content=内容界面(阅读器) / thumbnail=阅读器缩略图
-  clickCoverAction: 'detail',
-  clickYueAction: 'detail',
+  // 点击策略默认:单击封面 / 阅 / 读 = 内容界面;单击标题 = 详细界面
+  clickCoverAction: 'content',
+  clickYueAction: 'content',
+  clickTitleAction: 'detail',
+  // 标记「点击策略新默认值已应用」,只迁移一次
+  clickPolicyDefaultsV2: true,
   clickDuAction: 'content',
   clickPageCountAction: 'thumbnail',
   dblClickCoverAction: 'content',

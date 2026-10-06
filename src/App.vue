@@ -107,6 +107,7 @@
               v-if="!book.isCollection && !book.collectionHide && (sortValue === 'hidden' || !book.hiddenBook) && !book.folderHide"
               @open-book-detail="$refs.BookDetailDialogRef.openBookDetail(book)"
               @handle-click-cover="handleClickCover(book)"
+              @title-click="onTitleClick(book)"
               @on-book-context-menu="onBookContextMenu"
               @handle-search-string="handleSearchString"
               @search-from-tag="searchFromTag"
@@ -333,6 +334,7 @@ export default defineComponent({
       lastAutoThemeCover: null,
       // 背景图像素化的去重签名
       lastPixelBgSrc: null,
+      pixelFallbackTimer: null,
       mixBgTimer: null,
       pixelSfxDetach: null,
       // 排序方向(仅排序类有效,筛选/随机无方向)
@@ -1007,36 +1009,19 @@ export default defineComponent({
         this.applyPixelCovers()
         this.applyPixelBackground()
       })
+      // 兜底:万一有封面卡在处理中,5 秒后强制显示出来,不能一直空着
+      clearTimeout(this.pixelFallbackTimer)
+      this.pixelFallbackTimer = setTimeout(() => {
+        for (const el of document.querySelectorAll('.book-card-list img:not([data-pixel-done])')) {
+          el.dataset.pixelFailed = '1'
+          el.style.removeProperty('opacity')
+        }
+      }, 5000)
     },
-    // 背景图也跟封面一样做像素化(有自定义背景图用自定义,没有就用内置默认图)
-    async applyPixelBackground () {
-      const root = document.documentElement.style
-      const level = Number(this.setting?.pixelCoverLevel)
-      const on = !!this.setting?.pixelTheme && Number.isFinite(level) && level > 0
-      if (!on) {
-        root.removeProperty('--emm-pixel-bg-image')
-        this.lastPixelBgSrc = null
-        return
-      }
-      const custom = this.setting?.themeCustomBgImage
-      const src = custom ? toAssetUrl(custom) : pixelDefaultBg
-      if (!src) return
-      const sig = src + '|' + (this.setting?.pixelBlockSize || 4) + '|' + (this.setting?.pixelColorCount || 0) + '|' + (this.setting?.pixelAlgorithm || 'average')
-      if (sig === this.lastPixelBgSrc) return
-      this.lastPixelBgSrc = sig
-      // 背景图比封面大得多,块也放大一些,像素感才明显
-      const blockSize = Math.max(6, Math.round((Number(this.setting?.pixelBlockSize) || 4) * 3))
-      let res = await pixelateToDataUrl(src, {
-        blockSize,
-        colorCount: Math.max(0, Math.min(64, Math.round(Number(this.setting?.pixelColorCount) || 0))),
-        algorithm: this.setting?.pixelAlgorithm || 'average',
-      })
-      let dataUrl = res && res.dataUrl
-      if (!dataUrl) {
-        // 本地文件走主进程 nativeImage 兜底
-        try { dataUrl = await ipcRenderer.invoke('pixelate-cover', src, 180) } catch (e) { dataUrl = null }
-      }
-      if (dataUrl) root.setProperty('--emm-pixel-bg-image', 'url("' + dataUrl + '")')
+    // 背景图不做像素化(用户要求:背景保持原样)
+    applyPixelBackground () {
+      document.documentElement.style.removeProperty('--emm-pixel-bg-image')
+      this.lastPixelBgSrc = null
     },
     // ---------- 高级主题:像素音效 / 自动主题 ----------
     syncPixelSfx () {
@@ -1701,6 +1686,9 @@ export default defineComponent({
     runClickAction (action, book) {
       if (!book) return
       switch (action) {
+        case 'none':
+          // 「无效果」:点了什么都不做
+          return
         case 'content':
           this.openContentView(book)
           break
@@ -1712,8 +1700,9 @@ export default defineComponent({
           break
       }
     },
-    onCoverClick (book) { this.runClickAction(this.setting.clickCoverAction || 'detail', book) },
-    onYueClick (book) { this.runClickAction(this.setting.clickYueAction || 'detail', book) },
+    onCoverClick (book) { this.runClickAction(this.setting.clickCoverAction || 'content', book) },
+    onTitleClick (book) { this.runClickAction(this.setting.clickTitleAction || 'detail', book) },
+    onYueClick (book) { this.runClickAction(this.setting.clickYueAction || 'content', book) },
     onDuClick (book) { this.runClickAction(this.setting.clickDuAction || 'content', book) },
     onPageCountClick (book) { this.runClickAction(this.setting.clickPageCountAction || 'thumbnail', book) },
     onCoverDblClick (book) { this.runClickAction(this.setting.dblClickCoverAction || 'content', book) },
@@ -2718,9 +2707,8 @@ html.theme-auto
 html.theme-pixel
   // 有自定义背景图(--emm-custom-bg-image 只在设了图时才有值)就用自定义的,没有才用内置默认图。
   // ⚠️ 不能直接写死 url(默认图):这条规则在 html.theme-custom 之后,会把自定义背景图盖掉
-  // 优先级:像素化后的背景图 > 自定义背景图 > 内置默认图
-  // !important:theme-custom 的 background-image 规则写在后面,不加会被它盖成 none
-  background-image: var(--emm-pixel-bg-image, var(--emm-custom-bg-image, url('./assets/pixel-default-bg.png'))) !important
+  // 自定义背景图优先,没设就用内置默认像素图(背景不做像素化处理)
+  background-image: var(--emm-custom-bg-image, url('./assets/pixel-default-bg.png')) !important
   background-size: cover
   background-position: center
   background-attachment: fixed

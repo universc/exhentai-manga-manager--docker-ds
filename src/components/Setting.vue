@@ -1113,6 +1113,20 @@
                   <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
                   <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
                   <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
+          <el-col :span="12">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.clickTitle')}}</span></template>
+                <el-select placeholder=" " v-model="setting.clickTitleAction" @change="saveSetting">
+                  <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
+                  <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
+                  <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
                 </el-select>
               </NameFormItem>
             </div>
@@ -1125,6 +1139,7 @@
                   <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
                   <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
                   <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
                 </el-select>
               </NameFormItem>
             </div>
@@ -1137,6 +1152,7 @@
                   <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
                   <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
                   <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
                 </el-select>
               </NameFormItem>
             </div>
@@ -1149,6 +1165,7 @@
                   <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
                   <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
                   <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
                 </el-select>
               </NameFormItem>
             </div>
@@ -1161,6 +1178,7 @@
                   <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
                   <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
                   <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
                 </el-select>
               </NameFormItem>
             </div>
@@ -2609,6 +2627,14 @@ onMounted(() => {
       if (res.pixelSfx === undefined) setting.value.pixelSfx = true
       // 自动主题:像素风格打开时默认开启;封面清晰度默认 60
       if (res.autoTheme === undefined) setting.value.autoTheme = !!res.pixelTheme
+      // 点击策略新默认值:单击封面/阅/读 = 内容界面,单击标题 = 详细界面(只迁移一次)
+      if (!res.clickPolicyDefaultsV2) {
+        setting.value.clickCoverAction = 'content'
+        setting.value.clickYueAction = 'content'
+        setting.value.clickTitleAction = 'detail'
+        setting.value.clickPolicyDefaultsV2 = true
+      }
+      if (res.clickTitleAction === undefined) setting.value.clickTitleAction = 'detail'
       if (res.pixelCoverLevel === undefined) setting.value.pixelCoverLevel = 60
       if (res.pixelBlockSize === undefined) setting.value.pixelBlockSize = 4
       if (res.pixelColorCount === undefined) setting.value.pixelColorCount = 32
