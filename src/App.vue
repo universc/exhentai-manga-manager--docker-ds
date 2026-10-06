@@ -2604,6 +2604,14 @@ html.theme-pixel-covers
   flex: 0 0 auto
   i
     background-color: #ffffff
+// ⚠️ 任务遮罩容器原来是个「转圈环」,自带 spin 动画 —— 换成均衡器后必须关掉它自己的旋转,
+//    否则 4 根柱子会跟着一起转
+.book-task-ring.emm-eq
+  width: auto !important
+  height: auto !important
+  border: none !important
+  background: none !important
+  animation: none !important
 
 @keyframes emm-eq
   0%, 100%
@@ -2659,6 +2667,13 @@ html.theme-pixel
   background-size: cover
   background-position: center
   background-attachment: fixed
+  // body 默认有不透明底色,会把 html 上的背景图盖住 → 让它透明透出来
+  body
+    background-color: transparent
+// 设了自定义背景图时(theme-custom),body 同样透明,由 html 上的自定义背景图接管
+html.theme-custom
+  body
+    background-color: transparent
 
 .autocomplete-value
   margin-left: 2em

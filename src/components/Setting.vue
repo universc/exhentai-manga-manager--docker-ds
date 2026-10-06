@@ -150,9 +150,7 @@
                       <span class="setting-label" style="margin-left:10px">{{$t('m.autoTheme')}}</span>
                     </div>
                     <div class="setting-hint">{{$t('m.autoThemeHint')}}</div>
-                    <div class="setting-line" style="margin-top:10px">
-                      <el-button size="small" :disabled="!setting.pixelTheme" @click="pixelSettingVisible = true">{{$t('m.pixelSettings')}}</el-button>
-                    </div>
+
                   </el-popover>
                 </div>
               </NameFormItem>
@@ -1059,6 +1057,10 @@
                   <el-button size="small" @click="selectCustomImage('bg')">{{$t('m.select')}}</el-button>
                   <el-button v-if="setting.themeCustomBgImage" size="small" text type="danger" @click="clearCustomImage('bg')">{{$t('m.clear')}}</el-button>
                 </div>
+              </div>
+              <div class="theme-row theme-row-wide">
+                <el-button size="small" :disabled="!setting.pixelTheme" @click="pixelSettingVisible = true">{{$t('m.pixelSettings')}}</el-button>
+                <span class="setting-hint" style="margin-left:10px">{{$t('m.pixelSettingsHint')}}</span>
               </div>
               <div class="theme-row theme-row-wide">
                 <span class="theme-label">{{$t('m.customIcon')}}</span>

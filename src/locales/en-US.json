@@ -157,6 +157,7 @@
     "pixelAlgoNone": "No quantization",
     "pixelShowGrid": "Show grid",
     "pixelSettings": "Pixel style settings",
+    "pixelSettingsHint": "Available when pixel style is on: sounds, cover clarity, block size, color count, algorithm and grid.",
     "externalViewer": "External Viewer",
     "general": "General",
     "advanced": "Advanced",

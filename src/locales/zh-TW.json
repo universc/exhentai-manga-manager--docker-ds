@@ -157,6 +157,7 @@
     "pixelAlgoNone": "不量化(保留原色)",
     "pixelShowGrid": "顯示網格",
     "pixelSettings": "像素風格設定",
+    "pixelSettingsHint": "像素風格開啟後可在這裡調音效、封面清晰度、塊大小、顏色數量、演算法與網格。",
     "externalViewer": "外置閱讀器",
     "general": "常用",
     "advanced": "高級",
