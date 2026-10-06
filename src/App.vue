@@ -324,6 +324,8 @@ export default defineComponent({
       actionHistory: [],
       // 工具栏宽度(与下方漫画卡片行对齐,随窗口/封面尺寸自适应)
       toolbarWidth: 0,
+      // 上一次「打开下一本」的时间戳(1 秒冷却)
+      lastMangaSwitchAt: 0,
       // 排序方向(仅排序类有效,筛选/随机无方向)
       sortDirection_: 'desc',
       // collection
@@ -1855,7 +1857,16 @@ export default defineComponent({
     },
 
     // internal viewer
+    // 「打开下一本」1 秒冷却:新打开的书若也处于「已读完」(阅读进度带过去的),
+    // 会立刻再次触发下一本,不加限制会一连切掉好几本
+    canSwitchManga () {
+      const now = Date.now()
+      if (this.lastMangaSwitchAt && now - this.lastMangaSwitchAt < 1000) return false
+      this.lastMangaSwitchAt = now
+      return true
+    },
     toNextManga (step) {
+      if (!this.canSwitchManga()) return
       this.$refs.InternalViewerRef.handleStopReadManga()
       const activeBookList = this.drawerVisibleCollection ? this.openCollectionBookList : _.filter(this.displayBookList, book => this.isBook(book) && this.isVisibleBook(book))
       const indexNow = _.findIndex(activeBookList, {id: this.bookDetail.id})
@@ -1873,6 +1884,7 @@ export default defineComponent({
       }
     },
     toNextMangaRandom () {
+      if (!this.canSwitchManga()) return
       this.$refs.InternalViewerRef.handleStopReadManga()
       const activeBookList = this.drawerVisibleCollection ? this.openCollectionBookList : _.filter(this.displayBookList, book => this.isBook(book) && this.isVisibleBook(book))
       const selectBook = _.sample(activeBookList)

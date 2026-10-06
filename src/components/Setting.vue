@@ -918,41 +918,46 @@
           <el-col :span="24">
             <div class="custom-theme-panel">
               <div class="setting-hint theme-hint-full">{{$t('m.themeAlphaHint')}}</div>
+              <!-- 颜色设置:单独一排 -->
+              <div class="theme-group">
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomBg')}}</span>
                 <div class="theme-value">
                   <el-color-picker v-model="setting.themeCustomBg" :show-alpha="true" @change="handleCustomThemeChange" />
-                  <el-button v-if="setting.themeCustomBg" size="small" text type="danger" @click="clearThemeColor('bg')">{{$t('m.clear')}}</el-button>
+                  <el-button v-if="setting.themeCustomBg" class="theme-clear-btn" size="small" text type="danger" @click="clearThemeColor('bg')">{{$t('m.clear')}}</el-button>
                 </div>
               </div>
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomPrimary')}}</span>
                 <div class="theme-value">
                   <el-color-picker v-model="setting.themeCustomPrimary" :show-alpha="true" @change="handleCustomThemeChange" />
-                  <el-button v-if="setting.themeCustomPrimary && setting.themeCustomPrimary !== '#409EFF'" size="small" text type="danger" @click="resetThemeColor('primary')">{{$t('m.clear')}}</el-button>
+                  <el-button v-if="setting.themeCustomPrimary && setting.themeCustomPrimary !== '#409EFF'" class="theme-clear-btn" size="small" text type="danger" @click="resetThemeColor('primary')">{{$t('m.clear')}}</el-button>
                 </div>
               </div>
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomFontColor')}}</span>
                 <div class="theme-value">
                   <el-color-picker v-model="setting.themeCustomFontColor" :show-alpha="true" @change="handleCustomThemeChange" />
-                  <el-button v-if="setting.themeCustomFontColor" size="small" text type="danger" @click="clearThemeColor('font')">{{$t('m.clear')}}</el-button>
+                  <el-button v-if="setting.themeCustomFontColor" class="theme-clear-btn" size="small" text type="danger" @click="clearThemeColor('font')">{{$t('m.clear')}}</el-button>
                 </div>
               </div>
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomCardBg')}}</span>
                 <div class="theme-value">
                   <el-color-picker v-model="setting.themeCustomCardBg" :show-alpha="true" @change="handleCustomThemeChange" />
-                  <el-button v-if="setting.themeCustomCardBg" size="small" text type="danger" @click="clearThemeColor('card')">{{$t('m.clear')}}</el-button>
+                  <el-button v-if="setting.themeCustomCardBg" class="theme-clear-btn" size="small" text type="danger" @click="clearThemeColor('card')">{{$t('m.clear')}}</el-button>
                 </div>
               </div>
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomButtonBg')}}</span>
                 <div class="theme-value">
                   <el-color-picker v-model="setting.themeCustomButtonBg" :show-alpha="true" @change="handleCustomThemeChange" />
-                  <el-button v-if="setting.themeCustomButtonBg" size="small" text type="danger" @click="clearThemeColor('button')">{{$t('m.clear')}}</el-button>
+                  <el-button v-if="setting.themeCustomButtonBg" class="theme-clear-btn" size="small" text type="danger" @click="clearThemeColor('button')">{{$t('m.clear')}}</el-button>
                 </div>
               </div>
+              </div>
+              <!-- 字体设置:单独一排(字号留在这一组,不挪到颜色那排) -->
+              <div class="theme-group">
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomFontSize')}}</span>
                 <div class="theme-value">
@@ -979,6 +984,7 @@
                   <el-checkbox v-model="setting.themeCustomFontItalic" @change="handleCustomThemeChange">{{$t('m.themeFontItalic')}}</el-checkbox>
                   <el-checkbox v-model="setting.themeCustomFontUnderline" @change="handleCustomThemeChange">{{$t('m.themeFontUnderline')}}</el-checkbox>
                 </div>
+              </div>
               </div>
               <div class="theme-row theme-row-wide">
                 <span class="theme-label">{{$t('m.themeCustomBgImage')}}</span>
@@ -3428,7 +3434,10 @@ const dialogVisibleSetting = ref(false)
 // Ctrl+滚轮 改过缩放后,再打开设置时同步显示当前的百分比
 // (必须放在 dialogVisibleSetting 定义之后,否则 setup 阶段会 ReferenceError → 整个设置面板打不开)
 watch(dialogVisibleSetting, (visible) => {
-  if (visible) zoomPercentRef.value = readZoomPercent()
+  if (!visible) return
+  // 每次打开设置:同步界面缩放 + 自动刷新一次回收站(文件可能被外部移动/删除,状态会变)
+  zoomPercentRef.value = readZoomPercent()
+  loadTrashList()
 })
 // 更新日志(关于页展示;新版本加在数组最前面)
 const changelog = [
@@ -3961,6 +3970,18 @@ defineExpose({
     .theme-hint-full
       flex: 1 1 100%
       margin: 4px 0 0
+    // 分组:颜色一排、字体一排(每组独占一行,内部再自动换行)
+    .theme-group
+      flex: 1 1 100%
+      display: flex
+      flex-wrap: wrap
+      align-items: center
+      gap: 8px 18px
+    // 「清除」按钮:框窄一点,别占地方
+    .theme-clear-btn
+      padding: 0 4px
+      min-width: 0
+      height: 22px
     .theme-row
       display: inline-flex
       align-items: center
