@@ -2663,7 +2663,9 @@ html.theme-auto
 // 像素风格的默认背景图(用户提供的那张);若设了自定义背景图,以自定义为准
 // (theme-custom 的规则写在后面,同优先级下后写者胜)
 html.theme-pixel
-  background-image: url('./assets/pixel-default-bg.png')
+  // 有自定义背景图(--emm-custom-bg-image 只在设了图时才有值)就用自定义的,没有才用内置默认图。
+  // ⚠️ 不能直接写死 url(默认图):这条规则在 html.theme-custom 之后,会把自定义背景图盖掉
+  background-image: var(--emm-custom-bg-image, url('./assets/pixel-default-bg.png'))
   background-size: cover
   background-position: center
   background-attachment: fixed
