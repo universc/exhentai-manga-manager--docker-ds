@@ -265,8 +265,10 @@ import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save1
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
-import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, parsePageSizes } from './utils.js'
+import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes } from './utils.js'
 import { extractCoverColors, pixelateToDataUrl } from './cover-color.js'
+// 内置的默认像素底图(构建后会变成带 hash 的资源 URL)
+import pixelDefaultBg from './assets/pixel-default-bg.png'
 import { attachPixelSfx, playPixelSfx } from './pixel-sfx.js'
 import { attachInertiaScroll } from './inertia-scroll.js'
 
@@ -329,6 +331,8 @@ export default defineComponent({
       lastMangaSwitchAt: 0,
       // 混合背景:上次取色用的封面地址 / 滚动节流定时器 / 像素音效解绑函数
       lastAutoThemeCover: null,
+      // 背景图像素化的去重签名
+      lastPixelBgSrc: null,
       mixBgTimer: null,
       pixelSfxDetach: null,
       // 排序方向(仅排序类有效,筛选/随机无方向)
@@ -556,9 +560,11 @@ export default defineComponent({
       this.syncPixelSfx()
       this.$nextTick(() => {
         this.applyPixelCovers()
+        this.applyPixelBackground()
         this.applyAutoTheme()
       })
     },
+    'setting.themeCustomBgImage' () { this.lastPixelBgSrc = null; this.$nextTick(() => this.applyPixelBackground()) },
     'setting.pixelSfx' () { this.syncPixelSfx() },
     // 任务减少(完成/中断)时来一段完成音效
     bookTaskCount (val, old) {
@@ -569,10 +575,10 @@ export default defineComponent({
       this.lastAutoThemeCover = null
       this.$nextTick(() => this.applyAutoTheme())
     },
-    'setting.pixelCoverLevel' () { this.$nextTick(() => this.applyPixelCovers()) },
-    'setting.pixelBlockSize' () { this.$nextTick(() => this.applyPixelCovers()) },
-    'setting.pixelColorCount' () { this.$nextTick(() => this.applyPixelCovers()) },
-    'setting.pixelAlgorithm' () { this.$nextTick(() => this.applyPixelCovers()) },
+    'setting.pixelCoverLevel' () { this.$nextTick(() => { this.applyPixelCovers(); this.applyPixelBackground() }) },
+    'setting.pixelBlockSize' () { this.$nextTick(() => { this.applyPixelCovers(); this.applyPixelBackground() }) },
+    'setting.pixelColorCount' () { this.$nextTick(() => { this.applyPixelCovers(); this.applyPixelBackground() }) },
+    'setting.pixelAlgorithm' () { this.$nextTick(() => { this.applyPixelCovers(); this.applyPixelBackground() }) },
     'setting.pixelShowGrid' () { this.$nextTick(() => this.applyPixelCovers()) },
     // 卡片列表变化(翻页/排序/搜索/扫描)后重算混合背景 + 重新像素化封面
     visibleRenderedBookList () {
@@ -699,6 +705,7 @@ export default defineComponent({
       this.applyAutoTheme()
     })
     // 首屏封面是懒加载的:过一会儿再补几次,避免「不滚动就一直不像素化」
+    this.applyPixelBackground()
     setTimeout(() => this.applyPixelCovers(), 700)
     setTimeout(() => this.applyPixelCovers(), 1800)
     setTimeout(() => this.applyPixelCovers(), 3500)
@@ -985,6 +992,36 @@ export default defineComponent({
         el.style.removeProperty('opacity')
         processed++
       }
+    },
+    // 背景图也跟封面一样做像素化(有自定义背景图用自定义,没有就用内置默认图)
+    async applyPixelBackground () {
+      const root = document.documentElement.style
+      const level = Number(this.setting?.pixelCoverLevel)
+      const on = !!this.setting?.pixelTheme && Number.isFinite(level) && level > 0
+      if (!on) {
+        root.removeProperty('--emm-pixel-bg-image')
+        this.lastPixelBgSrc = null
+        return
+      }
+      const custom = this.setting?.themeCustomBgImage
+      const src = custom ? toAssetUrl(custom) : pixelDefaultBg
+      if (!src) return
+      const sig = src + '|' + (this.setting?.pixelBlockSize || 4) + '|' + (this.setting?.pixelColorCount || 0) + '|' + (this.setting?.pixelAlgorithm || 'average')
+      if (sig === this.lastPixelBgSrc) return
+      this.lastPixelBgSrc = sig
+      // 背景图比封面大得多,块也放大一些,像素感才明显
+      const blockSize = Math.max(6, Math.round((Number(this.setting?.pixelBlockSize) || 4) * 3))
+      let res = await pixelateToDataUrl(src, {
+        blockSize,
+        colorCount: Math.max(0, Math.min(64, Math.round(Number(this.setting?.pixelColorCount) || 0))),
+        algorithm: this.setting?.pixelAlgorithm || 'average',
+      })
+      let dataUrl = res && res.dataUrl
+      if (!dataUrl) {
+        // 本地文件走主进程 nativeImage 兜底
+        try { dataUrl = await ipcRenderer.invoke('pixelate-cover', src, 180) } catch (e) { dataUrl = null }
+      }
+      if (dataUrl) root.setProperty('--emm-pixel-bg-image', 'url("' + dataUrl + '")')
     },
     // ---------- 高级主题:像素音效 / 自动主题 ----------
     syncPixelSfx () {
@@ -2665,7 +2702,8 @@ html.theme-auto
 html.theme-pixel
   // 有自定义背景图(--emm-custom-bg-image 只在设了图时才有值)就用自定义的,没有才用内置默认图。
   // ⚠️ 不能直接写死 url(默认图):这条规则在 html.theme-custom 之后,会把自定义背景图盖掉
-  background-image: var(--emm-custom-bg-image, url('./assets/pixel-default-bg.png'))
+  // 优先级:像素化后的背景图 > 自定义背景图 > 内置默认图
+  background-image: var(--emm-pixel-bg-image, var(--emm-custom-bg-image, url('./assets/pixel-default-bg.png')))
   background-size: cover
   background-position: center
   background-attachment: fixed
