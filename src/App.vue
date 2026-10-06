@@ -2193,7 +2193,38 @@ body.emm-mobile
     gap: 8px
     flex: 0 0 auto
 
-// 像素风格(高级主题):方角硬边、关掉圆角/阴影/过渡、图片像素化、像素字体
+// 像素风格自带字体:方舟像素字体 Ark Pixel 12px(OFL-1.1,许可证见 src/assets/fonts/OFL.txt)
+// 字体文件随安装包一起分发,不依赖用户本机安装;简体 / 繁体用两个字体族,由界面语言切换
+@font-face
+  font-family: 'EmmPixel'
+  font-style: normal
+  font-weight: 100 900
+  font-display: swap
+  src: url('./assets/fonts/ark-pixel-12px-proportional-latin.woff2') format('woff2')
+  unicode-range: U+0000-024F, U+1E00-1EFF, U+2000-206F, U+20A0-20CF, U+2100-214F, U+2190-21FF, U+2200-22FF, U+25A0-25FF
+@font-face
+  font-family: 'EmmPixel'
+  font-style: normal
+  font-weight: 100 900
+  font-display: swap
+  src: url('./assets/fonts/ark-pixel-12px-proportional-zh_hans.woff2') format('woff2')
+  unicode-range: U+2E80-2EFF, U+3000-303F, U+31C0-31EF, U+3200-32FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF
+@font-face
+  font-family: 'EmmPixelHant'
+  font-style: normal
+  font-weight: 100 900
+  font-display: swap
+  src: url('./assets/fonts/ark-pixel-12px-proportional-latin.woff2') format('woff2')
+  unicode-range: U+0000-024F, U+1E00-1EFF, U+2000-206F, U+20A0-20CF, U+2100-214F, U+2190-21FF, U+2200-22FF, U+25A0-25FF
+@font-face
+  font-family: 'EmmPixelHant'
+  font-style: normal
+  font-weight: 100 900
+  font-display: swap
+  src: url('./assets/fonts/ark-pixel-12px-proportional-zh_hant.woff2') format('woff2')
+  unicode-range: U+2E80-2EFF, U+3000-303F, U+31C0-31EF, U+3200-32FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF
+
+// 像素风格(高级主题):自带像素字体、方角硬边、图片真像素化(降采样)、方块动画
 html.theme-pixel
   --emm-pixel-border: 2px solid var(--el-border-color-darker, #606266)
   .el-icon svg
@@ -2203,7 +2234,7 @@ html.theme-pixel
     image-rendering: pixelated
   // 全部字体像素化(含 Element Plus 组件与挂在 body 上的浮层/右键菜单 —— 它们不在 #app 里)
   #app, #app *, .el-popper, .el-popper *, .mx-context-menu, .mx-context-menu *
-    font-family: 'Zpix', 'Fusion Pixel 12px zh_hans', 'Fusion Pixel 12px zh_hant', 'Ark Pixel 12px zh_cn', 'Ark Pixel 12px zh_tw', 'Press Start 2P', 'DotGothic16', ui-monospace, monospace !important
+    font-family: var(--emm-pixel-font, 'EmmPixel'), 'EmmPixelHant', ui-monospace, monospace !important
     -webkit-font-smoothing: none
     font-smooth: never
   *, *::before, *::after
@@ -2211,7 +2242,39 @@ html.theme-pixel
     box-shadow: none !important
     text-shadow: none !important
     transition: none !important
-    animation: none !important
+    // 动画改成「方块跳帧」:所有缓动都换成 steps,不再有平滑过渡
+    transition-timing-function: steps(4, end) !important
+    animation-timing-function: steps(6, end) !important
+  // 加载/任务转圈:圆环变方块
+  .book-task-ring, .book-task-mask, .el-loading-spinner .circular, .el-loading-spinner .path
+    border-radius: 0 !important
+  // 封面图片真像素化:先按 1/4 尺寸渲染(浏览器降采样),再放大 4 倍用 pixelated 插值,
+  // 这样才看得到「块状」像素感(只写 image-rendering 对高分辨率原图是看不出来的)
+  .book-cover-frame
+    position: relative
+    height: calc((var(--emm-cover-size, 220px) - 20px) * 1.415)
+    overflow: hidden
+  .book-cover-frame .book-cover
+    position: absolute
+    top: 0
+    left: 0
+    width: 25% !important
+    height: auto !important
+    transform: scale(4) !important
+    transform-origin: top left
+  .book-card.fill-cover .book-cover-fill
+    width: 25% !important
+    height: 25% !important
+    transform: scale(4.6) !important
+    transform-origin: top left
+  // 按钮:粗像素风(2px 硬边框 + 左上亮/右下暗的内阴影,像老游戏按钮)
+  .el-button
+    border-width: 2px !important
+    border-style: solid !important
+    box-shadow: inset 2px 2px 0 0 rgba(255, 255, 255, .28), inset -2px -2px 0 0 rgba(0, 0, 0, .35) !important
+    &:active
+      transform: translate(2px, 2px)
+      box-shadow: inset -2px -2px 0 0 rgba(255, 255, 255, .28), inset 2px 2px 0 0 rgba(0, 0, 0, .35) !important
   .el-button, .el-input__wrapper, .el-select__wrapper, .el-textarea__inner, .el-tag, .el-card, .el-checkbox__inner, .el-switch__core
     border: var(--emm-pixel-border) !important
   .el-dialog

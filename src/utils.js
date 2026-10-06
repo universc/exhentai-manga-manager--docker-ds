@@ -339,6 +339,10 @@ const applyPixelTheme = (setting) => {
   if (typeof document === 'undefined') return
   const root = document.documentElement
   root.classList.toggle('theme-pixel', !!setting?.pixelTheme)
+  // 自带的开源像素字体(方舟像素 Ark Pixel 12px,OFL-1.1):简体/繁体是两个字体族,
+  // 按界面语言切换,这样不依赖用户本机是否装了像素字体
+  const hant = String(setting?.language || '') === 'zh-TW'
+  root.style.setProperty('--emm-pixel-font', hant ? "'EmmPixelHant', 'EmmPixel'" : "'EmmPixel', 'EmmPixelHant'")
   // 混合背景:根据当前显示的漫画封面取色生成渐变(颜色由 App.vue 算好写进 --emm-mix-bg)
   root.classList.toggle('theme-mixbg', !!setting?.mixBackground)
   if (!setting?.mixBackground) root.style.removeProperty('--emm-mix-bg')
