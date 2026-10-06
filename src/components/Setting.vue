@@ -917,7 +917,7 @@
         <el-row :gutter="8">
           <el-col :span="24">
             <div class="custom-theme-panel">
-              <div class="setting-hint">{{$t('m.themeAlphaHint')}}</div>
+              <div class="setting-hint theme-hint-full">{{$t('m.themeAlphaHint')}}</div>
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomBg')}}</span>
                 <div class="theme-value">
@@ -942,7 +942,7 @@
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomFontSize')}}</span>
                 <div class="theme-value">
-                  <el-input-number v-model="setting.themeCustomFontSize" :min="10" :max="40" size="small" controls-position="right" @change="handleCustomThemeChange" />
+                  <el-input-number v-model="setting.themeCustomFontSize" :min="1" :max="999" size="small" controls-position="right" @change="handleCustomThemeChange" />
                 </div>
               </div>
               <div class="theme-row">
@@ -954,6 +954,14 @@
                 </div>
               </div>
               <div class="theme-row">
+                <span class="theme-label">{{$t('m.themeFontEffect')}}</span>
+                <div class="theme-value">
+                  <el-checkbox v-model="setting.themeCustomFontBold" @change="handleCustomThemeChange">{{$t('m.themeFontBold')}}</el-checkbox>
+                  <el-checkbox v-model="setting.themeCustomFontItalic" @change="handleCustomThemeChange">{{$t('m.themeFontItalic')}}</el-checkbox>
+                  <el-checkbox v-model="setting.themeCustomFontUnderline" @change="handleCustomThemeChange">{{$t('m.themeFontUnderline')}}</el-checkbox>
+                </div>
+              </div>
+              <div class="theme-row theme-row-wide">
                 <span class="theme-label">{{$t('m.themeCustomBgImage')}}</span>
                 <div class="theme-value">
                   <el-input v-model="setting.themeCustomBgImage" size="small" :placeholder="$t('m.themeCustomBgImagePlaceholder')" @change="handleCustomThemeChange" />
@@ -961,7 +969,7 @@
                   <el-button v-if="setting.themeCustomBgImage" size="small" text type="danger" @click="clearCustomImage('bg')">{{$t('m.clear')}}</el-button>
                 </div>
               </div>
-              <div class="theme-row">
+              <div class="theme-row theme-row-wide">
                 <span class="theme-label">{{$t('m.customIcon')}}</span>
                 <div class="theme-value">
                   <el-input v-model="setting.customIconPath" size="small" :placeholder="$t('m.customIconPlaceholder')" @change="handleCustomIconChange" />
@@ -2473,6 +2481,9 @@ onMounted(() => {
       if (res.themeCustomFontSize === undefined) setting.value.themeCustomFontSize = 14
       if (res.themeCustomFontColor === undefined) setting.value.themeCustomFontColor = ''
       if (res.themeCustomFontStyle === undefined) setting.value.themeCustomFontStyle = ''
+      if (res.themeCustomFontBold === undefined) setting.value.themeCustomFontBold = false
+      if (res.themeCustomFontItalic === undefined) setting.value.themeCustomFontItalic = false
+      if (res.themeCustomFontUnderline === undefined) setting.value.themeCustomFontUnderline = false
       if (res.customIconPath === undefined) setting.value.customIconPath = ''
       if (!Array.isArray(res.toolbarButtonsHidden)) setting.value.toolbarButtonsHidden = []
       setting.value.toolbarButtons = ensureToolbarButtons(res.toolbarButtons, res.toolbarButtonsHidden)
@@ -3881,34 +3892,51 @@ defineExpose({
     color: var(--el-text-color-secondary)
     background-color: transparent
   // 自定义主题面板
+  // 自定义主题面板:横排紧凑布局(每项「标签 + 控件」并排,自动换行)
   .custom-theme-panel
     border: solid 1px var(--el-border-color)
     border-radius: 8px
-    padding: 4px 14px
+    padding: 6px 14px 10px
+    display: flex
+    flex-wrap: wrap
+    align-items: center
+    gap: 8px 18px
+    .theme-hint-full
+      flex: 1 1 100%
+      margin: 4px 0 0
     .theme-row
-      display: flex
+      display: inline-flex
       align-items: center
-      gap: 12px
-      padding: 9px 0
-      border-bottom: dashed 1px var(--el-border-color-lighter, var(--el-border-color))
-      &:last-child
-        border-bottom: none
+      gap: 8px
+      padding: 2px 0
+      flex: 0 0 auto
       .theme-label
-        width: 88px
-        flex: 0 0 88px
-        text-align: right
+        flex: 0 0 auto
+        text-align: left
         font-size: 13px
+        white-space: nowrap
         color: var(--el-text-color-regular)
       .theme-value
-        flex: 1
-        display: flex
+        flex: 0 0 auto
+        display: inline-flex
         align-items: center
-        gap: 8px
+        gap: 6px
         min-width: 0
-        .el-input, .el-select
-          flex: 1
+        .el-input-number
+          width: 104px
+        .el-select
+          width: 160px
+        .el-checkbox
+          margin-right: 0
         .el-color-picker
           flex: 0 0 auto
+    // 背景图 / 自定义图标:内容较长,独占一行
+    .theme-row-wide
+      flex: 1 1 100%
+      .theme-value
+        flex: 1 1 auto
+        .el-input
+          flex: 1 1 auto
   // 超分过滤设置(开关 + 宽×高阈值)
   .upscale-filter-row
     display: flex

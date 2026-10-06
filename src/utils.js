@@ -231,14 +231,25 @@ const toAssetUrl = (path) => {
   return 'file:///' + String(path).replace(/\\/g, '/')
 }
 
-// 字体样式映射
+// 字体样式映射(按「无衬线 → 标题体 → 衬线 → 书法 → 等宽」排列)
 const customFontStyles = [
   { value: '', labelKey: 'm.fontStyleDefault' },
   { value: 'Microsoft YaHei, 微软雅黑, sans-serif', labelKey: 'm.fontStyleYaHei' },
-  { value: 'SimSun, 宋体, serif', labelKey: 'm.fontStyleSong' },
-  { value: 'KaiTi, 楷体, serif', labelKey: 'm.fontStyleKai' },
-  { value: 'Consolas, Monaco, monospace', labelKey: 'm.fontStyleMono' },
   { value: 'PingFang SC, Hiragino Sans GB, sans-serif', labelKey: 'm.fontStylePingFang' },
+  { value: 'SimHei, 黑体, sans-serif', labelKey: 'm.fontStyleHei' },
+  { value: 'Source Han Sans SC, Noto Sans SC, 思源黑体, sans-serif', labelKey: 'm.fontStyleNoto' },
+  { value: 'Hiragino Sans GB, 冬青黑体, sans-serif', labelKey: 'm.fontStyleHiragino' },
+  { value: 'DengXian, 等线, sans-serif', labelKey: 'm.fontStyleDengXian' },
+  { value: 'YouYuan, 幼圆, sans-serif', labelKey: 'm.fontStyleYouYuan' },
+  { value: 'SimSun, 宋体, serif', labelKey: 'm.fontStyleSong' },
+  { value: 'STZhongsong, 华文中宋, serif', labelKey: 'm.fontStyleZhongSong' },
+  { value: 'KaiTi, 楷体, serif', labelKey: 'm.fontStyleKai' },
+  { value: 'FangSong, 仿宋, serif', labelKey: 'm.fontStyleFangSong' },
+  { value: 'LiSu, 隶书, serif', labelKey: 'm.fontStyleLiSu' },
+  { value: 'STXingkai, 华文行楷, cursive', labelKey: 'm.fontStyleXingKai' },
+  { value: 'Consolas, Monaco, monospace', labelKey: 'm.fontStyleMono' },
+  { value: 'sans-serif', labelKey: 'm.fontStyleSans' },
+  { value: 'serif', labelKey: 'm.fontStyleSerif' },
 ]
 
 // 取颜色的 alpha(支持 #rgb / #rrggbb / #rgba / #rrggbbaa / rgb() / rgba() / hsl() / hsla())
@@ -269,9 +280,14 @@ const applyCustomTheme = (setting) => {
   root.style.setProperty('--emm-custom-card-bg', translucent ? bg : '')
   const bgImage = toAssetUrl(s.themeCustomBgImage)
   root.style.setProperty('--emm-custom-bg-image', bgImage ? `url("${bgImage}")` : '')
-  root.style.setProperty('--emm-custom-font-size', s.themeCustomFontSize ? s.themeCustomFontSize + 'px' : '')
+  const fontSize = Number(s.themeCustomFontSize)
+  root.style.setProperty('--emm-custom-font-size', Number.isFinite(fontSize) && fontSize > 0 ? fontSize + 'px' : '')
   root.style.setProperty('--emm-custom-font-color', s.themeCustomFontColor || '')
   root.style.setProperty('--emm-custom-font-family', s.themeCustomFontStyle || '')
+  // 经典文字效果:加粗 / 倾斜 / 下划线
+  root.style.setProperty('--emm-custom-font-weight', s.themeCustomFontBold ? '700' : '')
+  root.style.setProperty('--emm-custom-font-italic', s.themeCustomFontItalic ? 'italic' : '')
+  root.style.setProperty('--emm-custom-font-decoration', s.themeCustomFontUnderline ? 'underline' : '')
   // 主色调(ELEMENT PLUS 变量)
   const primary = s.themeCustomPrimary || '#409EFF'
   root.style.setProperty('--el-color-primary', primary)
@@ -547,6 +563,9 @@ const defaultUiSettings = () => ({
   themeCustomFontSize: 14,
   themeCustomFontColor: '',
   themeCustomFontStyle: '',
+  themeCustomFontBold: false,
+  themeCustomFontItalic: false,
+  themeCustomFontUnderline: false,
   customIconPath: '',
   toolbarButtons: defaultToolbarButtons(),
   // 用户显式关掉的「后加入」工具栏元素(搜索框/搜索按钮/排序框/界面模式框)

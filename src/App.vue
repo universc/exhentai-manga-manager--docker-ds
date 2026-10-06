@@ -2127,11 +2127,21 @@ html.theme-custom
     font-size: var(--emm-custom-font-size, 14px)
     color: var(--emm-custom-font-color, inherit)
     font-family: var(--emm-custom-font-family, inherit)
+    font-weight: var(--emm-custom-font-weight, normal)
+    font-style: var(--emm-custom-font-italic, normal)
+    text-decoration: var(--emm-custom-font-decoration, none)
   // 弹层/卡片背景跟随背景色(半透明)增强沉浸感
   .el-dialog, .el-drawer, .el-message-box
     background-color: var(--emm-custom-panel-bg, var(--el-bg-color-overlay))
   .book-card
     background-color: var(--emm-custom-card-bg, var(--el-bg-color-overlay))
+  // 工具栏:输入框 / 下拉框 / plain 按钮跟随自定义背景色,否则深色背景下会是一块白
+  .toolbar-flex
+    // stylus 会把 color-mix(in srgb, ...) 的 in 当语法解析,必须用 unquote 原样输出
+    .el-input__wrapper, .el-select__wrapper, .el-textarea__inner
+      background-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
+    .el-button.is-plain
+      background-color: unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)")
 .autocomplete-value
   margin-left: 2em
   float: right
@@ -2253,9 +2263,25 @@ html.e-hentai
   --el-border-color: #919191
 
 html.nhentai
+  color-scheme: dark
   background-color: #0d0d0d
   --el-bg-color: #0d0d0d
   --el-bg-color-overlay: #0d0d0d
+  --el-bg-color-page: #0d0d0d
+  // 这个主题没有挂 html.dark,Element Plus 的深色变量得自己补齐,
+  // 否则输入框 / plain 按钮会是一块白底,文字也是深色,在纯黑背景上非常突兀
+  --el-fill-color-blank: #1f1f1f
+  --el-fill-color: #262626
+  --el-fill-color-lighter: #1a1a1a
+  --el-text-color-primary: #e5eaf3
+  --el-text-color-regular: #cfd3dc
+  --el-text-color-secondary: #a3a6ad
+  --el-text-color-placeholder: #8d9095
+  --el-text-color-disabled: #6c6e72
+  --el-border-color-light: #414243
+  --el-border-color-lighter: #363637
+  --el-border-color-extra-light: #2b2b2c
+  --el-mask-color: rgba(0, 0, 0, .8)
   --el-color-primary: #d54255
   --el-color-primary-light-3: #b25252
   --el-color-primary-light-5: #854040
