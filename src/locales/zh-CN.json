@@ -156,6 +156,7 @@
     "pixelAlgoDither": "块平均 + 抖动",
     "pixelAlgoNone": "不量化(保留原色)",
     "pixelShowGrid": "显示网格",
+    "pixelSettings": "像素风格设置",
     "externalViewer": "外置阅读器",
     "general": "常用",
     "advanced": "高级",

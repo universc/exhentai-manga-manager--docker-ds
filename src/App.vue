@@ -2582,7 +2582,9 @@ html.theme-pixel-covers
   i
     width: 4px
     background-color: var(--el-color-primary, #409EFF)
-    animation: emm-eq 0.9s steps(4, end) infinite
+    transform-origin: bottom center
+    // !important:像素模式里那条「所有动画都用 steps(6)」的规则会覆盖简写里的 timing
+    animation: emm-eq 0.9s steps(4, end) infinite !important
     &:nth-child(1)
       height: 34%
       animation-delay: 0s
@@ -2595,9 +2597,13 @@ html.theme-pixel-covers
     &:nth-child(4)
       height: 92%
       animation-delay: .45s
-// 白色浮层上的均衡器(填充封面/任务遮罩)用白柱子
-.book-task-mask .emm-eq i, .cover-loading .emm-eq i
-  background-color: #ffffff
+// 白色浮层上的均衡器(填充封面/任务遮罩)用白柱子,并保证居中
+.book-task-mask .emm-eq, .cover-loading .emm-eq
+  position: relative
+  margin: 0 auto
+  flex: 0 0 auto
+  i
+    background-color: #ffffff
 
 @keyframes emm-eq
   0%, 100%

@@ -146,45 +146,12 @@
                     </div>
                     <div class="setting-hint">{{$t('m.pixelThemeHint')}}</div>
                     <div class="setting-line" style="margin-top:8px">
-                      <el-switch v-model="setting.pixelSfx" :disabled="!setting.pixelTheme" @change="handlePixelThemeChange" />
-                      <span class="setting-label" style="margin-left:10px">{{$t('m.pixelSfx')}}</span>
-                    </div>
-                    <div class="setting-line" style="margin-top:8px">
                       <el-switch v-model="setting.autoTheme" :disabled="!setting.pixelTheme" @change="handleAutoThemeChange" />
                       <span class="setting-label" style="margin-left:10px">{{$t('m.autoTheme')}}</span>
                     </div>
                     <div class="setting-hint">{{$t('m.autoThemeHint')}}</div>
-                    <div class="setting-line" style="margin-top:8px">
-                      <span class="setting-label">{{$t('m.pixelCoverLevel')}}</span>
-                      <el-slider
-                        v-model="setting.pixelCoverLevel"
-                        :min="0" :max="100" :step="5"
-                        :disabled="!setting.pixelTheme"
-                        style="width:150px;margin-left:10px"
-                        @change="saveSetting"
-                      />
-                    </div>
-                    <div class="setting-hint">{{$t('m.pixelCoverLevelHint')}}</div>
-                    <div class="setting-line" style="margin-top:8px">
-                      <span class="setting-label">{{$t('m.pixelBlockSize')}}</span>
-                      <el-slider v-model="setting.pixelBlockSize" :min="2" :max="20" :step="1" :disabled="!setting.pixelTheme || !setting.pixelCoverLevel" style="width:130px;margin-left:10px" @change="saveSetting" />
-                    </div>
-                    <div class="setting-line" style="margin-top:8px">
-                      <span class="setting-label">{{$t('m.pixelColorCount')}}</span>
-                      <el-slider v-model="setting.pixelColorCount" :min="2" :max="64" :step="2" :disabled="!setting.pixelTheme || !setting.pixelCoverLevel" style="width:130px;margin-left:10px" @change="saveSetting" />
-                    </div>
-                    <div class="setting-line" style="margin-top:8px">
-                      <span class="setting-label">{{$t('m.pixelAlgorithm')}}</span>
-                      <el-select v-model="setting.pixelAlgorithm" size="small" style="width:150px;margin-left:10px" :disabled="!setting.pixelTheme || !setting.pixelCoverLevel" @change="saveSetting">
-                        <el-option :label="$t('m.pixelAlgoAverage')" value="average" />
-                        <el-option :label="$t('m.pixelAlgoCenter')" value="center" />
-                        <el-option :label="$t('m.pixelAlgoDither')" value="dither" />
-                        <el-option :label="$t('m.pixelAlgoNone')" value="none" />
-                      </el-select>
-                    </div>
-                    <div class="setting-line" style="margin-top:8px">
-                      <el-switch v-model="setting.pixelShowGrid" :disabled="!setting.pixelTheme || !setting.pixelCoverLevel" @change="saveSetting" />
-                      <span class="setting-label" style="margin-left:10px">{{$t('m.pixelShowGrid')}}</span>
+                    <div class="setting-line" style="margin-top:10px">
+                      <el-button size="small" :disabled="!setting.pixelTheme" @click="pixelSettingVisible = true">{{$t('m.pixelSettings')}}</el-button>
                     </div>
                   </el-popover>
                 </div>
@@ -249,7 +216,43 @@
           </el-col>
         </el-row>
         <!-- 删除记录(delete-log.jsonl):记录每一次删除/还原/彻底删除,删错了能查是谁、什么时候、从哪删的 -->
-        <!-- EH 设置:四个账号 Cookie -->
+        <!-- 像素风格设置:音效 / 封面清晰度 / 块大小 / 颜色数量 / 算法 / 网格 -->
+    <el-dialog v-model="pixelSettingVisible" :title="$t('m.pixelSettings')" width="46em" append-to-body>
+      <div class="setting-line">
+        <el-switch v-model="setting.pixelSfx" @change="handlePixelThemeChange" />
+        <span class="setting-label" style="margin-left:10px">{{$t('m.pixelSfx')}}</span>
+      </div>
+      <div class="setting-line" style="margin-top:10px">
+        <span class="setting-label">{{$t('m.pixelCoverLevel')}}</span>
+        <el-slider v-model="setting.pixelCoverLevel" :min="0" :max="100" :step="5" style="width:180px;margin-left:10px" @change="saveSetting" />
+      </div>
+      <div class="setting-hint">{{$t('m.pixelCoverLevelHint')}}</div>
+      <div class="setting-line" style="margin-top:10px">
+        <span class="setting-label">{{$t('m.pixelBlockSize')}}</span>
+        <el-slider v-model="setting.pixelBlockSize" :min="2" :max="20" :step="1" :disabled="!setting.pixelCoverLevel" style="width:180px;margin-left:10px" @change="saveSetting" />
+      </div>
+      <div class="setting-line" style="margin-top:10px">
+        <span class="setting-label">{{$t('m.pixelColorCount')}}</span>
+        <el-slider v-model="setting.pixelColorCount" :min="2" :max="64" :step="2" :disabled="!setting.pixelCoverLevel" style="width:180px;margin-left:10px" @change="saveSetting" />
+      </div>
+      <div class="setting-line" style="margin-top:10px">
+        <span class="setting-label">{{$t('m.pixelAlgorithm')}}</span>
+        <el-select v-model="setting.pixelAlgorithm" size="small" style="width:180px;margin-left:10px" :disabled="!setting.pixelCoverLevel" @change="saveSetting">
+          <el-option :label="$t('m.pixelAlgoAverage')" value="average" />
+          <el-option :label="$t('m.pixelAlgoCenter')" value="center" />
+          <el-option :label="$t('m.pixelAlgoDither')" value="dither" />
+          <el-option :label="$t('m.pixelAlgoNone')" value="none" />
+        </el-select>
+      </div>
+      <div class="setting-line" style="margin-top:10px">
+        <el-switch v-model="setting.pixelShowGrid" :disabled="!setting.pixelCoverLevel" @change="saveSetting" />
+        <span class="setting-label" style="margin-left:10px">{{$t('m.pixelShowGrid')}}</span>
+      </div>
+      <template #footer>
+        <el-button @click="pixelSettingVisible = false">{{$t('m.close')}}</el-button>
+      </template>
+    </el-dialog>
+    <!-- EH 设置:四个账号 Cookie -->
     <el-dialog v-model="ehSettingVisible" :title="$t('m.ehSetting')" width="46em" append-to-body>
       <div class="setting-hint" style="margin-bottom:8px">{{$t('m.ehSettingHint')}}</div>
       <div class="setting-line">
@@ -3509,6 +3512,8 @@ const tagCategoryLabel = (c) => ((resolvedTranslation.value && resolvedTranslati
 const dialogVisibleSetting = ref(false)
 // EH 设置(四个账号 Cookie)/ 高级主题(像素风格)
 const ehSettingVisible = ref(false)
+// 像素风格设置(音效 / 清晰度 / 块大小 / 颜色数量 / 算法 / 网格)
+const pixelSettingVisible = ref(false)
 const ehSettingSummary = computed(() => {
   const filled = ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star']
     .filter(k => String(setting.value[k] == null ? '' : setting.value[k]).trim()).length

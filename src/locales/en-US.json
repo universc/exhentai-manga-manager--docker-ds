@@ -156,6 +156,7 @@
     "pixelAlgoDither": "Average + dither",
     "pixelAlgoNone": "No quantization",
     "pixelShowGrid": "Show grid",
+    "pixelSettings": "Pixel style settings",
     "externalViewer": "External Viewer",
     "general": "General",
     "advanced": "Advanced",
