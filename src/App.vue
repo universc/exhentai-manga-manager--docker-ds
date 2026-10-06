@@ -2,7 +2,6 @@
   <el-config-provider :locale="localeFile">
     <!-- 网页版账户登录(启用账户系统且未登录时显示) -->
     <LoginDialog />
-    <div id="progressbar" :class="{ indeterminate: scanning && progress <= 0 }" :style="{ width: progress + '%' }"></div>
     <el-button v-if="setting.showFullscreenButton !== false" class="fullscreen-button" circle :icon="FullScreen" size="large" @click="switchFullscreen"></el-button>
     <el-row :gutter="20" class="book-search-bar">
       <el-col :span="24">
@@ -952,32 +951,31 @@ export default defineComponent({
     // 自动主题:取「当前可见的那张封面」的主色,联动卡片框 / 按钮 / 按钮内颜色 / 主色调
     async applyAutoTheme () {
       if (!(this.setting?.pixelTheme && this.setting?.autoTheme !== false)) return
-      const area = document.querySelector('.book-card-area')
-      if (!area) return
       const covers = Array.from(document.querySelectorAll('.book-card-list .book-cover, .book-card-list .book-cover-fill'))
       if (!covers.length) return
-      const areaRect = area.getBoundingClientRect()
-      const visible = covers.find((el) => {
-        const r = el.getBoundingClientRect()
-        return r.bottom > areaRect.top + 4 && r.top < areaRect.bottom - 4
-      })
-      const el = visible || covers[0]
-      const src = el && (el.currentSrc || el.src)
+      // 每页只取一次色:固定用列表第一张封面,不随滚动反复取色
+      const el = covers[0]
+      const src = el && (el.dataset.pixelOriginal || el.currentSrc || el.src)
       if (!src || src === this.lastAutoThemeCover) return
       this.lastAutoThemeCover = src
       const colors = await extractCoverColors(src)
       if (!colors) return
       const toHex = (c) => '#' + c.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
-      const lighten = (c, k) => c.map((v) => Math.round(v + (255 - v) * k))
+      const shade = (c, k) => c.map((v) => Math.round(v * k))
       const vivid = colors.vivid || colors.average
       const avg = colors.average
+      // 按钮/卡片底色统一压暗,文字按背景亮度取「黑或白」,保证对比明显
+      const btnBg = shade(avg, 0.55)
+      const btnLum = 0.299 * btnBg[0] + 0.587 * btnBg[1] + 0.114 * btnBg[2]
+      const btnText = btnLum > 140 ? '#1a1a1a' : '#ffffff'
+      const cardBg = shade(avg, 0.32)
       const root = document.documentElement.style
-      root.setProperty('--emm-auto-primary', toHex(lighten(vivid, 0.18)))
-      root.setProperty('--emm-auto-primary-dark', toHex(vivid.map((v) => Math.round(v * 0.7))))
-      root.setProperty('--emm-auto-card-bg', `rgba(${avg[0]}, ${avg[1]}, ${avg[2]}, 0.3)`)
-      root.setProperty('--emm-auto-card-border', toHex(vivid.map((v) => Math.round(v * 0.6))))
-      root.setProperty('--emm-auto-button-bg', `rgba(${avg[0]}, ${avg[1]}, ${avg[2]}, 0.45)`)
-      root.setProperty('--emm-auto-button-text', toHex(lighten(vivid, 0.6)))
+      root.setProperty('--emm-auto-primary', toHex(vivid))
+      root.setProperty('--emm-auto-primary-dark', toHex(shade(vivid, 0.7)))
+      root.setProperty('--emm-auto-card-bg', `rgba(${cardBg[0]}, ${cardBg[1]}, ${cardBg[2]}, 0.45)`)
+      root.setProperty('--emm-auto-card-border', toHex(shade(vivid, 0.65)))
+      root.setProperty('--emm-auto-button-bg', `rgba(${btnBg[0]}, ${btnBg[1]}, ${btnBg[2]}, 0.6)`)
+      root.setProperty('--emm-auto-button-text', btnText)
     },
     resolveWheel (event) {
       if (event.ctrlKey) {
@@ -2362,6 +2360,9 @@ html.theme-pixel
   //    而给 book-cover-frame 加 overflow: hidden 又会把右上角的收藏按钮裁掉。
   .book-card-list img, .book-cover, .book-cover-fill
     image-rendering: pixelated
+  // 换好像素图之前一律隐藏,避免「先看到原图再变像素」;处理失败(data-pixel-failed)的照常显示
+  .book-card-list img:not([data-pixel-done]):not([data-pixel-failed])
+    opacity: 0 !important
   // 按钮:粗像素风(2px 硬边框 + 左上亮/右下暗的内阴影,像老游戏按钮)
   .el-button
     box-sizing: border-box !important
@@ -2411,7 +2412,8 @@ html.theme-pixel
     padding: 0
     box-sizing: border-box
     border: 2px solid var(--el-border-color-darker, #606266) !important
-    background-color: var(--el-bg-color-overlay, #ffffff) !important
+    // 半透明深色底:填充封面布局的白色心形、经典布局的橙/灰心形都能看清
+    background-color: rgba(0, 0, 0, .45) !important
     svg
       opacity: 0 !important
     &::after
@@ -2517,6 +2519,63 @@ html.theme-custom
   100%
     left: 0
     top: 0
+
+// ============ 音乐律动加载动画(4 根柱子上下跳,替代转圈) ============
+.emm-eq
+  display: inline-flex
+  align-items: flex-end
+  justify-content: center
+  gap: 3px
+  height: 22px
+  i
+    width: 4px
+    background-color: var(--el-color-primary, #409EFF)
+    animation: emm-eq 0.9s steps(4, end) infinite
+    &:nth-child(1)
+      height: 34%
+      animation-delay: 0s
+    &:nth-child(2)
+      height: 72%
+      animation-delay: .15s
+    &:nth-child(3)
+      height: 48%
+      animation-delay: .3s
+    &:nth-child(4)
+      height: 92%
+      animation-delay: .45s
+// 白色浮层上的均衡器(填充封面/任务遮罩)用白柱子
+.book-task-mask .emm-eq i, .cover-loading .emm-eq i
+  background-color: #ffffff
+
+@keyframes emm-eq
+  0%, 100%
+    transform: scaleY(.35)
+  50%
+    transform: scaleY(1)
+
+// 像素模式:加载中的按钮改成「光点闪烁」
+html.theme-pixel
+  .el-button.is-loading
+    .el-icon
+      display: none !important
+    &::after
+      content: ''
+      display: inline-block
+      width: 6px
+      height: 6px
+      background-color: currentColor
+      box-shadow: 10px 0 0 currentColor, 20px 0 0 currentColor
+      animation: emm-blink 1s steps(3, end) infinite
+
+@keyframes emm-blink
+  0%
+    opacity: 1
+  35%
+    opacity: .2
+  70%
+    opacity: .65
+  100%
+    opacity: 1
 
 // 自动主题(替代原「混合背景」):按当前显示的漫画封面取色,
 // 联动 卡片框背景 / 卡片边框 / 按钮框内颜色 / 按钮内文字颜色 / 主色调
