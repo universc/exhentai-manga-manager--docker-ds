@@ -150,10 +150,21 @@
                       <span class="setting-label" style="margin-left:10px">{{$t('m.pixelSfx')}}</span>
                     </div>
                     <div class="setting-line" style="margin-top:8px">
-                      <el-switch v-model="setting.mixBackground" @change="handleMixBackgroundChange" />
-                      <span class="setting-label" style="margin-left:10px">{{$t('m.mixBackground')}}</span>
+                      <el-switch v-model="setting.autoTheme" :disabled="!setting.pixelTheme" @change="handleAutoThemeChange" />
+                      <span class="setting-label" style="margin-left:10px">{{$t('m.autoTheme')}}</span>
                     </div>
-                    <div class="setting-hint">{{$t('m.mixBackgroundHint')}}</div>
+                    <div class="setting-hint">{{$t('m.autoThemeHint')}}</div>
+                    <div class="setting-line" style="margin-top:8px">
+                      <span class="setting-label">{{$t('m.pixelCoverLevel')}}</span>
+                      <el-slider
+                        v-model="setting.pixelCoverLevel"
+                        :min="0" :max="100" :step="5"
+                        :disabled="!setting.pixelTheme"
+                        style="width:150px;margin-left:10px"
+                        @change="saveSetting"
+                      />
+                    </div>
+                    <div class="setting-hint">{{$t('m.pixelCoverLevelHint')}}</div>
                   </el-popover>
                 </div>
               </NameFormItem>
@@ -2570,7 +2581,9 @@ onMounted(() => {
       if (res.themeCustomCardBg === undefined) setting.value.themeCustomCardBg = ''
       if (res.pixelTheme === undefined) setting.value.pixelTheme = false
       if (res.pixelSfx === undefined) setting.value.pixelSfx = true
-      if (res.mixBackground === undefined) setting.value.mixBackground = false
+      // 自动主题:像素风格打开时默认开启;封面清晰度默认 60
+      if (res.autoTheme === undefined) setting.value.autoTheme = !!res.pixelTheme
+      if (res.pixelCoverLevel === undefined) setting.value.pixelCoverLevel = 60
       if (res.themeCustomButtonBg === undefined) setting.value.themeCustomButtonBg = ''
       if (res.themeCustomFontItalic === undefined) setting.value.themeCustomFontItalic = false
       if (res.themeCustomFontUnderline === undefined) setting.value.themeCustomFontUnderline = false
@@ -2838,9 +2851,9 @@ const handleThemeChange = (val) => {
 }
 
 const changeTheme = (classValue) => {
-  // 保留像素风格 / 混合背景这些附加 class(setAttribute 会把它们一起清掉)
+  // 保留像素风格 / 自动主题这些附加 class(setAttribute 会把它们一起清掉)
   const root = document.documentElement
-  const keepClasses = ['theme-pixel', 'theme-mixbg'].filter(c => root.classList.contains(c))
+  const keepClasses = ['theme-pixel', 'theme-auto'].filter(c => root.classList.contains(c))
   root.setAttribute('class', classValue)
   keepClasses.forEach(c => root.classList.add(c))
 }
@@ -3480,7 +3493,7 @@ const handlePixelThemeChange = () => {
   applyPixelTheme(setting.value)
   saveSetting()
 }
-const handleMixBackgroundChange = () => {
+const handleAutoThemeChange = () => {
   applyPixelTheme(setting.value)
   saveSetting()
 }

@@ -267,7 +267,7 @@ import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPa
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
 import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, parsePageSizes } from './utils.js'
-import { extractCoverColors, buildMixGradient, pixelateToDataUrl } from './cover-color.js'
+import { extractCoverColors, pixelateToDataUrl } from './cover-color.js'
 import { attachPixelSfx } from './pixel-sfx.js'
 import { attachInertiaScroll } from './inertia-scroll.js'
 
@@ -329,7 +329,7 @@ export default defineComponent({
       // 上一次「打开下一本」的时间戳(1 秒冷却)
       lastMangaSwitchAt: 0,
       // 混合背景:上次取色用的封面地址 / 滚动节流定时器 / 像素音效解绑函数
-      lastMixCoverSrc: null,
+      lastAutoThemeCover: null,
       mixBgTimer: null,
       pixelSfxDetach: null,
       // 排序方向(仅排序类有效,筛选/随机无方向)
@@ -544,24 +544,29 @@ export default defineComponent({
       this.handleSortChange(this.sortValue, this.bookList)
     },
     // 像素风格 / 像素音效 / 混合背景
-    'setting.pixelTheme' () {
+    'setting.pixelTheme' (val) {
+      // 开启像素风格时自动打开「自动主题」(用户仍可手动关掉)
+      // 开启像素风格 → 自动打开「自动主题」
+      if (val) this.setting.autoTheme = true
+      applyPixelTheme(this.setting)
       this.syncPixelSfx()
       this.$nextTick(() => {
         this.applyPixelCovers()
-        this.updateMixBackgroundColor()
+        this.applyAutoTheme()
       })
     },
     'setting.pixelSfx' () { this.syncPixelSfx() },
-    'setting.mixBackground' (val) {
+    'setting.autoTheme' () {
       applyPixelTheme(this.setting)
-      this.lastMixCoverSrc = null
-      if (val) this.$nextTick(() => this.updateMixBackgroundColor())
+      this.lastAutoThemeCover = null
+      this.$nextTick(() => this.applyAutoTheme())
     },
+    'setting.pixelCoverLevel' () { this.$nextTick(() => this.applyPixelCovers()) },
     // 卡片列表变化(翻页/排序/搜索/扫描)后重算混合背景 + 重新像素化封面
     visibleRenderedBookList () {
       this.$nextTick(() => {
         this.applyPixelCovers()
-        this.updateMixBackgroundColor()
+        this.applyAutoTheme()
       })
     },
   },
@@ -661,11 +666,11 @@ export default defineComponent({
         this.renderedCount += this.renderBatchSize
       }
       // 滚动时节流:新滚进来的封面做像素化 + 按当前可见封面重算混合背景
-      if (this.setting?.mixBackground || this.setting?.pixelTheme) {
+      if (this.setting?.pixelTheme) {
         clearTimeout(this.mixBgTimer)
         this.mixBgTimer = setTimeout(() => {
-          if (this.setting?.pixelTheme) this.applyPixelCovers()
-          this.updateMixBackgroundColor()
+          this.applyPixelCovers()
+          this.applyAutoTheme()
         }, 400)
       }
     }
@@ -679,7 +684,7 @@ export default defineComponent({
     this.syncPixelSfx()
     this.$nextTick(() => {
       this.applyPixelCovers()
-      this.updateMixBackgroundColor()
+      this.applyAutoTheme()
     })
     ipcRenderer.on('send-action', async (event, arg) => {
       switch (arg.action) {
@@ -887,16 +892,23 @@ export default defineComponent({
     // CSS 的 image-rendering 对高分辨率原图看不出效果,所以直接把封面缩到 72px 宽再显示
     async applyPixelCovers () {
       const nodes = Array.from(document.querySelectorAll('.book-card-list .book-cover, .book-card-list .book-cover-fill'))
-      if (!this.setting?.pixelTheme) {
+      const level = Number(this.setting?.pixelCoverLevel)
+      // 清晰度拉条:0 = 完全不像素化封面;越大降采样越狠(块越粗)
+      const pixelOn = !!this.setting?.pixelTheme && Number.isFinite(level) && level > 0
+      if (!pixelOn) {
         for (const el of nodes) {
           if (el.dataset.pixelOriginal) {
             el.src = el.dataset.pixelOriginal
             delete el.dataset.pixelOriginal
             delete el.dataset.pixelDone
+            delete el.dataset.pixelWidth
           }
+          el.style.removeProperty('opacity')
         }
         return
       }
+      const clamped = Math.min(100, Math.max(1, level))
+      const targetWidth = Math.max(24, Math.round(120 - (clamped / 100) * 96))
       const area = document.querySelector('.book-card-area')
       const areaRect = area ? area.getBoundingClientRect() : null
       let processed = 0
@@ -909,28 +921,37 @@ export default defineComponent({
         const cur = el.currentSrc || el.src
         if (!cur || cur.startsWith('data:')) continue
         if (el.dataset.pixelFailed) continue
-        let dataUrl = await pixelateToDataUrl(cur, 56)
-        // 渲染端被跨域拦住时,交给主进程用 nativeImage 降采样(file:// 图片的情况)
+        // 同一个清晰度已经处理过就不重复处理,免得滚动时反复闪
+        if (el.dataset.pixelDone && el.dataset.pixelWidth === String(targetWidth)) continue
+        // 先把原图藏起来,处理完再显示 —— 否则会「先看到原图,再变成像素图」
+        el.style.opacity = '0'
+        let dataUrl = await pixelateToDataUrl(cur, targetWidth)
         if (!dataUrl) {
-          try { dataUrl = await ipcRenderer.invoke('pixelate-cover', cur, 56) } catch (e) { dataUrl = null }
+          try { dataUrl = await ipcRenderer.invoke('pixelate-cover', cur, targetWidth) } catch (e) { dataUrl = null }
         }
-        if (!dataUrl) { el.dataset.pixelFailed = '1'; continue }
+        if (!dataUrl) {
+          el.dataset.pixelFailed = '1'
+          el.style.removeProperty('opacity')
+          continue
+        }
         el.dataset.pixelOriginal = cur
         el.dataset.pixelDone = '1'
+        el.dataset.pixelWidth = String(targetWidth)
         el.src = dataUrl
+        el.style.removeProperty('opacity')
         processed++
       }
     },
-    // ---------- 高级主题:像素音效 / 混合背景 ----------
+    // ---------- 高级主题:像素音效 / 自动主题 ----------
     syncPixelSfx () {
       if (this.pixelSfxDetach) { this.pixelSfxDetach(); this.pixelSfxDetach = null }
       if (this.setting?.pixelTheme && this.setting?.pixelSfx !== false) {
         this.pixelSfxDetach = attachPixelSfx()
       }
     },
-    // 混合背景:按「当前可见的那张封面」取色,生成渐变背景
-    async updateMixBackgroundColor () {
-      if (!this.setting?.mixBackground) return
+    // 自动主题:取「当前可见的那张封面」的主色,联动卡片框 / 按钮 / 按钮内颜色 / 主色调
+    async applyAutoTheme () {
+      if (!(this.setting?.pixelTheme && this.setting?.autoTheme !== false)) return
       const area = document.querySelector('.book-card-area')
       if (!area) return
       const covers = Array.from(document.querySelectorAll('.book-card-list .book-cover, .book-card-list .book-cover-fill'))
@@ -942,13 +963,21 @@ export default defineComponent({
       })
       const el = visible || covers[0]
       const src = el && (el.currentSrc || el.src)
-      if (!src || src === this.lastMixCoverSrc) return
-      this.lastMixCoverSrc = src
+      if (!src || src === this.lastAutoThemeCover) return
+      this.lastAutoThemeCover = src
       const colors = await extractCoverColors(src)
       if (!colors) return
-      const themeName = String(this.setting.theme || '')
-      const dark = document.documentElement.classList.contains('dark') || themeName.includes('dark') || themeName === 'nhentai'
-      document.documentElement.style.setProperty('--emm-mix-bg', buildMixGradient(colors, dark))
+      const toHex = (c) => '#' + c.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
+      const lighten = (c, k) => c.map((v) => Math.round(v + (255 - v) * k))
+      const vivid = colors.vivid || colors.average
+      const avg = colors.average
+      const root = document.documentElement.style
+      root.setProperty('--emm-auto-primary', toHex(lighten(vivid, 0.18)))
+      root.setProperty('--emm-auto-primary-dark', toHex(vivid.map((v) => Math.round(v * 0.7))))
+      root.setProperty('--emm-auto-card-bg', `rgba(${avg[0]}, ${avg[1]}, ${avg[2]}, 0.3)`)
+      root.setProperty('--emm-auto-card-border', toHex(vivid.map((v) => Math.round(v * 0.6))))
+      root.setProperty('--emm-auto-button-bg', `rgba(${avg[0]}, ${avg[1]}, ${avg[2]}, 0.45)`)
+      root.setProperty('--emm-auto-button-text', toHex(lighten(vivid, 0.6)))
     },
     resolveWheel (event) {
       if (event.ctrlKey) {
@@ -1013,10 +1042,10 @@ export default defineComponent({
       const idx = themes.indexOf(current)
       const next = themes[(idx + 1) % themes.length]
       this.setting.theme = next
-      // ⚠️ 不能直接 setAttribute('class', …):会把 theme-pixel / theme-mixbg 一起抹掉
+      // ⚠️ 不能直接 setAttribute('class', …):会把 theme-pixel / theme-auto 一起抹掉
       //    (症状就是「切完主题像素风格失效,得关掉再打开」)
       const root = document.documentElement
-      const keepClasses = ['theme-pixel', 'theme-mixbg'].filter(c => root.classList.contains(c))
+      const keepClasses = ['theme-pixel', 'theme-auto'].filter(c => root.classList.contains(c))
       root.setAttribute('class', next)
       keepClasses.forEach(c => root.classList.add(c))
       if (next === 'custom') {
@@ -2372,47 +2401,45 @@ html.theme-pixel
     border: none !important
     background-color: #ffffff
     animation: pixel-chase 1.8s steps(10, end) infinite !important
-  // 收藏(书签)按钮:换成像素风格的小方块按钮,并挪到卡片内侧右下一点的位置,
-  // 免得像原来那样 right:-14px 探出封面框被裁掉一半
+  // 收藏按钮:像素风小方块 + 像素心(mask),原书签 SVG 变透明占位
   .book-card-mark
     right: 3px !important
     top: 3px !important
+  .book-card-mark, .fill-mark
     width: 22px
     height: 22px
-    padding: 2px
+    padding: 0
     box-sizing: border-box
     border: 2px solid var(--el-border-color-darker, #606266) !important
     background-color: var(--el-bg-color-overlay, #ffffff) !important
-  .fill-mark
-    width: 22px
-    height: 22px
-    padding: 2px
-    box-sizing: border-box
-    border: 2px solid var(--el-border-color-darker, #606266) !important
-    background-color: var(--el-bg-color-overlay, #ffffff) !important
+    svg
+      opacity: 0 !important
+    &::after
+      content: ''
+      position: absolute
+      inset: 3px
+      background-color: currentColor
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 7 7'%3E%3Cg fill='black'%3E%3Crect x='1' y='0' width='2' height='1'/%3E%3Crect x='4' y='0' width='2' height='1'/%3E%3Crect x='0' y='1' width='7' height='3'/%3E%3Crect x='1' y='4' width='5' height='1'/%3E%3Crect x='2' y='5' width='3' height='1'/%3E%3Crect x='3' y='6' width='1' height='1'/%3E%3C/g%3E%3C/svg%3E") center / contain no-repeat
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 7 7'%3E%3Cg fill='black'%3E%3Crect x='1' y='0' width='2' height='1'/%3E%3Crect x='4' y='0' width='2' height='1'/%3E%3Crect x='0' y='1' width='7' height='3'/%3E%3Crect x='1' y='4' width='5' height='1'/%3E%3Crect x='2' y='5' width='3' height='1'/%3E%3Crect x='3' y='6' width='1' height='1'/%3E%3C/g%3E%3C/svg%3E") center / contain no-repeat
   // 阅读器里看漫画时不做像素化(用户要求:看图保持原样)
   .viewer-drawer .drawer-image-content img,
   .viewer-drawer .viewer-image-frame img,
   .viewer-drawer .viewer-horizontal-item img,
   .viewer-drawer .image-frame img
     image-rendering: auto !important
-  // 评分星星:用 2px 的方块点拼出星形(原来那个是 SVG,缩放不出像素感)
+  // 评分星星:用 SVG 蒙版换成像素方块星。
+  // ⚠️ 原 SVG 不能 display:none —— 那样点击区域与半星的 50% 宽度都会塌掉;
+  //    现在它只是透明占位,形状交给 mask(蒙版固定 14px,半星时只露左半)
   .el-rate__icon
-    overflow: visible
-    // 保持原来的 18px 点击区域 —— 隐藏 SVG 后如果宽度塌成 0,半星就点不中了
-    display: inline-block
     width: 18px
     height: 18px
-    .el-icon
-      display: none !important
-    &::before
-      content: ''
-      display: block
-      width: 2px
-      height: 2px
-      margin: 2px 0 0 2px
-      background-color: currentColor
-      box-shadow: 6px 0 currentColor, 6px 2px currentColor, 4px 4px currentColor, 6px 4px currentColor, 8px 4px currentColor, 0 6px currentColor, 2px 6px currentColor, 4px 6px currentColor, 6px 6px currentColor, 8px 6px currentColor, 10px 6px currentColor, 12px 6px currentColor, 2px 8px currentColor, 4px 8px currentColor, 6px 8px currentColor, 8px 8px currentColor, 10px 8px currentColor, 4px 10px currentColor, 8px 10px currentColor, 2px 12px currentColor, 10px 12px currentColor !important
+    display: inline-block
+  .el-rate__icon, .el-rate__decimal
+    background-color: currentColor
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 7 7'%3E%3Cg fill='black'%3E%3Crect x='3' y='0' width='1' height='2'/%3E%3Crect x='2' y='2' width='3' height='1'/%3E%3Crect x='0' y='3' width='7' height='2'/%3E%3Crect x='1' y='5' width='5' height='1'/%3E%3Crect x='2' y='6' width='1' height='1'/%3E%3Crect x='4' y='6' width='1' height='1'/%3E%3C/g%3E%3C/svg%3E") center / 14px 14px no-repeat
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 7 7'%3E%3Cg fill='black'%3E%3Crect x='3' y='0' width='1' height='2'/%3E%3Crect x='2' y='2' width='3' height='1'/%3E%3Crect x='0' y='3' width='7' height='2'/%3E%3Crect x='1' y='5' width='5' height='1'/%3E%3Crect x='2' y='6' width='1' height='1'/%3E%3Crect x='4' y='6' width='1' height='1'/%3E%3C/g%3E%3C/svg%3E") center / 14px 14px no-repeat
+    svg
+      opacity: 0 !important
   .el-button, .el-input__wrapper, .el-select__wrapper, .el-textarea__inner, .el-tag, .el-card, .el-checkbox__inner, .el-switch__core
     border: var(--emm-pixel-border) !important
   .el-dialog
@@ -2491,10 +2518,23 @@ html.theme-custom
     left: 0
     top: 0
 
-// 混合背景:按当前显示的漫画封面取色生成(颜色由 App.vue 写进 --emm-mix-bg)
-// 放在自定义主题之后 —— 两个都开时以封面混合背景为准
-html.theme-mixbg
-  background-image: var(--emm-mix-bg, none)
+// 自动主题(替代原「混合背景」):按当前显示的漫画封面取色,
+// 联动 卡片框背景 / 卡片边框 / 按钮框内颜色 / 按钮内文字颜色 / 主色调
+html.theme-auto
+  --el-color-primary: var(--emm-auto-primary, #409EFF)
+  --el-color-primary-dark-2: var(--emm-auto-primary-dark, #337ecc)
+  .book-card
+    background-color: var(--emm-auto-card-bg, var(--el-bg-color-overlay)) !important
+    border-color: var(--emm-auto-card-border, var(--el-border-color)) !important
+  .el-button
+    background-color: var(--emm-auto-button-bg, var(--el-button-bg-color)) !important
+    border-color: var(--emm-auto-card-border, var(--el-border-color)) !important
+    color: var(--emm-auto-button-text, var(--el-button-text-color)) !important
+
+// 像素风格的默认背景图(用户提供的那张);若设了自定义背景图,以自定义为准
+// (theme-custom 的规则写在后面,同优先级下后写者胜)
+html.theme-pixel
+  background-image: url('./assets/pixel-default-bg.png')
   background-size: cover
   background-position: center
   background-attachment: fixed

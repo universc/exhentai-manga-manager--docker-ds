@@ -333,6 +333,12 @@ const clearCustomTheme = () => {
   for (const name of CUSTOM_THEME_VARS) style.removeProperty(name)
 }
 
+// 自动主题用到的 CSS 变量(切换时统一清理)
+const AUTO_THEME_VARS = [
+  '--emm-auto-primary', '--emm-auto-primary-dark', '--emm-auto-card-bg', '--emm-auto-card-border',
+  '--emm-auto-button-bg', '--emm-auto-button-text', '--emm-auto-bg-image',
+]
+
 // 像素风格:独立于主题的附加外观(方角硬边 + 关掉圆角/阴影/过渡 + 图片像素化 + 像素字体)
 // 只是个 class,具体覆盖规则在 App.vue 的 html.theme-pixel 里
 const applyPixelTheme = (setting) => {
@@ -343,9 +349,13 @@ const applyPixelTheme = (setting) => {
   // 按界面语言切换,这样不依赖用户本机是否装了像素字体
   const hant = String(setting?.language || '') === 'zh-TW'
   root.style.setProperty('--emm-pixel-font', hant ? "'EmmPixelHant', 'EmmPixel'" : "'EmmPixel', 'EmmPixelHant'")
-  // 混合背景:根据当前显示的漫画封面取色生成渐变(颜色由 App.vue 算好写进 --emm-mix-bg)
-  root.classList.toggle('theme-mixbg', !!setting?.mixBackground)
-  if (!setting?.mixBackground) root.style.removeProperty('--emm-mix-bg')
+  // 自动主题:按当前显示的漫画封面取色,改卡片框/按钮/按钮内颜色/主色调(颜色由 App.vue 写进变量)
+  const autoOn = !!setting?.pixelTheme && setting?.autoTheme !== false
+  root.classList.toggle('theme-auto', autoOn)
+  if (!autoOn) {
+    for (const name of AUTO_THEME_VARS) root.style.removeProperty(name)
+    root.classList.remove('theme-auto-bg')
+  }
 }
 
 // 应用自定义网站图标(浏览器标签页)
@@ -628,10 +638,12 @@ const defaultUiSettings = () => ({
   themeCustomButtonBg: '',
   // 高级主题:像素风格(独立开关,可与任意主题叠加)
   pixelTheme: false,
-  // 像素风点击音效(仅像素风格开启时生效)
+  // 像素风音效(仅像素风格开启时生效)
   pixelSfx: true,
-  // 混合背景:按当前显示的漫画封面取色生成渐变背景
-  mixBackground: false,
+  // 封面像素化强度:0 = 完全不处理封面,越大降采样越狠(块越大)
+  pixelCoverLevel: 60,
+  // 自动主题:按当前显示的漫画封面取色,联动卡片框/按钮/按钮内颜色/主色调(像素风格开启时自动打开)
+  autoTheme: false,
   customIconPath: '',
   toolbarButtons: defaultToolbarButtons(),
   // 用户显式关掉的「后加入」工具栏元素(搜索框/搜索按钮/排序框/界面模式框)
