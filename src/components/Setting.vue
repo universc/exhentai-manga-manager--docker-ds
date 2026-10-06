@@ -1761,10 +1761,6 @@ const uiZoomPercent = computed({
     zoomPercentRef.value = p
   }
 })
-// Ctrl+滚轮 改过缩放后,再打开设置时同步显示当前的百分比
-watch(dialogVisibleSetting, (visible) => {
-  if (visible) zoomPercentRef.value = readZoomPercent()
-})
 // 清空主题颜色
 const clearThemeColor = (kind) => {
   if (kind === 'bg') setting.value.themeCustomBg = ''
@@ -3413,6 +3409,11 @@ const tagCategoryKeys = computed(() => {
 const tagCategoryLabel = (c) => ((resolvedTranslation.value && resolvedTranslation.value[c] && resolvedTranslation.value[c]._name) || catDisplayName(c))
 
 const dialogVisibleSetting = ref(false)
+// Ctrl+滚轮 改过缩放后,再打开设置时同步显示当前的百分比
+// (必须放在 dialogVisibleSetting 定义之后,否则 setup 阶段会 ReferenceError → 整个设置面板打不开)
+watch(dialogVisibleSetting, (visible) => {
+  if (visible) zoomPercentRef.value = readZoomPercent()
+})
 // 更新日志(关于页展示;新版本加在数组最前面)
 const changelog = [
   {
