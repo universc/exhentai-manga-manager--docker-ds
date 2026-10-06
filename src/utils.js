@@ -231,25 +231,27 @@ const toAssetUrl = (path) => {
   return 'file:///' + String(path).replace(/\\/g, '/')
 }
 
-// 字体样式映射(按「无衬线 → 标题体 → 衬线 → 书法 → 等宽」排列)
+// 字体样式映射
+// ⚠️ 只列**开源 / 免费商用**字体(思源、霞鹜文楷、更纱黑体、阿里巴巴普惠体、鸿蒙、MiSans、OPPO Sans、得意黑)
+// 与各平台的通用字体族;微软雅黑、宋体、黑体、苹方、冬青黑体、华文系列等商业授权字体一律不列,
+// 它们要显示也得用户本机另行安装,列出来只会引导用户去用受限字体。
+// 这些字体都需要用户自己装,没装时按后面的 sans-serif / serif / monospace 兜底。
 const customFontStyles = [
   { value: '', labelKey: 'm.fontStyleDefault' },
-  { value: 'Microsoft YaHei, 微软雅黑, sans-serif', labelKey: 'm.fontStyleYaHei' },
-  { value: 'PingFang SC, Hiragino Sans GB, sans-serif', labelKey: 'm.fontStylePingFang' },
-  { value: 'SimHei, 黑体, sans-serif', labelKey: 'm.fontStyleHei' },
+  // —— 开源 / 免费商用 ——
   { value: 'Source Han Sans SC, Noto Sans SC, 思源黑体, sans-serif', labelKey: 'm.fontStyleNoto' },
-  { value: 'Hiragino Sans GB, 冬青黑体, sans-serif', labelKey: 'm.fontStyleHiragino' },
-  { value: 'DengXian, 等线, sans-serif', labelKey: 'm.fontStyleDengXian' },
-  { value: 'YouYuan, 幼圆, sans-serif', labelKey: 'm.fontStyleYouYuan' },
-  { value: 'SimSun, 宋体, serif', labelKey: 'm.fontStyleSong' },
-  { value: 'STZhongsong, 华文中宋, serif', labelKey: 'm.fontStyleZhongSong' },
-  { value: 'KaiTi, 楷体, serif', labelKey: 'm.fontStyleKai' },
-  { value: 'FangSong, 仿宋, serif', labelKey: 'm.fontStyleFangSong' },
-  { value: 'LiSu, 隶书, serif', labelKey: 'm.fontStyleLiSu' },
-  { value: 'STXingkai, 华文行楷, cursive', labelKey: 'm.fontStyleXingKai' },
-  { value: 'Consolas, Monaco, monospace', labelKey: 'm.fontStyleMono' },
+  { value: 'Source Han Serif SC, Noto Serif SC, 思源宋体, serif', labelKey: 'm.fontStyleNotoSerif' },
+  { value: 'LXGW WenKai, LXGW WenKai Screen, 霞鹜文楷, serif', labelKey: 'm.fontStyleLXGW' },
+  { value: 'Sarasa Gothic SC, 更纱黑体, sans-serif', labelKey: 'm.fontStyleSarasa' },
+  { value: 'Alibaba PuHuiTi, 阿里巴巴普惠体, sans-serif', labelKey: 'm.fontStyleAlibaba' },
+  { value: 'HarmonyOS Sans SC, HarmonyOS Sans, 鸿蒙字体, sans-serif', labelKey: 'm.fontStyleHarmonyOS' },
+  { value: 'MiSans, 小米兰亭 Pro, sans-serif', labelKey: 'm.fontStyleMiSans' },
+  { value: 'OPPO Sans, OPPO Sans SC, sans-serif', labelKey: 'm.fontStyleOPPO' },
+  { value: 'Smiley Sans, 得意黑, sans-serif', labelKey: 'm.fontStyleSmiley' },
+  // —— 系统通用字体族(由系统映射到本机默认字体,不含厂商字体名)——
   { value: 'sans-serif', labelKey: 'm.fontStyleSans' },
   { value: 'serif', labelKey: 'm.fontStyleSerif' },
+  { value: 'ui-monospace, monospace', labelKey: 'm.fontStyleMono' },
 ]
 
 // 取颜色的 alpha(支持 #rgb / #rrggbb / #rgba / #rrggbbaa / rgb() / rgba() / hsl() / hsla())
@@ -297,6 +299,22 @@ const applyCustomTheme = (setting) => {
   root.style.setProperty('--el-color-primary-light-8', `color-mix(in srgb, ${primary} 20%, white)`)
   root.style.setProperty('--el-color-primary-light-9', `color-mix(in srgb, ${primary} 10%, white)`)
   root.style.setProperty('--el-color-primary-dark-2', `color-mix(in srgb, ${primary} 80%, black)`)
+}
+
+// 自定义主题的变量是直接写在 <html> 内联样式上的,内联优先级高于主题类 ——
+// 从「自定义」切到别的主题时必须逐个清掉,否则主色调 / 字号 / 字体颜色会一直赖着不走
+const CUSTOM_THEME_VARS = [
+  '--emm-custom-bg', '--emm-custom-panel-bg', '--emm-custom-card-bg', '--emm-custom-bg-image',
+  '--emm-custom-font-size', '--emm-custom-font-color', '--emm-custom-font-family',
+  '--emm-custom-font-weight', '--emm-custom-font-italic', '--emm-custom-font-decoration',
+  '--el-color-primary', '--el-color-primary-light-3', '--el-color-primary-light-5',
+  '--el-color-primary-light-7', '--el-color-primary-light-8', '--el-color-primary-light-9',
+  '--el-color-primary-dark-2',
+]
+const clearCustomTheme = () => {
+  if (typeof document === 'undefined') return
+  const style = document.documentElement.style
+  for (const name of CUSTOM_THEME_VARS) style.removeProperty(name)
 }
 
 // 应用自定义网站图标(浏览器标签页)
@@ -653,6 +671,7 @@ export {
   toAssetUrl,
   customFontStyles,
   applyCustomTheme,
+  clearCustomTheme,
   applyFavicon,
   applyCoverStyle,
   applyAppName,
