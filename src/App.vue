@@ -568,6 +568,8 @@ export default defineComponent({
     'setting.pixelSfx' () { this.syncPixelSfx() },
     // 任务减少(完成/中断)时来一段完成音效
     bookTaskCount (val, old) {
+      // 音效是像素风格的专属功能,普通模式保持安静
+      if (!this.setting?.pixelTheme || this.setting?.pixelSfx === false) return
       if (typeof old === 'number' && val < old) playPixelSfx('done')
     },
     'setting.autoTheme' () {
@@ -575,10 +577,10 @@ export default defineComponent({
       this.lastAutoThemeCover = null
       this.$nextTick(() => this.applyAutoTheme())
     },
-    'setting.pixelCoverLevel' () { this.$nextTick(() => { this.applyPixelCovers(); this.applyPixelBackground() }) },
-    'setting.pixelBlockSize' () { this.$nextTick(() => { this.applyPixelCovers(); this.applyPixelBackground() }) },
-    'setting.pixelColorCount' () { this.$nextTick(() => { this.applyPixelCovers(); this.applyPixelBackground() }) },
-    'setting.pixelAlgorithm' () { this.$nextTick(() => { this.applyPixelCovers(); this.applyPixelBackground() }) },
+    'setting.pixelCoverLevel' () { this.refreshPixelArt() },
+    'setting.pixelBlockSize' () { this.refreshPixelArt() },
+    'setting.pixelColorCount' () { this.refreshPixelArt() },
+    'setting.pixelAlgorithm' () { this.refreshPixelArt() },
     'setting.pixelShowGrid' () { this.$nextTick(() => this.applyPixelCovers()) },
     // 卡片列表变化(翻页/排序/搜索/扫描)后重算混合背景 + 重新像素化封面
     visibleRenderedBookList () {
@@ -992,6 +994,19 @@ export default defineComponent({
         el.style.removeProperty('opacity')
         processed++
       }
+    },
+    // 参数变化后立刻重刷一次(清掉旧的 data-pixel-* 标记,否则失败过的封面会被跳过)
+    refreshPixelArt () {
+      for (const el of document.querySelectorAll('.book-card-list img[data-pixel-done], .book-card-list img[data-pixel-failed]')) {
+        delete el.dataset.pixelDone
+        delete el.dataset.pixelFailed
+        delete el.dataset.pixelSig
+      }
+      this.lastPixelBgSrc = null
+      this.$nextTick(() => {
+        this.applyPixelCovers()
+        this.applyPixelBackground()
+      })
     },
     // 背景图也跟封面一样做像素化(有自定义背景图用自定义,没有就用内置默认图)
     async applyPixelBackground () {
@@ -2609,7 +2624,16 @@ html.theme-pixel-covers
       pointer-events: none
       background-image: repeating-linear-gradient(to right, rgba(0, 0, 0, .35) 0 1px, transparent 1px calc(100% / var(--pixel-cols, 60))), repeating-linear-gradient(to bottom, rgba(0, 0, 0, .35) 0 1px, transparent 1px calc(100% / var(--pixel-rows, 80)))
 
-// ============ 音乐律动加载动画(4 根柱子上下跳,替代转圈) ============
+// ============ 音乐律动加载动画(仅像素风格下使用,普通模式保持原生转圈) ============
+.emm-eq.pixel-only
+  display: none
+html.theme-pixel .emm-eq.pixel-only
+  display: inline-flex
+// 像素模式:原生转圈/旋转环隐藏,换成均衡器
+html.theme-pixel .cover-loading .el-icon
+  display: none !important
+html.theme-pixel .book-task-ring
+  display: none !important
 .emm-eq
   display: inline-flex
   align-items: flex-end
@@ -2641,14 +2665,6 @@ html.theme-pixel-covers
   flex: 0 0 auto
   i
     background-color: #ffffff
-// ⚠️ 任务遮罩容器原来是个「转圈环」,自带 spin 动画 —— 换成均衡器后必须关掉它自己的旋转,
-//    否则 4 根柱子会跟着一起转
-.book-task-ring.emm-eq
-  width: auto !important
-  height: auto !important
-  border: none !important
-  background: none !important
-  animation: none !important
 
 @keyframes emm-eq
   0%, 100%
@@ -2703,7 +2719,8 @@ html.theme-pixel
   // 有自定义背景图(--emm-custom-bg-image 只在设了图时才有值)就用自定义的,没有才用内置默认图。
   // ⚠️ 不能直接写死 url(默认图):这条规则在 html.theme-custom 之后,会把自定义背景图盖掉
   // 优先级:像素化后的背景图 > 自定义背景图 > 内置默认图
-  background-image: var(--emm-pixel-bg-image, var(--emm-custom-bg-image, url('./assets/pixel-default-bg.png')))
+  // !important:theme-custom 的 background-image 规则写在后面,不加会被它盖成 none
+  background-image: var(--emm-pixel-bg-image, var(--emm-custom-bg-image, url('./assets/pixel-default-bg.png'))) !important
   background-size: cover
   background-position: center
   background-attachment: fixed

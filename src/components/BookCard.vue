@@ -9,7 +9,8 @@
     >{{getDisplayTitle(book)}}</p>
     <div class="book-cover-frame">
       <div class="book-task-mask" v-if="bookTaskChar">
-        <div class="book-task-ring emm-eq"><i></i><i></i><i></i><i></i></div>
+        <div class="book-task-ring"></div>
+        <span class="emm-eq pixel-only"><i></i><i></i><i></i><i></i></span>
         <span class="book-task-text">{{ bookTaskChar }}</span>
         <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
       </div>
@@ -28,7 +29,8 @@
       />
       <!-- 封面加载动画:只覆盖封面区域,加载完成自动消失 -->
       <div class="cover-loading" v-if="coverLoading">
-        <span class="emm-eq"><i></i><i></i><i></i><i></i></span>
+        <el-icon class="is-loading" :size="26"><Loading /></el-icon>
+        <span class="emm-eq pixel-only"><i></i><i></i><i></i><i></i></span>
       </div>
       <el-tag class="book-card-language" size="small" v-if="!setting.hideReadCount"
         :type="isChineseTranslatedManga(book) ? 'danger' : 'info'"
@@ -92,11 +94,13 @@
         @error="onCoverError"
       />
       <div class="cover-loading" v-if="coverLoading">
-        <span class="emm-eq"><i></i><i></i><i></i><i></i></span>
+        <el-icon class="is-loading" :size="26"><Loading /></el-icon>
+        <span class="emm-eq pixel-only"><i></i><i></i><i></i><i></i></span>
       </div>
       <!-- 任务进度遮罩:填充封面布局同样展示(旋转环 + 任务单字 + 已处理/总数) -->
       <div class="book-task-mask" v-if="bookTaskChar">
-        <div class="book-task-ring emm-eq"><i></i><i></i><i></i><i></i></div>
+        <div class="book-task-ring"></div>
+        <span class="emm-eq pixel-only"><i></i><i></i><i></i><i></i></span>
         <span class="book-task-text">{{ bookTaskChar }}</span>
         <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
       </div>
