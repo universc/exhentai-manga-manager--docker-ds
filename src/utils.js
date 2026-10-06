@@ -337,7 +337,11 @@ const clearCustomTheme = () => {
 // 只是个 class,具体覆盖规则在 App.vue 的 html.theme-pixel 里
 const applyPixelTheme = (setting) => {
   if (typeof document === 'undefined') return
-  document.documentElement.classList.toggle('theme-pixel', !!setting?.pixelTheme)
+  const root = document.documentElement
+  root.classList.toggle('theme-pixel', !!setting?.pixelTheme)
+  // 混合背景:根据当前显示的漫画封面取色生成渐变(颜色由 App.vue 算好写进 --emm-mix-bg)
+  root.classList.toggle('theme-mixbg', !!setting?.mixBackground)
+  if (!setting?.mixBackground) root.style.removeProperty('--emm-mix-bg')
 }
 
 // 应用自定义网站图标(浏览器标签页)
@@ -620,6 +624,10 @@ const defaultUiSettings = () => ({
   themeCustomButtonBg: '',
   // 高级主题:像素风格(独立开关,可与任意主题叠加)
   pixelTheme: false,
+  // 像素风点击音效(仅像素风格开启时生效)
+  pixelSfx: true,
+  // 混合背景:按当前显示的漫画封面取色生成渐变背景
+  mixBackground: false,
   customIconPath: '',
   toolbarButtons: defaultToolbarButtons(),
   // 用户显式关掉的「后加入」工具栏元素(搜索框/搜索按钮/排序框/界面模式框)

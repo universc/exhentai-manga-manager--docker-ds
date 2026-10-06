@@ -267,6 +267,8 @@ import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPa
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
 import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, parsePageSizes } from './utils.js'
+import { extractCoverColors, buildMixGradient } from './cover-color.js'
+import { attachPixelSfx } from './pixel-sfx.js'
 import { attachInertiaScroll } from './inertia-scroll.js'
 
 import Setting from './components/Setting.vue'
@@ -326,6 +328,10 @@ export default defineComponent({
       toolbarWidth: 0,
       // 上一次「打开下一本」的时间戳(1 秒冷却)
       lastMangaSwitchAt: 0,
+      // 混合背景:上次取色用的封面地址 / 滚动节流定时器 / 像素音效解绑函数
+      lastMixCoverSrc: null,
+      mixBgTimer: null,
+      pixelSfxDetach: null,
       // 排序方向(仅排序类有效,筛选/随机无方向)
       sortDirection_: 'desc',
       // collection
@@ -532,6 +538,24 @@ export default defineComponent({
     'setting.coverWidth' () { this.recomputeToolbarWidth() },
     'setting.cardGapV' () { this.recomputeToolbarWidth() },
     'setting.cardGapH' () { this.recomputeToolbarWidth() },
+    // ⚠️ 这里原来被下面那个重复的 watch 段覆盖掉了(同一个对象里 watch 只能有一份),
+    //    所以卡片尺寸变化后工具栏宽度其实一直没重算 —— 现在合并到一处。
+    bookList () {
+      this.handleSortChange(this.sortValue, this.bookList)
+    },
+    // 像素风格 / 像素音效 / 混合背景
+    'setting.pixelTheme' () {
+      this.syncPixelSfx()
+      this.$nextTick(() => this.updateMixBackgroundColor())
+    },
+    'setting.pixelSfx' () { this.syncPixelSfx() },
+    'setting.mixBackground' (val) {
+      applyPixelTheme(this.setting)
+      this.lastMixCoverSrc = null
+      if (val) this.$nextTick(() => this.updateMixBackgroundColor())
+    },
+    // 卡片列表变化(翻页/排序/搜索/扫描)后重算混合背景
+    visibleRenderedBookList () { this.$nextTick(() => this.updateMixBackgroundColor()) },
   },
   mounted () {
     // UI 模式初始化(自动/手机/平板/电脑)与 body 标记
@@ -628,6 +652,11 @@ export default defineComponent({
       if (area.scrollTop + area.clientHeight >= area.scrollHeight - 600) {
         this.renderedCount += this.renderBatchSize
       }
+      // 混合背景:滚动时按「当前可见的那张封面」重新取色(400ms 节流)
+      if (this.setting?.mixBackground) {
+        clearTimeout(this.mixBgTimer)
+        this.mixBgTimer = setTimeout(() => this.updateMixBackgroundColor(), 400)
+      }
     }
     const cardAreaEl = document.querySelector('.book-card-area')
     if (cardAreaEl) cardAreaEl.addEventListener('scroll', this.cardAreaScrollListener, { passive: true })
@@ -635,6 +664,9 @@ export default defineComponent({
     // passive:滚轮事件不阻塞浏览器默认滚动,消除滚轮卡顿感
     window.addEventListener('wheel', this.resolveWheel, { passive: true })
     window.addEventListener('mousedown', this.resolveMouseDown)
+    // 像素风点击音效(仅像素风格开启时挂载)+ 混合背景首次取色
+    this.syncPixelSfx()
+    this.$nextTick(() => this.updateMixBackgroundColor())
     ipcRenderer.on('send-action', async (event, arg) => {
       switch (arg.action) {
         case 'setting':
@@ -673,11 +705,9 @@ export default defineComponent({
   beforeUnmount () {
     window.removeEventListener('keydown', this.resolveKey)
     window.removeEventListener('wheel', this.resolveWheel)
-    window.removeEventListener('mousedown', this.resolveMouseDown)  },
-  watch: {
-    bookList () {
-      this.handleSortChange(this.sortValue, this.bookList)
-    },
+    window.removeEventListener('mousedown', this.resolveMouseDown)
+    if (this.pixelSfxDetach) { this.pixelSfxDetach(); this.pixelSfxDetach = null }
+    clearTimeout(this.mixBgTimer)
   },
   methods: {
     ...mapActions(useAppStore, [
@@ -838,6 +868,35 @@ export default defineComponent({
           this.jumpBookByTabindex(1, '.collection-drawer')
         }
       }
+    },
+    // ---------- 高级主题:像素音效 / 混合背景 ----------
+    syncPixelSfx () {
+      if (this.pixelSfxDetach) { this.pixelSfxDetach(); this.pixelSfxDetach = null }
+      if (this.setting?.pixelTheme && this.setting?.pixelSfx !== false) {
+        this.pixelSfxDetach = attachPixelSfx()
+      }
+    },
+    // 混合背景:按「当前可见的那张封面」取色,生成渐变背景
+    async updateMixBackgroundColor () {
+      if (!this.setting?.mixBackground) return
+      const area = document.querySelector('.book-card-area')
+      if (!area) return
+      const covers = Array.from(document.querySelectorAll('.book-card-list .book-cover, .book-card-list .book-cover-fill'))
+      if (!covers.length) return
+      const areaRect = area.getBoundingClientRect()
+      const visible = covers.find((el) => {
+        const r = el.getBoundingClientRect()
+        return r.bottom > areaRect.top + 4 && r.top < areaRect.bottom - 4
+      })
+      const el = visible || covers[0]
+      const src = el && (el.currentSrc || el.src)
+      if (!src || src === this.lastMixCoverSrc) return
+      this.lastMixCoverSrc = src
+      const colors = await extractCoverColors(src)
+      if (!colors) return
+      const themeName = String(this.setting.theme || '')
+      const dark = document.documentElement.classList.contains('dark') || themeName.includes('dark') || themeName === 'nhentai'
+      document.documentElement.style.setProperty('--emm-mix-bg', buildMixGradient(colors, dark))
     },
     resolveWheel (event) {
       if (event.ctrlKey) {
@@ -2139,10 +2198,12 @@ html.theme-pixel
   --emm-pixel-border: 2px solid var(--el-border-color-darker, #606266)
   .el-icon svg
     shape-rendering: crispEdges
-  img
+  // 全部图片 / 缩略图 / Canvas 像素化(封面、阅读器图片、侧栏与底部缩略图都走这条)
+  img, canvas, video
     image-rendering: pixelated
-  #app
-    font-family: 'Zpix', 'Fusion Pixel 12px', 'Ark Pixel 12px', 'Press Start 2P', ui-monospace, monospace
+  // 全部字体像素化(含 Element Plus 组件与挂在 body 上的浮层/右键菜单 —— 它们不在 #app 里)
+  #app, #app *, .el-popper, .el-popper *, .mx-context-menu, .mx-context-menu *
+    font-family: 'Zpix', 'Fusion Pixel 12px zh_hans', 'Fusion Pixel 12px zh_hant', 'Ark Pixel 12px zh_cn', 'Ark Pixel 12px zh_tw', 'Press Start 2P', 'DotGothic16', ui-monospace, monospace !important
     -webkit-font-smoothing: none
     font-smooth: never
   *, *::before, *::after
@@ -2205,6 +2266,14 @@ html.theme-custom
       background-color: var(--emm-custom-button-bg, unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)"))
     .el-button.is-plain
       background-color: var(--emm-custom-button-bg, unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)"))
+// 混合背景:按当前显示的漫画封面取色生成(颜色由 App.vue 写进 --emm-mix-bg)
+// 放在自定义主题之后 —— 两个都开时以封面混合背景为准
+html.theme-mixbg
+  background-image: var(--emm-mix-bg, none)
+  background-size: cover
+  background-position: center
+  background-attachment: fixed
+
 .autocomplete-value
   margin-left: 2em
   float: right

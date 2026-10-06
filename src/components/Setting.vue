@@ -145,6 +145,15 @@
                       <span class="setting-label" style="margin-left:10px">{{$t('m.pixelTheme')}}</span>
                     </div>
                     <div class="setting-hint">{{$t('m.pixelThemeHint')}}</div>
+                    <div class="setting-line" style="margin-top:8px">
+                      <el-switch v-model="setting.pixelSfx" :disabled="!setting.pixelTheme" @change="handlePixelThemeChange" />
+                      <span class="setting-label" style="margin-left:10px">{{$t('m.pixelSfx')}}</span>
+                    </div>
+                    <div class="setting-line" style="margin-top:8px">
+                      <el-switch v-model="setting.mixBackground" @change="handleMixBackgroundChange" />
+                      <span class="setting-label" style="margin-left:10px">{{$t('m.mixBackground')}}</span>
+                    </div>
+                    <div class="setting-hint">{{$t('m.mixBackgroundHint')}}</div>
                   </el-popover>
                 </div>
               </NameFormItem>
@@ -2560,6 +2569,8 @@ onMounted(() => {
       if (res.themeCustomFontWeight === undefined) setting.value.themeCustomFontWeight = res.themeCustomFontBold ? '700' : ''
       if (res.themeCustomCardBg === undefined) setting.value.themeCustomCardBg = ''
       if (res.pixelTheme === undefined) setting.value.pixelTheme = false
+      if (res.pixelSfx === undefined) setting.value.pixelSfx = true
+      if (res.mixBackground === undefined) setting.value.mixBackground = false
       if (res.themeCustomButtonBg === undefined) setting.value.themeCustomButtonBg = ''
       if (res.themeCustomFontItalic === undefined) setting.value.themeCustomFontItalic = false
       if (res.themeCustomFontUnderline === undefined) setting.value.themeCustomFontUnderline = false
@@ -3462,6 +3473,10 @@ const ehSettingSummary = computed(() => {
   return t('m.ehSettingFilled', { n: filled })
 })
 const handlePixelThemeChange = () => {
+  applyPixelTheme(setting.value)
+  saveSetting()
+}
+const handleMixBackgroundChange = () => {
   applyPixelTheme(setting.value)
   saveSetting()
 }
