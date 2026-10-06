@@ -31,11 +31,6 @@
   </a>
 </p>
 
-中文介绍 | [English Readme](https://github.com/SchneeHertz/exhentai-manga-manager/blob/master/README_EN.md) | [日本語の説明](https://github.com/SchneeHertz/exhentai-manga-manager/blob/master/README_JA.md)
-
-
-**[使用说明](https://github.com/SchneeHertz/exhentai-manga-manager/wiki/中文说明)** | **[FAQ](https://github.com/SchneeHertz/exhentai-manga-manager/wiki/FAQ)**
-
 </div>
 
 ## Docker / NAS 部署
@@ -50,8 +45,6 @@
 ![viewer2.jpg](https://raw.githubusercontent.com/SchneeHertz/exhentai-manga-manager/master/screenshots/viewer2.jpg)
 ![thumbnails.jpg](https://raw.githubusercontent.com/SchneeHertz/exhentai-manga-manager/master/screenshots/thumbnails.jpg)
 
-
-**欢迎加入[Discord讨论组](https://discord.gg/pS9jR8C8f6)**
 
 ## 功能
 - 从一个文件夹建立漫画库
@@ -99,9 +92,6 @@
   - [从ExHentai画廊页面复制元数据](https://sleazyfork.org/zh-CN/scripts/472321)
   - [EH高亮本地本子](https://greasyfork.org/zh-CN/scripts/510077)
 
-## 贡献
-- 请参考[贡献指南](https://github.com/SchneeHertz/exhentai-manga-manager/blob/master/CONTRIBUTING.md)
-
 ## 本修改版新增功能
 - **封面懒加载**(设置 → 常用 → 封面懒加载,默认开启):
   - 扫描建库时不再批量生成封面,浏览到哪本书封面才按需生成,建库/重扫速度大幅提升
@@ -131,12 +121,3 @@
 - **超分结果落盘(v1.10.3)**:同一文件夹(另存 `原名_模型_倍数`)/ 替换原文件(旧文件备份 `.bak`)/ 仅预览;
   超分过滤设置(宽高都 ≥ 阈值则跳过)
 - **右键菜单修复(v1.10.2)**:菜单项勾选不再每次打开软件都变回默认全选
-## Thanks
-本项目受到了诸多开源项目的帮助
-
-- [EhTagTranslation/Database](https://github.com/EhTagTranslation/Database)
-
-
-## 赞助
-[!["爱发电"](https://static.afdiancdn.com/static/img/logo/logo.png)](https://afdian.com/a/SeldonHorizon)
-[如果这个软件帮到了你，可以请我喝杯奶茶](https://afdian.com/a/SeldonHorizon)
