@@ -840,7 +840,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.uiZoom')}}</span></template>
-                <el-input-number v-model="uiZoomPercent" :min="50" :max="300" :step="10" controls-position="right" placeholder="100" />
+                <el-input-number v-model="uiZoomPercent" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" placeholder="100" />
               </NameFormItem>
             </div>
           </el-col>
@@ -848,7 +848,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverWidth')}}</span></template>
-                <el-input-number v-model="setting.coverWidth" :min="80" :max="800" :step="10" controls-position="right" placeholder="220" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.coverWidth" :min="80" :max="800" :step="10" :value-on-clear="220" controls-position="right" placeholder="220" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -856,7 +856,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverHeight')}}</span></template>
-                <el-input-number v-model="setting.coverHeight" :min="100" :max="1200" :step="10" controls-position="right" placeholder="360" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.coverHeight" :min="100" :max="1200" :step="10" :value-on-clear="360" controls-position="right" placeholder="360" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -867,7 +867,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.cardGapV')}}</span></template>
-                <el-input-number v-model="setting.cardGapV" :min="0" :max="40" :step="2" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.cardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -875,7 +875,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.cardGapH')}}</span></template>
-                <el-input-number v-model="setting.cardGapH" :min="0" :max="40" :step="2" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.cardGapH" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -956,7 +956,7 @@
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomFontSize')}}</span>
                 <div class="theme-value">
-                  <el-input-number v-model="setting.themeCustomFontSize" :min="1" :max="999" size="small" controls-position="right" placeholder="14" @change="handleCustomThemeChange" />
+                  <el-input-number v-model="setting.themeCustomFontSize" :min="1" :max="999" :value-on-clear="14" size="small" controls-position="right" placeholder="14" @change="handleCustomThemeChange" />
                 </div>
               </div>
               <div class="theme-row">
@@ -970,7 +970,7 @@
               <div class="theme-row">
                 <span class="theme-label">{{$t('m.themeCustomFontWeight')}}</span>
                 <div class="theme-value">
-                  <el-input-number v-model="setting.themeCustomFontWeight" :min="100" :max="900" :step="100" size="small" controls-position="right" placeholder="400" @change="handleCustomThemeChange" />
+                  <el-input-number v-model="setting.themeCustomFontWeight" :min="100" :max="900" :step="100" :value-on-clear="400" size="small" controls-position="right" placeholder="400" @change="handleCustomThemeChange" />
                 </div>
               </div>
               <div class="theme-row">
@@ -1153,12 +1153,12 @@
                 <div class="upscale-filter-row">
                   <el-input-number
                     v-model="setting.upscaleSkipWidth"
-                    :min="0" :max="20000" :step="100" :disabled="!setting.upscaleSkipHighRes"
+                    :min="0" :max="20000" :step="100" :value-on-clear="1200" :disabled="!setting.upscaleSkipHighRes"
                     size="small" controls-position="right" @change="saveSetting" />
                   <span class="upscale-filter-sep">×</span>
                   <el-input-number
                     v-model="setting.upscaleSkipHeight"
-                    :min="0" :max="20000" :step="100" :disabled="!setting.upscaleSkipHighRes"
+                    :min="0" :max="20000" :step="100" :value-on-clear="2000" :disabled="!setting.upscaleSkipHighRes"
                     size="small" controls-position="right" @change="saveSetting" />
                   <span class="upscale-filter-unit">px</span>
                 </div>
