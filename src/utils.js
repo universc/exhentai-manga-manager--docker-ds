@@ -333,6 +333,13 @@ const clearCustomTheme = () => {
   for (const name of CUSTOM_THEME_VARS) style.removeProperty(name)
 }
 
+// 像素风格:独立于主题的附加外观(方角硬边 + 关掉圆角/阴影/过渡 + 图片像素化 + 像素字体)
+// 只是个 class,具体覆盖规则在 App.vue 的 html.theme-pixel 里
+const applyPixelTheme = (setting) => {
+  if (typeof document === 'undefined') return
+  document.documentElement.classList.toggle('theme-pixel', !!setting?.pixelTheme)
+}
+
 // 应用自定义网站图标(浏览器标签页)
 const applyFavicon = (setting) => {
   if (typeof document === 'undefined') return
@@ -611,6 +618,8 @@ const defaultUiSettings = () => ({
   themeCustomFontUnderline: false,
   themeCustomCardBg: '',
   themeCustomButtonBg: '',
+  // 高级主题:像素风格(独立开关,可与任意主题叠加)
+  pixelTheme: false,
   customIconPath: '',
   toolbarButtons: defaultToolbarButtons(),
   // 用户显式关掉的「后加入」工具栏元素(搜索框/搜索按钮/排序框/界面模式框)
@@ -699,6 +708,7 @@ export {
   customFontStyles,
   applyCustomTheme,
   clearCustomTheme,
+  applyPixelTheme,
   applyFavicon,
   applyCoverStyle,
   applyAppName,

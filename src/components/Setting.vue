@@ -126,43 +126,38 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="110px">
                 <template #prepend><span class="setting-label">{{$t('m.theme')}}</span></template>
-                <el-select placeholder=" " v-model="setting.theme" @change="handleThemeChange">
-                  <el-option label="Default Dark" value="dark"></el-option>
-                  <el-option label="Default Light" value="light"></el-option>
-                  <el-option label="ExHentai" value="dark exhentai"></el-option>
-                  <el-option label="E-Hentai" value="light e-hentai"></el-option>
-                  <el-option label="nHentai" value="dark nhentai"></el-option>
-                  <el-option :label="$t('m.customTheme')" value="custom"></el-option>
-                </el-select>
+                <div class="theme-select-group">
+                  <el-select placeholder=" " v-model="setting.theme" @change="handleThemeChange">
+                    <el-option label="Default Dark" value="dark"></el-option>
+                    <el-option label="Default Light" value="light"></el-option>
+                    <el-option label="ExHentai" value="dark exhentai"></el-option>
+                    <el-option label="E-Hentai" value="light e-hentai"></el-option>
+                    <el-option label="nHentai" value="dark nhentai"></el-option>
+                    <el-option :label="$t('m.customTheme')" value="custom"></el-option>
+                  </el-select>
+                  <!-- 「高级主题」与主题下拉拼成同一个框,点开的也是紧贴的浮层(不再单独弹对话框) -->
+                  <el-popover placement="bottom-end" :width="280" trigger="click" popper-class="advanced-theme-popover">
+                    <template #reference>
+                      <el-button class="advanced-theme-btn">{{$t('m.advancedTheme')}}</el-button>
+                    </template>
+                    <div class="setting-line">
+                      <el-switch v-model="setting.pixelTheme" @change="handlePixelThemeChange" />
+                      <span class="setting-label" style="margin-left:10px">{{$t('m.pixelTheme')}}</span>
+                    </div>
+                    <div class="setting-hint">{{$t('m.pixelThemeHint')}}</div>
+                  </el-popover>
+                </div>
               </NameFormItem>
             </div>
           </el-col>
+          <!-- 四个 ExHentai 账号 Cookie 合并成一个「EH 设置」入口,不再平铺四行 -->
           <el-col :span="24">
             <div class="setting-line">
-              <el-input v-model="setting.igneous" @change="saveSetting">
-                <template #prepend><span class="setting-label">igneous</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input v-model="setting.ipb_pass_hash" @change="saveSetting">
-                <template #prepend><span class="setting-label">ipb_pass_hash</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input v-model="setting.ipb_member_id" @change="saveSetting">
-                <template #prepend><span class="setting-label">ipb_member_id</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input v-model="setting.star" @change="saveSetting">
-                <template #prepend><span class="setting-label">star</span></template>
-              </el-input>
+              <NameFormItem class="label-input" prependWidth="100px">
+                <template #prepend><span class="setting-label">{{$t('m.ehSetting')}}</span></template>
+                <el-button @click="ehSettingVisible = true">{{$t('m.open')}}</el-button>
+                <span class="setting-hint" style="margin-left:10px">{{ ehSettingSummary }}</span>
+              </NameFormItem>
             </div>
           </el-col>
           <el-col :span="24">
@@ -213,7 +208,34 @@
           </el-col>
         </el-row>
         <!-- 删除记录(delete-log.jsonl):记录每一次删除/还原/彻底删除,删错了能查是谁、什么时候、从哪删的 -->
-        <el-dialog v-model="trashLogVisible" :title="$t('m.trashLog')" width="52em" append-to-body>
+        <!-- EH 设置:四个账号 Cookie -->
+    <el-dialog v-model="ehSettingVisible" :title="$t('m.ehSetting')" width="46em" append-to-body>
+      <div class="setting-hint" style="margin-bottom:8px">{{$t('m.ehSettingHint')}}</div>
+      <div class="setting-line">
+        <el-input v-model="setting.igneous" @change="saveSetting">
+          <template #prepend><span class="setting-label">igneous</span></template>
+        </el-input>
+      </div>
+      <div class="setting-line">
+        <el-input v-model="setting.ipb_pass_hash" @change="saveSetting">
+          <template #prepend><span class="setting-label">ipb_pass_hash</span></template>
+        </el-input>
+      </div>
+      <div class="setting-line">
+        <el-input v-model="setting.ipb_member_id" @change="saveSetting">
+          <template #prepend><span class="setting-label">ipb_member_id</span></template>
+        </el-input>
+      </div>
+      <div class="setting-line">
+        <el-input v-model="setting.star" @change="saveSetting">
+          <template #prepend><span class="setting-label">star</span></template>
+        </el-input>
+      </div>
+      <template #footer>
+        <el-button @click="ehSettingVisible = false">{{$t('m.close')}}</el-button>
+      </template>
+    </el-dialog>
+    <el-dialog v-model="trashLogVisible" :title="$t('m.trashLog')" width="52em" append-to-body>
           <div class="setting-line toolbar-tip" style="margin-bottom:6px">{{ trashLogFile }}</div>
           <el-table :data="trashLogList" size="small" max-height="360" style="width:100%">
             <el-table-column :label="$t('m.trashDeletedAt')" width="150">
@@ -1582,7 +1604,7 @@ import en from 'element-plus/dist/locale/en.mjs'
 
 import { version } from '../../package.json'
 import { gh_token } from '../../secret_key.json'
-import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, clearCustomTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey , markContextMenuItemDisabled } from '../utils.js'
+import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, clearCustomTheme, applyPixelTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey , markContextMenuItemDisabled } from '../utils.js'
 import { attachInertiaScroll } from '../inertia-scroll.js'
 import NameFormItem from './NameFormItem.vue'
 
@@ -2537,6 +2559,7 @@ onMounted(() => {
       // 旧的「加粗」开关迁移成「粗细」下拉
       if (res.themeCustomFontWeight === undefined) setting.value.themeCustomFontWeight = res.themeCustomFontBold ? '700' : ''
       if (res.themeCustomCardBg === undefined) setting.value.themeCustomCardBg = ''
+      if (res.pixelTheme === undefined) setting.value.pixelTheme = false
       if (res.themeCustomButtonBg === undefined) setting.value.themeCustomButtonBg = ''
       if (res.themeCustomFontItalic === undefined) setting.value.themeCustomFontItalic = false
       if (res.themeCustomFontUnderline === undefined) setting.value.themeCustomFontUnderline = false
@@ -3431,6 +3454,17 @@ const tagCategoryKeys = computed(() => {
 const tagCategoryLabel = (c) => ((resolvedTranslation.value && resolvedTranslation.value[c] && resolvedTranslation.value[c]._name) || catDisplayName(c))
 
 const dialogVisibleSetting = ref(false)
+// EH 设置(四个账号 Cookie)/ 高级主题(像素风格)
+const ehSettingVisible = ref(false)
+const ehSettingSummary = computed(() => {
+  const filled = ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star']
+    .filter(k => String(setting.value[k] == null ? '' : setting.value[k]).trim()).length
+  return t('m.ehSettingFilled', { n: filled })
+})
+const handlePixelThemeChange = () => {
+  applyPixelTheme(setting.value)
+  saveSetting()
+}
 // Ctrl+滚轮 改过缩放后,再打开设置时同步显示当前的百分比
 // (必须放在 dialogVisibleSetting 定义之后,否则 setup 阶段会 ReferenceError → 整个设置面板打不开)
 watch(dialogVisibleSetting, (visible) => {
@@ -3958,6 +3992,24 @@ defineExpose({
     color: var(--el-text-color-secondary)
     background-color: transparent
   // 自定义主题面板
+  // 主题:下拉框 + 「高级主题」按钮拼成同一个框(去掉中间的缝和圆角)
+  .theme-select-group
+    display: flex
+    align-items: stretch
+    width: 100%
+    min-width: 0
+    .el-select
+      flex: 1 1 auto
+      min-width: 0
+      .el-select__wrapper
+        border-top-right-radius: 0
+        border-bottom-right-radius: 0
+    .advanced-theme-btn
+      flex: 0 0 auto
+      margin-left: -1px
+      padding: 0 12px
+      border-top-left-radius: 0
+      border-bottom-left-radius: 0
   // 自定义主题面板:横排紧凑布局(每项「标签 + 控件」并排,自动换行)
   .custom-theme-panel
     border: solid 1px var(--el-border-color)

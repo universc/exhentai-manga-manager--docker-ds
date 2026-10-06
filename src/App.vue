@@ -266,7 +266,7 @@ import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save1
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
-import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, parsePageSizes } from './utils.js'
+import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, parsePageSizes } from './utils.js'
 import { attachInertiaScroll } from './inertia-scroll.js'
 
 import Setting from './components/Setting.vue'
@@ -599,6 +599,8 @@ export default defineComponent({
         // 非自定义主题:确保上一次会话/上一次切换留下的自定义变量不残留
         clearCustomTheme()
       }
+      // 高级主题:像素风格(独立开关)
+      applyPixelTheme(this.setting)
       applyFavicon(this.setting)
       this.recomputeToolbarWidth()
       if (this.setting.loadOnStart) {
@@ -2131,6 +2133,33 @@ body.emm-mobile
     display: inline-flex
     gap: 8px
     flex: 0 0 auto
+
+// 像素风格(高级主题):方角硬边、关掉圆角/阴影/过渡、图片像素化、像素字体
+html.theme-pixel
+  --emm-pixel-border: 2px solid var(--el-border-color-darker, #606266)
+  .el-icon svg
+    shape-rendering: crispEdges
+  img
+    image-rendering: pixelated
+  #app
+    font-family: 'Zpix', 'Fusion Pixel 12px', 'Ark Pixel 12px', 'Press Start 2P', ui-monospace, monospace
+    -webkit-font-smoothing: none
+    font-smooth: never
+  *, *::before, *::after
+    border-radius: 0 !important
+    box-shadow: none !important
+    text-shadow: none !important
+    transition: none !important
+    animation: none !important
+  .el-button, .el-input__wrapper, .el-select__wrapper, .el-textarea__inner, .el-tag, .el-card, .el-checkbox__inner, .el-switch__core
+    border: var(--emm-pixel-border) !important
+  .el-dialog
+    border: 3px solid var(--el-border-color-darker, #606266) !important
+  .book-card
+    border: 3px solid var(--el-border-color-darker, #606266)
+    &:hover
+      transform: none
+      box-shadow: none
 
 // 自定义主题
 html.theme-custom
