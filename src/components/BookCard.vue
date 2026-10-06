@@ -9,7 +9,7 @@
     >{{getDisplayTitle(book)}}</p>
     <div class="book-cover-frame">
       <div class="book-task-mask" v-if="bookTaskChar">
-        <div class="book-task-runner"></div>
+        <div class="book-task-ring emm-eq"><i></i><i></i><i></i><i></i></div>
         <span class="book-task-text">{{ bookTaskChar }}</span>
         <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
       </div>
@@ -96,7 +96,7 @@
       </div>
       <!-- 任务进度遮罩:填充封面布局同样展示(旋转环 + 任务单字 + 已处理/总数) -->
       <div class="book-task-mask" v-if="bookTaskChar">
-        <div class="book-task-runner"></div>
+        <div class="book-task-ring emm-eq"><i></i><i></i><i></i><i></i></div>
         <span class="book-task-text">{{ bookTaskChar }}</span>
         <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
       </div>

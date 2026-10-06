@@ -2557,47 +2557,6 @@ html.theme-custom
     left: 0
     top: 0
 
-// ============ 任务动画:像素小人在跑(超分/翻译等,替代转圈与均衡器) ============
-.book-task-runner
-  position: absolute
-  left: 50%
-  top: 50%
-  width: 16px
-  height: 20px
-  margin: -10px 0 0 -8px
-  &::before
-    content: ''
-    position: absolute
-    left: 4px
-    top: 0
-    width: 8px
-    height: 8px
-    background-color: #ffffff
-    box-shadow: 0 8px 0 0 #ffffff, -4px 9px 0 0 #ffffff, 8px 9px 0 0 #ffffff
-    animation: runner-bob .45s steps(2, end) infinite alternate
-  &::after
-    content: ''
-    position: absolute
-    left: 4px
-    top: 14px
-    width: 3px
-    height: 4px
-    background-color: #ffffff
-    box-shadow: 5px 0 0 0 #ffffff
-    animation: runner-legs .45s steps(2, end) infinite alternate
-
-@keyframes runner-bob
-  from
-    transform: translateY(0)
-  to
-    transform: translateY(-2px)
-
-@keyframes runner-legs
-  from
-    box-shadow: 5px 0 0 0 #ffffff
-  to
-    box-shadow: 3px -2px 0 0 #ffffff
-
 // 封面像素化进行中:先隐藏原图,换好像素图(data-pixel-done)或处理失败(data-pixel-failed)才显示
 // 只在「像素风格开启 + 清晰度 > 0」时生效(清晰度为 0 时不做像素化,封面照常显示)
 html.theme-pixel-covers
