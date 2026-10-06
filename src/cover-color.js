@@ -50,7 +50,7 @@ export function buildMixGradient (colors, dark) {
 
 // 真降采样:把图片缩到 targetWidth 宽再返回 dataURL —— 显示时它天然就是「块状像素」,
 // 比纯 CSS 的 image-rendering 可靠(高分辨率原图直接缩放是看不出像素感的)
-export function pixelateToDataUrl (src, targetWidth = 72) {
+export function pixelateToDataUrl (src, targetWidth = 56) {
   return new Promise((resolve) => {
     if (typeof document === 'undefined' || !src) { resolve(null); return }
     try {
@@ -65,6 +65,18 @@ export function pixelateToDataUrl (src, targetWidth = 72) {
           canvas.height = h
           const ctx = canvas.getContext('2d')
           ctx.drawImage(img, 0, 0, w, h)
+          // 调色板量化:每个通道只保留 4 档(最多 64 色),色阶更硬,像素画味道更浓
+          try {
+            const imageData = ctx.getImageData(0, 0, w, h)
+            const data = imageData.data
+            const step = 255 / 3
+            for (let i = 0; i < data.length; i += 4) {
+              data[i] = Math.round(data[i] / step) * step
+              data[i + 1] = Math.round(data[i + 1] / step) * step
+              data[i + 2] = Math.round(data[i + 2] / step) * step
+            }
+            ctx.putImageData(imageData, 0, 0)
+          } catch (e) { /* 量化失败就用未量化的结果 */ }
           resolve(canvas.toDataURL('image/png'))
         } catch (e) { resolve(null) }
       }

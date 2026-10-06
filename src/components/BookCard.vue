@@ -35,7 +35,7 @@
         @click="$emit('handleSearchString', `:count=${book.readCount}`)"
       >{{book.readCount}}</el-tag>
       <el-tag class="book-card-pagecount" size="small" type="danger" v-if="!setting.hidePageCount && book.pageDiff" @click="$emit('pageCountClick')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
-      <el-tag class="book-card-pagecount" size="small" type="info" v-else-if="!setting.hidePageCount">{{ book.pageCount }}P</el-tag>
+      <el-tag class="book-card-pagecount" size="small" type="info" v-else-if="!setting.hidePageCount" @click="$emit('pageCountClick')">{{ book.pageCount }}P</el-tag>
       <el-icon
         v-if="!setting.hideBookmarkButton && !viewerRole"
         :size="30"

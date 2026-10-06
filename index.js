@@ -2007,6 +2007,26 @@ ipcMain.handle('delete-local-book', async (event, filepath) => {
 })
 
 // 列出回收站
+// 封面像素化:主进程用 nativeImage 直接降采样
+// (渲染端 canvas 处理 file:// 图片会被跨域拦成「污染的画布」,toDataURL 会抛错)
+ipcMain.handle('pixelate-cover', async (event, target, width) => {
+  try {
+    let p = String(target || '')
+    if (!p) return null
+    if (/^file:\/\//i.test(p)) {
+      try { p = decodeURIComponent(p.replace(/^file:\/\//i, '')) } catch (e) { p = p.replace(/^file:\/\//i, '') }
+    }
+    if (/^https?:/i.test(p)) return null // 远程 URL 交回渲染端处理
+    const w = Math.max(8, Math.min(512, Math.round(Number(width) || 56)))
+    const img = nativeImage.createFromPath(p)
+    if (img.isEmpty()) return null
+    const size = img.getSize()
+    if (!size.width || !size.height) return null
+    const h = Math.max(8, Math.round((size.height / size.width) * w))
+    return img.resize({ width: w, height: h, quality: 'good' }).toDataURL()
+  } catch (e) { return null }
+})
+
 ipcMain.handle('trash-list', async () => {
   const list = await readTrashIndex()
   const out = []

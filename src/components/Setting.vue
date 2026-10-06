@@ -2838,7 +2838,11 @@ const handleThemeChange = (val) => {
 }
 
 const changeTheme = (classValue) => {
-  document.documentElement.setAttribute('class', classValue)
+  // 保留像素风格 / 混合背景这些附加 class(setAttribute 会把它们一起清掉)
+  const root = document.documentElement
+  const keepClasses = ['theme-pixel', 'theme-mixbg'].filter(c => root.classList.contains(c))
+  root.setAttribute('class', classValue)
+  keepClasses.forEach(c => root.classList.add(c))
 }
 
 const handleLanguageChange = async (languageCode) => {

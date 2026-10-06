@@ -909,7 +909,11 @@ export default defineComponent({
         const cur = el.currentSrc || el.src
         if (!cur || cur.startsWith('data:')) continue
         if (el.dataset.pixelFailed) continue
-        const dataUrl = await pixelateToDataUrl(cur, 72)
+        let dataUrl = await pixelateToDataUrl(cur, 56)
+        // 渲染端被跨域拦住时,交给主进程用 nativeImage 降采样(file:// 图片的情况)
+        if (!dataUrl) {
+          try { dataUrl = await ipcRenderer.invoke('pixelate-cover', cur, 56) } catch (e) { dataUrl = null }
+        }
         if (!dataUrl) { el.dataset.pixelFailed = '1'; continue }
         el.dataset.pixelOriginal = cur
         el.dataset.pixelDone = '1'
@@ -1009,15 +1013,22 @@ export default defineComponent({
       const idx = themes.indexOf(current)
       const next = themes[(idx + 1) % themes.length]
       this.setting.theme = next
-      document.documentElement.setAttribute('class', next)
+      // ⚠️ 不能直接 setAttribute('class', …):会把 theme-pixel / theme-mixbg 一起抹掉
+      //    (症状就是「切完主题像素风格失效,得关掉再打开」)
+      const root = document.documentElement
+      const keepClasses = ['theme-pixel', 'theme-mixbg'].filter(c => root.classList.contains(c))
+      root.setAttribute('class', next)
+      keepClasses.forEach(c => root.classList.add(c))
       if (next === 'custom') {
         document.documentElement.classList.add('theme-custom')
         applyCustomTheme(this.setting)
       } else {
-        document.documentElement.classList.remove('theme-custom')
+        root.classList.remove('theme-custom')
         // 清掉自定义主题写在 <html> 上的内联变量,否则按钮主色调等会继续生效
         clearCustomTheme()
       }
+      // 切主题后重新把像素风格挂回去
+      applyPixelTheme(this.setting)
       ipcRenderer.invoke('save-setting', _.cloneDeep(this.setting))
       this.printMessage('info', next)
     },
@@ -2291,6 +2302,10 @@ body.emm-mobile
 // 像素风格(高级主题):自带像素字体、方角硬边、图片真像素化(降采样)、方块动画
 html.theme-pixel
   --emm-pixel-border: 2px solid var(--el-border-color-darker, #606266)
+  // 像素风给按钮/输入框加了 2px 硬边框,尺寸会略微变大,容易把内容顶出横向滚动条
+  overflow-x: hidden
+  body
+    overflow-x: hidden
   .el-icon svg
     shape-rendering: crispEdges
   // 全部图片 / 缩略图 / Canvas 像素化(封面、阅读器图片、侧栏与底部缩略图都走这条)
@@ -2313,28 +2328,14 @@ html.theme-pixel
   // 加载/任务转圈:圆环变方块
   .book-task-ring, .book-task-mask, .el-loading-spinner .circular, .el-loading-spinner .path
     border-radius: 0 !important
-  // 封面图片真像素化:先按 1/4 尺寸渲染(浏览器降采样),再放大 4 倍用 pixelated 插值,
-  // 这样才看得到「块状」像素感(只写 image-rendering 对高分辨率原图是看不出来的)
-  .book-cover-frame
-    position: relative
-    height: calc((var(--emm-cover-size, 220px) - 20px) * 1.415)
-    overflow: hidden
-  // 没能用 Canvas 降采样的封面(比如跨域被拦)退回 CSS 方案
-  .book-cover-frame .book-cover:not([data-pixel-done])
-    position: absolute
-    top: 0
-    left: 0
-    width: 25% !important
-    height: auto !important
-    transform: scale(4) !important
-    transform-origin: top left
-  .book-card.fill-cover .book-cover-fill:not([data-pixel-done])
-    width: 25% !important
-    height: 25% !important
-    transform: scale(4.6) !important
-    transform-origin: top left
+  // 封面像素化交给「真降采样」:渲染端 Canvas,失败时走主进程 nativeImage(pixelate-cover)。
+  // ⚠️ 不再用 CSS 缩放:transform: scale(4) 会撑出可视溢出(页面多出滚动条),
+  //    而给 book-cover-frame 加 overflow: hidden 又会把右上角的收藏按钮裁掉。
+  .book-card-list img, .book-cover, .book-cover-fill
+    image-rendering: pixelated
   // 按钮:粗像素风(2px 硬边框 + 左上亮/右下暗的内阴影,像老游戏按钮)
   .el-button
+    box-sizing: border-box !important
     border-width: 2px !important
     border-style: solid !important
     box-shadow: inset 2px 2px 0 0 rgba(255, 255, 255, .28), inset -2px -2px 0 0 rgba(0, 0, 0, .35) !important
@@ -2371,9 +2372,37 @@ html.theme-pixel
     border: none !important
     background-color: #ffffff
     animation: pixel-chase 1.8s steps(10, end) infinite !important
+  // 收藏(书签)按钮:换成像素风格的小方块按钮,并挪到卡片内侧右下一点的位置,
+  // 免得像原来那样 right:-14px 探出封面框被裁掉一半
+  .book-card-mark
+    right: 3px !important
+    top: 3px !important
+    width: 22px
+    height: 22px
+    padding: 2px
+    box-sizing: border-box
+    border: 2px solid var(--el-border-color-darker, #606266) !important
+    background-color: var(--el-bg-color-overlay, #ffffff) !important
+  .fill-mark
+    width: 22px
+    height: 22px
+    padding: 2px
+    box-sizing: border-box
+    border: 2px solid var(--el-border-color-darker, #606266) !important
+    background-color: var(--el-bg-color-overlay, #ffffff) !important
+  // 阅读器里看漫画时不做像素化(用户要求:看图保持原样)
+  .viewer-drawer .drawer-image-content img,
+  .viewer-drawer .viewer-image-frame img,
+  .viewer-drawer .viewer-horizontal-item img,
+  .viewer-drawer .image-frame img
+    image-rendering: auto !important
   // 评分星星:用 2px 的方块点拼出星形(原来那个是 SVG,缩放不出像素感)
   .el-rate__icon
     overflow: visible
+    // 保持原来的 18px 点击区域 —— 隐藏 SVG 后如果宽度塌成 0,半星就点不中了
+    display: inline-block
+    width: 18px
+    height: 18px
     .el-icon
       display: none !important
     &::before
