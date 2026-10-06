@@ -175,7 +175,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { IosRemoveCircleOutline } from '@vicons/ionicons4'
 import draggable from 'vuedraggable'
 import { nanoid } from 'nanoid'
@@ -570,7 +570,8 @@ const addTagToGroup = async () => {
       await saveBook(book)
     }
     printMessage('success', t('c.addGroupTagSuccess'))
-    updateTagsLoading.value = false
+    ElMessage.success(t('c.movedToTrash'))
+        updateTagsLoading.value = false
   } catch (e) {
     console.error(e)
     printMessage('error', t('c.groupTagError'))
@@ -682,7 +683,11 @@ const groupDeleteLocalBook = () => {
     for (const id of selectBookList.value) {
       const book = _.find(displayBookList.value, { id })
       if (book) {
-        await ipcRenderer.invoke('delete-local-book', book.filepath)
+        let delRes = null
+        try {
+          delRes = await ipcRenderer.invoke('delete-local-book', book.filepath)
+        } catch (err) { delRes = { ok: false, error: String((err && err.message) || err) } }
+        await Promise.resolve()
         .finally(async () => {
           if (book.collectionHide) {
             _.forEach(collectionList.value, (collection) => {

@@ -210,7 +210,7 @@
 <script setup>
 import { ref, computed, h, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessageBox } from 'element-plus'
+import { ElMessageBox, ElMessage } from 'element-plus'
 import { CaretRight20Regular, CaretLeft20Regular } from '@vicons/fluent'
 import { BookmarkTwotone } from '@vicons/material'
 import { Loading, ArrowDown } from '@element-plus/icons-vue'
@@ -515,7 +515,19 @@ const queryBookOrigins = async () => {
 }
 
 const deleteBook = async (book) => {
-  await ipcRenderer.invoke('delete-local-book', book.filepath)
+  let res = null
+  try {
+    res = await ipcRenderer.invoke('delete-local-book', book.filepath)
+  } catch (e) {
+    res = { ok: false, error: String((e && e.message) || e) }
+  }
+  if (res && res.ok) {
+    // 现在是「移入回收站」,不是永久删除 —— 明确告诉用户去哪找回来
+    ElMessage.success(t('c.movedToTrash'))
+  } else if (res && res.error) {
+    ElMessage.error(res.error)
+  }
+  await Promise.resolve()
   .finally(() => {
     dialogVisibleBookDetail.value = false
     if (book.collectionHide) {

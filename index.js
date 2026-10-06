@@ -1897,37 +1897,187 @@ ipcMain.handle('get-default-manga-reader', async (event, arg) => {
   return _mange_reader
 })
 
-ipcMain.handle('delete-local-book', async (event, filepath) => {
-  if (filepath.startsWith(setting.library)) {
-    try {
-      const stats = await fs.promises.stat(filepath)
-      if (stats.isDirectory()) {
-        const imageFiles = await glob('*.@(jpg|jpeg|png|webp|avif|gif)', {
-          cwd: filepath,
-          nocase: true,
-          absolute: true
-        })
+// ---------- 回收站(软删除) ----------
+// 历史问题:delete-local-book 在 Linux 上 shell.trashItem 必然失败(容器里没有 gio trash),
+// 于是逐张图退化成 fs.rm -rf —— 永久删除、不留日志、无法恢复(用户已因此误删过漫画)。
+// 现在统一改为「移动到 <数据目录>/.trash/<时间戳>--<名字>」:
+//   · 同一磁盘内 rename,瞬间完成、不额外占空间;跨盘(Windows 库在 Y: 而数据在 C:)自动降级为复制后删除;
+//   · 每次删除都写 delete-log.jsonl 与 .trash/index.json,事后可查可还原;
+//   · database.sqlite 的行会被移除,但 metadata.sqlite / 封面 / 缩略图 / 扫描快照一律保留,
+//     只有「清空回收站」才真正清理它们 —— 这样恢复时元数据还在。
+const TRASH_DIR = path.join(STORE_PATH, '.trash')
+const TRASH_INDEX = path.join(TRASH_DIR, 'index.json')
+const DELETE_LOG = path.join(STORE_PATH, 'delete-log.jsonl')
 
-        for (const imageFile of imageFiles) {
-          try {
-            await shell.trashItem(imageFile)
-          } catch {
-            await fs.promises.rm(imageFile, { force: true })
-          }
-        }
-
-        const remainingFiles = await fs.promises.readdir(filepath)
-        if (remainingFiles.length === 0) {
-          await shell.trashItem(filepath)
-        }
-      } else {
-        await shell.trashItem(filepath)
-      }
-    } catch (e) {
-      sendMessageToWebContents(`删除 ${filepath} 失败:${e}`)
-    }
-    await Manga.destroy({ where: { filepath: filepath } })
+const readTrashIndex = async () => {
+  try {
+    const raw = await fs.promises.readFile(TRASH_INDEX, 'utf8')
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? arr : []
+  } catch (e) {
+    return []
   }
+}
+const writeTrashIndex = async (list) => {
+  await fs.promises.mkdir(TRASH_DIR, { recursive: true })
+  await fs.promises.writeFile(TRASH_INDEX, JSON.stringify(list, null, 2), 'utf8')
+}
+// 追加一条删除日志(JSON Lines,不会被运行日志轮转清掉)
+const appendDeleteLog = async (entry) => {
+  try {
+    await fs.promises.mkdir(STORE_PATH, { recursive: true })
+    await fs.promises.appendFile(DELETE_LOG, JSON.stringify(entry) + '\n', 'utf8')
+  } catch (e) { /* 日志失败不影响删除本身 */ }
+}
+// 把路径移入回收站:同盘 rename,跨盘复制后删除
+const movePathToTrash = async (srcPath, meta = {}) => {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const name = path.basename(srcPath)
+  await fs.promises.mkdir(TRASH_DIR, { recursive: true })
+  let dest = path.join(TRASH_DIR, stamp + '--' + name)
+  let n = 1
+  while (fs.existsSync(dest)) dest = path.join(TRASH_DIR, stamp + '--' + name + '(' + (++n) + ')')
+  let mode = 'move'
+  try {
+    await fs.promises.rename(srcPath, dest)
+  } catch (e) {
+    if (e && e.code === 'EXDEV') {
+      mode = 'copy'
+      await fs.promises.cp(srcPath, dest, { recursive: true, force: true })
+      await fs.promises.rm(srcPath, { recursive: true, force: true })
+    } else {
+      throw e
+    }
+  }
+  const entry = {
+    id: stamp + '--' + name,
+    deletedAt: Date.now(),
+    deletedAtText: new Date().toLocaleString(),
+    src: srcPath,
+    dest,
+    mode,
+    ok: true,
+    ...meta,
+  }
+  const list = await readTrashIndex()
+  list.unshift(entry)
+  await writeTrashIndex(list)
+  await appendDeleteLog(entry)
+  return entry
+}
+
+ipcMain.handle('delete-local-book', async (event, filepath) => {
+  const result = { ok: false, trashed: false, src: filepath }
+  if (!filepath || !filepath.startsWith(setting.library)) {
+    result.error = '路径不在漫画库内,已拒绝'
+    await appendDeleteLog({ deletedAt: Date.now(), deletedAtText: new Date().toLocaleString(), src: filepath, ok: false, error: result.error })
+    return result
+  }
+  let info = {}
+  try {
+    const row = await Manga.findOne({ where: { filepath }, raw: true })
+    if (row) info = { id: row.id, title: row.title, title_jpn: row.title_jpn, tags: row.tags }
+  } catch (e) { /* 拿不到不影响删除 */ }
+  try {
+    const stats = await fs.promises.stat(filepath)
+    if (stats.isDirectory() || stats.isFile()) {
+      // 整本(或压缩包)一次性移入回收站:不再逐张图操作,既快又不会删一半留一半
+      await movePathToTrash(filepath, info)
+      result.trashed = true
+    } else {
+      result.error = '不支持的路径类型'
+    }
+  } catch (e) {
+    result.error = String((e && e.message) || e)
+    await appendDeleteLog({ deletedAt: Date.now(), deletedAtText: new Date().toLocaleString(), src: filepath, ok: false, error: result.error, ...info })
+    sendMessageToWebContents('删除 ' + filepath + ' 失败:' + result.error)
+    return result
+  }
+  try { await Manga.destroy({ where: { filepath: filepath } }) } catch (e) { /* 忽略 */ }
+  result.ok = true
+  sendMessageToWebContents('已移入回收站:' + (info.title || path.basename(filepath)) + '(可在 设置 → 常用 → 回收站 里恢复)')
+  return result
+})
+
+// 列出回收站
+ipcMain.handle('trash-list', async () => {
+  const list = await readTrashIndex()
+  const out = []
+  for (const item of list) {
+    let exists = false
+    let fileCount = 0
+    try {
+      const st = await fs.promises.stat(item.dest)
+      exists = true
+      if (st.isDirectory()) fileCount = (await fs.promises.readdir(item.dest)).length
+    } catch (e) { exists = false }
+    out.push({ ...item, exists, fileCount })
+  }
+  return { ok: true, list: out, trashDir: TRASH_DIR, logFile: DELETE_LOG }
+})
+
+// 从回收站还原(优先还原回原路径;原路径已被占用则报错,不覆盖)
+ipcMain.handle('trash-restore', async (event, id) => {
+  const list = await readTrashIndex()
+  const item = list.find(x => x.id === id)
+  if (!item) return { ok: false, error: '回收站里没有这条记录' }
+  try {
+    if (fs.existsSync(item.src)) return { ok: false, error: '原路径已存在同名文件,请先改名或移动:' + item.src }
+    await fs.promises.mkdir(path.dirname(item.src), { recursive: true })
+    let mode = 'move'
+    try {
+      await fs.promises.rename(item.dest, item.src)
+    } catch (e) {
+      if (e && e.code === 'EXDEV') {
+        mode = 'copy'
+        await fs.promises.cp(item.dest, item.src, { recursive: true, force: true })
+        await fs.promises.rm(item.dest, { recursive: true, force: true })
+      } else throw e
+    }
+    await writeTrashIndex(list.filter(x => x.id !== id))
+    await appendDeleteLog({ restoredAt: Date.now(), restoredAtText: new Date().toLocaleString(), src: item.src, from: item.dest, mode, ok: true, action: 'restore' })
+    return { ok: true, path: item.src }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+// 清空回收站(传 id 只清一条;不传则全清)
+ipcMain.handle('trash-purge', async (event, id) => {
+  const list = await readTrashIndex()
+  const targets = id ? list.filter(x => x.id === id) : list.slice()
+  let removed = 0
+  const failed = []
+  for (const item of targets) {
+    try {
+      await fs.promises.rm(item.dest, { recursive: true, force: true })
+      removed++
+      await appendDeleteLog({ purgedAt: Date.now(), purgedAtText: new Date().toLocaleString(), src: item.src, from: item.dest, ok: true, action: 'purge' })
+    } catch (e) {
+      failed.push({ id: item.id, error: String((e && e.message) || e) })
+    }
+  }
+  const keep = id ? list.filter(x => !targets.includes(x)) : []
+  await writeTrashIndex(keep)
+  return { ok: true, removed, failed }
+})
+
+// 读取删除记录(最多最近 200 条,倒序)—— 用户抱怨过「删了没日志」,这里把 delete-log.jsonl 直接摆到界面上
+ipcMain.handle('trash-log', async () => {
+  const out = []
+  try {
+    const st = await fs.promises.stat(DELETE_LOG)
+    const start = Math.max(0, st.size - 2 * 1024 * 1024) // 日志再大也只读最后 2MB
+    const fh = await fs.promises.open(DELETE_LOG, 'r')
+    const buf = Buffer.alloc(st.size - start)
+    await fh.read(buf, 0, buf.length, start)
+    await fh.close()
+    const lines = buf.toString('utf8').split('\n').filter(Boolean)
+    for (const line of lines.slice(-200)) {
+      try { out.push(JSON.parse(line)) } catch (e) { /* 跳过坏行 */ }
+    }
+  } catch (e) { /* 还没有日志文件 */ }
+  return { ok: true, list: out.reverse(), logFile: DELETE_LOG }
 })
 
 ipcMain.handle('move-local-book', async (event, oldPath, folderArr) => {
