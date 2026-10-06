@@ -47,3 +47,29 @@ export function buildMixGradient (colors, dark) {
   const base = dark ? '#0d0d0d' : '#ffffff'
   return `linear-gradient(160deg, ${toRgb(vivid, 0.85)} 0%, ${toRgb(avg, 0.92)} 42%, ${base} 100%)`
 }
+
+// 真降采样:把图片缩到 targetWidth 宽再返回 dataURL —— 显示时它天然就是「块状像素」,
+// 比纯 CSS 的 image-rendering 可靠(高分辨率原图直接缩放是看不出像素感的)
+export function pixelateToDataUrl (src, targetWidth = 72) {
+  return new Promise((resolve) => {
+    if (typeof document === 'undefined' || !src) { resolve(null); return }
+    try {
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        try {
+          const w = Math.max(8, Math.round(targetWidth))
+          const h = Math.max(8, Math.round(((img.naturalHeight || 1) / (img.naturalWidth || 1)) * w))
+          const canvas = document.createElement('canvas')
+          canvas.width = w
+          canvas.height = h
+          const ctx = canvas.getContext('2d')
+          ctx.drawImage(img, 0, 0, w, h)
+          resolve(canvas.toDataURL('image/png'))
+        } catch (e) { resolve(null) }
+      }
+      img.onerror = () => resolve(null)
+      img.src = src
+    } catch (e) { resolve(null) }
+  })
+}

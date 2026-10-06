@@ -267,7 +267,7 @@ import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPa
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
 import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, parsePageSizes } from './utils.js'
-import { extractCoverColors, buildMixGradient } from './cover-color.js'
+import { extractCoverColors, buildMixGradient, pixelateToDataUrl } from './cover-color.js'
 import { attachPixelSfx } from './pixel-sfx.js'
 import { attachInertiaScroll } from './inertia-scroll.js'
 
@@ -546,7 +546,10 @@ export default defineComponent({
     // 像素风格 / 像素音效 / 混合背景
     'setting.pixelTheme' () {
       this.syncPixelSfx()
-      this.$nextTick(() => this.updateMixBackgroundColor())
+      this.$nextTick(() => {
+        this.applyPixelCovers()
+        this.updateMixBackgroundColor()
+      })
     },
     'setting.pixelSfx' () { this.syncPixelSfx() },
     'setting.mixBackground' (val) {
@@ -554,8 +557,13 @@ export default defineComponent({
       this.lastMixCoverSrc = null
       if (val) this.$nextTick(() => this.updateMixBackgroundColor())
     },
-    // 卡片列表变化(翻页/排序/搜索/扫描)后重算混合背景
-    visibleRenderedBookList () { this.$nextTick(() => this.updateMixBackgroundColor()) },
+    // 卡片列表变化(翻页/排序/搜索/扫描)后重算混合背景 + 重新像素化封面
+    visibleRenderedBookList () {
+      this.$nextTick(() => {
+        this.applyPixelCovers()
+        this.updateMixBackgroundColor()
+      })
+    },
   },
   mounted () {
     // UI 模式初始化(自动/手机/平板/电脑)与 body 标记
@@ -652,10 +660,13 @@ export default defineComponent({
       if (area.scrollTop + area.clientHeight >= area.scrollHeight - 600) {
         this.renderedCount += this.renderBatchSize
       }
-      // 混合背景:滚动时按「当前可见的那张封面」重新取色(400ms 节流)
-      if (this.setting?.mixBackground) {
+      // 滚动时节流:新滚进来的封面做像素化 + 按当前可见封面重算混合背景
+      if (this.setting?.mixBackground || this.setting?.pixelTheme) {
         clearTimeout(this.mixBgTimer)
-        this.mixBgTimer = setTimeout(() => this.updateMixBackgroundColor(), 400)
+        this.mixBgTimer = setTimeout(() => {
+          if (this.setting?.pixelTheme) this.applyPixelCovers()
+          this.updateMixBackgroundColor()
+        }, 400)
       }
     }
     const cardAreaEl = document.querySelector('.book-card-area')
@@ -666,7 +677,10 @@ export default defineComponent({
     window.addEventListener('mousedown', this.resolveMouseDown)
     // 像素风点击音效(仅像素风格开启时挂载)+ 混合背景首次取色
     this.syncPixelSfx()
-    this.$nextTick(() => this.updateMixBackgroundColor())
+    this.$nextTick(() => {
+      this.applyPixelCovers()
+      this.updateMixBackgroundColor()
+    })
     ipcRenderer.on('send-action', async (event, arg) => {
       switch (arg.action) {
         case 'setting':
@@ -867,6 +881,40 @@ export default defineComponent({
         } else if (event.key === 'ArrowRight') {
           this.jumpBookByTabindex(1, '.collection-drawer')
         }
+      }
+    },
+    // ---------- 高级主题:封面真降采样像素化 ----------
+    // CSS 的 image-rendering 对高分辨率原图看不出效果,所以直接把封面缩到 72px 宽再显示
+    async applyPixelCovers () {
+      const nodes = Array.from(document.querySelectorAll('.book-card-list .book-cover, .book-card-list .book-cover-fill'))
+      if (!this.setting?.pixelTheme) {
+        for (const el of nodes) {
+          if (el.dataset.pixelOriginal) {
+            el.src = el.dataset.pixelOriginal
+            delete el.dataset.pixelOriginal
+            delete el.dataset.pixelDone
+          }
+        }
+        return
+      }
+      const area = document.querySelector('.book-card-area')
+      const areaRect = area ? area.getBoundingClientRect() : null
+      let processed = 0
+      for (const el of nodes) {
+        if (processed >= 40) break
+        if (areaRect) {
+          const r = el.getBoundingClientRect()
+          if (r.bottom < areaRect.top - 300 || r.top > areaRect.bottom + 300) continue
+        }
+        const cur = el.currentSrc || el.src
+        if (!cur || cur.startsWith('data:')) continue
+        if (el.dataset.pixelFailed) continue
+        const dataUrl = await pixelateToDataUrl(cur, 72)
+        if (!dataUrl) { el.dataset.pixelFailed = '1'; continue }
+        el.dataset.pixelOriginal = cur
+        el.dataset.pixelDone = '1'
+        el.src = dataUrl
+        processed++
       }
     },
     // ---------- 高级主题:像素音效 / 混合背景 ----------
@@ -2193,36 +2241,52 @@ body.emm-mobile
     gap: 8px
     flex: 0 0 auto
 
-// 像素风格自带字体:方舟像素字体 Ark Pixel 12px(OFL-1.1,许可证见 src/assets/fonts/OFL.txt)
-// 字体文件随安装包一起分发,不依赖用户本机安装;简体 / 繁体用两个字体族,由界面语言切换
+// 像素风格自带字体:缝合像素字体 Fusion Pixel 12px(OFL-1.1,许可证见 src/assets/fonts/OFL-fusion-pixel.txt)
+// 自带字体文件,不依赖用户本机安装。方舟像素(Ark Pixel)对中文/日文覆盖不全,改用缝合像素:
+// 汉字覆盖面更广,且日文假名单独一段 unicode-range,所以中文、日文都能像素化。
+// 简体 / 繁体是两个字体族,由 applyPixelTheme 按界面语言切换。
 @font-face
   font-family: 'EmmPixel'
   font-style: normal
   font-weight: 100 900
   font-display: swap
-  src: url('./assets/fonts/ark-pixel-12px-proportional-latin.woff2') format('woff2')
+  src: url('./assets/fonts/fusion-pixel-12px-proportional-latin.woff2') format('woff2')
   unicode-range: U+0000-024F, U+1E00-1EFF, U+2000-206F, U+20A0-20CF, U+2100-214F, U+2190-21FF, U+2200-22FF, U+25A0-25FF
 @font-face
   font-family: 'EmmPixel'
   font-style: normal
   font-weight: 100 900
   font-display: swap
-  src: url('./assets/fonts/ark-pixel-12px-proportional-zh_hans.woff2') format('woff2')
-  unicode-range: U+2E80-2EFF, U+3000-303F, U+31C0-31EF, U+3200-32FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF
+  src: url('./assets/fonts/fusion-pixel-12px-proportional-ja.woff2') format('woff2')
+  unicode-range: U+3040-30FF, U+31F0-31FF, U+FF66-FF9F
+@font-face
+  font-family: 'EmmPixel'
+  font-style: normal
+  font-weight: 100 900
+  font-display: swap
+  src: url('./assets/fonts/fusion-pixel-12px-proportional-zh_hans.woff2') format('woff2')
+  unicode-range: U+2E80-2EFF, U+3000-303F, U+31C0-31EF, U+3200-32FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FF65, U+FFA0-FFEF
 @font-face
   font-family: 'EmmPixelHant'
   font-style: normal
   font-weight: 100 900
   font-display: swap
-  src: url('./assets/fonts/ark-pixel-12px-proportional-latin.woff2') format('woff2')
+  src: url('./assets/fonts/fusion-pixel-12px-proportional-latin.woff2') format('woff2')
   unicode-range: U+0000-024F, U+1E00-1EFF, U+2000-206F, U+20A0-20CF, U+2100-214F, U+2190-21FF, U+2200-22FF, U+25A0-25FF
 @font-face
   font-family: 'EmmPixelHant'
   font-style: normal
   font-weight: 100 900
   font-display: swap
-  src: url('./assets/fonts/ark-pixel-12px-proportional-zh_hant.woff2') format('woff2')
-  unicode-range: U+2E80-2EFF, U+3000-303F, U+31C0-31EF, U+3200-32FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF
+  src: url('./assets/fonts/fusion-pixel-12px-proportional-ja.woff2') format('woff2')
+  unicode-range: U+3040-30FF, U+31F0-31FF, U+FF66-FF9F
+@font-face
+  font-family: 'EmmPixelHant'
+  font-style: normal
+  font-weight: 100 900
+  font-display: swap
+  src: url('./assets/fonts/fusion-pixel-12px-proportional-zh_hant.woff2') format('woff2')
+  unicode-range: U+2E80-2EFF, U+3000-303F, U+31C0-31EF, U+3200-32FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF, U+FE30-FE4F, U+FF00-FF65, U+FFA0-FFEF
 
 // 像素风格(高级主题):自带像素字体、方角硬边、图片真像素化(降采样)、方块动画
 html.theme-pixel
@@ -2232,8 +2296,9 @@ html.theme-pixel
   // 全部图片 / 缩略图 / Canvas 像素化(封面、阅读器图片、侧栏与底部缩略图都走这条)
   img, canvas, video
     image-rendering: pixelated
-  // 全部字体像素化(含 Element Plus 组件与挂在 body 上的浮层/右键菜单 —— 它们不在 #app 里)
-  #app, #app *, .el-popper, .el-popper *, .mx-context-menu, .mx-context-menu *
+  // 全部字体像素化:直接盖在 body 上 —— 设置对话框、选择器浮层、右键菜单都是 teleport 到 body 的,
+  // 只写 #app 会漏掉一大半(设置里那些字就是这么漏的)
+  body, body *
     font-family: var(--emm-pixel-font, 'EmmPixel'), 'EmmPixelHant', ui-monospace, monospace !important
     -webkit-font-smoothing: none
     font-smooth: never
@@ -2254,7 +2319,8 @@ html.theme-pixel
     position: relative
     height: calc((var(--emm-cover-size, 220px) - 20px) * 1.415)
     overflow: hidden
-  .book-cover-frame .book-cover
+  // 没能用 Canvas 降采样的封面(比如跨域被拦)退回 CSS 方案
+  .book-cover-frame .book-cover:not([data-pixel-done])
     position: absolute
     top: 0
     left: 0
@@ -2262,7 +2328,7 @@ html.theme-pixel
     height: auto !important
     transform: scale(4) !important
     transform-origin: top left
-  .book-card.fill-cover .book-cover-fill
+  .book-card.fill-cover .book-cover-fill:not([data-pixel-done])
     width: 25% !important
     height: 25% !important
     transform: scale(4.6) !important
@@ -2275,6 +2341,49 @@ html.theme-pixel
     &:active
       transform: translate(2px, 2px)
       box-shadow: inset -2px -2px 0 0 rgba(255, 255, 255, .28), inset 2px 2px 0 0 rgba(0, 0, 0, .35) !important
+  // ---------- 方块的「贪吃蛇」动画 ----------
+  // 顶部扫描进度:一个小方块从左跳到右,像蛇头
+  #progressbar
+    transition: none !important
+  #progressbar.indeterminate
+    width: 14px !important
+    animation: pixel-jump 1.6s steps(12, end) infinite !important
+  // 加载遮罩:方块绕着方形路径跑一圈
+  .el-loading-spinner
+    position: relative
+    width: 26px
+    height: 26px
+    .circular
+      display: none !important
+    &::after
+      content: ''
+      position: absolute
+      top: 0
+      left: 0
+      width: 8px
+      height: 8px
+      background-color: var(--el-color-primary)
+      animation: pixel-chase 1.4s steps(8, end) infinite
+  // 卡片上的任务转圈:方块绕着卡片边框跑
+  .book-task-ring
+    width: 10px !important
+    height: 10px !important
+    border: none !important
+    background-color: #ffffff
+    animation: pixel-chase 1.8s steps(10, end) infinite !important
+  // 评分星星:用 2px 的方块点拼出星形(原来那个是 SVG,缩放不出像素感)
+  .el-rate__icon
+    overflow: visible
+    .el-icon
+      display: none !important
+    &::before
+      content: ''
+      display: block
+      width: 2px
+      height: 2px
+      margin: 2px 0 0 2px
+      background-color: currentColor
+      box-shadow: 6px 0 currentColor, 6px 2px currentColor, 4px 4px currentColor, 6px 4px currentColor, 8px 4px currentColor, 0 6px currentColor, 2px 6px currentColor, 4px 6px currentColor, 6px 6px currentColor, 8px 6px currentColor, 10px 6px currentColor, 12px 6px currentColor, 2px 8px currentColor, 4px 8px currentColor, 6px 8px currentColor, 8px 8px currentColor, 10px 8px currentColor, 4px 10px currentColor, 8px 10px currentColor, 2px 12px currentColor, 10px 12px currentColor !important
   .el-button, .el-input__wrapper, .el-select__wrapper, .el-textarea__inner, .el-tag, .el-card, .el-checkbox__inner, .el-switch__core
     border: var(--emm-pixel-border) !important
   .el-dialog
@@ -2329,6 +2438,30 @@ html.theme-custom
       background-color: var(--emm-custom-button-bg, unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)"))
     .el-button.is-plain
       background-color: var(--emm-custom-button-bg, unquote("color-mix(in srgb, var(--emm-custom-bg, #ffffff) 88%, var(--emm-custom-font-color, #303133) 12%)"))
+// 像素风格用的两个方块动画(贪吃蛇式)
+@keyframes pixel-jump
+  0%
+    margin-left: 0
+  100%
+    margin-left: calc(100vw - 14px)
+
+@keyframes pixel-chase
+  0%
+    left: 0
+    top: 0
+  25%
+    left: calc(100% - 10px)
+    top: 0
+  50%
+    left: calc(100% - 10px)
+    top: calc(100% - 10px)
+  75%
+    left: 0
+    top: calc(100% - 10px)
+  100%
+    left: 0
+    top: 0
+
 // 混合背景:按当前显示的漫画封面取色生成(颜色由 App.vue 写进 --emm-mix-bg)
 // 放在自定义主题之后 —— 两个都开时以封面混合背景为准
 html.theme-mixbg
