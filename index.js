@@ -1903,6 +1903,7 @@ ipcMain.handle('get-default-manga-reader', async (event, arg) => {
 // 现在统一改为「移动到 <数据目录>/.trash/<时间戳>--<名字>」:
 //   · 同一磁盘内 rename,瞬间完成、不额外占空间;跨盘(Windows 库在 Y: 而数据在 C:)自动降级为复制后删除;
 //   · 每次删除都写 delete-log.jsonl 与 .trash/index.json,事后可查可还原;
+//   · 整本目录/压缩包与**单张图片**都走这里(单张图片曾用 shell.trashItem,Linux 上同样必然失败);
 //   · database.sqlite 的行会被移除,但 metadata.sqlite / 封面 / 缩略图 / 扫描快照一律保留,
 //     只有「清空回收站」才真正清理它们 —— 这样恢复时元数据还在。
 const TRASH_DIR = path.join(STORE_PATH, '.trash')
@@ -1930,7 +1931,7 @@ const appendDeleteLog = async (entry) => {
   } catch (e) { /* 日志失败不影响删除本身 */ }
 }
 // 把路径移入回收站:同盘 rename,跨盘复制后删除
-const movePathToTrash = async (srcPath, meta = {}) => {
+const movePathToTrash = async (srcPath, meta = {}, options = {}) => {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const name = path.basename(srcPath)
   await fs.promises.mkdir(TRASH_DIR, { recursive: true })
@@ -1938,15 +1939,21 @@ const movePathToTrash = async (srcPath, meta = {}) => {
   let n = 1
   while (fs.existsSync(dest)) dest = path.join(TRASH_DIR, stamp + '--' + name + '(' + (++n) + ')')
   let mode = 'move'
-  try {
-    await fs.promises.rename(srcPath, dest)
-  } catch (e) {
-    if (e && e.code === 'EXDEV') {
-      mode = 'copy'
-      await fs.promises.cp(srcPath, dest, { recursive: true, force: true })
-      await fs.promises.rm(srcPath, { recursive: true, force: true })
-    } else {
-      throw e
+  if (options.keepOriginal) {
+    // 压缩包这类「原地重写」的文件:只能留一份备份,原件必须留在原处
+    mode = 'copy'
+    await fs.promises.cp(srcPath, dest, { recursive: true, force: true })
+  } else {
+    try {
+      await fs.promises.rename(srcPath, dest)
+    } catch (e) {
+      if (e && e.code === 'EXDEV') {
+        mode = 'copy'
+        await fs.promises.cp(srcPath, dest, { recursive: true, force: true })
+        await fs.promises.rm(srcPath, { recursive: true, force: true })
+      } else {
+        throw e
+      }
     }
   }
   const entry = {
@@ -2010,6 +2017,7 @@ ipcMain.handle('trash-list', async () => {
       const st = await fs.promises.stat(item.dest)
       exists = true
       if (st.isDirectory()) fileCount = (await fs.promises.readdir(item.dest)).length
+      else if (st.isFile()) fileCount = 1
     } catch (e) { exists = false }
     out.push({ ...item, exists, fileCount })
   }
@@ -2022,7 +2030,11 @@ ipcMain.handle('trash-restore', async (event, id) => {
   const item = list.find(x => x.id === id)
   if (!item) return { ok: false, error: '回收站里没有这条记录' }
   try {
-    if (fs.existsSync(item.src)) return { ok: false, error: '原路径已存在同名文件,请先改名或移动:' + item.src }
+    if (fs.existsSync(item.src)) {
+      if (!item.overwriteOnRestore) return { ok: false, error: '原路径已存在同名文件,请先改名或移动:' + item.src }
+      // 压缩包备份:原文件必然还在(只是被 7z 改写过),按用户确认覆盖还原
+      await fs.promises.rm(item.src, { recursive: true, force: true })
+    }
     await fs.promises.mkdir(path.dirname(item.src), { recursive: true })
     let mode = 'move'
     try {
@@ -2367,8 +2379,66 @@ ipcMain.handle('release-sendimagelock', () => {
   sendImageLock = false
 })
 
+// 单张图片删除:同样进回收站(用户要求「整本和单张都不能直接消失」)
+//  · 文件夹漫画:那一张图直接 move 进 .trash(瞬间、可还原到原位)
+//  · 压缩包漫画:7z 是原地重写,没法只搬一张出来 —— 于是先把整个压缩包「复制」一份进回收站
+//    (同一本只留最早的那一份),再删包内那张图;还原时用备份覆盖回去,等于撤销这次删除。
 ipcMain.handle('delete-image', async (event, filename, filepath, type) => {
-  return await deleteImageFromBook(filename, filepath, type)
+  const result = { ok: false, trashed: false, src: filepath }
+  const bookPath = String(filepath || '')
+  const rel = String(filename || '')
+  if (!bookPath || !rel) {
+    result.error = '参数不完整'
+    return result
+  }
+  let info = {}
+  try {
+    const row = await Manga.findOne({ where: { filepath: bookPath }, raw: true })
+    if (row) info = { bookId: row.id, title: row.title, title_jpn: row.title_jpn }
+  } catch (e) { /* 拿不到元数据不影响删除 */ }
+  const meta = { kind: 'image', bookPath, bookType: type, image: rel, ...info }
+  if (type === 'folder') {
+    const abs = path.isAbsolute(rel) ? rel : path.join(bookPath, rel)
+    if (!abs.startsWith(setting.library)) {
+      result.error = '路径不在漫画库内,已拒绝'
+      await appendDeleteLog({ deletedAt: Date.now(), deletedAtText: new Date().toLocaleString(), src: abs, ok: false, error: result.error, ...meta })
+      return result
+    }
+    try {
+      await fs.promises.stat(abs)
+      await movePathToTrash(abs, meta)
+      result.ok = true
+      result.trashed = true
+      sendMessageToWebContents('已把这张图移入回收站:' + rel + '(可在 设置 → 常用 → 回收站 里恢复)')
+    } catch (e) {
+      result.error = String((e && e.message) || e)
+      await appendDeleteLog({ deletedAt: Date.now(), deletedAtText: new Date().toLocaleString(), src: abs, ok: false, error: result.error, ...meta })
+      sendMessageToWebContents('删除 ' + abs + ' 失败:' + result.error)
+    }
+    return result
+  }
+  try {
+    const list = await readTrashIndex()
+    let backup = list.find(x => x.kind === 'archive-backup' && x.src === bookPath && fs.existsSync(x.dest))
+    if (!backup) {
+      backup = await movePathToTrash(bookPath, { kind: 'archive-backup', bookPath, bookType: type, overwriteOnRestore: true, ...info }, { keepOriginal: true })
+    }
+    result.backupId = backup.id
+    const deleted = await deleteImageFromBook(rel, bookPath, type)
+    if (!deleted) {
+      result.error = '删除压缩包内的图片失败'
+      await appendDeleteLog({ deletedAt: Date.now(), deletedAtText: new Date().toLocaleString(), src: bookPath, ok: false, error: result.error, ...meta })
+      sendMessageToWebContents('删除 ' + bookPath + ' 里的 ' + rel + ' 失败')
+      return result
+    }
+    result.ok = true
+    result.trashed = true
+    sendMessageToWebContents('已删除压缩包里的 ' + rel + ',该压缩包的原样备份在回收站里(可整体还原)')
+  } catch (e) {
+    result.error = String((e && e.message) || e)
+    await appendDeleteLog({ deletedAt: Date.now(), deletedAtText: new Date().toLocaleString(), src: bookPath, ok: false, error: result.error, ...meta })
+  }
+  return result
 })
 
 // ---------- .bak 备份清理 ----------

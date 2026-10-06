@@ -1556,12 +1556,16 @@ const onMangaImageContextMenu = (e, image) => {
       label: t('c.deleteImage'),
       onClick: async () => {
         const deleteResult = await ipcRenderer.invoke('delete-image', image.relativePath, bookDetail.value.filepath, bookDetail.value.type)
-        if (deleteResult) {
+        // 后端现在返回 { ok, trashed, error },不能再只看「有没有返回值」
+        const deleteOk = deleteResult === true || !!(deleteResult && deleteResult.ok)
+        if (deleteOk) {
           viewerImageList.value = viewerImageList.value.filter(item => item.id !== image.id)
           receiveThumbnailList.value = receiveThumbnailList.value.filter(item => item.id !== image.id)
           emit('rescanBook', bookDetail.value)
+          const isArchive = bookDetail.value.type === 'zip' || bookDetail.value.type === 'archive'
+          printMessage('success', t(isArchive ? 'c.imageDeletedWithBackup' : 'c.imageTrashed'))
         } else {
-          printMessage('error', t('c.deleteImageError'))
+          printMessage('error', t('c.deleteImageError') + ((deleteResult && deleteResult.error) ? ':' + deleteResult.error : ''))
         }
       }
     }

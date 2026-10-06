@@ -23,73 +23,6 @@
             </div>
           </el-col>
         </el-row>
-        <!-- 回收站:删除的漫画先移到这里,可随时恢复(桌面版/网页版都显示 —— 网页版正是以前永久删除的重灾区) -->
-        <el-row :gutter="8">
-          <!-- 回收站:删除的漫画先移到这里,可随时恢复 -->
-          <el-col :span="24">
-            <el-divider content-position="left">{{$t('m.trashSection')}}</el-divider>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line toolbar-tip">{{$t('m.trashHint')}}</div>
-          </el-col>
-          <el-col :span="24" v-if="trashList.length">
-            <el-table :data="trashList" size="small" max-height="240" style="width:100%">
-              <el-table-column prop="deletedAtText" :label="$t('m.trashDeletedAt')" width="170" />
-              <el-table-column :label="$t('m.trashName')">
-                <template #default="{ row }">{{ row.title || (row.src || '').split(/[\\/]/).pop() }}</template>
-              </el-table-column>
-              <el-table-column :label="$t('m.trashState')" width="96">
-                <template #default="{ row }">
-                  <el-tag size="small" :type="row.exists ? 'success' : 'info'">{{ row.exists ? $t('m.trashStateOk') : $t('m.trashStateLost') }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column :label="$t('m.trashActions')" width="160">
-                <template #default="{ row }">
-                  <el-button size="small" @click="restoreTrashItem(row)" :disabled="!row.exists">{{$t('m.trashRestore')}}</el-button>
-                  <el-button size="small" type="danger" plain @click="purgeTrashItem(row)">{{$t('m.trashPurge')}}</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </el-col>
-          <el-col :span="24" v-else>
-            <div class="setting-line toolbar-tip">{{$t('m.trashEmpty')}}</div>
-          </el-col>
-          <el-col :span="24">
-            <el-button size="small" @click="loadTrashList">{{$t('m.trashRefresh')}}</el-button>
-            <el-button size="small" type="danger" plain :disabled="!trashList.length" @click="purgeAllTrash">{{$t('m.trashPurgeAll')}}</el-button>
-            <el-button size="small" plain @click="loadTrashLog">{{$t('m.trashLog')}}</el-button>
-            <span class="setting-hint" style="margin-left:10px">{{ trashDir }}</span>
-          </el-col>
-        </el-row>
-        <!-- 删除记录(delete-log.jsonl):记录每一次删除/还原/彻底删除,删错了能查是谁、什么时候、从哪删的 -->
-        <el-dialog v-model="trashLogVisible" :title="$t('m.trashLog')" width="52em" append-to-body>
-          <div class="setting-line toolbar-tip" style="margin-bottom:6px">{{ trashLogFile }}</div>
-          <el-table :data="trashLogList" size="small" max-height="360" style="width:100%">
-            <el-table-column :label="$t('m.trashDeletedAt')" width="150">
-              <template #default="{ row }">{{ row.timeText }}</template>
-            </el-table-column>
-            <el-table-column :label="$t('m.trashLogAction')" width="90">
-              <template #default="{ row }">{{ row.actionText }}</template>
-            </el-table-column>
-            <el-table-column :label="$t('m.trashName')">
-              <template #default="{ row }">{{ row.title || row.name }}</template>
-            </el-table-column>
-            <el-table-column :label="$t('m.trashLogPath')">
-              <template #default="{ row }">
-                <span class="setting-hint">{{ row.pathText }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column :label="$t('m.trashState')" width="80">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.ok ? 'success' : 'danger'">{{ row.ok ? $t('m.trashLogOk') : $t('m.trashLogFail') }}</el-tag>
-              </template>
-            </el-table-column>
-          </el-table>
-          <div v-if="!trashLogList.length" class="setting-line toolbar-tip">{{$t('m.trashLogEmpty')}}</div>
-          <template #footer>
-            <el-button size="small" @click="trashLogVisible = false">{{$t('m.close')}}</el-button>
-          </template>
-        </el-dialog>
         <!-- 本地模式:数据文件位置(漫画库位置见下方) -->
         <el-row :gutter="8" v-if="showDesktopUI && runMode === 'local'">
           <el-col :span="24">
@@ -241,6 +174,73 @@
             </div>
           </el-col>
         </el-row>
+        <!-- 回收站:删除的漫画先移到这里,可随时恢复(桌面版/网页版都显示 —— 网页版正是以前永久删除的重灾区) -->
+        <el-row :gutter="8">
+          <!-- 回收站:删除的漫画先移到这里,可随时恢复 -->
+          <el-col :span="24">
+            <el-divider content-position="left">{{$t('m.trashSection')}}</el-divider>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line toolbar-tip">{{$t('m.trashHint')}}</div>
+          </el-col>
+          <el-col :span="24" v-if="trashList.length">
+            <el-table :data="trashList" size="small" max-height="240" style="width:100%">
+              <el-table-column prop="deletedAtText" :label="$t('m.trashDeletedAt')" width="170" />
+              <el-table-column :label="$t('m.trashName')">
+                <template #default="{ row }">{{ trashRowName(row) }}</template>
+              </el-table-column>
+              <el-table-column :label="$t('m.trashState')" width="96">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="row.exists ? 'success' : 'info'">{{ row.exists ? $t('m.trashStateOk') : $t('m.trashStateLost') }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column :label="$t('m.trashActions')" width="160">
+                <template #default="{ row }">
+                  <el-button size="small" @click="restoreTrashItem(row)" :disabled="!row.exists">{{$t('m.trashRestore')}}</el-button>
+                  <el-button size="small" type="danger" plain @click="purgeTrashItem(row)">{{$t('m.trashPurge')}}</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-col>
+          <el-col :span="24" v-else>
+            <div class="setting-line toolbar-tip">{{$t('m.trashEmpty')}}</div>
+          </el-col>
+          <el-col :span="24">
+            <el-button size="small" @click="loadTrashList">{{$t('m.trashRefresh')}}</el-button>
+            <el-button size="small" type="danger" plain :disabled="!trashList.length" @click="purgeAllTrash">{{$t('m.trashPurgeAll')}}</el-button>
+            <el-button size="small" plain @click="loadTrashLog">{{$t('m.trashLog')}}</el-button>
+            <span class="setting-hint" style="margin-left:10px">{{ trashDir }}</span>
+          </el-col>
+        </el-row>
+        <!-- 删除记录(delete-log.jsonl):记录每一次删除/还原/彻底删除,删错了能查是谁、什么时候、从哪删的 -->
+        <el-dialog v-model="trashLogVisible" :title="$t('m.trashLog')" width="52em" append-to-body>
+          <div class="setting-line toolbar-tip" style="margin-bottom:6px">{{ trashLogFile }}</div>
+          <el-table :data="trashLogList" size="small" max-height="360" style="width:100%">
+            <el-table-column :label="$t('m.trashDeletedAt')" width="150">
+              <template #default="{ row }">{{ row.timeText }}</template>
+            </el-table-column>
+            <el-table-column :label="$t('m.trashLogAction')" width="90">
+              <template #default="{ row }">{{ row.actionText }}</template>
+            </el-table-column>
+            <el-table-column :label="$t('m.trashName')">
+              <template #default="{ row }">{{ row.title || row.name }}{{ row.image ? ' / ' + row.image : '' }}</template>
+            </el-table-column>
+            <el-table-column :label="$t('m.trashLogPath')">
+              <template #default="{ row }">
+                <span class="setting-hint">{{ row.pathText }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column :label="$t('m.trashState')" width="80">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.ok ? 'success' : 'danger'">{{ row.ok ? $t('m.trashLogOk') : $t('m.trashLogFail') }}</el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div v-if="!trashLogList.length" class="setting-line toolbar-tip">{{$t('m.trashLogEmpty')}}</div>
+          <template #footer>
+            <el-button size="small" @click="trashLogVisible = false">{{$t('m.close')}}</el-button>
+          </template>
+        </el-dialog>
       </el-tab-pane>
       <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.internalViewer')" name="internalViewer">
         <el-row :gutter="8">
@@ -2519,9 +2519,16 @@ const loadTrashList = async () => {
     }
   } catch (e) { /* 忽略 */ }
 }
+// 回收站列表里的名字:整本用书名,单张图片用「书名 / 图片名」,压缩包备份标注清楚
+const trashRowName = (row) => {
+  const base = String((row && row.src) || '').split(/[\\/]/).pop() || ''
+  if (row.kind === 'archive-backup') return (row.title || base) + '(' + t('m.trashKindArchiveBackup') + ')'
+  if (row.kind === 'image') return (row.title ? row.title + ' / ' : '') + (row.image || base)
+  return row.title || base
+}
 const restoreTrashItem = async (row) => {
   try {
-    await ElMessageBox.confirm(t('m.trashRestoreConfirm'), t('m.trashRestore'), { type: 'warning' })
+    await ElMessageBox.confirm(row.overwriteOnRestore ? t('m.trashRestoreOverwriteConfirm') : t('m.trashRestoreConfirm'), t('m.trashRestore'), { type: 'warning' })
   } catch (e) { return }
   try {
     const res = await ipcRenderer.invoke('trash-restore', row.id)
@@ -3338,7 +3345,7 @@ const dialogVisibleSetting = ref(false)
 const changelog = [
   {
     version: 'v1.10.6',
-    summary: '回收站与删除记录:删错了能救回来,每一次删除都有据可查',
+    summary: '回收站与删除记录:删错了能救回来(单张图片也算),每一次删除都有据可查',
     items: [
       '【新增】回收站(软删除):删除漫画不再直接抹盘,整本移入 <数据目录>/.trash/,可在 设置 → 常用 → 回收站 里恢复',
       '【新增】回收站支持「彻底删除」与「清空回收站」;文件缺失的条目会标注并禁用恢复;恢复时原路径被占用会拒绝覆盖',
@@ -3346,6 +3353,11 @@ const changelog = [
       '【修复】Linux / Docker 下删除漫画会永久删除(shell.trashItem 在容器里必然失败,旧版本 catch 里直接 rm),且失败也会删掉数据库行',
       '【修复】删除确认文案改为「移入回收站」;删除时保留数据库 / 元数据 / 封面 / 缩略图 / 扫描快照,恢复后重新扫描即可回到书架',
       '【说明】回收站只能保住升级到 1.10.6 之后删掉的书;老版本直接删除的文件不在回收站里',
+      '【新增】单张图片删除也进回收站:文件夹漫画把这张图本身移入 <数据目录>/.trash/(条目名「书名 / 图片名」),可单独恢复',
+      '【新增】压缩包漫画删除图片时,先把整个压缩包的原样备份放进回收站(条目名「书名(压缩包备份)」),同一本只保留最早一份,还原即整体回滚',
+      '【变更】设置 → 常用 的回收站区块移到该页最下方;回收站与删除记录的名称会显示「书名 / 图片名」「书名(压缩包备份)」',
+      '【修复】Linux / Docker 下删除单张图片会永久删除(文件夹走 shell.trashItem,容器里必然失败后旧代码直接 rm)',
+      '【修复】删除图片失败也会提示成功(旧代码把返回对象当布尔值判断),现在失败会显示具体原因',
     ]
   },
 

@@ -1,7 +1,7 @@
 # ============================================================
 # exhentai-manga-manager 网页版 Docker 镜像(多阶段构建)
 # 最终镜像只包含运行所需内容:前端 dist + 运行时 node_modules + 源码
-# 构建: docker build -t exhentai-manga-manager:1.10.5 .
+# 构建: docker build -t exhentai-manga-manager:1.10.6 .
 # 运行: docker compose up -d   (见 docker-compose.yml 与 docker/README.md)
 # 注意:不使用 # syntax=docker/dockerfile:1 指令,避免镜像加速器
 #       无法拉取 dockerfile 前端时导致构建失败(本文件均为标准语法)。
