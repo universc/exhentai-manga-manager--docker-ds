@@ -112,8 +112,10 @@ const ensureLibraries = (setting, options = {}) => {
 
   const state = { migrated: false, changed: false, active: null }
 
-  // 旧版单库 → 默认库(容器模式优先用 nameHint,保证与桌面端同名)
-  if (!list.length) {
+  // 旧版单库 → 默认库(容器模式优先用 nameHint,保证与桌面端同名)。
+  // ⚠️ 只在「从来没有 libraries 字段」时迁移:用户主动删光库之后 libraries 是空数组,
+  //    这时若还按 setting.library 重建,就会出现「删掉的库自己复活、一万多本又回来了」。
+  if (!list.length && setting.libraries === undefined) {
     const legacy = String(setting.library || '').trim()
     if (legacy) {
       const nameHint = String((options && options.nameHint) || '').trim()

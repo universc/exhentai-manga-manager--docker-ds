@@ -1074,7 +1074,7 @@ const loadLegecyBookListFromFile = async () => {
 
 // 跨平台路径翻译:共享数据库可能由 Windows 桌面版写入(路径形如 Y:\01-漫画\...,
 // 封面在 Y:\01-漫画\S\数据存放\cover\...)。读取时把 Windows 路径翻译为当前环境路径。
-const translateBookPath = (p, kind) => {
+const translateBookPath = (p, kind, coverDir) => {
   if (!p) return p
   const root = setting.externalLibraryRoot || setting.windowsLibraryRoot
   if (kind === 'filepath' && root && p.startsWith(root)) {
@@ -1086,21 +1086,22 @@ const translateBookPath = (p, kind) => {
     // 只取文件名,映射到当前 CURRENT_COVER_DIR(封面文件统一存在共享 cover 目录,
     // NAS 端写入的 /data/cover/x.webp 在 Windows 桌面也能据此读到)
     const base = p.split(/[\\/]/).pop()
-    return base ? path.join(CURRENT_COVER_DIR, base) : p
+    return base ? path.join(coverDir || CURRENT_COVER_DIR, base) : p
   }
   return p
 }
 
 // 反向翻译:写入共享数据库时把当前环境路径写成 Windows 侧格式,
 // 保证 Windows 桌面版也能直接读取同一份数据库。
-const toExternalPath = (p, kind) => {
+const toExternalPath = (p, kind, coverDir) => {
   if (!p) return p
   if (kind === 'filepath' && setting.externalLibraryRoot && p.startsWith(setting.library)) {
     const rel = p.slice(setting.library.length).replace(/[/\\]+/g, '\\')
     return setting.externalLibraryRoot + rel
   }
-  if (kind === 'coverPath' && setting.externalCoverRoot && p.startsWith(CURRENT_COVER_DIR)) {
-    return setting.externalCoverRoot + '\\' + p.slice(CURRENT_COVER_DIR.length).replace(/[/\\]+/g, '\\')
+  const covDir = coverDir || CURRENT_COVER_DIR
+  if (kind === 'coverPath' && setting.externalCoverRoot && p.startsWith(covDir)) {
+    return setting.externalCoverRoot + '\\' + p.slice(covDir.length).replace(/[/\\]+/g, '\\')
   }
   return p
 }
@@ -1119,12 +1120,22 @@ const sanitizeFileName = (name) => {
 
 // 以漫画名(文件名去扩展名)生成封面文件名:
 // 用 openSync('wx') 独占创建占位文件,同名自动加序号,并发生成也不会互相覆盖
-const acquireCoverName = (filepath) => {
+// 某本书的封面目录 —— 必须是【它自己所属库】的封面目录。
+// 之前一律用全局 CURRENT_COVER_DIR(跟着"活动库"走),合并书架里只要书的库 ≠ 活动库,
+// 封面就会写错目录/找不到 —— 这就是「同一个库在 Win 上没封面、NAS 上有」的根因。
+const coverDirOf = (lib) => libraryRuntimePaths(STORE_PATH, lib).coverDir
+const bookCoverDir = (book) => {
+  const libs = runtimeLibs()
+  const lib = (book && book.libraryId ? libs.find(l => l.id === book.libraryId) : null) || activeLibraryOf(setting)
+  return lib ? coverDirOf(lib) : CURRENT_COVER_DIR
+}
+
+const acquireCoverName = (filepath, coverDir) => {
   const base = sanitizeFileName(path.basename(String(filepath || '').replace(/[\\/]+$/, '')).replace(/\.[^.]+$/, ''))
   let coverName = `${base}.webp`
   for (let i = 2; ; i++) {
     try {
-      const fd = fs.openSync(path.join(CURRENT_COVER_DIR, coverName), 'wx')
+      const fd = fs.openSync(path.join(coverDir || CURRENT_COVER_DIR, coverName), 'wx')
       fs.closeSync(fd)
       return coverName
     } catch (e) {
@@ -1135,31 +1146,32 @@ const acquireCoverName = (filepath) => {
 }
 
 // 生成失败时释放占位文件(sharp 成功输出时会直接覆盖占位文件)
-const releaseCoverName = (coverName) => {
-  try { fs.rmSync(path.join(CURRENT_COVER_DIR, coverName), { force: true }) } catch {}
+const releaseCoverName = (coverName, coverDir) => {
+  try { fs.rmSync(path.join(coverDir || CURRENT_COVER_DIR, coverName), { force: true }) } catch {}
 }
 
 // 生成封面(指定漫画名)并返回本地 coverPath;失败返回 null
-const generateCoverByName = async (book) => {
+const generateCoverByName = async (book, coverDir) => {
+  const dir = coverDir || bookCoverDir(book)
   const filepath = translateBookPath(book.filepath, 'filepath')
   const type = book.type || 'archive'
-  const coverName = acquireCoverName(filepath)
+  const coverName = acquireCoverName(filepath, dir)
   try {
-    const { coverPath } = await geneCover(filepath, type, coverName, CURRENT_COVER_DIR)
+    const { coverPath } = await geneCover(filepath, type, coverName, dir)
     if (!coverPath || !fs.existsSync(coverPath)) {
-      releaseCoverName(coverName)
+      releaseCoverName(coverName, dir)
       return null
     }
     return coverPath
   } catch (e) {
-    releaseCoverName(coverName)
+    releaseCoverName(coverName, dir)
     throw e
   }
 }
 
 // 把封面路径写回共享数据库(路径按当前环境转外部格式)
-const updateBookCoverPath = async (id, coverPath) => {
-  const ext = toExternalPath(coverPath, 'coverPath')
+const updateBookCoverPath = async (id, coverPath, coverDir) => {
+  const ext = toExternalPath(coverPath, 'coverPath', coverDir)
   // 合并书架下必须写回这本书自己的库
   const model = await modelForBookId(id)
   await model.update({ coverPath: ext }, { where: { id } })
@@ -1198,23 +1210,26 @@ const ensureBookCover = (book) => {
   if (coverJobs.has(book.id)) return coverJobs.get(book.id)
   const job = (async () => {
     try {
+      // 封面目录跟着「这本书所属的库」走,不再是全局的 CURRENT_COVER_DIR
+      const coverDir = bookCoverDir(book)
+      try { fs.mkdirSync(coverDir, { recursive: true }) } catch (e) { /* 稍后生成时再试 */ }
       if (book.coverPath) {
-        const local = translateBookPath(book.coverPath, 'coverPath')
+        const local = translateBookPath(book.coverPath, 'coverPath', coverDir)
         if (isUsableCover(local)) return local
-        // basename 兜底:共享 cover 目录里可能存在其他平台生成的文件
+        // basename 兜底:文件可能被另一端生成在同一个封面目录里
         const base = String(book.coverPath).replace(/[\\/]+$/, '').split(/[\\/]/).pop()
         if (base) {
-          const fallback = path.join(CURRENT_COVER_DIR, base)
+          const fallback = path.join(coverDir, base)
           if (isUsableCover(fallback)) {
-            await updateBookCoverPath(book.id, fallback)
+            await updateBookCoverPath(book.id, fallback, coverDir)
             return fallback
           }
         }
       }
       await takeCoverSlot()
       try {
-        const coverPath = await generateCoverByName(book)
-        if (coverPath) await updateBookCoverPath(book.id, coverPath)
+        const coverPath = await generateCoverByName(book, coverDir)
+        if (coverPath) await updateBookCoverPath(book.id, coverPath, coverDir)
         return coverPath
       } finally {
         releaseCoverSlot()
@@ -1257,7 +1272,7 @@ const loadBookListFromDatabase = async () => {
         b.libraryId = lib.id
         b.libraryName = lib.name
         b.filepath = translateBookPath(b.filepath, 'filepath')
-        b.coverPath = translateBookPath(b.coverPath, 'coverPath')
+        b.coverPath = translateBookPath(b.coverPath, 'coverPath', coverDirOf(lib))
         rememberBookLibrary(b)
         bookList.push(b)
       }
@@ -1266,9 +1281,10 @@ const loadBookListFromDatabase = async () => {
     // 没有任何已生效的库:退回「当前库数据库」,避免界面直接空掉
     const rows = await Manga.findAll()
     bookList = rows.map(b => b.toJSON())
+    const fallbackDir = coverDirOf(activeLibraryOf(setting))
     for (const b of bookList) {
       b.filepath = translateBookPath(b.filepath, 'filepath')
-      b.coverPath = translateBookPath(b.coverPath, 'coverPath')
+      b.coverPath = translateBookPath(b.coverPath, 'coverPath', fallbackDir)
     }
   }
   if (_.isEmpty(bookList)) {
