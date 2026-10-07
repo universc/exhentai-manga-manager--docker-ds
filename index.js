@@ -31,7 +31,7 @@ const {
 const { findSameFile } = require('./fileLoader/folder.js')
 const { inventoryLibrary, diffInventory, snapshotFromInventory, loadSnapshotFile, saveSnapshotFile, archiveTypeOf } = require('./fileLoader/incremental.js')
 const localModels = require('./modules/localModels.js')
-const { ensureLibraries, libraryDataDir, libraryRuntimePaths, shouldMoveLibraryData, migrateLibraryData } = require('./modules/libraries.js')
+const { ensureLibraries, libraryDataDir, libraryRuntimePaths, isLibraryActive, shouldMoveLibraryData, migrateLibraryData } = require('./modules/libraries.js')
 
 const WEB_MODE = process.env.WEB_MODE === '1'
 
@@ -73,8 +73,43 @@ if (process.env.WEB_LIBRARY) {
 // 继续同步为活动库路径 —— 扫描/删除等现有逻辑不用改。
 // 数据归属:scan-snapshot.json / database.sqlite / viewcache 属于「库」,放库数据目录;
 // metadata.sqlite / setting.json / collectionList.json / cover 等属于「用户统一配置」,仍在数据存放目录。
-// 当前活动库(多库管理 UI 切换的就是它)
-const activeLibraryOf = (s = setting) => (s.libraries || []).find(l => l.id === s.activeLibraryId) || (s.libraries || [])[0] || null
+// 当前活动库(多库管理 UI 切换的就是它)。第 3 条 C:没填「库数据存放位置」的库不生效、不参与。
+const activeLibraryOf = (s = setting) => {
+  const list = s.libraries || []
+  const byId = list.find(l => l.id === s.activeLibraryId)
+  if (byId && isLibraryActive(byId)) return byId
+  return list.find(isLibraryActive) || null
+}
+// ---------- 库切换框(工具栏「切换库」按框循环) ----------
+// 每个框 = 一组库;点一下工具栏按钮就切到下一个框,书架显示该框内所有库合并的漫画。
+const activeBoxOf = (s = setting) => {
+  const boxes = Array.isArray(s.switchBoxes) ? s.switchBoxes : []
+  if (!boxes.length) return null
+  const n = boxes.length
+  const idx = Number.isInteger(s.activeBoxIndex) ? ((s.activeBoxIndex % n) + n) % n : 0
+  return boxes[idx] || null
+}
+// 当前框里「已生效」的库;没配置框 / 框为空时退化成「所有已生效的库」
+const boxLibraries = (s = setting) => {
+  const active = (s.libraries || []).filter(isLibraryActive)
+  const box = activeBoxOf(s)
+  const ids = box && Array.isArray(box.libraryIds) ? box.libraryIds : null
+  if (!ids || !ids.length) return active
+  return active.filter(l => ids.includes(l.id))
+}
+// 每个库一个 sequelize 实例:合并书架要同时读多个库数据库
+const mangaModels = new Map()
+const modelForLibrary = async (libraryId) => {
+  const lib = (setting.libraries || []).find(l => l.id === libraryId)
+  if (!lib || !isLibraryActive(lib)) return Manga
+  const cached = mangaModels.get(lib.id)
+  if (cached) return cached
+  const paths = libraryRuntimePaths(STORE_PATH, lib)
+  const model = prepareMangaModel(paths.dbFile)
+  await ensureMangaSchema(model)
+  mangaModels.set(lib.id, model)
+  return model
+}
 const libraryState = ensureLibraries(setting, { nameHint: setting.externalLibraryRoot })
 const activeLibrary = libraryState.active
 // 活动库的运行时路径:切换活动库时由 switchActiveLibraryRuntime() 重新计算,所以都是 let
@@ -127,8 +162,20 @@ const ensureMangaSchema = async (model) => {
 }
 // 切换活动库:关闭旧库数据库连接 → 切到新库的数据目录/快照/缓存 → 重新打开并同步库数据库。
 // 多库管理 UI 的 apply-libraries 会调用它。
+// 扫描循环用:把运行时切到指定库(搬数据只发生在设置页改目录/改名时,这里不搬)
+const openLibraryForScan = async (lib) => {
+  if (!lib) return false
+  const paths = libraryRuntimePaths(STORE_PATH, lib)
+  LIBRARY_DATA_DIR = paths.dataDir
+  LIBRARY_VIEWCACHE_DIR = paths.viewcacheDir
+  SNAPSHOT_FILE = paths.snapshotFile
+  LIBRARY_DB_FILE = paths.dbFile
+  setting.library = lib.path
+  Manga = await modelForLibrary(lib.id)
+  return true
+}
+
 const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir) => {
-  try { await Manga.sequelize.close() } catch (e) { console.error('关闭旧库数据库失败', e) }
   const lib = activeLibraryOf(setting)
   const paths = libraryRuntimePaths(STORE_PATH, lib)
   // 同一个库改了「库数据存放位置」:先把原库数据整体搬到新目录(绝不覆盖)
@@ -141,8 +188,9 @@ const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir) => {
   libraryDataMigration = lib ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
   SNAPSHOT_FILE = paths.snapshotFile
   LIBRARY_DB_FILE = paths.dbFile
-  Manga = prepareMangaModel(LIBRARY_DB_FILE)
-  await ensureMangaSchema(Manga)
+  // 不关旧连接:每个库的 model 缓存在 mangaModels 里复用,关掉会破坏合并书架
+  Manga = lib ? await modelForLibrary(lib.id) : prepareMangaModel(LIBRARY_DB_FILE)
+  if (!lib) await ensureMangaSchema(Manga)
   console.log(`[libraries] 已切换活动库「${lib ? lib.name : '(无)'}」;库数据目录:${LIBRARY_DATA_DIR}`)
   console.log(`[libraries] 库数据库:${LIBRARY_DB_FILE};扫描快照:${SNAPSHOT_FILE};缩略图缓存:${LIBRARY_VIEWCACHE_DIR}`)
   if (movedFromOldDir.moved.length) console.log(`[libraries] 已把库数据从旧位置搬到新位置:${movedFromOldDir.moved.join('、')}`)
@@ -1123,12 +1171,30 @@ ipcMain.handle('ensure-book-cover', async (event, id) => {
 })
 
 const loadBookListFromDatabase = async () => {
-  let bookList = await Manga.findAll()
-  bookList = bookList.map(b => b.toJSON())
-  // 兼容 Windows 版数据:统一翻译路径
-  for (const b of bookList) {
-    b.filepath = translateBookPath(b.filepath, 'filepath')
-    b.coverPath = translateBookPath(b.coverPath, 'coverPath')
+  // 多库:当前「切换框」里所有已生效的库各读各的库数据库,合并成一个书架(同一本书不去重)
+  const libs = boxLibraries()
+  let bookList = []
+  if (libs.length) {
+    for (const lib of libs) {
+      const model = await modelForLibrary(lib.id)
+      const rows = await model.findAll()
+      for (const row of rows) {
+        const b = row.toJSON()
+        b.libraryId = lib.id
+        b.libraryName = lib.name
+        b.filepath = translateBookPath(b.filepath, 'filepath')
+        b.coverPath = translateBookPath(b.coverPath, 'coverPath')
+        bookList.push(b)
+      }
+    }
+  } else {
+    // 没有任何已生效的库:退回「当前库数据库」,避免界面直接空掉
+    const rows = await Manga.findAll()
+    bookList = rows.map(b => b.toJSON())
+    for (const b of bookList) {
+      b.filepath = translateBookPath(b.filepath, 'filepath')
+      b.coverPath = translateBookPath(b.coverPath, 'coverPath')
+    }
   }
   if (_.isEmpty(bookList)) {
     bookList = await loadLegecyBookListFromFile()
@@ -1144,7 +1210,7 @@ const loadBookListFromDatabase = async () => {
     const book = bookList[i]
     const findMetadata = metadataMap.get(book.hash)
     if (findMetadata) {
-      if (book.status === 'non-tag' && findMetadata.status !== 'non-tag') await Manga.update(findMetadata, { where: { id: book.id } })
+      if (book.status === 'non-tag' && findMetadata.status !== 'non-tag') await (await modelForLibrary(book.libraryId)).update(findMetadata, { where: { id: book.id } })
       Object.assign(book, findMetadata)
     } else {
       // 每 50 本才刷新一次进度,减少 IPC 往返
@@ -1182,7 +1248,12 @@ const saveBookToDatabase = async (book) => {
     filepath: toExternalPath(book.filepath, 'filepath'),
     coverPath: toExternalPath(book.coverPath, 'coverPath')
   }
-  await Manga.update(extBook, { where: { id: extBook.id } })
+  // 合并书架下每本书自带 libraryId:必须写回它自己所属的库,不然会写脏别的库
+  delete extBook.libraryId
+  delete extBook.libraryName
+  const target = await modelForLibrary(book.libraryId)
+  await target.update(extBook, { where: { id: extBook.id } })
+  // 元数据始终写全局 metadata.sqlite
   await Metadata.upsert(extBook)
   console.log(`Saved ${extBook.title}`)
 }
@@ -1476,6 +1547,27 @@ const runScan = async () => {
   sendMessageToWebContents('Scan complete')
 }
 
+// 依次扫描「当前切换框」里的每个库(用户要求:扫描按钮改成依次扫每个库)
+const runScanAll = async () => {
+  const libs = boxLibraries()
+  if (!libs.length) {
+    sendMessageToWebContents('没有已生效的漫画库:请先在 设置 → 常用 给库填「库数据存放位置」')
+    setProgressBar(-1)
+    sendMessageToWebContents('Scan complete')
+    return
+  }
+  for (let i = 0; i < libs.length; i++) {
+    const lib = libs[i]
+    sendMessageToWebContents(`[${i + 1}/${libs.length}] 开始扫描库「${lib.name}」:${lib.path}`)
+    await openLibraryForScan(lib)
+    await runScan()
+  }
+  // 扫完还原到当前活动库(路径/数据库模型)
+  const active = activeLibraryOf(setting)
+  if (active) await openLibraryForScan(active)
+  setting.library = active ? active.path : setting.library
+}
+
 ipcMain.handle('load-book-list', async (event, scan) => {
   if (scan) {
     if (isScanning) {
@@ -1486,7 +1578,7 @@ ipcMain.handle('load-book-list', async (event, scan) => {
       // 后台扫描:立即返回当前列表,不阻塞 UI,扫描完成后再通知前端刷新
       setImmediate(async () => {
         try {
-          await runScan()
+          await runScanAll()
         } catch (e) {
           console.error(e)
           sendMessageToWebContents(`扫描失败:${e}`)
@@ -2825,10 +2917,18 @@ const librariesSnapshot = () => ({
     name: l.name,
     path: l.path,
     dataPath: l.dataPath || '',
-    dataDir: libraryDataDir(STORE_PATH, l)
+    dataDir: libraryDataDir(STORE_PATH, l),
+    // 第 3 条 C:没填「库数据存放位置」的库不生效
+    active: isLibraryActive(l)
   })),
   activeLibraryId: setting.activeLibraryId || '',
-  library: setting.library || ''
+  library: setting.library || '',
+  switchBoxes: (Array.isArray(setting.switchBoxes) ? setting.switchBoxes : []).map(b => ({
+    id: b.id,
+    libraryIds: Array.isArray(b.libraryIds) ? [...b.libraryIds] : []
+  })),
+  activeBoxIndex: Number.isInteger(setting.activeBoxIndex) ? setting.activeBoxIndex : 0,
+  boxLibraryIds: boxLibraries().map(l => l.id)
 })
 
 ipcMain.handle('get-libraries', async () => librariesSnapshot())
@@ -2840,7 +2940,9 @@ ipcMain.handle('apply-libraries', async (event, arg) => {
     const draft = {
       ...setting,
       libraries: Array.isArray(payload.libraries) ? payload.libraries : [],
-      activeLibraryId: payload.activeLibraryId || ''
+      activeLibraryId: payload.activeLibraryId || '',
+      switchBoxes: Array.isArray(payload.switchBoxes) ? payload.switchBoxes : (setting.switchBoxes || []),
+      activeBoxIndex: Number.isInteger(payload.activeBoxIndex) ? payload.activeBoxIndex : (setting.activeBoxIndex || 0)
     }
     // preferList:以 UI 提交的库列表为准,否则旧的 setting.library 会把刚选中的库路径覆盖掉
     ensureLibraries(draft, { preferList: true, nameHint: setting.externalLibraryRoot })
@@ -2880,12 +2982,38 @@ ipcMain.handle('set-active-library', async (event, id) => {
   try {
     const lib = (setting.libraries || []).find(l => l.id === id)
     if (!lib) return { ok: false, error: '找不到该漫画库' }
+    if (!isLibraryActive(lib)) return { ok: false, error: `库「${lib.name}」还没填「库数据存放位置」,填完才会生效` }
     const prev = activeLibraryOf(setting)
     if (prev && prev.id === lib.id) return { ok: true, activeChanged: false, ...librariesSnapshot() }
     if (isScanning) return { ok: false, error: '正在扫描漫画库,请等扫描结束后再切换库' }
     const prevDataDir = LIBRARY_DATA_DIR
     setting.activeLibraryId = lib.id
     setting.library = lib.path
+    await applySetting({})
+    await switchActiveLibraryRuntime(prev, prevDataDir)
+    return { ok: true, activeChanged: true, ...librariesSnapshot() }
+  } catch (e) {
+    console.error(e)
+    return { ok: false, error: String(e && e.message ? e.message : e) }
+  }
+})
+
+// 库切换框:点工具栏按钮 = 切到下一个框(循环);书架显示该框内所有库合并的漫画
+ipcMain.handle('set-active-box', async (event, arg) => {
+  try {
+    const boxes = Array.isArray(setting.switchBoxes) ? setting.switchBoxes : []
+    if (!boxes.length) return { ok: false, error: '还没有配置「库切换」框(设置 → 常用)' }
+    if (isScanning) return { ok: false, error: '正在扫描漫画库,请等扫描结束后再切换' }
+    const n = boxes.length
+    let idx = Number.isInteger(setting.activeBoxIndex) ? setting.activeBoxIndex : 0
+    if (arg && Number.isInteger(arg.index)) idx = arg.index
+    else idx += 1
+    idx = ((idx % n) + n) % n
+    const prev = activeLibraryOf(setting)
+    const prevDataDir = LIBRARY_DATA_DIR
+    setting.activeBoxIndex = idx
+    const target = boxLibraries()[0] || null
+    if (target) setting.activeLibraryId = target.id
     await applySetting({})
     await switchActiveLibraryRuntime(prev, prevDataDir)
     return { ok: true, activeChanged: true, ...librariesSnapshot() }

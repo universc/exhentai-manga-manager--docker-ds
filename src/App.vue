@@ -60,15 +60,8 @@
             <el-button v-else-if="id === 'uiMode'" :icon="uiModeIcon" plain @click="switchUiMode" :title="$t('m.switchUiMode') + ': ' + $t(uiModeLabelKey)"></el-button>
             <!-- 设置按钮:与界面模式按钮一套样式(纯 plain,图标不跟主色调) -->
             <el-button v-else-if="id === 'setting'" :icon="SettingIcon" plain @click="$refs.SettingRef.dialogVisibleSetting = true" :title="$t('m.setting')"></el-button>
-            <!-- 切换库:下拉列出所有漫画库(当前库不可选) -->
-            <el-dropdown v-else-if="id === 'switchLibrary'" trigger="click" @command="switchLibrary" class="switch-library-dropdown">
-              <el-button type="primary" plain :icon="MdBook" :title="$t('m.switchLibrary') + (activeLibraryName ? ': ' + activeLibraryName : '')"></el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item v-for="lib in libraries" :key="lib.id" :command="lib.id" :disabled="lib.id === setting.activeLibraryId">{{ lib.name }}</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <!-- 切换库:点一下 = 切到下一个「库切换」框(书架显示该框内所有库合并的漫画) -->
+            <el-button v-else-if="id === 'switchLibrary'" type="primary" plain :icon="MdBook" @click="switchBox" :title="$t('m.switchLibrary') + (boxLabel ? ': ' + boxLabel : '')"></el-button>
             <!-- 可自定义的界面按钮 -->
             <el-button
               v-else-if="toolbarButtonMap[id]"
@@ -460,9 +453,15 @@ export default defineComponent({
       const store = useAppStore()
       return Object.keys(store.bookTasks || {}).length
     },
-    // 多库:所有漫画库 / 当前库名(工具栏「切换库」下拉用)
+    // 多库:所有漫画库 / 当前框里的库名(工具栏「切换库」悬浮提示用)
     libraries () {
       return Array.isArray(this.setting?.libraries) ? this.setting.libraries : []
+    },
+    boxLabel () {
+      const boxes = Array.isArray(this.setting?.switchBoxes) ? this.setting.switchBoxes : []
+      const box = boxes[Number.isInteger(this.setting?.activeBoxIndex) ? this.setting.activeBoxIndex : 0]
+      const ids = box && Array.isArray(box.libraryIds) ? box.libraryIds : []
+      return this.libraries.filter(l => ids.includes(l.id)).map(l => l.name).join(' + ')
     },
     activeLibraryName () {
       const lib = this.libraries.find(l => l.id === this.setting?.activeLibraryId)
@@ -1214,13 +1213,12 @@ export default defineComponent({
         }
       }
     },
-    // 切换当前漫画库(工具栏「切换库」):后端切库并重建运行时,前端重读书架
-    async switchLibrary (libraryId) {
-      const id = String(libraryId || '')
-      if (!id || id === this.setting?.activeLibraryId) return
+    // 切换库(工具栏):点一下 = 切到下一个「库切换」框,书架显示该框内所有库合并的漫画
+    async switchBox () {
       try {
-        const res = await ipcRenderer.invoke('set-active-library', id)
+        const res = await ipcRenderer.invoke('set-active-box', {})
         if (res && res.ok) {
+          this.setting.activeBoxIndex = res.activeBoxIndex
           this.setting.activeLibraryId = res.activeLibraryId
           this.setting.library = res.library
           if (res.activeChanged) await this.loadBookList()

@@ -147,6 +147,10 @@ const shouldMoveLibraryData = (prevLib, nextLib, prevDataDir, nextDataDir) => {
   return path.resolve(prevDataDir) !== path.resolve(nextDataDir)
 }
 
+// 库是否「已生效」:用户第 3 条 C —— 没填「库数据存放位置」的库不加载、不扫描。
+// (path 也要有;dataPath 留空 = 这个库还不算配置完成)
+const isLibraryActive = (lib) => !!(lib && String(lib.path || '').trim() && String(lib.dataPath || '').trim())
+
 // 属于「某个库」的数据文件名(第二十八轮起从「数据存放目录」根部搬进库数据目录)
 const LIBRARY_DATA_FILES = ['scan-snapshot.json', 'viewcache', 'database.sqlite', 'bookList.json', 'bookList.json.br']
 const SQLITE_SIDECAR_RE = /^database\.sqlite-(journal|wal|shm)$/
@@ -199,6 +203,7 @@ module.exports = {
   safeDirName,
   libraryDataDir,
   libraryRuntimePaths,
+  isLibraryActive,
   shouldMoveLibraryData,
   ensureLibraries,
   migrateLibraryData

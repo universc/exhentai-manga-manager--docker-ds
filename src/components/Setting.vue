@@ -92,6 +92,7 @@
             <!-- 一排 = 一个漫画库:库名(就是「库文件夹」这几个字,可改名)+ 库文件夹(只读,不能输入/清空)+ 库数据存放位置 -->
             <div v-for="lib in libraries" :key="lib.id" class="setting-line library-row">
               <el-input v-model="lib.name" class="library-name-input" @change="onLibraryNameChange" />
+              <span v-if="!isLibActive(lib)" class="library-inactive">{{$t('m.libraryInactive')}}</span>
               <el-input class="library-path-input" :model-value="lib.path" readonly />
               <!-- 删除这个库(只从列表移除,不动磁盘上的文件与库数据目录) -->
               <el-button class="library-remove-btn" type="danger" plain :icon="Delete" :title="$t('m.libraryRemove')" @click="removeLibraryRow(lib)" />
@@ -108,6 +109,20 @@
             <div class="setting-line library-actions">
               <el-button :loading="libraryBusy" @click="addLibrary">{{$t('m.libraryAdd')}}</el-button>
               <span class="toolbar-tip">{{$t('m.libraryHint')}}</span>
+            </div>
+            <!-- 库切换:一个框 = 一组库;工具栏「切换库」按钮点一下切到下一个框,书架显示该框内所有库合并 -->
+            <div class="setting-line library-boxes-title">{{$t('m.switchBoxes')}}</div>
+            <div v-for="(box, bi) in switchBoxes" :key="box.id" class="setting-line library-box-row">
+              <span class="library-box-index">{{ bi + 1 }}</span>
+              <el-select v-model="box.libraryIds" multiple class="library-box-select" :placeholder="$t('m.switchBoxLibraries')" @change="onBoxesChange">
+                <el-option v-for="lib in activeLibraries" :key="lib.id" :label="lib.name" :value="lib.id" />
+              </el-select>
+              <el-button type="danger" plain :icon="Delete" :title="$t('m.libraryRemove')" @click="removeSwitchBox(bi)" />
+              <span v-if="activeBoxIndex === bi" class="library-box-current">{{$t('m.switchBoxCurrent')}}</span>
+            </div>
+            <div class="setting-line library-actions">
+              <el-button @click="addSwitchBox">{{$t('m.switchBoxAdd')}}</el-button>
+              <span class="toolbar-tip">{{$t('m.switchBoxHint')}}</span>
             </div>
           </el-col>
           <el-col :span="24">
@@ -2722,6 +2737,24 @@ const activeLibrary = computed(() => libraries.value.find(l => l.id === activeLi
 // 库 id -> 后端解析出的「库数据目录」(仅用于显示;不写回设置,避免脏字段落盘)
 const libraryDataDirs = ref({})
 const libraryBusy = ref(false)
+// 库切换框(工具栏「切换库」按框循环)
+const switchBoxes = computed(() => (setting.value && Array.isArray(setting.value.switchBoxes)) ? setting.value.switchBoxes : [])
+const activeBoxIndex = computed(() => Number.isInteger(setting.value?.activeBoxIndex) ? setting.value.activeBoxIndex : 0)
+// 只有「已生效」的库(路径 + 库数据存放位置都填了)才能被选进框里
+const activeLibraries = computed(() => libraries.value.filter(l => l.path && String(l.dataPath || '').trim()))
+const isLibActive = (lib) => !!(lib && lib.path && String(lib.dataPath || '').trim())
+const addSwitchBox = () => {
+  setting.value.switchBoxes = [...switchBoxes.value, { id: 'box-' + Math.random().toString(16).slice(2, 12), libraryIds: [] }]
+  applyLibraries()
+}
+const removeSwitchBox = (i) => {
+  const boxes = switchBoxes.value.filter((_, idx) => idx !== i)
+  setting.value.switchBoxes = boxes
+  if (activeBoxIndex.value >= boxes.length) setting.value.activeBoxIndex = 0
+  applyLibraries()
+}
+const onBoxesChange = () => { applyLibraries() }
+
 // 每排「库数据存放位置」的 placeholder:显示后端解析出的默认目录(留空即用它)
 const libraryDataDirPlaceholder = () => t('m.libraryDataPathDefault')
 
@@ -2733,6 +2766,10 @@ const applyLibrariesResponse = (res) => {
   setting.value.libraries = [...valid, ...drafts]
   setting.value.activeLibraryId = res.activeLibraryId
   setting.value.library = res.library
+  if (Array.isArray(res.switchBoxes)) {
+    setting.value.switchBoxes = res.switchBoxes.map(b => ({ id: b.id, libraryIds: Array.isArray(b.libraryIds) ? [...b.libraryIds] : [] }))
+  }
+  if (Number.isInteger(res.activeBoxIndex)) setting.value.activeBoxIndex = res.activeBoxIndex
   const map = {}
   res.libraries.forEach(l => { map[l.id] = l.dataDir })
   libraryDataDirs.value = map
@@ -2758,7 +2795,9 @@ const applyLibraries = async () => {
     const activeId = payload.some(l => l.id === activeLibraryId.value) ? activeLibraryId.value : (payload[0] ? payload[0].id : '')
     const res = await ipcRenderer.invoke('apply-libraries', {
       libraries: JSON.parse(JSON.stringify(payload)),
-      activeLibraryId: activeId
+      activeLibraryId: activeId,
+      switchBoxes: JSON.parse(JSON.stringify(switchBoxes.value)),
+      activeBoxIndex: activeBoxIndex.value
     })
     if (res && res.ok) {
       applyLibrariesResponse(res)
@@ -3940,6 +3979,12 @@ defineExpose({
 .library-remove-btn { flex: 0 0 auto; padding: 8px 10px; }
 .library-data-input { flex: 1 1 260px; min-width: 200px; }
 .library-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.library-inactive { color: #e6a23c; font-size: 12px; flex: 0 0 auto; }
+.library-boxes-title { font-weight: 600; margin-top: 10px; }
+.library-box-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.library-box-index { width: 18px; text-align: center; color: #909399; flex: 0 0 auto; }
+.library-box-select { flex: 1 1 300px; min-width: 220px; }
+.library-box-current { color: #409eff; font-size: 12px; flex: 0 0 auto; }
 
 // 标签设置:当前库中的全部标签
 .tag-cat-list
