@@ -3621,8 +3621,16 @@ ipcMain.handle('set-data-path', async (event, dataPath) => {
 // 默认账户 admin / admin(见 modules/auth.js:没有任何账户时自动创建)。
 const auth = require('./modules/auth.js')
 auth.loadUsers(STORE_PATH)
-// 桌面版当前登录用户(渲染进程刷新页面也不丢;退出应用即失效)
+// 桌面版当前登录用户(渲染进程刷新页面也不丢)
 let currentAuth = null
+// 桌面版「保持登录」:重启后自动恢复上次的有效会话,直到用户主动退出登录
+if (!WEB_MODE) {
+  const restored = auth.restoreLastSession()
+  if (restored) {
+    currentAuth = restored
+    console.log('[auth] 已恢复上次登录:', restored.username, '(' + restored.role + ')')
+  }
+}
 const authStatus = () => ({
   enabled: auth.isEnabled(),
   role: currentAuth ? currentAuth.role : null,
@@ -3633,7 +3641,13 @@ ipcMain.on('auth-status', (event) => { event.returnValue = authStatus() })
 ipcMain.handle('auth-current', async () => authStatus())
 ipcMain.handle('auth-login', async (event, { username, password } = {}) => {
   const user = auth.verify(String(username || '').trim(), String(password || ''))
-  if (!user) return { ok: false, error: '用户名或密码不正确' }
+  if (!user) {
+    // 账户是跟着「数据目录」走的:换了数据目录(例如指向 NAS 共享)后,
+    // 本机原来的账户就不存在了 —— 直接把该目录里的账户列出来,免得用户猜。
+    const names = auth.listUsers().map(u => u.username)
+    const hint = names.length ? `(当前数据目录里的账户:${names.join('、')})` : ''
+    return { ok: false, error: '用户名或密码不正确' + hint }
+  }
   currentAuth = { username: user.username, role: user.role, token: auth.createSession(user) }
   // 需求:配置文件以账户命名 —— 把登录名记成「配置名」,下次启动就加载该账户的 setting.<账户>.json。
   // 这里不重启(避免打断当前使用),下次启动自然生效。

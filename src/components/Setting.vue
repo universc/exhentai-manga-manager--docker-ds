@@ -1493,7 +1493,7 @@
             </template>
             <!-- ② 网页版:账户在 NAS 上 -->
             <template v-else>
-              <div class="account-section-title">{{$t('m.serverMode')}}</div>
+              <div class="account-section-title">{{$t('m.accounts')}}</div>
             </template>
             <div class="setting-line" style="display: flex; align-items: center; gap: 10px;">
               <span>{{$t('m.loginUsername')}}: <b>{{authUsername}}</b></span>

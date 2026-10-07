@@ -322,6 +322,7 @@
     "loginSub": "Enter your account and password (viewer accounts are read-only)",
   "loginTitleLocal": "Local account login",
   "loginSubLocal": "Sign in with a local account (default admin / admin)",
+  "loginDataPath": "Data directory:",
   "loginTitleNas": "NAS account login",
   "loginSubNas": "Sign in with the account on your NAS (remote mode)",
   "localAccountHint": "Local account: used on this machine only. Settings (toolbar buttons, theme, ...) are stored per account name in setting.<name>.json and shared with the same-named account on your NAS.",

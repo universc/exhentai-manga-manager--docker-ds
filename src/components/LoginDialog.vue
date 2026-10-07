@@ -5,6 +5,8 @@
       <!-- 标题按模式区分:本地模式=本机账户;远程/网页模式=NAS 账户 -->
       <div class="login-title">{{ $t(titleKey) }}</div>
       <div class="login-sub">{{ $t(subKey) }}</div>
+      <!-- 账户跟着「数据目录」走:显示出来,换过目录(如指向 NAS 共享)时用户一眼就明白 -->
+      <div v-if="dataPath" class="login-path">{{ $t('m.loginDataPath') }}{{ dataPath }}</div>
       <el-form @submit.prevent="doLogin" label-position="top">
         <el-form-item :label="$t('m.loginUsername')">
           <el-input v-model="username" :placeholder="$t('m.loginUsername')" autofocus @keyup.enter="doLogin" />
@@ -44,6 +46,15 @@ export default {
     const isWebMode = !!window.__WEB_MODE__
     const titleKey = computed(() => (isWebMode ? 'm.loginTitleNas' : 'm.loginTitleLocal'))
     const subKey = computed(() => (isWebMode ? 'm.loginSubNas' : 'm.loginSubLocal'))
+    // 桌面版:登录框上显示当前数据目录(账户就存在这个目录里)
+    const dataPath = ref('')
+    const loadDataPath = async () => {
+      if (isWebMode || !window.ipcRenderer || !window.ipcRenderer.invoke) return
+      try {
+        const info = await window.ipcRenderer.invoke('get-data-path')
+        if (info && info.dataPath) dataPath.value = info.dataPath
+      } catch (e) { /* 拿不到就不显示 */ }
+    }
 
     // 切回本地模式:清空服务器地址并重启(由客户端主进程处理)
     const switchToLocalMode = async () => {
@@ -88,10 +99,11 @@ export default {
 
     onMounted(() => {
       refresh()
+      loadDataPath()
       window.addEventListener('emm-auth-required', refresh)
     })
 
-    return { visible, username, password, loading, error, isRemoteDesktop, titleKey, subKey, doLogin, refresh, switchToLocalMode }
+    return { visible, username, password, loading, error, isRemoteDesktop, titleKey, subKey, dataPath, doLogin, refresh, switchToLocalMode }
   }
 }
 </script>
@@ -121,6 +133,13 @@ export default {
       font-size: 12px
       text-align: center
       color: var(--el-text-color-secondary, #888)
+    .login-path
+      margin: -12px 0 14px
+      font-size: 11px
+      text-align: center
+      color: var(--el-text-color-secondary, #999)
+      word-break: break-all
+      line-height: 1.5
     .login-btn
       width: 100%
       margin-top: 4px

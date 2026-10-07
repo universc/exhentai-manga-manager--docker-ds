@@ -78,7 +78,8 @@ const requireLogin = (req, res, next) => {
 }
 
 const setSessionCookie = (res, token) => {
-  res.setHeader('Set-Cookie', `${TOKEN_COOKIE}=${token}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`)
+  // 一年有效(登录后一直保持,直到用户主动退出登录)
+  res.setHeader('Set-Cookie', `${TOKEN_COOKIE}=${token}; HttpOnly; Path=/; Max-Age=31536000; SameSite=Lax`)
 }
 const clearSessionCookie = (res) => {
   res.setHeader('Set-Cookie', `${TOKEN_COOKIE}=; HttpOnly; Path=/; Max-Age=0`)
@@ -201,6 +202,9 @@ app.get('/api/auth/me', (req, res) => {
 // ---------- 基础信息 ----------
 app.get('/api/info', (req, res) => {
   const session = sessionOf(req)
+  // 滑动续期:每次打开页面都把有效期续满,长期不用也不会突然掉登录
+  const tok = parseCookies(req)[TOKEN_COOKIE]
+  if (tok && auth.getSession(tok)) setSessionCookie(res, tok)
   res.json({
     webMode: true,
     pathSep: path.sep,

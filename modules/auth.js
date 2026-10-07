@@ -14,7 +14,8 @@ let users = {} // username -> { salt, hash, role, createdAt }
 const sessions = new Map() // token -> { username, role, expires }
 let authEnabled = false
 
-const TOKEN_TTL = 7 * 24 * 3600 * 1000
+// 会话有效期:登录后一直保持,直到用户主动退出登录(用户要求)。
+const TOKEN_TTL = 365 * 24 * 3600 * 1000
 
 const hashPassword = (password, salt) => {
   return crypto.scryptSync(String(password), salt, 32).toString('hex')
@@ -137,6 +138,25 @@ const destroySession = (token) => {
 
 const listUsers = () => Object.entries(users).map(([username, u]) => ({ username, role: u.role }))
 
+// 桌面版「保持登录」:重启后从 sessions.json 里挑一个仍然有效、且账户还在的会话,
+// 直接恢复成已登录状态 —— 用户不必每次开客户端都重新输密码,
+// 只有主动点「退出登录」才会失效。
+const restoreLastSession = () => {
+  const now = Date.now()
+  let best = null
+  for (const [token, s] of sessions.entries()) {
+    if (!s || !s.username || !s.expires || s.expires <= now) continue
+    if (!users[s.username]) continue // 账户已被删除的会话作废
+    if (!best || s.expires > best.session.expires) best = { token, session: s }
+  }
+  if (!best) return null
+  return {
+    username: best.session.username,
+    role: best.session.role || (users[best.session.username] || {}).role || 'viewer',
+    token: best.token,
+  }
+}
+
 module.exports = {
   loadUsers,
   addUser,
@@ -147,5 +167,6 @@ module.exports = {
   getSession,
   destroySession,
   listUsers,
+  restoreLastSession,
   isEnabled: () => authEnabled,
 }

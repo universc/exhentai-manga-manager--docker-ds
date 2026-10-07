@@ -68,7 +68,7 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
         username: info.username || null,
       }
     }
-  } catch (e) {}
+  } catch (e) { console.error('[web-ipc] /api/info 失败:', e && (e.name + ': ' + e.message)) }
   // 桌面版(preload 已暴露 window.ipcRenderer)整块都不会执行,
   // 账户状态在文件末尾单独注入 —— 见「桌面版(Win)账户状态注入」。
 
@@ -272,6 +272,8 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
     }
   }
 
+  // 标记:本页是「网页桥」而不是桌面 preload —— 桌面版注入块据此跳过,避免互相覆盖
+  window.__EMM_WEB_BRIDGE__ = true
   window.ipcRenderer = {
     invoke,
     on: (channel, listener) => {
@@ -320,15 +322,21 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
 // 登录框(LoginDialog)就不会弹出,「必须登录才能使用」也就落不了地。
 // 同步 IPC:必须在界面渲染之前拿到状态,否则设置页会先按「未登录」渲染一遍。
 // 远程桌面模式(preload-remote.js 故意不暴露 ipcRenderer)不走这里,仍用上面的 /api/info。
-if (typeof window !== 'undefined' && window.ipcRenderer && typeof window.ipcRenderer.sendSync === 'function') {
+// ⚠️ 必须排除网页桥:web-ipc 自己装的桥也有 sendSync(对未知通道返回 undefined),
+//    否则这里会用空对象把 /api/info 拿到的正确账户状态覆盖成「未登录」——
+//    表现就是网页版设置界面整页空白(所有页签都被 v-if 隐藏)。
+if (typeof window !== 'undefined' && !window.__EMM_WEB_BRIDGE__ &&
+    window.ipcRenderer && typeof window.ipcRenderer.sendSync === 'function') {
   try {
-    const st = window.ipcRenderer.sendSync('auth-status') || {}
-    window.__AUTH__ = {
-      enabled: !!st.enabled,
-      role: st.role || null,
-      username: st.username || null,
+    const st = window.ipcRenderer.sendSync('auth-status')
+    if (st && typeof st === 'object') {
+      window.__AUTH__ = {
+        enabled: !!st.enabled,
+        role: st.role || null,
+        username: st.username || null,
+      }
     }
   } catch (e) {
-    window.__AUTH__ = window.__AUTH__ || { enabled: false, role: null, username: null }
+    console.error('[web-ipc] 读取桌面版账户状态失败:', (e && e.message) || e)
   }
 }

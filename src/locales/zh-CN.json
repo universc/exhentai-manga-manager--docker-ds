@@ -321,6 +321,7 @@
     "loginSub": "请输入账户与密码(普通账户仅可浏览)",
   "loginTitleLocal": "本地账户登录",
   "loginSubLocal": "使用本机账户登录(默认 admin / admin)",
+  "loginDataPath": "当前数据目录:",
   "loginTitleNas": "NAS 账户登录",
   "loginSubNas": "登录 NAS(远程模式)上的账户",
   "localAccountHint": "本机账户:只在本机使用。设置(按钮、主题等)按账户名保存在 setting.账户名.json,与 NAS 上同名账户共用同一份设置。",

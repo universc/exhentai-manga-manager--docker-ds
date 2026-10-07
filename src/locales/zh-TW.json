@@ -321,6 +321,7 @@
     "loginSub": "請輸入帳戶與密碼(普通帳戶僅可瀏覽)",
   "loginTitleLocal": "本機帳戶登入",
   "loginSubLocal": "使用本機帳戶登入(預設 admin / admin)",
+  "loginDataPath": "目前資料目錄:",
   "loginTitleNas": "NAS 帳戶登入",
   "loginSubNas": "登入 NAS(遠端模式)上的帳戶",
   "localAccountHint": "本機帳戶:只在本機使用。設定(按鈕、主題等)依帳戶名保存在 setting.帳戶名.json,與 NAS 上同名帳戶共用同一份設定。",
