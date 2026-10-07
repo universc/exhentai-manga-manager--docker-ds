@@ -74,6 +74,8 @@
     "libraryAdd": "新增庫",
     "libraryInactive": "未生效",
     "switchBoxes": "庫切換",
+    "switchLibraryCurrent": "目前庫",
+    "switchBoxKeepOne": "至少要保留一個切換框",
     "switchBoxLibraries": "選擇這個框裡的庫",
     "switchBoxAdd": "新增切換框",
     "switchBoxCurrent": "目前",

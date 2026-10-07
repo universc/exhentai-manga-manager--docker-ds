@@ -94,17 +94,12 @@
               <el-input v-model="lib.name" class="library-name-input" @change="onLibraryNameChange" />
               <span v-if="!isLibActive(lib)" class="library-inactive">{{$t('m.libraryInactive')}}</span>
               <el-input class="library-path-input" :model-value="lib.path" readonly />
-              <!-- 删除这个库(只从列表移除,不动磁盘上的文件与库数据目录) -->
-              <el-button class="library-remove-btn" type="danger" plain :icon="Delete" :title="$t('m.libraryRemove')" @click="removeLibraryRow(lib)" />
-              <el-input v-model="lib.dataPath" class="library-data-input" :placeholder="libraryDataDirPlaceholder(lib)" @change="onLibraryDataPathChange(lib)">
+              <el-input class="library-data-input" v-model="lib.dataPath" :placeholder="libraryDataDirPlaceholder(lib)" @change="onLibraryDataPathChange(lib)">
                 <template #prepend><span class="setting-label">{{$t('m.libraryDataPath')}}</span></template>
-                <template #append>
-                  <el-button-group>
-                    <el-button @click="selectLibraryDataPath(lib)">{{$t('m.select')}}</el-button>
-                    <el-button v-if="lib.dataPath" @click="followLibraryDataPath(lib)">{{$t('m.metadataPathFollow')}}</el-button>
-                  </el-button-group>
-                </template>
+                <template #append><el-button @click="selectLibraryDataPath(lib)">{{$t('m.select')}}</el-button></template>
               </el-input>
+              <!-- 删除按钮在最右边(只从列表移除,不动磁盘文件) -->
+              <el-button class="library-remove-btn" type="danger" plain :icon="Delete" :title="$t('m.libraryRemove')" @click="removeLibraryRow(lib)" />
             </div>
             <div class="setting-line library-actions">
               <el-button :loading="libraryBusy" @click="addLibrary">{{$t('m.libraryAdd')}}</el-button>
@@ -117,7 +112,7 @@
               <el-select v-model="box.libraryIds" multiple class="library-box-select" :placeholder="$t('m.switchBoxLibraries')" @change="onBoxesChange">
                 <el-option v-for="lib in activeLibraries" :key="lib.id" :label="lib.name" :value="lib.id" />
               </el-select>
-              <el-button type="danger" plain :icon="Delete" :title="$t('m.libraryRemove')" @click="removeSwitchBox(bi)" />
+              <el-button type="danger" plain :icon="Delete" :disabled="switchBoxes.length <= 1" :title="$t('m.libraryRemove')" @click="removeSwitchBox(bi)" />
               <span v-if="activeBoxIndex === bi" class="library-box-current">{{$t('m.switchBoxCurrent')}}</span>
             </div>
             <div class="setting-line library-actions">
@@ -2748,6 +2743,8 @@ const addSwitchBox = () => {
   applyLibraries()
 }
 const removeSwitchBox = (i) => {
+  // 至少保留一个切换框(用户要求:默认那一条不能被删)
+  if (switchBoxes.value.length <= 1) { ElMessage.warning(t('m.switchBoxKeepOne')); return }
   const boxes = switchBoxes.value.filter((_, idx) => idx !== i)
   setting.value.switchBoxes = boxes
   if (activeBoxIndex.value >= boxes.length) setting.value.activeBoxIndex = 0
@@ -3975,8 +3972,8 @@ defineExpose({
 .library-active-radio { margin-right: 2px; flex: 0 0 auto; }
 .library-name-input { width: 120px; flex: 0 0 auto; }
 .library-name-input .el-input__inner { font-weight: 600; }
-.library-path-input { flex: 1 1 220px; min-width: 160px; }
-.library-remove-btn { flex: 0 0 auto; padding: 8px 10px; }
+.library-path-input { flex: 0 1 180px; min-width: 120px; }
+.library-remove-btn { flex: 0 0 auto; padding: 8px 10px; margin-left: auto; }
 .library-data-input { flex: 1 1 260px; min-width: 200px; }
 .library-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .library-inactive { color: #e6a23c; font-size: 12px; flex: 0 0 auto; }

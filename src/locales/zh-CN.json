@@ -74,6 +74,8 @@
     "libraryAdd": "添加库",
     "libraryInactive": "未生效",
     "switchBoxes": "库切换",
+    "switchLibraryCurrent": "当前库",
+    "switchBoxKeepOne": "至少要保留一个切换框",
     "switchBoxLibraries": "选择这个框里的库",
     "switchBoxAdd": "添加切换框",
     "switchBoxCurrent": "当前",

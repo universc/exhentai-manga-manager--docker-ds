@@ -268,7 +268,7 @@ if (libraryState.migrated || libraryState.changed) {
   if (!process.env.WEB_LIBRARY) {
     try {
       const settingPath = path.join(STORE_PATH, 'setting.json')
-      const settingTempPath = settingPath + '.tmp'
+      const settingTempPath = settingTmpPath()
       fs.writeFileSync(settingTempPath, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
       fs.renameSync(settingTempPath, settingPath)
       console.log('[libraries] 已写入 setting.json')
@@ -319,9 +319,13 @@ let sendImageLock = false
 
 // ---------- Windows 客户端增强功能 ----------
 // 原子写入 setting.json(与 save-setting 处理器末尾逻辑一致)
+// setting.json 原子写:临时文件必须唯一 —— persistSetting(同步)与 applySetting(异步)可能并发,
+// 以前都用 setting.json.tmp,先完成的那次会把临时文件 rename 走,后一次就 ENOENT(用户报的 bug)
+let settingWriteSeq = 0
+const settingTmpPath = () => path.join(STORE_PATH, 'setting.json.' + process.pid + '.' + (++settingWriteSeq) + '.tmp')
 const persistSetting = () => {
   const targetPath = path.join(STORE_PATH, 'setting.json')
-  const tempPath = path.join(STORE_PATH, 'setting.json.tmp')
+  const tempPath = settingTmpPath()
   fs.writeFileSync(tempPath, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
   fs.renameSync(tempPath, targetPath)
 }
@@ -2960,7 +2964,7 @@ const applySetting = async (receiveSetting) => {
   // 刷新托盘菜单(置顶/开机启动勾选状态与设置同步)
   if (tray) buildTrayMenu()
   const targetPath = path.join(STORE_PATH, 'setting.json')
-  const tempPath = path.join(STORE_PATH, 'setting.json.tmp')
+  const tempPath = settingTmpPath()
   await fs.promises.writeFile(tempPath, JSON.stringify(fileSetting, null, '  '), { encoding: 'utf-8' })
   return await fs.promises.rename(tempPath, targetPath)
 }

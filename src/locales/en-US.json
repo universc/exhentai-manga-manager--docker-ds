@@ -74,6 +74,8 @@
     "libraryAdd": "Add library",
     "libraryInactive": "Not active",
     "switchBoxes": "Library switch",
+    "switchLibraryCurrent": "Current libraries",
+    "switchBoxKeepOne": "At least one switch box must remain",
     "switchBoxLibraries": "Pick the libraries in this box",
     "switchBoxAdd": "Add switch box",
     "switchBoxCurrent": "Current",

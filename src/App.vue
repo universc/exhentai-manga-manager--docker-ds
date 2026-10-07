@@ -61,7 +61,7 @@
             <!-- 设置按钮:与界面模式按钮一套样式(纯 plain,图标不跟主色调) -->
             <el-button v-else-if="id === 'setting'" :icon="SettingIcon" plain @click="$refs.SettingRef.dialogVisibleSetting = true" :title="$t('m.setting')"></el-button>
             <!-- 切换库:点一下 = 切到下一个「库切换」框(书架显示该框内所有库合并的漫画) -->
-            <el-button v-else-if="id === 'switchLibrary'" type="primary" plain :icon="MdBook" @click="switchBox" :title="$t('m.switchLibrary') + (boxLabel ? ': ' + boxLabel : '')"></el-button>
+            <el-button v-else-if="id === 'switchLibrary'" type="primary" plain :icon="switchLibraryIcon" @click="switchBox" :title="$t('m.switchLibraryCurrent') + ':' + (boxLabel || '—')"></el-button>
             <!-- 可自定义的界面按钮 -->
             <el-button
               v-else-if="toolbarButtonMap[id]"
@@ -456,6 +456,11 @@ export default defineComponent({
     // 多库:所有漫画库 / 当前框里的库名(工具栏「切换库」悬浮提示用)
     libraries () {
       return Array.isArray(this.setting?.libraries) ? this.setting.libraries : []
+    },
+    // ⚠️ Options API 的模板拿不到 <script> 里 import 的组件(要靠 this.xxx),
+    // 所以图标必须经 computed 暴露,否则按钮是空白的(用户报的 bug)
+    switchLibraryIcon () {
+      return MdBook
     },
     boxLabel () {
       const boxes = Array.isArray(this.setting?.switchBoxes) ? this.setting.switchBoxes : []
