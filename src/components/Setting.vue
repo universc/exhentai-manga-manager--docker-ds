@@ -1691,7 +1691,7 @@ import en from 'element-plus/dist/locale/en.mjs'
 
 import { version } from '../../package.json'
 import { gh_token } from '../../secret_key.json'
-import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, clearCustomTheme, applyPixelTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey , markContextMenuItemDisabled } from '../utils.js'
+import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, clearCustomTheme, applyPixelTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey , markContextMenuItemDisabled } from '../utils.js'
 import { attachInertiaScroll } from '../inertia-scroll.js'
 import NameFormItem from './NameFormItem.vue'
 
@@ -1799,9 +1799,8 @@ const orderedToolbarItems = computed(() => {
   const saved = setting.value.toolbarButtonOrder
   const ids = Array.isArray(saved) && saved.length ? saved : toolbarButtonDefinitions.map(b => b.id)
   const map = new Map(toolbarButtonDefinitions.map(b => [b.id, b]))
-  const out = ids.map(id => map.get(id)).filter(Boolean)
-  for (const b of toolbarButtonDefinitions) if (!ids.includes(b.id)) out.push(b)
-  return out
+  // 新增元素插到定义顺序里前一个元素之后(与主界面共用 utils.js 的同一个函数)
+  return insertMissingToolbarItems(ids).map(id => map.get(id)).filter(Boolean)
 })
 const onToolbarReorder = (list) => {
   const ids = list.map(b => b.id)

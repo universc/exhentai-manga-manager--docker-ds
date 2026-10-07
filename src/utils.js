@@ -462,6 +462,24 @@ const ensureToolbarButtons = (list, hidden) => {
   return out
 }
 
+// 把「定义里有、用户顺序里还没有」的元素,插到它定义顺序里前一个元素之后(而不是一律丢到末尾)。
+// 这样老配置升级后,新增按钮会出现在它本该在的位置 —— 例如「切换库(switchLibrary)」会紧跟在
+// 「切换阅读器(viewerSwitch)」后面。没有前驱可用时放到最前面。
+const insertMissingToolbarItems = (order, definitions = toolbarButtonDefinitions) => {
+  const defIds = definitions.map(b => b.id)
+  const out = Array.isArray(order) ? order.slice() : []
+  for (const id of defIds) {
+    if (out.includes(id)) continue
+    let inserted = false
+    for (let i = defIds.indexOf(id) - 1; i >= 0; i--) {
+      const at = out.indexOf(defIds[i])
+      if (at > -1) { out.splice(at + 1, 0, id); inserted = true; break }
+    }
+    if (!inserted) out.unshift(id)
+  }
+  return out
+}
+
 // ---------- 内置标签分类中文名(兜底) ----------
 // 标签分类的中文名原本依赖 EhTagTranslation 在线词库(setting.showTranslation);
 // 未开启或词库未加载时会回退成英文 key(character/parody…)。这里内置一份常见分类名兜底,
@@ -756,6 +774,7 @@ export {
   TOOLBAR_NEW_ITEMS,
   TOOLBAR_ALWAYS_ITEMS,
   ensureToolbarButtons,
+  insertMissingToolbarItems,
   DEFAULT_CAT_NAMES,
   resolveCatKey,
   catDisplayName,

@@ -275,7 +275,7 @@ import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save1
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
-import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes } from './utils.js'
+import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes } from './utils.js'
 import { extractCoverColors, pixelateToDataUrl } from './cover-color.js'
 // 内置的默认像素底图(构建后会变成带 hash 的资源 URL)
 import pixelDefaultBg from './assets/pixel-default-bg.png'
@@ -438,10 +438,11 @@ export default defineComponent({
       const tail = ['sortSelect', 'setting', 'uiMode']
       // 老配置的排序里还没有新元素(用户新版里没拖过)→ 按默认位置摆放
       const hasNew = savedOrder.some(id => TOOLBAR_NEW_ITEMS.includes(id))
-      const fullOrder = hasNew
+      const composed = hasNew
         ? base
         : [...head, ...base.filter(id => !head.includes(id) && !tail.includes(id)), ...tail]
-      for (const id of defaultToolbarButtons()) if (!fullOrder.includes(id)) fullOrder.push(id)
+      // 新增元素插到定义顺序里前一个元素之后(与设置页共用 utils.js 的同一个函数)
+      const fullOrder = insertMissingToolbarItems(composed)
       // 只读账户:隐藏写操作类按钮(扫描/批量元数据/合集编辑/标签编辑),服务端同样会拦截
       const viewerBlock = new Set(['manualScan', 'incrementalScan', 'batchMetadata', 'manageCollection', 'manageTag'])
       // ⚠️ 搜索框/搜索按钮/排序框不是 toolbarButtonMap 里的普通按钮(模板里各有一段 v-if 分支),
