@@ -268,8 +268,10 @@ app.get('/api/file', requireLogin, (req, res) => {
   //  ③ 其它(漫画库原图、压缩包解压产物:文件名可能在不同漫画间重名,内容也可能被超分替换)
   //     → 强制校验;Express sendFile 自带 ETag/Last-Modified,内容没变会返回 304,不再重传整张图。
   //     注意:这一档绝不能发 immutable,否则超分替换原文件后会一直显示旧图。
+  // 封面现在按库存放:<数据目录>/libraries/<库名>/cover/
   const coverDir = path.join(STORE_PATH, 'cover')
   const isCover = p.startsWith(coverDir + path.sep)
+    || (p.startsWith(path.join(STORE_PATH, 'libraries') + path.sep) && p.includes(path.sep + 'cover' + path.sep))
   const isGeneratedImage = /^(thumb_|rsz_|resized_|rename_)/.test(path.basename(p))
   res.sendFile(p, {
     headers: isCover

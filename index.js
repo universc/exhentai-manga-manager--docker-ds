@@ -23,7 +23,7 @@ const { prepareTemplate } = require('./modules/prepare_menu.js')
 const { getBookFilelist, geneCover, getImageListByBook, deleteImageFromBook } = require('./fileLoader/index.js')
 const {
   STORE_PATH, isPortable,
-  TEMP_PATH, COVER_PATH, VIEWER_PATH,
+  TEMP_PATH, VIEWER_PATH,
   prepareSetting, prepareCollectionList, preparePath,
   setBootstrapDataPath,
   _mange_reader
@@ -138,6 +138,9 @@ const activeLibrary = libraryState.active
 const startupLibraryPaths = libraryRuntimePaths(STORE_PATH, activeLibrary)
 let LIBRARY_DATA_DIR = startupLibraryPaths.dataDir
 let LIBRARY_VIEWCACHE_DIR = startupLibraryPaths.viewcacheDir
+// 封面缓存也属于「那个库」(用户要求:每个库独自生成封面)—— 用可变变量,随运行时切库走
+let CURRENT_COVER_DIR = startupLibraryPaths.coverDir
+try { fs.mkdirSync(CURRENT_COVER_DIR, { recursive: true }) } catch (e) { /* 稍后生成封面时再试 */ }
 // 首次升级:把旧版放在数据存放目录根部的库数据搬进库数据目录(绝不覆盖已有文件)
 let libraryDataMigration = activeLibrary ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
 let SNAPSHOT_FILE = startupLibraryPaths.snapshotFile
@@ -190,6 +193,8 @@ const openLibraryForScan = async (lib) => {
   const paths = libraryRuntimePaths(STORE_PATH, lib)
   LIBRARY_DATA_DIR = paths.dataDir
   LIBRARY_VIEWCACHE_DIR = paths.viewcacheDir
+  CURRENT_COVER_DIR = paths.coverDir
+  try { fs.mkdirSync(CURRENT_COVER_DIR, { recursive: true }) } catch (e) { /* 稍后生成封面时再试 */ }
   SNAPSHOT_FILE = paths.snapshotFile
   LIBRARY_DB_FILE = paths.dbFile
   setting.library = lib.path
@@ -206,6 +211,8 @@ const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir) => {
     : { moved: [], kept: [] }
   LIBRARY_DATA_DIR = paths.dataDir
   LIBRARY_VIEWCACHE_DIR = paths.viewcacheDir
+  CURRENT_COVER_DIR = paths.coverDir
+  try { fs.mkdirSync(CURRENT_COVER_DIR, { recursive: true }) } catch (e) { /* 稍后生成封面时再试 */ }
   // 首次升级:旧版放在数据存放目录根部的库数据
   libraryDataMigration = lib ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
   SNAPSHOT_FILE = paths.snapshotFile
@@ -1044,10 +1051,10 @@ const translateBookPath = (p, kind) => {
   }
   if (kind === 'coverPath' && (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\') || p.startsWith('/'))) {
     // 封面绝对路径(Windows 盘符 / UNC / Linux 如 /data/cover/...) →
-    // 只取文件名,映射到当前 COVER_PATH(封面文件统一存在共享 cover 目录,
+    // 只取文件名,映射到当前 CURRENT_COVER_DIR(封面文件统一存在共享 cover 目录,
     // NAS 端写入的 /data/cover/x.webp 在 Windows 桌面也能据此读到)
     const base = p.split(/[\\/]/).pop()
-    return base ? path.join(COVER_PATH, base) : p
+    return base ? path.join(CURRENT_COVER_DIR, base) : p
   }
   return p
 }
@@ -1060,8 +1067,8 @@ const toExternalPath = (p, kind) => {
     const rel = p.slice(setting.library.length).replace(/[/\\]+/g, '\\')
     return setting.externalLibraryRoot + rel
   }
-  if (kind === 'coverPath' && setting.externalCoverRoot && p.startsWith(COVER_PATH)) {
-    return setting.externalCoverRoot + '\\' + p.slice(COVER_PATH.length).replace(/[/\\]+/g, '\\')
+  if (kind === 'coverPath' && setting.externalCoverRoot && p.startsWith(CURRENT_COVER_DIR)) {
+    return setting.externalCoverRoot + '\\' + p.slice(CURRENT_COVER_DIR.length).replace(/[/\\]+/g, '\\')
   }
   return p
 }
@@ -1085,7 +1092,7 @@ const acquireCoverName = (filepath) => {
   let coverName = `${base}.webp`
   for (let i = 2; ; i++) {
     try {
-      const fd = fs.openSync(path.join(COVER_PATH, coverName), 'wx')
+      const fd = fs.openSync(path.join(CURRENT_COVER_DIR, coverName), 'wx')
       fs.closeSync(fd)
       return coverName
     } catch (e) {
@@ -1097,7 +1104,7 @@ const acquireCoverName = (filepath) => {
 
 // 生成失败时释放占位文件(sharp 成功输出时会直接覆盖占位文件)
 const releaseCoverName = (coverName) => {
-  try { fs.rmSync(path.join(COVER_PATH, coverName), { force: true }) } catch {}
+  try { fs.rmSync(path.join(CURRENT_COVER_DIR, coverName), { force: true }) } catch {}
 }
 
 // 生成封面(指定漫画名)并返回本地 coverPath;失败返回 null
@@ -1157,7 +1164,7 @@ const ensureBookCover = (book) => {
         // basename 兜底:共享 cover 目录里可能存在其他平台生成的文件
         const base = String(book.coverPath).replace(/[\\/]+$/, '').split(/[\\/]/).pop()
         if (base) {
-          const fallback = path.join(COVER_PATH, base)
+          const fallback = path.join(CURRENT_COVER_DIR, base)
           if (fs.existsSync(fallback)) {
             await updateBookCoverPath(book.id, fallback)
             return fallback
@@ -1415,7 +1422,7 @@ const processScanItem = async (ctx, filepath, type) => {
         // update the Mangas table in database.sqlite(路径写 Windows 格式)
         // 懒加载模式下旧封面可能为空:保留空,由用户使用时按需生成
         const newCoverPath = foundPrevBook.coverPath
-          ? path.join(COVER_PATH, path.basename(foundPrevBook.coverPath))
+          ? path.join(CURRENT_COVER_DIR, path.basename(foundPrevBook.coverPath))
           : null
         foundPrevBook.coverPath = newCoverPath
         await Manga.update(
@@ -1453,7 +1460,7 @@ const processScanItem = async (ctx, filepath, type) => {
     foundData.exist = true
     if (isPortable) {
       const newCoverPath = foundData.coverPath
-        ? path.join(COVER_PATH, path.basename(foundData.coverPath))
+        ? path.join(CURRENT_COVER_DIR, path.basename(foundData.coverPath))
         : null
       if (foundData.coverPath !== newCoverPath) {
         foundData.coverPath = newCoverPath
@@ -1534,15 +1541,15 @@ const runScan = async () => {
     return
   }
   try {
-    // 清理孤儿封面。封面文件都存放在共享 COVER_PATH 目录,而数据库里的
+    // 清理孤儿封面。封面文件都存放在共享 CURRENT_COVER_DIR 目录,而数据库里的
     // coverPath 可能是 Windows 盘符 / UNC / Linux(/data/...) 任意一种格式,
     // 统一按 basename 对比,避免误删另一平台格式路径引用的封面。
-    const coverList = await fs.promises.readdir(COVER_PATH)
+    const coverList = await fs.promises.readdir(CURRENT_COVER_DIR)
     const existCoverSet = new Set(existData
       .map(b => b.coverPath ? path.basename(String(b.coverPath).replace(/[\\/]+$/, '')) : null)
       .filter(Boolean))
     const removeCoverList = coverList
-      .map(p => path.join(COVER_PATH, p))
+      .map(p => path.join(CURRENT_COVER_DIR, p))
       .filter(p => !existCoverSet.has(path.basename(p)))
     for (const coverPath of removeCoverList) {
       await fs.promises.rm(coverPath)
@@ -1726,7 +1733,7 @@ const runIncrementalScan = async () => {
     try {
       for (const row of removedRows) {
         if (row.coverPath) {
-          const coverFile = path.join(COVER_PATH, path.basename(String(row.coverPath)))
+          const coverFile = path.join(CURRENT_COVER_DIR, path.basename(String(row.coverPath)))
           await fs.promises.rm(coverFile, { force: true }).catch(() => {})
         }
       }
@@ -1780,7 +1787,7 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
   // 封面懒加载为固定行为:重建库也不生成封面,由用户浏览时按需生成
   await Manga.destroy({ truncate: true })
   await clearFolder(TEMP_PATH)
-  await clearFolder(COVER_PATH)
+  await clearFolder(CURRENT_COVER_DIR)
   sendMessageToWebContents('开始加载漫画库')
   setProgressBar(0.02)
   let list = await getBookFilelist(setting.library)
@@ -1851,7 +1858,7 @@ ipcMain.handle('patch-local-metadata', async (event, arg) => {
   const bookList = await loadBookListFromDatabase()
   const bookListLength = bookList.length
   await clearFolder(TEMP_PATH)
-  await clearFolder(COVER_PATH)
+  await clearFolder(CURRENT_COVER_DIR)
 
   const CONCURRENCY = 4
   const BATCH_SIZE = 200
@@ -2007,9 +2014,13 @@ ipcMain.handle('save-book', async (event, book) => {
 
 // home
 ipcMain.handle('get-folder-tree', async (event, filePathList) => {
-  const librarySplitPathsLength = setting.library.split(path.sep).length - 1
+  // 每个路径按「它所属的那个库」的根目录来切 —— 合并显示不同库时根深度可能不一样
   const folderList = [...new Set(filePathList.map(filepath => path.dirname(filepath)))]
-  const bookPathSplitList = folderList.sort().map(fp => fp.split(path.sep).slice(librarySplitPathsLength))
+  const bookPathSplitList = folderList.sort().map(fp => {
+    const root = (libraryForPath(fp) || libraryForPath(path.dirname(fp)) || { path: setting.library }).path
+    const rootDepth = String(root || '').split(path.sep).length - 1
+    return fp.split(path.sep).slice(rootDepth)
+  })
   const folderTreeObject = {}
   for (const folders of bookPathSplitList) {
     _.set(folderTreeObject, folders.map(f => '_' + f), {})
@@ -2062,7 +2073,7 @@ ipcMain.handle('show-file', async (event, filepath) => {
 
 ipcMain.handle('use-new-cover', async (event, filepath) => {
   const copyTempCoverPath = path.join(TEMP_PATH, nanoid(8) + path.extname(filepath))
-  const coverPath = path.join(COVER_PATH, nanoid() + path.extname(filepath))
+  const coverPath = path.join(CURRENT_COVER_DIR, nanoid() + path.extname(filepath))
   try {
     await fs.promises.copyFile(filepath, copyTempCoverPath)
     await sharp(copyTempCoverPath, { failOnError: false })
@@ -2338,7 +2349,8 @@ ipcMain.handle('move-local-book', async (event, oldPath, folderArr) => {
   try {
     const pathSep = require('path').sep
     const folderPath = Array.isArray(folderArr) && folderArr.length > 0 ? folderArr.join(pathSep) : ''
-    const newFilePath = path.join(path.dirname(setting.library), folderPath, path.basename(oldPath))
+    const ownerRoot = (libraryForPath(oldPath) || { path: setting.library }).path
+    const newFilePath = path.join(path.dirname(ownerRoot), folderPath, path.basename(oldPath))
     if (oldPath !== newFilePath) {
       await fs.promises.rename(oldPath, newFilePath)
       sendMessageToWebContents(`已将 ${oldPath} 移动到 ${newFilePath}`)
@@ -3059,6 +3071,9 @@ ipcMain.handle('set-active-box', async (event, arg) => {
     // 切框只改「书架显示哪几个库」:不碰扫描/写操作的运行时,所以**扫描中也可以切**。
     // 每本书自带 libraryId 决定写回哪个库;扫描也是自带库循环逐个扫,两者互不干扰。
     setting.activeBoxIndex = idx
+    // 兼容:还有几处(移动文件/文件夹树/局域网根目录)仍读 setting.library,同步成框里第一个库
+    const firstLib = boxLibraries()[0]
+    if (firstLib) setting.library = firstLib.path
     await applySetting({})
     return { ok: true, activeChanged: true, ...librariesSnapshot() }
   } catch (e) {
