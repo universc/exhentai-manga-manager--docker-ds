@@ -1209,14 +1209,17 @@ ipcMain.handle('set-viewer-active', (event, active) => {
   viewerActive = !!active
 })
 
-// 编译排除规则正则(非法正则返回 null,与旧逻辑一致:忽略该规则)
+// 自动排除规则:这些是「软件自己的数据」,绝不能被当成漫画扫描进来
+// (设置 → 高级 → 排除文件 下方会用灰字列出来,让用户知道它们始终生效)
+const AUTO_EXCLUDE_PATTERNS = ['(.trash)', 'viewcache', '(database.sqlite)', '(metadata.sqlite)', '(setting.json)', '(scan-snapshot.json)', '(delete-log.jsonl)', '(.deleted-)']
+// 编译排除规则正则:用户规则 + 自动规则(任一命中即排除)
 const compileExclude = () => {
-  if (_.isEmpty(setting.excludeFile)) return null
+  const user = _.isEmpty(setting.excludeFile) ? '' : String(setting.excludeFile)
+  const all = (user ? [user] : []).concat(AUTO_EXCLUDE_PATTERNS)
   try {
-    return new RegExp(setting.excludeFile)
-  } catch {
-    console.log('Illegal regular expressions')
-    return null
+    return new RegExp('(' + all.join(')|(') + ')')
+  } catch (e) {
+    try { return new RegExp('(' + AUTO_EXCLUDE_PATTERNS.join(')|(') + ')') } catch (e2) { return null }
   }
 }
 
@@ -1594,7 +1597,7 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
   if (!_.isEmpty(setting.excludeFile)) {
     let excludeRe
     try {
-      excludeRe = new RegExp(setting.excludeFile)
+      excludeRe = compileExclude()
       list = _.filter(list, file => !excludeRe.test(file.filepath))
     } catch {
       console.log('Illegal regular expressions')
@@ -1934,11 +1937,20 @@ const appendDeleteLog = async (entry) => {
 const movePathToTrash = async (srcPath, meta = {}, options = {}) => {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const name = path.basename(srcPath)
-  await fs.promises.mkdir(TRASH_DIR, { recursive: true })
-  let dest = path.join(TRASH_DIR, stamp + '--' + name)
-  let n = 1
-  while (fs.existsSync(dest)) dest = path.join(TRASH_DIR, stamp + '--' + name + '(' + (++n) + ')')
-  let mode = 'move'
+  let dest
+  if (options.inPlace) {
+    // 原地改名:文件不动地方(不跨盘、不占额外空间),只换成一个不会被扫描的名字 ——
+    // 数据库/扫描快照里没有它、界面上也看不到;从回收站恢复就是改回原名
+    dest = path.join(path.dirname(srcPath), '.' + name + '.deleted-' + stamp)
+    let k = 1
+    while (fs.existsSync(dest)) dest = path.join(path.dirname(srcPath), '.' + name + '.deleted-' + stamp + '(' + (++k) + ')')
+  } else {
+    await fs.promises.mkdir(TRASH_DIR, { recursive: true })
+    dest = path.join(TRASH_DIR, stamp + '--' + name)
+    let n = 1
+    while (fs.existsSync(dest)) dest = path.join(TRASH_DIR, stamp + '--' + name + '(' + (++n) + ')')
+  }
+  let mode = options.inPlace ? 'rename-in-place' : 'move'
   if (options.keepOriginal) {
     // 压缩包这类「原地重写」的文件:只能留一份备份,原件必须留在原处
     mode = 'copy'
@@ -1989,7 +2001,7 @@ ipcMain.handle('delete-local-book', async (event, filepath) => {
     const stats = await fs.promises.stat(filepath)
     if (stats.isDirectory() || stats.isFile()) {
       // 整本(或压缩包)一次性移入回收站:不再逐张图操作,既快又不会删一半留一半
-      await movePathToTrash(filepath, info)
+      await movePathToTrash(filepath, info, { inPlace: true })
       result.trashed = true
     } else {
       result.error = '不支持的路径类型'
@@ -2426,7 +2438,7 @@ ipcMain.handle('delete-image', async (event, filename, filepath, type) => {
     }
     try {
       await fs.promises.stat(abs)
-      await movePathToTrash(abs, meta)
+      await movePathToTrash(abs, meta, { inPlace: true })
       result.ok = true
       result.trashed = true
       sendMessageToWebContents('已把这张图移入回收站:' + rel + '(可在 设置 → 常用 → 回收站 里恢复)')

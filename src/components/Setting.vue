@@ -681,6 +681,7 @@
                 <template #prepend><span class="setting-label">{{$t('m.excludeFile')}}</span></template>
               </el-input>
             </div>
+            <div class="setting-line toolbar-tip">{{$t('m.excludeFileAuto')}}</div>
           </el-col>
           <el-col :span="24">
             <div class="setting-line">
