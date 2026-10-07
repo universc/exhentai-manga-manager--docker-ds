@@ -2756,7 +2756,23 @@ const onBoxesChange = () => { applyLibraries() }
 const libraryDataDirPlaceholder = () => t('m.libraryDataPathDefault')
 
 const applyLibrariesResponse = (res) => {
-  const valid = res.libraries.map(l => ({ id: l.id, name: l.name, path: l.path, dataPath: l.dataPath }))
+  // 双环境路径:界面上编辑的永远是「本端」那一组,另一端原值存在 pathOther/dataPathOther 里,
+  // 提交时原样带回去 —— 这样两端共用一份 setting.json 也绝不会把对方的路径覆盖掉。
+  const web = isWebMode.value
+  const valid = res.libraries.map(l => {
+    const deskPath = l.path || ''
+    const deskData = l.dataPath || ''
+    const webPath = l.pathWeb || ''
+    const webData = l.dataPathWeb || ''
+    return {
+      id: l.id,
+      name: l.name,
+      path: web ? (webPath || deskPath) : deskPath,
+      dataPath: web ? (webData || deskData) : deskData,
+      pathOther: web ? deskPath : webPath,
+      dataPathOther: web ? deskData : webData
+    }
+  })
   const validIds = new Set(valid.map(l => l.id))
   // 保留还没填「库文件夹」的草稿行(点了添加但还没选目录),别让下一次提交把它冲掉
   const drafts = libraries.value.filter(l => !l.path && !validIds.has(l.id))
@@ -2786,9 +2802,13 @@ const applyLibraries = async () => {
   if (libraryBusy.value) return
   libraryBusy.value = true
   try {
+    const web = isWebMode.value
     const payload = libraries.value
       .filter(l => l.path)
-      .map(l => ({ id: l.id, name: l.name, path: l.path, dataPath: l.dataPath || '' }))
+      .map(l => (web
+        // 网页端:界面上的 path/dataPath 是容器路径 → 写进 pathWeb/dataPathWeb,桌面那组原样带回
+        ? { id: l.id, name: l.name, path: l.pathOther || '', dataPath: l.dataPathOther || '', pathWeb: l.path, dataPathWeb: l.dataPath || '' }
+        : { id: l.id, name: l.name, path: l.path, dataPath: l.dataPath || '', pathWeb: l.pathOther || '', dataPathWeb: l.dataPathOther || '' }))
     const activeId = payload.some(l => l.id === activeLibraryId.value) ? activeLibraryId.value : (payload[0] ? payload[0].id : '')
     const res = await ipcRenderer.invoke('apply-libraries', {
       libraries: JSON.parse(JSON.stringify(payload)),

@@ -37,23 +37,26 @@ const getBookFilelist = async (library) => {
 // coverName 三态:undefined=旧行为(扫描即生成,nanoid 文件名);
 // null=懒加载模式(只探测第一页信息,不生成封面文件,coverPath 为 null);
 // 字符串=以指定文件名生成封面(如「漫画名.webp」)
-const geneCover = async (filepath, type, coverName) => {
+// coverDirOverride:封面写到哪个目录。多库之后封面按库存放,index.js 会把
+// 「当前库的封面目录」传进来;不传则退回全局 STORE_PATH/cover(旧行为)。
+const geneCover = async (filepath, type, coverName, coverDirOverride) => {
+  const COVER_DIR = coverDirOverride || COVER_PATH
   let targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime
   switch (type) {
     case 'folder':
-      ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeFolder(filepath, TEMP_PATH, COVER_PATH, coverName))
+      ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeFolder(filepath, TEMP_PATH, COVER_DIR, coverName))
       break
     case 'zip':
       try {
-        ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeArchive(filepath, TEMP_PATH, COVER_PATH, coverName))
+        ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeArchive(filepath, TEMP_PATH, COVER_DIR, coverName))
       } catch (e) {
         console.log(e)
         console.log(`reload ${filepath} use adm-zip`)
-        ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeZip(filepath, TEMP_PATH, COVER_PATH, coverName))
+        ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeZip(filepath, TEMP_PATH, COVER_DIR, coverName))
       }
       break
     case 'archive':
-      ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeArchive(filepath, TEMP_PATH, COVER_PATH, coverName))
+      ;({ targetFilePath, coverPath, tempCoverPath, pageCount, bundleSize, mtime } = await solveBookTypeArchive(filepath, TEMP_PATH, COVER_DIR, coverName))
       break
   }
 

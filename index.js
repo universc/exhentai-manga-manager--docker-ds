@@ -32,7 +32,10 @@ const {
 const { findSameFile } = require('./fileLoader/folder.js')
 const { inventoryLibrary, diffInventory, snapshotFromInventory, loadSnapshotFile, saveSnapshotFile, archiveTypeOf } = require('./fileLoader/incremental.js')
 const localModels = require('./modules/localModels.js')
-const { ensureLibraries, libraryDataDir, libraryRuntimePaths, isLibraryActive, shouldMoveLibraryData, migrateLibraryData } = require('./modules/libraries.js')
+const {
+  ensureLibraries, libraryDataDir, libraryRuntimePaths, isLibraryActive, shouldMoveLibraryData, migrateLibraryData,
+  runtimeLibraries, localLibraryPath, localLibraryDataPath
+} = require('./modules/libraries.js')
 
 const WEB_MODE = process.env.WEB_MODE === '1'
 
@@ -75,11 +78,17 @@ if (process.env.WEB_LIBRARY) {
 // 数据归属:scan-snapshot.json / database.sqlite / viewcache 属于「库」,放库数据目录;
 // metadata.sqlite / setting.json / collectionList.json / cover 等属于「用户统一配置」,仍在数据存放目录。
 // 当前活动库(多库管理 UI 切换的就是它)。第 3 条 C:没填「库数据存放位置」的库不生效、不参与。
+// 当前环境:网页版/容器 还是 桌面版。
+// libraries 里存了两组路径(path/dataPath = 桌面,pathWeb/dataPathWeb = 网页),
+// 业务代码统一通过 runtimeLibs() 拿到「本端」那一组 —— 两端共用同一份 setting.json 也不会互相打架。
+const IS_WEB_ENV = !!process.env.WEB_LIBRARY
+const runtimeLibs = (s = setting) => runtimeLibraries(s, IS_WEB_ENV)
+
 const activeLibraryOf = (s = setting) => {
-  const list = s.libraries || []
+  const list = runtimeLibs(s)
   const byId = list.find(l => l.id === s.activeLibraryId)
-  if (byId && isLibraryActive(byId)) return byId
-  return list.find(isLibraryActive) || null
+  if (byId && isLibraryActive(byId, IS_WEB_ENV)) return byId
+  return list.find(l => isLibraryActive(l, IS_WEB_ENV)) || null
 }
 // ---------- 库切换框(工具栏「切换库」按框循环) ----------
 // 每个框 = 一组库;点一下工具栏按钮就切到下一个框,书架显示该框内所有库合并的漫画。
@@ -92,7 +101,7 @@ const activeBoxOf = (s = setting) => {
 }
 // 当前框里「已生效」的库;没配置框 / 框为空时退化成「所有已生效的库」
 const boxLibraries = (s = setting) => {
-  const active = (s.libraries || []).filter(isLibraryActive)
+  const active = runtimeLibs(s).filter(l => isLibraryActive(l, IS_WEB_ENV))
   const box = activeBoxOf(s)
   if (!box) return active              // 完全没配置切换框 → 退化成「所有已生效的库」
   const ids = Array.isArray(box.libraryIds) ? box.libraryIds : []
@@ -1136,7 +1145,7 @@ const generateCoverByName = async (book) => {
   const type = book.type || 'archive'
   const coverName = acquireCoverName(filepath)
   try {
-    const { coverPath } = await geneCover(filepath, type, coverName)
+    const { coverPath } = await geneCover(filepath, type, coverName, CURRENT_COVER_DIR)
     if (!coverPath || !fs.existsSync(coverPath)) {
       releaseCoverName(coverName)
       return null
@@ -1172,6 +1181,14 @@ const releaseCoverSlot = () => {
 // 每本书的生成任务锁:并发请求只生成一次
 const coverJobs = new Map()
 
+// 封面文件必须「存在且不为空」才算可用。
+// 背景:封面是先建 0 字节占位文件、再让 sharp 覆盖写入的;如果生成环节出错或写到别处,
+// 就会留下 0 字节文件 —— 只判 existsSync 会把空文件当封面,表现就是「封面全是破图」。
+const isUsableCover = (p) => {
+  if (!p) return false
+  try { return fs.statSync(p).size > 0 } catch (e) { return false }
+}
+
 // 按需确保封面存在:
 // 1) DB 里 coverPath 翻译成本地路径后文件存在 → 直接复用;
 // 2) 否则按 basename 在共享封面目录里找(另一平台生成的旧封面) → 复用并修正 DB 路径;
@@ -1183,12 +1200,12 @@ const ensureBookCover = (book) => {
     try {
       if (book.coverPath) {
         const local = translateBookPath(book.coverPath, 'coverPath')
-        if (local && fs.existsSync(local)) return local
+        if (isUsableCover(local)) return local
         // basename 兜底:共享 cover 目录里可能存在其他平台生成的文件
         const base = String(book.coverPath).replace(/[\\/]+$/, '').split(/[\\/]/).pop()
         if (base) {
           const fallback = path.join(CURRENT_COVER_DIR, base)
-          if (fs.existsSync(fallback)) {
+          if (isUsableCover(fallback)) {
             await updateBookCoverPath(book.id, fallback)
             return fallback
           }
@@ -1459,7 +1476,7 @@ const processScanItem = async (ctx, filepath, type) => {
     } else {
       // this is the new file, so generate the cover(懒加载:只探测信息,封面为空)
       const id = nanoid()
-      const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null)
+      const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null, CURRENT_COVER_DIR)
       // 懒加载模式下 coverPath 为 null(封面按需生成),书仍然入库
       if (targetFilePath) {
         batchNewBooks.push({
@@ -1840,7 +1857,7 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
       await waitViewerIdle()
       try {
         const id = nanoid()
-        const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null)
+        const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null, CURRENT_COVER_DIR)
         // 懒加载模式下 coverPath 为 null(封面按需生成),书仍然入库
         if (targetFilePath) {
           batchNewBooks.push({
@@ -1901,7 +1918,7 @@ ipcMain.handle('patch-local-metadata', async (event, arg) => {
         // 封面以漫画名命名(占位防并发)
         const coverName = acquireCoverName(filepath)
         try {
-          const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName)
+          const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName, CURRENT_COVER_DIR)
           if (targetFilePath && coverPath) {
             _.assign(book, { type, coverPath, hash, pageCount, bundleSize, mtime: mtime.toJSON(), coverHash })
             await saveBookToDatabase(book)
@@ -1931,7 +1948,7 @@ ipcMain.handle('patch-local-metadata-by-book', async (event, book) => {
   // 封面以漫画名命名(占位防并发)
   const coverName = acquireCoverName(filepath)
   try {
-    const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName)
+    const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName, CURRENT_COVER_DIR)
     if (targetFilePath && coverPath) {
       await clearFolder(TEMP_PATH)
       return Promise.resolve({ coverPath, hash, pageCount, bundleSize, mtime: mtime.toJSON(), coverHash })
@@ -2139,7 +2156,8 @@ const TRASH_INDEX = path.join(TRASH_DIR, 'index.json')
 const LEGACY_DELETE_LOG = path.join(STORE_PATH, 'delete-log.jsonl')
 // 按路径判断它属于哪个库(路径前缀最长匹配)——「每个操作都对应相应的库」的基础
 const libraryForPath = (p) => {
-  const list = (setting.libraries || []).filter(isLibraryActive)
+  // 只在本端路径上做前缀匹配(投影后 path 就是本端值)
+  const list = runtimeLibs().filter(l => isLibraryActive(l, IS_WEB_ENV))
   const s = String(p || '')
   if (!s) return null
   return list.filter(l => s.startsWith(l.path)).sort((a, b) => b.path.length - a.path.length)[0] || null
@@ -2997,14 +3015,20 @@ ipcMain.handle('save-setting', async (event, receiveSetting) => {
 // ---------- 多库管理(第二十九轮) ----------
 // 返回给设置页的库列表:额外带上解析后的「库数据目录」,方便 UI 显示
 const librariesSnapshot = () => ({
+  // 两组原始路径都给 UI(桌面端编辑 path/dataPath,网页端编辑 pathWeb/dataPathWeb),
+  // 另附 localPath/localDataPath = 本端实际使用的值
   libraries: (setting.libraries || []).map(l => ({
     id: l.id,
     name: l.name,
-    path: l.path,
+    path: l.path || '',
     dataPath: l.dataPath || '',
-    dataDir: libraryDataDir(STORE_PATH, l),
-    // 第 3 条 C:没填「库数据存放位置」的库不生效
-    active: isLibraryActive(l)
+    pathWeb: l.pathWeb || '',
+    dataPathWeb: l.dataPathWeb || '',
+    localPath: localLibraryPath(l, IS_WEB_ENV),
+    localDataPath: localLibraryDataPath(l, IS_WEB_ENV),
+    dataDir: libraryDataDir(STORE_PATH, l, IS_WEB_ENV),
+    // 第 3 条 C:没填「库数据存放位置」的库不生效(按本端那一组判断)
+    active: isLibraryActive(l, IS_WEB_ENV)
   })),
   activeLibraryId: setting.activeLibraryId || '',
   library: setting.library || '',

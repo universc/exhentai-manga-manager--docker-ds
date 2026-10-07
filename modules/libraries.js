@@ -42,17 +42,46 @@ const safeDirName = (name) => {
 }
 
 // 某个库的数据目录:用户自定义优先,否则 <数据存放目录>/libraries/<库名>/
-const libraryDataDir = (storePath, lib) => {
-  const custom = String(lib && lib.dataPath ? lib.dataPath : '').trim()
+const libraryDataDir = (storePath, lib, isWeb) => {
+  const custom = localLibraryDataPath(lib, isWeb)
   if (custom) return custom
   const name = safeDirName((lib && (lib.name || lib.id)) || 'library')
   return path.join(storePath, LIBRARIES_DIR, name)
 }
 
-// 只读兼容层:规范化 setting.libraries,必要时从 setting.library 迁移;返回本次是否发生迁移/变更。
+// 某个库在「当前环境」下的路径。
+// 老配置只有单个 path 字段 → 视作两端通用(网页端直接沿用桌面值)。
+const localLibraryPath = (lib, isWeb) => {
+  if (!lib) return ''
+  const web = isWeb === undefined ? !!process.env.WEB_LIBRARY : !!isWeb
+  const desk = String(lib.path || '').trim()
+  if (!web) return desk
+  return String(lib.pathWeb || '').trim() || desk
+}
+const localLibraryDataPath = (lib, isWeb) => {
+  if (!lib) return ''
+  const web = isWeb === undefined ? !!process.env.WEB_LIBRARY : !!isWeb
+  const desk = String(lib.dataPath || '').trim()
+  if (!web) return desk
+  return String(lib.dataPathWeb || '').trim() || desk
+}
+// 把落盘的双字段列表投影成「本端路径」列表,供 index.js 的运行时使用。
+// 不修改传入的 setting —— 只读投影。
+const runtimeLibraries = (setting, isWeb) => (Array.isArray(setting && setting.libraries) ? setting.libraries : [])
+  .map(lib => ({
+    ...lib,
+    path: localLibraryPath(lib, isWeb),
+    dataPath: localLibraryDataPath(lib, isWeb)
+  }))
+
+// 规范化 setting.libraries,必要时从 setting.library 迁移;返回本次是否发生迁移/变更。
+// options.isWeb:当前是不是网页版/容器(默认按 process.env.WEB_LIBRARY 判断)。
+//   —— 决定把 path/pathWeb 中的哪一组投影成本端路径,写盘时只写自己那一半。
 // options.nameHint:容器模式下 setting.library 会被映射成 /library,但共享 setting.json 里存的是
 // Windows 路径(Y:\...)。用这个名字提示保证容器与桌面算出同一个「库名」,即同一个库数据目录。
 const ensureLibraries = (setting, options = {}) => {
+  // 当前环境:网页版/容器 还是 桌面版 —— 决定运行时投影用哪一组路径
+  const isWeb = (options && options.isWeb !== undefined) ? !!options.isWeb : !!process.env.WEB_LIBRARY
   const before = JSON.stringify({
     libraries: setting.libraries === undefined ? null : setting.libraries,
     activeLibraryId: setting.activeLibraryId === undefined ? null : setting.activeLibraryId,
@@ -73,7 +102,11 @@ const ensureLibraries = (setting, options = {}) => {
       id: String(item.id || '') || newLibraryId(),
       name: String(item.name || '').trim() || libraryNameFromPath(p, list.length),
       path: p,
-      dataPath: typeof item.dataPath === 'string' ? item.dataPath : ''
+      dataPath: typeof item.dataPath === 'string' ? item.dataPath : '',
+      // 双环境路径:同一份 setting.json 可能被桌面版与网页版共用,
+      // path/dataPath 是桌面(Windows)那组,pathWeb/dataPathWeb 是容器那组
+      pathWeb: typeof item.pathWeb === 'string' ? item.pathWeb : '',
+      dataPathWeb: typeof item.dataPathWeb === 'string' ? item.dataPathWeb : ''
     })
   }
 
@@ -85,7 +118,7 @@ const ensureLibraries = (setting, options = {}) => {
     if (legacy) {
       const nameHint = String((options && options.nameHint) || '').trim()
       const name = nameHint ? libraryNameFromPath(nameHint, 0) : libraryNameFromPath(legacy, 0)
-      list.push({ id: newLibraryId(), name, path: legacy, dataPath: '' })
+      list.push({ id: newLibraryId(), name, path: legacy, dataPath: '', pathWeb: '', dataPathWeb: '' })
       state.migrated = true
     }
   }
@@ -98,9 +131,12 @@ const ensureLibraries = (setting, options = {}) => {
   // 由活动库路径回填 setting.library,避免旧值把用户刚选中的新库路径覆盖掉。
   if (active) {
     const legacy = String(setting.library || '').trim()
-    if (options.preferList) setting.library = active.path
-    else if (legacy) active.path = legacy
-    else setting.library = active.path
+    if (options.preferList) setting.library = localLibraryPath(active, isWeb)
+    else if (legacy && !isWeb) {
+      // setting.library 是**桌面端的遗留单值字段**,只有桌面端才用它回填活动库;
+      // 网页端若照做会把 pathWeb(容器路径)覆盖成 Windows 路径。
+      active.path = legacy
+    } else setting.library = localLibraryPath(active, isWeb)
   }
   state.active = active
 
@@ -114,7 +150,19 @@ const ensureLibraries = (setting, options = {}) => {
     usedNames.add(name.toLowerCase())
     lib.name = name
   }
-  setting.libraries = list.map(l => ({ id: l.id, name: l.name, path: l.path, dataPath: l.dataPath }))
+  // ── 双环境路径(A 方案:两端各存自己那一半) ───────────────────────────────
+  // 约定:path / dataPath        = 桌面版(Windows)那组
+  //       pathWeb / dataPathWeb  = 网页版 / 容器那组
+  // 这里【只规范化,绝不投影、绝不写对方字段】—— setting.libraries 本身就是落盘内容,
+  // 任何投影都会把另一端的路径覆盖掉。运行时需要「本端路径」时请调用 runtimeLibraries()。
+  setting.libraries = list.map(l => ({
+    id: l.id,
+    name: l.name,
+    path: String(l.path || '').trim(),
+    dataPath: String(l.dataPath || '').trim(),
+    pathWeb: String(l.pathWeb || '').trim(),
+    dataPathWeb: String(l.dataPathWeb || '').trim()
+  }))
   setting.activeLibraryId = active ? active.id : ''
 
   const after = JSON.stringify({
@@ -152,7 +200,9 @@ const shouldMoveLibraryData = (prevLib, nextLib, prevDataDir, nextDataDir) => {
 
 // 库是否「已生效」:用户第 3 条 C —— 没填「库数据存放位置」的库不加载、不扫描。
 // (path 也要有;dataPath 留空 = 这个库还不算配置完成)
-const isLibraryActive = (lib) => !!(lib && String(lib.path || '').trim() && String(lib.dataPath || '').trim())
+const isLibraryActive = (lib, isWeb) => !!(
+  lib && localLibraryPath(lib, isWeb) && localLibraryDataPath(lib, isWeb)
+)
 
 // 属于「某个库」的数据文件名(第二十八轮起从「数据存放目录」根部搬进库数据目录)
 const LIBRARY_DATA_FILES = ['scan-snapshot.json', 'viewcache', 'database.sqlite', 'bookList.json', 'bookList.json.br']
@@ -205,6 +255,9 @@ module.exports = {
   libraryNameFromPath,
   safeDirName,
   libraryDataDir,
+  localLibraryPath,
+  localLibraryDataPath,
+  runtimeLibraries,
   libraryRuntimePaths,
   isLibraryActive,
   shouldMoveLibraryData,
