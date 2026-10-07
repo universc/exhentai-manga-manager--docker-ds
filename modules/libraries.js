@@ -11,6 +11,7 @@
 //       用户以后可为单个库指定自定义路径(本层已支持读取,尚未提供 UI)。
 
 const path = require('path')
+const fs = require('fs')
 const crypto = require('crypto')
 
 // 每个库默认的数据目录所在子目录名
@@ -48,8 +49,10 @@ const libraryDataDir = (storePath, lib) => {
   return path.join(storePath, LIBRARIES_DIR, name)
 }
 
-// 只读兼容层:规范化 setting.libraries,必要时从 setting.library 迁移;返回本次是否发生迁移/变更
-const ensureLibraries = (setting) => {
+// 只读兼容层:规范化 setting.libraries,必要时从 setting.library 迁移;返回本次是否发生迁移/变更。
+// options.nameHint:容器模式下 setting.library 会被映射成 /library,但共享 setting.json 里存的是
+// Windows 路径(Y:\...)。用这个名字提示保证容器与桌面算出同一个「库名」,即同一个库数据目录。
+const ensureLibraries = (setting, options = {}) => {
   const before = JSON.stringify({
     libraries: setting.libraries === undefined ? null : setting.libraries,
     activeLibraryId: setting.activeLibraryId === undefined ? null : setting.activeLibraryId,
@@ -76,11 +79,13 @@ const ensureLibraries = (setting) => {
 
   const state = { migrated: false, changed: false, active: null }
 
-  // 旧版单库 → 默认库
+  // 旧版单库 → 默认库(容器模式优先用 nameHint,保证与桌面端同名)
   if (!list.length) {
     const legacy = String(setting.library || '').trim()
     if (legacy) {
-      list.push({ id: newLibraryId(), name: libraryNameFromPath(legacy, 0), path: legacy, dataPath: '' })
+      const nameHint = String((options && options.nameHint) || '').trim()
+      const name = nameHint ? libraryNameFromPath(nameHint, 0) : libraryNameFromPath(legacy, 0)
+      list.push({ id: newLibraryId(), name, path: legacy, dataPath: '' })
       state.migrated = true
     }
   }
@@ -109,6 +114,49 @@ const ensureLibraries = (setting) => {
   return state
 }
 
+// 属于「某个库」的数据文件名(第二十八轮起从「数据存放目录」根部搬进库数据目录)
+const LIBRARY_DATA_FILES = ['scan-snapshot.json', 'viewcache', 'database.sqlite']
+const SQLITE_SIDECAR_RE = /^database\.sqlite-(journal|wal|shm)$/
+
+// 把旧版放在「数据存放目录」根部的库数据搬进该库的库数据目录:
+//   scan-snapshot.json(扫描快照)/ viewcache(缩略图缓存)/ database.sqlite(库数据库)及 SQLite 附属文件。
+// 原则:只在「目标不存在」时搬,绝不覆盖已有数据;库数据目录与数据存放目录相同时什么都不做。
+// 返回 { moved, kept },供启动日志说明发生了什么。
+const migrateLibraryData = (storePath, libDataDir) => {
+  const result = { moved: [], kept: [] }
+  if (!storePath || !libDataDir) return result
+  const src = path.resolve(storePath)
+  const dst = path.resolve(libDataDir)
+  if (src === dst) return result
+  fs.mkdirSync(dst, { recursive: true })
+  const move = (name) => {
+    const from = path.join(src, name)
+    const to = path.join(dst, name)
+    try {
+      if (!fs.existsSync(from)) return
+      if (fs.existsSync(to)) { result.kept.push(name); return }
+      try {
+        fs.renameSync(from, to)
+      } catch {
+        // 跨盘或占用:复制后再删源
+        fs.cpSync(from, to, { recursive: true, force: false, errorOnExist: true })
+        fs.rmSync(from, { recursive: true, force: true })
+      }
+      result.moved.push(name)
+    } catch (e) {
+      result.kept.push(name)
+      result.error = String((e && e.message) || e)
+    }
+  }
+  for (const name of LIBRARY_DATA_FILES) move(name)
+  try {
+    for (const name of fs.readdirSync(src)) {
+      if (SQLITE_SIDECAR_RE.test(name)) move(name)
+    }
+  } catch { /* 目录不存在等:忽略 */ }
+  return result
+}
+
 module.exports = {
   LIBRARIES_DIR,
   newLibraryId,
@@ -117,5 +165,6 @@ module.exports = {
   libraryNameFromPath,
   safeDirName,
   libraryDataDir,
-  ensureLibraries
+  ensureLibraries,
+  migrateLibraryData
 }

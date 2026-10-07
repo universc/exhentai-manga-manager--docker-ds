@@ -31,15 +31,12 @@ const {
 const { findSameFile } = require('./fileLoader/folder.js')
 const { inventoryLibrary, diffInventory, snapshotFromInventory, loadSnapshotFile, saveSnapshotFile, archiveTypeOf } = require('./fileLoader/incremental.js')
 const localModels = require('./modules/localModels.js')
-const { ensureLibraries, libraryDataDir } = require('./modules/libraries.js')
+const { ensureLibraries, libraryDataDir, migrateLibraryData } = require('./modules/libraries.js')
 
 const WEB_MODE = process.env.WEB_MODE === '1'
 
 preparePath()
 let setting = prepareSetting()
-
-// 增量扫描目录指纹快照(存于共享数据目录;路径随环境不同,快照内部记录 library 以自校验)
-const SNAPSHOT_FILE = path.join(STORE_PATH, 'scan-snapshot.json')
 
 // 本地超分模型目录:<数据目录>/models/upscale/<模型 id>
 localModels.init(STORE_PATH)
@@ -71,9 +68,23 @@ if (process.env.WEB_LIBRARY) {
   }
 }
 
+// ---------- 漫画库列表 + 每库数据目录(第二十七/二十八轮) ----------
+// 兼容层:旧版只有单个 setting.library,这里迁移出 setting.libraries,并把 setting.library
+// 继续同步为活动库路径 —— 扫描/删除等现有逻辑不用改。
+// 数据归属:scan-snapshot.json / database.sqlite / viewcache 属于「库」,放库数据目录;
+// metadata.sqlite / setting.json / collectionList.json / cover 等属于「用户统一配置」,仍在数据存放目录。
+const libraryState = ensureLibraries(setting, { nameHint: setting.externalLibraryRoot })
+const activeLibrary = libraryState.active
+const LIBRARY_DATA_DIR = activeLibrary ? libraryDataDir(STORE_PATH, activeLibrary) : STORE_PATH
+const LIBRARY_VIEWCACHE_DIR = path.join(LIBRARY_DATA_DIR, 'viewcache')
+// 首次升级:把旧版放在数据存放目录根部的库数据搬进库数据目录(绝不覆盖已有文件)
+const libraryDataMigration = activeLibrary ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
+const SNAPSHOT_FILE = path.join(LIBRARY_DATA_DIR, 'scan-snapshot.json')
+const LIBRARY_DB_FILE = path.join(LIBRARY_DATA_DIR, 'database.sqlite')
+
 let collectionList = prepareCollectionList()
 
-const Manga = prepareMangaModel(path.join(STORE_PATH, './database.sqlite'))
+const Manga = prepareMangaModel(LIBRARY_DB_FILE)
 let metadataSqliteFile
 if (setting.metadataPath) {
   metadataSqliteFile = path.join(setting.metadataPath, './metadata.sqlite')
@@ -139,16 +150,11 @@ process
     process.exit(1)
   })
 
-// ---------- 漫画库列表(第二十七轮:多库只读兼容层) ----------
-// 旧版只有一个 setting.library;这里自动迁移出 setting.libraries(默认库,名字取文件夹名),
-// 并把 setting.library 继续同步为活动库路径 —— 扫描/删除等现有逻辑一行都不用改。
-// 本层只读:libraries 不参与扫描,仅落盘 + 记录日志,供后续按库拆分数据目录使用。
-const libraryState = ensureLibraries(setting)
+// ---------- 漫画库列表日志(第二十七/二十八轮) ----------
+// ensureLibraries 与每库数据目录在文件上方(setting 就绪后、打开数据库之前)已算好;
+// 这里只负责把结果写进 log.txt,并在本地模式把 setting.json 落盘。
 if (libraryState.migrated || libraryState.changed) {
   console.log(`[libraries] 漫画库列表已初始化:${setting.libraries.map(l => `${l.name}(${l.path})`).join('、') || '(空)'}`)
-  setting.libraries.forEach(l => {
-    console.log(`[libraries] 库「${l.name}」默认数据目录:${libraryDataDir(STORE_PATH, l)}`)
-  })
   // 只在本地模式落盘:容器模式(共享 /data/setting.json)下 library 会写回 Windows 侧,
   // 这里避免把容器路径 /library 覆盖进跨平台共享的 setting.json。
   if (!process.env.WEB_LIBRARY) {
@@ -162,6 +168,13 @@ if (libraryState.migrated || libraryState.changed) {
       console.error('[libraries] 写入 setting.json 失败', e)
     }
   }
+}
+if (activeLibrary) {
+  console.log(`[libraries] 活动库「${activeLibrary.name}」;库数据目录:${LIBRARY_DATA_DIR}`)
+  console.log(`[libraries] 库数据库:${LIBRARY_DB_FILE};扫描快照:${SNAPSHOT_FILE};缩略图缓存:${LIBRARY_VIEWCACHE_DIR}`)
+  if (libraryDataMigration.moved.length) console.log(`[libraries] 已把库数据搬进库数据目录:${libraryDataMigration.moved.join('、')}`)
+  if (libraryDataMigration.kept.length) console.log(`[libraries] 目标已存在、保留原地数据(未覆盖):${libraryDataMigration.kept.join('、')}`)
+  if (libraryDataMigration.error) console.error(`[libraries] 迁移库数据出错:${libraryDataMigration.error}`)
 }
 
 const sendMessageToWebContents = (message) => {
@@ -2177,7 +2190,7 @@ ipcMain.handle('move-local-book', async (event, oldPath, folderArr) => {
 //  ② 缩略图改为「前端按需请求 + 后台限流 + 持久缓存」:不开侧栏就不生成,重复打开直接命中缓存;
 //  ③ token 取消:切书/关阅读器后旧循环立即 break,不再空转,也不再多写无用文件;
 //  ④ 临时目录改惰性清理(只删 24h 前的文件),不再每次打开全量删除几千个小文件。
-const VIEWCACHE_PATH = path.join(STORE_PATH, 'viewcache')
+const VIEWCACHE_PATH = LIBRARY_VIEWCACHE_DIR
 // 临时文件保留窗口:超过这个时间的 viewer/ 产物会在下次打开阅读器时被清掉。
 // 30 分钟足够长(不会误删正在阅读的图),又不会像原来的「每次全量删除」那样引发磁盘风暴,
 // 也不会像 24 小时那样让临时目录持续膨胀。
