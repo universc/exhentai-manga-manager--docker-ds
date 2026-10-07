@@ -98,7 +98,9 @@
             <div v-for="lib in libraries" :key="lib.id" class="setting-line library-row">
               <el-input v-model="lib.name" class="library-name-input" @change="onLibraryNameChange" />
               <el-input class="library-path-input" :model-value="lib.path" readonly />
-              <el-input class="library-data-input" :model-value="lib.dataPath || ''" :placeholder="libraryDataDirPlaceholder(lib)" @change="(v) => onLibraryDataPathChange(lib, v)">
+              <!-- 删除这个库(只从列表移除,不动磁盘上的文件与库数据目录) -->
+              <el-button class="library-remove-btn" type="danger" plain :icon="Delete" :title="$t('m.libraryRemove')" @click="removeLibraryRow(lib)" />
+              <el-input v-model="lib.dataPath" class="library-data-input" :placeholder="libraryDataDirPlaceholder(lib)" @change="onLibraryDataPathChange(lib)">
                 <template #prepend><span class="setting-label">{{$t('m.libraryDataPath')}}</span></template>
                 <template #append>
                   <el-button-group>
@@ -1682,6 +1684,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import draggable from 'vuedraggable'
 import { MdRefresh, MdSync, MdShuffle, MdCodeDownload, MdBook, MdColorPalette, MdPhonePortrait, MdFunnel } from '@vicons/ionicons4'
+import { Delete } from '@element-plus/icons-vue'
 import { TreeViewAlt, CicsSystemGroup, TagGroup, Maximize } from '@vicons/carbon'
 import { Search32Filled, ArrowTrendingLines20Filled } from '@vicons/fluent'
 
@@ -2795,35 +2798,32 @@ const addLibrary = async () => {
   applyLibraries()
 }
 
-// 清空一排的「库文件夹 + 库数据存放位置」两格 → 自动删掉这一排(不动磁盘上的文件)
-const dropLibraryRow = (lib) => {
+// 删除一排(每排右侧的删除按钮):只从列表移除,不动磁盘文件与库数据目录;至少保留一个库
+const removeLibraryRow = async (lib) => {
+  if (!lib) return
+  if (libraries.value.filter(l => l.path).length <= 1) {
+    ElMessage.warning(t('m.libraryKeepOne'))
+    return
+  }
+  try {
+    await ElMessageBox.confirm(t('m.libraryRemoveConfirm', { name: lib.name }), t('m.libraryRemove'), { type: 'warning' })
+  } catch (e) { return }
   const next = libraries.value.filter(l => l.id !== lib.id)
-  if (!next.length) return
   setting.value.libraries = next
-  if (setting.value.activeLibraryId === lib.id) setting.value.activeLibraryId = next[0].id
+  if (setting.value.activeLibraryId === lib.id) {
+    const fallback = next.find(l => l.path) || next[0]
+    setting.value.activeLibraryId = fallback ? fallback.id : ''
+  }
   applyLibraries()
 }
 
 const onLibraryNameChange = () => { applyLibraries() }
 const onActiveLibraryChange = () => { applyLibraries() }
 
-const onLibraryPathChange = (lib, val) => {
+// 库数据存放位置:v-model 直接绑到库里(可以手动输入,失焦/回车时提交)
+const onLibraryDataPathChange = (lib) => {
   if (!lib) return
-  lib.path = String(val || '').trim()
-  if (!lib.path && !lib.dataPath) { dropLibraryRow(lib); return }
-  applyLibraries()
-}
-const onLibraryDataPathChange = (lib, val) => {
-  if (!lib) return
-  lib.dataPath = String(val || '').trim()
-  if (!lib.path && !lib.dataPath) { dropLibraryRow(lib); return }
-  applyLibraries()
-}
-const selectLibraryPath = async (lib) => {
-  if (!lib) return
-  const picked = await ipcRenderer.invoke('select-folder', t('m.library'))
-  if (!picked) return
-  lib.path = String(picked)
+  lib.dataPath = String(lib.dataPath || '').trim()
   applyLibraries()
 }
 const selectLibraryDataPath = async (lib) => {
@@ -3927,6 +3927,7 @@ defineExpose({
 .library-name-input { width: 120px; flex: 0 0 auto; }
 .library-name-input .el-input__inner { font-weight: 600; }
 .library-path-input { flex: 1 1 220px; min-width: 160px; }
+.library-remove-btn { flex: 0 0 auto; padding: 8px 10px; }
 .library-data-input { flex: 1 1 260px; min-width: 200px; }
 .library-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 

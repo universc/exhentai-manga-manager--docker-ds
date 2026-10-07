@@ -72,6 +72,7 @@
     "setting": "設定",
     "library": "庫資料夾",
     "libraryAdd": "新增庫",
+    "libraryKeepOne": "至少要保留一個漫畫庫",
     "libraryHint": "點「新增庫」選一個漫畫資料夾即可新增一個庫;每列最左邊那格是庫名(可直接改),中間的庫資料夾是唯讀的。",
     "libraryCurrent": "目前使用的庫",
     "switchLibrary": "切換庫",

@@ -72,6 +72,7 @@
     "setting": "设置",
     "library": "库文件夹",
     "libraryAdd": "添加库",
+    "libraryKeepOne": "至少要保留一个漫画库",
     "libraryHint": "点「添加库」选一个漫画文件夹即可新增一个库;每排最左边那格是库名(可直接改),中间的库文件夹是只读展示。",
     "libraryCurrent": "当前使用的库",
     "switchLibrary": "切换库",

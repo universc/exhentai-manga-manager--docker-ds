@@ -72,6 +72,7 @@
     "setting": "Setting",
     "library": "Library Folder",
     "libraryAdd": "Add library",
+    "libraryKeepOne": "At least one library must remain",
     "libraryHint": "Click \"Add library\" and pick a manga folder to add a library. The leftmost box is the library name (editable); the library folder itself is read-only.",
     "libraryCurrent": "Currently used library",
     "switchLibrary": "Switch library",
