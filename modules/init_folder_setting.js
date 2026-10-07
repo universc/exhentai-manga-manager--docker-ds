@@ -71,10 +71,17 @@ const resolveSettingReadPath = () => {
 const setBootstrapDataPath = (dataPath) => {
   const userData = app.getPath('userData')
   fs.mkdirSync(userData, { recursive: true })
-  // ⚠️ 必须带上 profile:否则改一次数据目录就把「配置名」弄丢了
+  // ⚠️ 必须带上 profile:否则改一次数据目录就把「配置名」弄丢了。
+  // 本进程启动时 SETTING_PROFILE 可能还是空的(用户是这次启动之后才登录的),
+  // 这种情况以 bootstrap.json 里的最新值为准,不能用旧的空值把它盖掉。
+  let profile = SETTING_PROFILE
+  try {
+    const cur = JSON.parse(fs.readFileSync(path.join(userData, 'bootstrap.json'), 'utf-8')) || {}
+    if (!profile && cur.profile) profile = safeProfile(cur.profile)
+  } catch { /* 文件不存在/损坏:用启动时那份 */ }
   fs.writeFileSync(
     path.join(userData, 'bootstrap.json'),
-    JSON.stringify({ dataPath: String(dataPath || ''), profile: SETTING_PROFILE }, null, '  '),
+    JSON.stringify({ dataPath: String(dataPath || ''), profile }, null, '  '),
     'utf-8'
   )
 }

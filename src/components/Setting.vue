@@ -35,7 +35,7 @@
             <div class="setting-line toolbar-tip">{{$t('m.dataPathHint')}}</div>
           </el-col>
         </el-row>
-        <!-- 服务器模式:服务器 IP / 端口 + 账户 + 连接/退出 -->
+        <!-- 应用名称 / 漫画库 / 图片查看器 / 主题(远程模式的服务器设置已移到「账户」页) -->
         <el-row :gutter="8">
           <el-col :span="24">
             <div class="setting-line">
@@ -1503,9 +1503,8 @@
               <span style="flex: 1"></span>
               <el-button type="danger" plain size="small" @click="logout">{{$t('m.logout')}}</el-button>
             </div>
-            <template v-if="isAdmin">
-              <div class="setting-line toolbar-tip" style="margin-top: 14px;">{{$t('m.accountsTip')}}</div>
-
+            <!-- 远程模式(桌面版):服务器 IP / 端口 + 账户 + 连接 / 退出。
+                 按需求从「常用」页移到「账户」页,放在账户信息下方。 -->
         <el-row :gutter="8" v-if="showDesktopUI && runMode === 'remote'">
           <el-col :span="12">
             <div class="setting-line">
@@ -1550,13 +1549,16 @@
             <div class="setting-line toolbar-tip">{{$t('m.webModeHint')}}</div>
           </el-col>
         </el-row>
+            <template v-if="isAdmin">
+              <div class="setting-line toolbar-tip" style="margin-top: 14px;">{{$t('m.accountsTip')}}</div>
               <div class="account-list">
               <div class="account-row" v-for="user in accountList" :key="user.username">
                 <span class="account-name">{{user.username}}</span>
                 <el-tag :type="user.role === 'admin' ? 'danger' : 'info'" size="small">{{user.role === 'admin' ? $t('m.adminRole') : $t('m.viewerRole')}}</el-tag>
                 <span class="account-actions">
                   <el-button size="small" text @click="resetAccountPassword(user.username)">{{$t('m.resetPassword')}}</el-button>
-                  <el-button v-if="user.role !== 'admin'" size="small" text type="danger" @click="removeAccount(user.username)">{{$t('m.deleteAccount')}}</el-button>
+                  <!-- 管理员也能删:后端只要求「至少保留一个管理员」,所以最后一个管理员的按钮置灰 -->
+                  <el-button size="small" text type="danger" :disabled="user.role === 'admin' && adminCount <= 1" @click="removeAccount(user.username)">{{$t('m.deleteAccount')}}</el-button>
                 </span>
               </div>
             </div>
@@ -1569,7 +1571,8 @@
               </el-select>
               <el-button type="primary" plain @click="addAccount">{{$t('m.addAccount')}}</el-button>
             </div>
-            <!-- IP 访问控制:白名单免登录 / 黑名单禁止连接 -->
+            <!-- IP 访问控制:白名单免登录 / 黑名单禁止连接(仅网页版有「客户端 IP」的概念) -->
+            <template v-if="isWebMode">
             <div class="advanced-section-title" style="margin-top: 20px;">{{$t('m.ipAccessControl')}}</div>
             <div class="setting-line toolbar-tip">{{$t('m.ipWhitelistHint')}}</div>
             <div class="account-list">
@@ -1603,6 +1606,7 @@
               <el-button type="primary" plain @click="saveIpRules">{{$t('m.ipRulesSave')}}</el-button>
               <span class="setting-line toolbar-tip" style="display: inline-block; margin-left: 10px;">{{$t('m.ipRulesNote')}}</span>
             </div>
+            </template>
             </template>
             </template>
           </el-col>
@@ -3287,6 +3291,16 @@ const doWebLogin = async () => {
   webLoginLoading.value = true
   webLoginError.value = ''
   try {
+    // 桌面版(Win 本地模式):走主进程 IPC(与 LoginDialog 同一套账户系统)
+    if (!isWebMode.value && ipcRenderer && typeof ipcRenderer.invoke === 'function') {
+      const st = await ipcRenderer.invoke('auth-login', {
+        username: webLoginUsername.value.trim(),
+        password: webLoginPassword.value,
+      })
+      if (!st || !st.ok) throw new Error((st && st.error) || '登录失败')
+      window.location.reload()
+      return
+    }
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3302,8 +3316,16 @@ const doWebLogin = async () => {
   }
 }
 
-// 网页版退出登录(设置 → 账户)
+// 退出登录(设置 → 账户):网页版走 /api/auth/logout,桌面版走主进程 IPC
 const logout = () => {
+  // 桌面版(Win 本地模式)没有 HTTP 服务:交给主进程清掉会话,
+  // 刷新后 web-ipc.js 重新 sendSync('auth-status') → 登录框随即弹出
+  if (!isWebMode.value && ipcRenderer && typeof ipcRenderer.invoke === 'function') {
+    Promise.resolve(ipcRenderer.invoke('auth-logout')).catch(() => {}).finally(() => {
+      window.location.reload()
+    })
+    return
+  }
   fetch('/api/auth/logout', { method: 'POST' })
     .catch(() => {})
     .finally(() => {
@@ -3311,6 +3333,8 @@ const logout = () => {
     })
 }
 const accountList = ref([])
+// 管理员数量:删除按钮据此置灰 —— 至少保留一个管理员(modules/auth.js 里还有一道后端校验)
+const adminCount = computed(() => accountList.value.filter(u => u.role === 'admin').length)
 const newAccountUsername = ref('')
 const newAccountPassword = ref('')
 const newAccountRole = ref('viewer')

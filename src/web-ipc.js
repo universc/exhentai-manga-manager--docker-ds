@@ -48,7 +48,6 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
   // ---------- /api/info(同步获取 pathSep / version / webMode / 账户信息) ----------
   let pathSep = '\\'
   let webVersion = ''
-  let infoOk = false
   window.__WEB_MODE__ = false
   window.__REMOTE_DESKTOP__ = false
   window.__AUTH__ = { enabled: false, role: null, username: null }
@@ -57,7 +56,6 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
     xhr.open('GET', '/api/info', false)
     xhr.send()
     if (xhr.status === 200) {
-      infoOk = true
       const info = JSON.parse(xhr.responseText)
       pathSep = info.pathSep || pathSep
       webVersion = info.version || ''
@@ -71,18 +69,8 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
       }
     }
   } catch (e) {}
-  // 桌面版没有 HTTP 服务器(/api/info 拿不到)→ 账户状态改从主进程的同步 IPC 取。
-  // 这样 Windows 客户端也能像 Docker 版一样弹登录框(默认账户 admin/admin)。
-  if (!infoOk && window.ipcRenderer && typeof window.ipcRenderer.sendSync === 'function') {
-    try {
-      const st = window.ipcRenderer.sendSync('auth-status') || {}
-      window.__AUTH__ = {
-        enabled: !!st.enabled,
-        role: st.role || null,
-        username: st.username || null,
-      }
-    } catch (e) {}
-  }
+  // 桌面版(preload 已暴露 window.ipcRenderer)整块都不会执行,
+  // 账户状态在文件末尾单独注入 —— 见「桌面版(Win)账户状态注入」。
 
   // ---------- SSE 事件分发 ----------
   const listeners = new Map()
@@ -323,5 +311,24 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
       style.textContent = css
       document.head.appendChild(style)
     },
+  }
+}
+
+// ---------- 桌面版(Win)账户状态注入(必须在网页桥之外) ----------
+// 桌面版 preload.js 已暴露 window.ipcRenderer,上面的网页桥整块被跳过;
+// 若不在这里补一次,Windows 客户端永远拿不到 window.__AUTH__,
+// 登录框(LoginDialog)就不会弹出,「必须登录才能使用」也就落不了地。
+// 同步 IPC:必须在界面渲染之前拿到状态,否则设置页会先按「未登录」渲染一遍。
+// 远程桌面模式(preload-remote.js 故意不暴露 ipcRenderer)不走这里,仍用上面的 /api/info。
+if (typeof window !== 'undefined' && window.ipcRenderer && typeof window.ipcRenderer.sendSync === 'function') {
+  try {
+    const st = window.ipcRenderer.sendSync('auth-status') || {}
+    window.__AUTH__ = {
+      enabled: !!st.enabled,
+      role: st.role || null,
+      username: st.username || null,
+    }
+  } catch (e) {
+    window.__AUTH__ = window.__AUTH__ || { enabled: false, role: null, username: null }
   }
 }
