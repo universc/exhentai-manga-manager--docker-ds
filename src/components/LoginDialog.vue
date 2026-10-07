@@ -2,8 +2,9 @@
   <!-- 网页版(Docker)账户登录:启用账户系统且未登录/会话失效时显示 -->
   <div class="login-mask" v-if="visible">
     <div class="login-box">
-      <div class="login-title">{{ $t('m.loginTitle') }}</div>
-      <div class="login-sub">{{ $t('m.loginSub') }}</div>
+      <!-- 标题按模式区分:本地模式=本机账户;远程/网页模式=NAS 账户 -->
+      <div class="login-title">{{ $t(titleKey) }}</div>
+      <div class="login-sub">{{ $t(subKey) }}</div>
       <el-form @submit.prevent="doLogin" label-position="top">
         <el-form-item :label="$t('m.loginUsername')">
           <el-input v-model="username" :placeholder="$t('m.loginUsername')" autofocus @keyup.enter="doLogin" />
@@ -21,7 +22,7 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 
 export default {
   name: 'LoginDialog',
@@ -39,6 +40,10 @@ export default {
 
     // Windows 客户端远程桌面模式标志(登录框显示「使用本地模式」按钮)
     const isRemoteDesktop = !!window.__REMOTE_DESKTOP__
+    // 登录的是谁:本地模式 → 本机账户;网页版 / 远程桌面模式 → NAS 上的账户
+    const isWebMode = !!window.__WEB_MODE__
+    const titleKey = computed(() => (isWebMode ? 'm.loginTitleNas' : 'm.loginTitleLocal'))
+    const subKey = computed(() => (isWebMode ? 'm.loginSubNas' : 'm.loginSubLocal'))
 
     // 切回本地模式:清空服务器地址并重启(由客户端主进程处理)
     const switchToLocalMode = async () => {
@@ -86,7 +91,7 @@ export default {
       window.addEventListener('emm-auth-required', refresh)
     })
 
-    return { visible, username, password, loading, error, isRemoteDesktop, doLogin, refresh, switchToLocalMode }
+    return { visible, username, password, loading, error, isRemoteDesktop, titleKey, subKey, doLogin, refresh, switchToLocalMode }
   }
 }
 </script>

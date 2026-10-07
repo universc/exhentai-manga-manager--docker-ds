@@ -19,8 +19,18 @@ const PORT = parseInt(process.env.WEB_PORT || '10000', 10)
 const DIST_DIR = path.join(__dirname, 'dist')
 const INDEX_HTML = path.join(DIST_DIR, 'index.html')
 
-// index.js 通过 start({ getSetting }) 注入,用于 /api/file 的目录白名单
+// index.js 通过 start({ getSetting, switchProfile }) 注入:
+//   getSetting —— /api/file 的目录白名单
+//   switchProfile —— 按登录账户切换设置文件(setting.<账户名>.json,与桌面版同名账户通用)
 let getSetting = () => ({})
+let switchProfile = async () => ({ ok: true, changed: false })
+// 把当前会话账户同步到「当前设置文件」:同一个进程要服务不同账户,谁在请求就用谁的设置
+const syncProfileForSession = async (session) => {
+  const name = session && session.username
+  // 白名单 IP 的伪会话(whitelist)不切:它没有真实账户,沿用默认 setting.json
+  if (!name || name === 'whitelist') return
+  try { await switchProfile(name) } catch (e) { console.log('[profile] 切换账户设置失败:', String((e && e.message) || e)) }
+}
 
 const app = express()
 app.use(express.json({ limit: '100mb' }))
@@ -158,7 +168,7 @@ setInterval(() => {
 }, 25000).unref()
 
 // ---------- 登录 / 登出 / 当前用户 ----------
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const username = String(req.body?.username || '').trim()
   const password = String(req.body?.password || '')
   const wait = throttleCheck(username)
@@ -171,6 +181,8 @@ app.post('/api/auth/login', (req, res) => {
   throttleCheck(username) && loginThrottle.delete(username)
   const token = auth.createSession(user)
   setSessionCookie(res, token)
+  // 登录即切到该账户的设置文件(同名账户在 Win 与 NAS 共用同一份)
+  await syncProfileForSession(user)
   res.json({ ok: true, username: user.username, role: user.role })
 })
 
@@ -212,6 +224,8 @@ app.post('/api/ipc/:channel', async (req, res) => {
   if (auth.isEnabled()) {
     const session = sessionOf(req)
     if (!session) return res.status(401).json({ ok: false, error: '未登录,请先登录' })
+    // 该账户的设置在 setting.<账户名>.json(没变就是空操作,不会反复重载)
+    await syncProfileForSession(session)
     if (session.role !== 'admin') {
       // load-book-list(scan=true) 会触发扫描建库(写操作),普通账户只能加载现有列表
       if (channel === 'load-book-list' && args[0] === true) {
@@ -246,8 +260,14 @@ app.post('/api/ipc/:channel', async (req, res) => {
 // ---------- 文件服务(封面 / 阅读图片) ----------
 const allowedRoots = () => {
   const setting = getSetting() || {}
-  // 多库:数据目录 + 活动库 + 所有库路径 + 元数据目录
-  const libraryPaths = Array.isArray(setting.libraries) ? setting.libraries.map(l => l.path) : []
+  // 多库:数据目录 + 活动库 + 所有库的路径 + 元数据目录。
+  // ⚠️ 桌面路径(path)与网页/容器路径(pathWeb)都要放行 ——
+  //    以前只放行 path,网页版读 NAS 上的书时图片一律 403,表现就是「阅读器一直白」。
+  // 库数据目录(每库的 cover / viewcache / 缩放缓存)也要放行:
+  // 用户把它指到数据目录之外时,封面与阅读缓存在网页版会 403
+  const libraryPaths = Array.isArray(setting.libraries)
+    ? setting.libraries.flatMap(l => [l.path, l.pathWeb, l.dataPath, l.dataPathWeb])
+    : []
   const roots = [STORE_PATH, setting.library, setting.metadataPath, ...libraryPaths].filter(Boolean)
   return roots.map(p => path.resolve(p))
 }
@@ -375,6 +395,7 @@ function getLanAddresses () {
 
 function start (options) {
   if (options?.getSetting) getSetting = options.getSetting
+  if (options?.switchProfile) switchProfile = options.switchProfile
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('')
     console.log('============================================')

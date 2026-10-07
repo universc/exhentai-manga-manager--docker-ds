@@ -94,13 +94,15 @@ const ensureLibraries = (setting, options = {}) => {
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue
     const p = String(item.path || '').trim()
-    if (!p) continue
-    const key = normalizePathKey(p)
+    const pw = String(item.pathWeb || '').trim()
+    // 只配了「这一端」路径的库同样保留(另一端的路径可以以后再补),两端都空才丢弃
+    if (!p && !pw) continue
+    const key = normalizePathKey(p || pw)
     if (seen.has(key)) continue
     seen.add(key)
     list.push({
       id: String(item.id || '') || newLibraryId(),
-      name: String(item.name || '').trim() || libraryNameFromPath(p, list.length),
+      name: String(item.name || '').trim() || libraryNameFromPath(p || pw, list.length),
       path: p,
       dataPath: typeof item.dataPath === 'string' ? item.dataPath : '',
       // 双环境路径:同一份 setting.json 可能被桌面版与网页版共用,
@@ -109,6 +111,25 @@ const ensureLibraries = (setting, options = {}) => {
       dataPathWeb: typeof item.dataPathWeb === 'string' ? item.dataPathWeb : ''
     })
   }
+
+  // ── 按「库名」归并 ─────────────────────────────────────────────────────
+  // setting.<账户>.json 会被 Win 与 NAS 共用:两端各自添加过「同名库」时,
+  // 它们其实是同一个库(数据目录按库名生成),必须合并成一条 ——
+  // 各自保留自己那一端的路径(path / pathWeb),书架里也只出现一个「漫画」。
+  const byName = new Map()
+  const mergedList = []
+  for (const lib of list) {
+    const key = String(lib.name || '').toLowerCase()
+    const kept = byName.get(key)
+    if (!kept) { byName.set(key, lib); mergedList.push(lib); continue }
+    // 后面这条与前面同名:非空的那一组路径补给前面那条(各端保留自己的路径)
+    if (!kept.path && lib.path) kept.path = lib.path
+    if (!kept.pathWeb && lib.pathWeb) kept.pathWeb = lib.pathWeb
+    if (!kept.dataPath && lib.dataPath) kept.dataPath = lib.dataPath
+    if (!kept.dataPathWeb && lib.dataPathWeb) kept.dataPathWeb = lib.dataPathWeb
+  }
+  list.length = 0
+  list.push(...mergedList)
 
   const state = { migrated: false, changed: false, active: null }
 
@@ -145,7 +166,7 @@ const ensureLibraries = (setting, options = {}) => {
   // 库名唯一:默认库数据目录按「库名」生成,同名会指向同一个目录(用户明确要求库名不重复)
   const usedNames = new Set()
   for (const lib of list) {
-    const base = String(lib.name || '').trim() || libraryNameFromPath(lib.path, 0)
+    const base = String(lib.name || '').trim() || libraryNameFromPath(lib.path || lib.pathWeb, 0)
     let name = base
     let n = 2
     while (usedNames.has(name.toLowerCase())) { name = base + n; n++ }

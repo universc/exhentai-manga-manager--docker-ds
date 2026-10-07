@@ -30,6 +30,9 @@ const {
   SETTING_FILE,
   SETTING_FILE_NAME,
   SETTING_PROFILE,
+  getSettingFilePath,
+  getActiveProfile,
+  setActiveProfile,
   _mange_reader
 } = require('./modules/init_folder_setting.js')
 const { findSameFile } = require('./fileLoader/folder.js')
@@ -55,25 +58,29 @@ localModels.setMirror(setting.localModelMirror || '')
 // 只对「Windows 盘符路径」(桌面端写进共享 setting.json 的 Y:\... 等)做跨平台映射;
 // 用户在容器内设置的合法路径(以 / 开头,如 /library/sub、/data/xxx)一律尊重,
 // 不再无条件强制回 /library,避免「库文件夹/元数据目录设置后又被重置」的问题。
-if (process.env.WEB_LIBRARY) {
+// 抽成函数:网页版按账户切换设置文件时,要对新读进来的那份重新套用一次。
+const applyContainerLibraryMapping = (target) => {
+  if (!process.env.WEB_LIBRARY) return target
   const forcedLibrary = path.resolve(process.env.WEB_LIBRARY)
-  const lib = String(setting.library || '')
+  const lib = String(target.library || '')
   if (/^[A-Za-z]:[\\/]/.test(lib)) {
     // Windows 盘符:记录为外部根,并在容器内强制为挂载路径
-    if (!setting.externalLibraryRoot) setting.externalLibraryRoot = lib
-    setting.library = forcedLibrary
+    if (!target.externalLibraryRoot) target.externalLibraryRoot = lib
+    target.library = forcedLibrary
   } else if (!lib || lib === '/') {
     // 未设置 / 根目录:回退到默认挂载路径
-    setting.library = forcedLibrary
+    target.library = forcedLibrary
   }
   // 元数据目录:仅 Windows 盘符时映射;容器内合法路径尊重
-  const meta = String(setting.metadataPath || '')
+  const meta = String(target.metadataPath || '')
   if (/^[A-Za-z]:[\\/]/.test(meta)) {
-    if (!setting.externalMetadataPath) setting.externalMetadataPath = meta
-    if (!setting.externalCoverRoot) setting.externalCoverRoot = path.join(meta, 'cover').replace(/\//g, '\\')
-    setting.metadataPath = null
+    if (!target.externalMetadataPath) target.externalMetadataPath = meta
+    if (!target.externalCoverRoot) target.externalCoverRoot = path.join(meta, 'cover').replace(/\//g, '\\')
+    target.metadataPath = null
   }
+  return target
 }
+applyContainerLibraryMapping(setting)
 
 // ---------- 漫画库列表 + 每库数据目录(第二十七/二十八轮) ----------
 // 兼容层:旧版只有单个 setting.library,这里迁移出 setting.libraries,并把 setting.library
@@ -216,11 +223,14 @@ const openLibraryForScan = async (lib) => {
   return true
 }
 
-const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir) => {
+const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}) => {
+  // 切换账户(另一份 setting.<账户>.json)时只切运行时,绝不搬数据 ——
+  // 两个账户可能给同一个库配了不同的库数据目录,搬一次就是灾难。
+  const allowMove = options.allowMove !== false
   const lib = activeLibraryOf(setting)
   const paths = libraryRuntimePaths(STORE_PATH, lib)
   // 同一个库改了「库数据存放位置」:先把原库数据整体搬到新目录(绝不覆盖)
-  const movedFromOldDir = (!dataPathFallback && shouldMoveLibraryData(prevLibrary, lib, prevDataDir, paths.dataDir))
+  const movedFromOldDir = (allowMove && !dataPathFallback && shouldMoveLibraryData(prevLibrary, lib, prevDataDir, paths.dataDir))
     ? migrateLibraryData(prevDataDir, paths.dataDir)
     : { moved: [], kept: [] }
   LIBRARY_DATA_DIR = paths.dataDir
@@ -281,7 +291,7 @@ if (libraryState.migrated || libraryState.changed) {
   // 这里避免把容器路径 /library 覆盖进跨平台共享的 setting.json。
   if (!process.env.WEB_LIBRARY && !dataPathFallback) {
     try {
-      const settingPath = SETTING_FILE
+      const settingPath = getSettingFilePath()
       const settingTempPath = settingTmpPath()
       fs.writeFileSync(settingTempPath, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
       fs.renameSync(settingTempPath, settingPath)
@@ -336,12 +346,46 @@ let sendImageLock = false
 // setting.json 原子写:临时文件必须唯一 —— persistSetting(同步)与 applySetting(异步)可能并发,
 // 以前都用 setting.json.tmp,先完成的那次会把临时文件 rename 走,后一次就 ENOENT(用户报的 bug)
 let settingWriteSeq = 0
-const settingTmpPath = () => SETTING_FILE + '.' + process.pid + '.' + (++settingWriteSeq) + '.tmp'
+const settingTmpPath = () => getSettingFilePath() + '.' + process.pid + '.' + (++settingWriteSeq) + '.tmp'
 const persistSetting = () => {
-  const targetPath = SETTING_FILE
+  const targetPath = getSettingFilePath()
   const tempPath = settingTmpPath()
   fs.writeFileSync(tempPath, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
   fs.renameSync(tempPath, targetPath)
+}
+
+// ---------- 按账户切换设置文件(设置按账户名保存,同名账户两端通用) ----------
+//   桌面版:登录成功后立即切换(本次会话就用该账户的配置),并写进 bootstrap.json 供下次启动;
+//   网页版:每个 IPC 请求按会话账户惰性切换(见 index.js 末尾注入 web-server.js 的 switchProfile)。
+// 只重载「设置 + 活动库运行时」:不重启、不搬库数据、不动库数据库连接缓存。
+const switchProfile = async (username) => {
+  if (!setActiveProfile(username || '')) return { ok: true, changed: false, profile: getActiveProfile() }
+  const prevLib = activeLibraryOf(setting)
+  const prevDataDir = LIBRARY_DATA_DIR
+  const next = prepareSetting()
+  // 容器模式的路径映射字段与账户无关,换了一份设置必须重新套用
+  applyContainerLibraryMapping(next)
+  const state = ensureLibraries(next, { nameHint: next.externalLibraryRoot || setting.externalLibraryRoot })
+  setting = next
+  // 元数据目录可能跟着账户变(metadata.sqlite 属于用户统一配置)
+  const newMetaFile = setting.metadataPath
+    ? path.join(setting.metadataPath, './metadata.sqlite')
+    : path.join(STORE_PATH, './metadata.sqlite')
+  if (newMetaFile !== metadataSqliteFile) {
+    metadataSqliteFile = newMetaFile
+    Metadata = prepareMetadataModel(metadataSqliteFile)
+    try {
+      await Metadata.sync()
+      await ensureColumns(Metadata.sequelize, 'Metadata', { title_cn: 'TEXT', description: 'TEXT' })
+    } catch (err) { console.log('[profile] 元数据库初始化失败:', String((err && err.message) || err)) }
+  }
+  await switchActiveLibraryRuntime(prevLib, prevDataDir, { allowMove: false })
+  // 桌面端:把规范化后的库列表落盘(容器端沿用启动时的策略,不写盘)
+  if (state.changed && !process.env.WEB_LIBRARY && !dataPathFallback) {
+    try { persistSetting() } catch (err) { console.log('[profile] 写回设置失败:', String((err && err.message) || err)) }
+  }
+  console.log(`[profile] 已切换到账户配置「${getActiveProfile() || '(默认 setting.json)'}」;文件:${getSettingFilePath()}`)
+  return { ok: true, changed: true, profile: getActiveProfile(), librariesChanged: state.changed }
 }
 
 const showMainWindow = () => {
@@ -1075,14 +1119,32 @@ const loadLegecyBookListFromFile = async () => {
   return bookList
 }
 
+// ---------- 按「书所属的库」翻译路径(多库 + 跨端) ----------
+// 约定:数据库里的 filepath 统一按「桌面(Windows)形式」保存(= 该库 path 的前缀),
+// 网页端读写时按同一个库的 pathWeb 做双向映射。库按名字归并(见 modules/libraries.js),
+// 所以两端同名库的 path / pathWeb 一定在同一条记录里。
+// 旧实现只有全局 externalLibraryRoot,多库时非活动库的书翻译不了 ——
+// 这正是「网页版能看封面、阅读器却一直白」的根因(图片路径根本没落到容器里)。
+const { localizeBookPath: localizeBookPathIn, externalizeBookPath: externalizeBookPathIn } = require('./modules/libraryPaths.js')
+// 以「当前库列表 + 当前端」为准的翻译(纯函数见 modules/libraryPaths.js,可单独测试)
+const localizeBookPath = (p) => localizeBookPathIn(p, setting.libraries, IS_WEB_ENV)
+const externalizeBookPath = (p) => externalizeBookPathIn(p, setting.libraries, IS_WEB_ENV)
+
 // 跨平台路径翻译:共享数据库可能由 Windows 桌面版写入(路径形如 Y:\01-漫画\...,
 // 封面在 Y:\01-漫画\S\数据存放\cover\...)。读取时把 Windows 路径翻译为当前环境路径。
 const translateBookPath = (p, kind, coverDir) => {
   if (!p) return p
-  const root = setting.externalLibraryRoot || setting.windowsLibraryRoot
-  if (kind === 'filepath' && root && p.startsWith(root)) {
-    const rel = p.slice(root.length).replace(/\\/g, '/').replace(/^\/+/, '')
-    return rel ? path.join(setting.library, rel) : setting.library
+  if (kind === 'filepath') {
+    // ① 多库:按书所属库翻译(网页端阅读能否取到图,全靠这一步)
+    const localized = localizeBookPath(p)
+    if (localized !== p) return localized
+    // ② 旧版单库兜底:externalLibraryRoot(容器模式按 WEB_LIBRARY 设置)
+    const root = setting.externalLibraryRoot || setting.windowsLibraryRoot
+    if (root && p.startsWith(root)) {
+      const rel = p.slice(root.length).replace(/\\/g, '/').replace(/^\/+/, '')
+      return rel ? path.join(setting.library, rel) : setting.library
+    }
+    return p
   }
   if (kind === 'coverPath' && (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\') || p.startsWith('/'))) {
     // 封面绝对路径(Windows 盘符 / UNC / Linux 如 /data/cover/...) →
@@ -1098,9 +1160,16 @@ const translateBookPath = (p, kind, coverDir) => {
 // 保证 Windows 桌面版也能直接读取同一份数据库。
 const toExternalPath = (p, kind, coverDir) => {
   if (!p) return p
-  if (kind === 'filepath' && setting.externalLibraryRoot && p.startsWith(setting.library)) {
-    const rel = p.slice(setting.library.length).replace(/[/\\]+/g, '\\')
-    return setting.externalLibraryRoot + rel
+  if (kind === 'filepath') {
+    // ① 多库:按书所属库把本端路径写成桌面(规范)形式,保证另一端也读得到
+    const externalized = externalizeBookPath(p)
+    if (externalized !== p) return externalized
+    // ② 旧版单库兜底
+    if (setting.externalLibraryRoot && p.startsWith(setting.library)) {
+      const rel = p.slice(setting.library.length).replace(/[/\\]+/g, '\\')
+      return setting.externalLibraryRoot + rel
+    }
+    return p
   }
   const covDir = coverDir || CURRENT_COVER_DIR
   if (kind === 'coverPath' && setting.externalCoverRoot && p.startsWith(covDir)) {
@@ -3021,7 +3090,7 @@ const applySetting = async (receiveSetting) => {
   if (tray) buildTrayMenu()
   // 降级模式(用户设置的数据目录打不开):只改内存,不落盘,避免污染默认目录里的旧数据
   if (dataPathFallback) return
-  const targetPath = SETTING_FILE
+  const targetPath = getSettingFilePath()
   const tempPath = settingTmpPath()
   await fs.promises.writeFile(tempPath, JSON.stringify(fileSetting, null, '  '), { encoding: 'utf-8' })
   return await fs.promises.rename(tempPath, targetPath)
@@ -3524,6 +3593,8 @@ ipcMain.handle('auth-login', async (event, { username, password } = {}) => {
         console.log('[auth] 配置名已设为账户:', user.username, '(下次启动生效)')
       }
     } catch (e) { console.log('[auth] 写入配置名失败:', String((e && e.message) || e)) }
+    // 桌面版也立即切到该账户的设置文件(不重启;文件不存在时自动回退 setting.json 平滑迁移)
+    try { await switchProfile(user.username) } catch (e) { console.log('[auth] 切换账户配置失败:', String((e && e.message) || e)) }
   }
   return { ok: true, role: user.role, username: user.username }
 })
@@ -4676,6 +4747,8 @@ ipcMain.handle('enable-LAN-browsing', async (event, arg) => {
 // 网页模式:启动 HTTP 服务(前端页面 + IPC 桥 + SSE + 文件服务)
 if (WEB_MODE) {
   require('./web-server.js').start({
-    getSetting: () => setting
+    getSetting: () => setting,
+    // 按登录账户切换设置文件(同名账户在 Win 与 NAS 上共用同一份设置)
+    switchProfile
   })
 }

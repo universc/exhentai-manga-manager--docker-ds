@@ -57,15 +57,33 @@ if (customDataPath) {
 //   桌面版:userData/bootstrap.json 里的 profile 字段
 // 留空则沿用 setting.json —— 行为与旧版完全一致(默认不改变任何东西)。
 const safeProfile = (v) => String(v || '').replace(/[^\w\u4e00-\u9fa5.-]/g, '').slice(0, 64)
-const SETTING_PROFILE = safeProfile(process.env.WEB_PROFILE || bootstrapConfig.profile || '')
-const SETTING_FILE_NAME = SETTING_PROFILE ? ('setting.' + SETTING_PROFILE + '.json') : 'setting.json'
-const SETTING_FILE = path.join(STORE_PATH, SETTING_FILE_NAME)
-// 读:优先「配置名专属文件」;不存在则回退 setting.json,平滑迁移(第一次保存就会写进新文件)
-const resolveSettingReadPath = () => {
-  if (fs.existsSync(SETTING_FILE)) return SETTING_FILE
-  const legacy = path.join(STORE_PATH, 'setting.json')
-  return (SETTING_PROFILE && fs.existsSync(legacy)) ? legacy : SETTING_FILE
+// 启动时的配置名:桌面版取 bootstrap.json 的 profile(登录时写入),网页版取 WEB_PROFILE。
+// 运行中网页版会随登录账户切换(见 setActiveProfile 与 index.js 的 switchProfile)。
+const STARTUP_PROFILE = safeProfile(process.env.WEB_PROFILE || bootstrapConfig.profile || '')
+let ACTIVE_PROFILE = STARTUP_PROFILE
+const settingFileNameOf = (profile) => profile ? ('setting.' + profile + '.json') : 'setting.json'
+const settingFilePathOf = (profile) => path.join(STORE_PATH, settingFileNameOf(profile))
+// 当前账户对应的设置文件(随账户切换 —— 同名账户在 Win 与 NAS 上共用同一份)
+const getSettingFilePath = () => settingFilePathOf(ACTIVE_PROFILE)
+const getActiveProfile = () => ACTIVE_PROFILE
+// 切换「配置名」(账户名);返回是否真的变化了(没变就不必重载设置)
+const setActiveProfile = (name) => {
+  const safe = safeProfile(name || '')
+  if (safe === ACTIVE_PROFILE) return false
+  ACTIVE_PROFILE = safe
+  return true
 }
+// 读:优先「账户专属文件」;不存在则回退 setting.json,平滑迁移(第一次保存就会写进新文件)
+const resolveSettingReadPath = (profile = ACTIVE_PROFILE) => {
+  const target = settingFilePathOf(profile)
+  if (fs.existsSync(target)) return target
+  const legacy = path.join(STORE_PATH, 'setting.json')
+  return (profile && fs.existsSync(legacy)) ? legacy : target
+}
+// 兼容导出:启动时刻的路径/文件名(读写请一律用 getSettingFilePath())
+const SETTING_FILE_NAME = settingFileNameOf(STARTUP_PROFILE)
+const SETTING_FILE = settingFilePathOf(STARTUP_PROFILE)
+const SETTING_PROFILE = STARTUP_PROFILE
 
 // 写入自定义数据目录设置(设置 → 常用 → 数据文件位置 → 保存并重启)
 const setBootstrapDataPath = (dataPath) => {
@@ -74,7 +92,7 @@ const setBootstrapDataPath = (dataPath) => {
   // ⚠️ 必须带上 profile:否则改一次数据目录就把「配置名」弄丢了。
   // 本进程启动时 SETTING_PROFILE 可能还是空的(用户是这次启动之后才登录的),
   // 这种情况以 bootstrap.json 里的最新值为准,不能用旧的空值把它盖掉。
-  let profile = SETTING_PROFILE
+  let profile = ACTIVE_PROFILE
   try {
     const cur = JSON.parse(fs.readFileSync(path.join(userData, 'bootstrap.json'), 'utf-8')) || {}
     if (!profile && cur.profile) profile = safeProfile(cur.profile)
@@ -104,7 +122,7 @@ const prepareSetting = () => {
     setting = JSON.parse(fs.readFileSync(resolveSettingReadPath(), { encoding: 'utf-8' }))
     if (setting.imageExplorer === '"C:\\Windows\\explorer.exe"') {
       setting.imageExplorer = _mange_reader
-      fs.writeFileSync(SETTING_FILE, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
+      fs.writeFileSync(getSettingFilePath(), JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
     }
   } catch {
     setting = {
@@ -263,7 +281,7 @@ const prepareSetting = () => {
       ocrApiUrl: '',
       ocrApiModel: 'qwen2.5-vl:7b',
     }
-    fs.writeFileSync(SETTING_FILE, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
+    fs.writeFileSync(getSettingFilePath(), JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
   }
   return setting
 }
@@ -289,6 +307,10 @@ module.exports = {
   SETTING_FILE,
   SETTING_FILE_NAME,
   SETTING_PROFILE,
+  getSettingFilePath,
+  getActiveProfile,
+  setActiveProfile,
+  resolveSettingReadPath,
   prepareCollectionList,
   preparePath,
   _mange_reader,
