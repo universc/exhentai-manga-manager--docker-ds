@@ -13,12 +13,13 @@ let isPortable = false
 // 自定义数据目录(设置 → 常用 → 本地模式 → 数据文件位置):
 // 记录在 userData/bootstrap.json,优先级最高(高于便携模式)
 const bootstrapFile = path.join(app.getPath('userData'), 'bootstrap.json')
-let customDataPath = null
+let bootstrapConfig = {}
 try {
-  customDataPath = JSON.parse(fs.readFileSync(bootstrapFile, 'utf-8')).dataPath
+  bootstrapConfig = JSON.parse(fs.readFileSync(bootstrapFile, 'utf-8')) || {}
 } catch {
-  customDataPath = null
+  bootstrapConfig = {}
 }
+let customDataPath = bootstrapConfig.dataPath || null
 // 自定义数据目录不可用时的降级记录:交给 index.js 明确告知用户,并且**不迁移/不落盘**,
 // 避免像以前那样「静默换目录」把默认目录里的旧数据当成真数据(用户会以为数据丢了)
 let dataPathFallback = null
@@ -51,11 +52,31 @@ if (customDataPath) {
   }
 }
 
+// ── 配置文件按「用户名 / 配置名」分文件(用户要求:同名账号 → 两端通用读取) ──
+//   容器(网页版):环境变量 WEB_PROFILE
+//   桌面版:userData/bootstrap.json 里的 profile 字段
+// 留空则沿用 setting.json —— 行为与旧版完全一致(默认不改变任何东西)。
+const safeProfile = (v) => String(v || '').replace(/[^\w\u4e00-\u9fa5.-]/g, '').slice(0, 64)
+const SETTING_PROFILE = safeProfile(process.env.WEB_PROFILE || bootstrapConfig.profile || '')
+const SETTING_FILE_NAME = SETTING_PROFILE ? ('setting.' + SETTING_PROFILE + '.json') : 'setting.json'
+const SETTING_FILE = path.join(STORE_PATH, SETTING_FILE_NAME)
+// 读:优先「配置名专属文件」;不存在则回退 setting.json,平滑迁移(第一次保存就会写进新文件)
+const resolveSettingReadPath = () => {
+  if (fs.existsSync(SETTING_FILE)) return SETTING_FILE
+  const legacy = path.join(STORE_PATH, 'setting.json')
+  return (SETTING_PROFILE && fs.existsSync(legacy)) ? legacy : SETTING_FILE
+}
+
 // 写入自定义数据目录设置(设置 → 常用 → 数据文件位置 → 保存并重启)
 const setBootstrapDataPath = (dataPath) => {
   const userData = app.getPath('userData')
   fs.mkdirSync(userData, { recursive: true })
-  fs.writeFileSync(path.join(userData, 'bootstrap.json'), JSON.stringify({ dataPath: String(dataPath || '') }, null, '  '), 'utf-8')
+  // ⚠️ 必须带上 profile:否则改一次数据目录就把「配置名」弄丢了
+  fs.writeFileSync(
+    path.join(userData, 'bootstrap.json'),
+    JSON.stringify({ dataPath: String(dataPath || ''), profile: SETTING_PROFILE }, null, '  '),
+    'utf-8'
+  )
 }
 
 const TEMP_PATH = path.join(STORE_PATH, 'tmp')
@@ -73,10 +94,10 @@ const _mange_reader = `"${path.join(getRootPath(), 'resources/extraResources/man
 const prepareSetting = () => {
   let setting
   try {
-    setting = JSON.parse(fs.readFileSync(path.join(STORE_PATH, 'setting.json'), { encoding: 'utf-8' }))
+    setting = JSON.parse(fs.readFileSync(resolveSettingReadPath(), { encoding: 'utf-8' }))
     if (setting.imageExplorer === '"C:\\Windows\\explorer.exe"') {
       setting.imageExplorer = _mange_reader
-      fs.writeFileSync(path.join(STORE_PATH, 'setting.json'), JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
+      fs.writeFileSync(SETTING_FILE, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
     }
   } catch {
     setting = {
@@ -235,7 +256,7 @@ const prepareSetting = () => {
       ocrApiUrl: '',
       ocrApiModel: 'qwen2.5-vl:7b',
     }
-    fs.writeFileSync(path.join(STORE_PATH, 'setting.json'), JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
+    fs.writeFileSync(SETTING_FILE, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
   }
   return setting
 }
@@ -258,6 +279,9 @@ module.exports = {
   COVER_PATH,
   VIEWER_PATH,
   prepareSetting,
+  SETTING_FILE,
+  SETTING_FILE_NAME,
+  SETTING_PROFILE,
   prepareCollectionList,
   preparePath,
   _mange_reader,

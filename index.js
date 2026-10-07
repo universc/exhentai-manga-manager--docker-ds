@@ -27,6 +27,9 @@ const {
   prepareSetting, prepareCollectionList, preparePath,
   setBootstrapDataPath,
   dataPathFallback,
+  SETTING_FILE,
+  SETTING_FILE_NAME,
+  SETTING_PROFILE,
   _mange_reader
 } = require('./modules/init_folder_setting.js')
 const { findSameFile } = require('./fileLoader/folder.js')
@@ -278,7 +281,7 @@ if (libraryState.migrated || libraryState.changed) {
   // 这里避免把容器路径 /library 覆盖进跨平台共享的 setting.json。
   if (!process.env.WEB_LIBRARY && !dataPathFallback) {
     try {
-      const settingPath = path.join(STORE_PATH, 'setting.json')
+      const settingPath = SETTING_FILE
       const settingTempPath = settingTmpPath()
       fs.writeFileSync(settingTempPath, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
       fs.renameSync(settingTempPath, settingPath)
@@ -333,9 +336,9 @@ let sendImageLock = false
 // setting.json 原子写:临时文件必须唯一 —— persistSetting(同步)与 applySetting(异步)可能并发,
 // 以前都用 setting.json.tmp,先完成的那次会把临时文件 rename 走,后一次就 ENOENT(用户报的 bug)
 let settingWriteSeq = 0
-const settingTmpPath = () => path.join(STORE_PATH, 'setting.json.' + process.pid + '.' + (++settingWriteSeq) + '.tmp')
+const settingTmpPath = () => SETTING_FILE + '.' + process.pid + '.' + (++settingWriteSeq) + '.tmp'
 const persistSetting = () => {
-  const targetPath = path.join(STORE_PATH, 'setting.json')
+  const targetPath = SETTING_FILE
   const tempPath = settingTmpPath()
   fs.writeFileSync(tempPath, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
   fs.renameSync(tempPath, targetPath)
@@ -3018,7 +3021,7 @@ const applySetting = async (receiveSetting) => {
   if (tray) buildTrayMenu()
   // 降级模式(用户设置的数据目录打不开):只改内存,不落盘,避免污染默认目录里的旧数据
   if (dataPathFallback) return
-  const targetPath = path.join(STORE_PATH, 'setting.json')
+  const targetPath = SETTING_FILE
   const tempPath = settingTmpPath()
   await fs.promises.writeFile(tempPath, JSON.stringify(fileSetting, null, '  '), { encoding: 'utf-8' })
   return await fs.promises.rename(tempPath, targetPath)
