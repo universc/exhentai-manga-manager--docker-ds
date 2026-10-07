@@ -2798,8 +2798,10 @@ const applyLibraries = async () => {
     })
     if (res && res.ok) {
       applyLibrariesResponse(res)
-      // 活动库变了:库数据库/快照/缓存都换了,让主界面重新读一次书架
-      if (res.activeChanged) emit('loadBookList')
+      // 增删库、改「库数据存放位置」、增删/改「库切换」框 —— 都会改变书架该显示哪些书,
+      // 所以这里**一律**让主界面立刻重读书架,改动马上生效(不再等切库或重启)。
+      // 注意 emit 不传参,否则 loadBookList(scan) 会把事件/参数当成「要扫描」。
+      emit('loadBookList')
     } else {
       ElMessage.error((res && res.error) || t('m.librarySaveFailed'))
       refreshLibraries()

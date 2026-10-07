@@ -61,17 +61,8 @@
             <!-- 设置按钮:与界面模式按钮一套样式(纯 plain,图标不跟主色调) -->
             <el-button v-else-if="id === 'setting'" :icon="SettingIcon" plain @click="$refs.SettingRef.dialogVisibleSetting = true" :title="$t('m.setting')"></el-button>
             <!-- 切换库:点一下 = 切到下一个「库切换」框(书架显示该框内所有库合并的漫画) -->
-            <el-dropdown v-else-if="id === 'switchLibrary'" trigger="click" @command="switchBox" class="switch-library-dropdown">
-              <el-button type="primary" plain :icon="switchLibraryIcon" :title="$t('m.switchLibraryCurrent') + ':' + (boxLabel || '—')"></el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item v-for="(box, i) in switchBoxes" :key="box.id" :command="i" :disabled="i === activeBoxIndex">
-                    {{ (i + 1) + '. ' + boxLibraryNames(box) }}
-                  </el-dropdown-item>
-                  <el-dropdown-item v-if="!switchBoxes.length" disabled>{{ $t('m.switchBoxNeedMore') }}</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <!-- 切换库:点一下 = 切到下一条「库切换」框(循环) -->
+            <el-button v-else-if="id === 'switchLibrary'" type="primary" plain :icon="switchLibraryIcon" @click="switchBox()" :title="$t('m.switchLibraryCurrent') + ':' + (boxLabel || '—')"></el-button>
             <!-- 可自定义的界面按钮 -->
             <el-button
               v-else-if="toolbarButtonMap[id]"
@@ -1237,24 +1228,18 @@ export default defineComponent({
       }
     },
     // 切换库(工具栏):点一下 = 切到下一个「库切换」框,书架显示该框内所有库合并的漫画
-    // 下拉里每一行显示的库名(没选库时明确说「显示全部」)
-    boxLibraryNames (box) {
-      const ids = box && Array.isArray(box.libraryIds) ? box.libraryIds : []
-      const names = this.libraries.filter(l => ids.includes(l.id)).map(l => l.name)
-      return names.length ? names.join(' + ') : this.$t('m.switchBoxEmptyMeansAll')
-    },
-    // 从下拉里选第 index 条「库切换」框
-    async switchBox (index) {
+    // 点一下工具栏按钮 = 切到下一条「库切换」框(循环)。只有一条框时点了不会变,所以提示一下
+    async switchBox () {
       const boxes = this.switchBoxes
-      if (!boxes.length) {
+      const n = boxes.length
+      if (n <= 1) {
         this.$message.info(this.$t('m.switchBoxNeedMore'))
         return
       }
-      const n = boxes.length
-      const idx = Number.isInteger(index) ? ((index % n) + n) % n : 0
-      if (idx === this.activeBoxIndex) return
+      // 前端算好「下一条框」的序号再传给后端:避免前后端状态不同步时「点了没反应」
+      const next = ((this.activeBoxIndex + 1) % n + n) % n
       try {
-        const res = await ipcRenderer.invoke('set-active-box', { index: idx })
+        const res = await ipcRenderer.invoke('set-active-box', { index: next })
         if (res && res.ok) {
           this.setting.activeBoxIndex = res.activeBoxIndex
           this.setting.activeLibraryId = res.activeLibraryId
