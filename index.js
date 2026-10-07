@@ -54,6 +54,22 @@ let defaultSetting = prepareSetting()
 // 键 = 配置名(账户名);'' = 未登录 / 桌面版默认。
 // 谁在请求由 modules/init_folder_setting.js 的 AsyncLocalStorage 决定(getActiveProfile),
 // web-server 用 withAccount() 把每个请求包进对应账户的上下文里。
+// 配置名(账户名)必须真的存在于「当前数据目录」里,否则会错位:
+// 例如 bootstrap.json 还记着 admin,但这个数据目录(如 NAS 共享)里只有 universc,
+// 于是设置被写进 setting.admin.json,而另一端读的是 setting.universc.json —— 两端永远对不上。
+const knownUsersInStore = () => {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(STORE_PATH, 'users.json'), 'utf-8'))
+    return Object.keys(j.users || {})
+  } catch { return [] }
+}
+if (getActiveProfile()) {
+  const known = knownUsersInStore()
+  if (known.length && !known.includes(getActiveProfile())) {
+    console.log(`[profile] 配置名「${getActiveProfile()}」在当前数据目录里没有对应账户,回退默认配置(setting.json)`)
+    setActiveProfile('')
+  }
+}
 const settingsByProfile = new Map([[safeProfile(getActiveProfile() || ''), defaultSetting]])
 const currentSettingObj = () => settingsByProfile.get(getActiveProfile()) || defaultSetting
 // index.js 里大量 setting.xxx 读写不用改:Proxy 把它们代理到「当前账户那一份」
@@ -584,8 +600,9 @@ const startRemoteProxy = (remoteServer) => new Promise((resolve) => {
     }
     clearNasCookie()
     nasCookie = ''
-    const username = setting.webUsername
-    const password = setting.webPassword
+    // 兼容旧字段名:设置页里那两个框曾经写成 remoteUsername / remotePassword
+    const username = setting.webUsername || setting.remoteUsername
+    const password = setting.webPassword || setting.remotePassword
     if (!username || !password) return
     try {
       const r = await fetch(remoteServer + '/api/auth/login', {
@@ -619,6 +636,19 @@ const startRemoteProxy = (remoteServer) => new Promise((resolve) => {
       if (data && data.ok) {
         nasCookie = sc.split(';')[0]
         saveNasCookie(nasCookie)
+        // 记住这次登录用的账户:下次启动 autoLogin 直接自动登录,
+        // 用户只需在登录框输入一次(不再每次重开都要求重输)
+        const u = String((req.body && req.body.username) || '').trim()
+        const p = String((req.body && req.body.password) || '')
+        if (u) {
+          setting.webUsername = u
+          setting.webPassword = p
+          // 旧字段一并清掉,避免两套值打架
+          setting.remoteUsername = ''
+          setting.remotePassword = ''
+          try { persistSetting() } catch (e) { console.log('保存远程账户失败:', String((e && e.message) || e)) }
+          console.log('已记住远程账户: ' + u + '(下次自动登录)')
+        }
       }
       res.status(r.status).json(data || { ok: false, error: '登录响应异常' })
     } catch (e) {
@@ -3575,6 +3605,8 @@ ipcMain.handle('switch-to-local-mode', async () => {
   setting.remoteServer = ''
   setting.webUsername = ''
   setting.webPassword = ''
+  setting.remoteUsername = ''
+  setting.remotePassword = ''
   persistSetting()
   app.relaunch()
   app.exit(0)
