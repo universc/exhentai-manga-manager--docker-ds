@@ -4159,13 +4159,17 @@ ipcMain.handle('rename-tag', async (event, { cat, oldName, newName } = {}) => {
     // 标签是全局的(metadata.sqlite):遍历全部元数据行,不受当前库/切换框影响
     const rows = await Metadata.findAll()
     let count = 0
-    for (const row of rows) {
-      const tags = row.tags
-      const arr = tags && tags[cat]
-      if (!Array.isArray(arr) || !arr.includes(oldName)) continue
-      await Metadata.update({ tags: { ...tags, [cat]: arr.map(t => (t === oldName ? newName : t)) } }, { where: { hash: row.hash } })
-      count++
-    }
+    // 整批一个事务:否则几千行 = 几千次「建 journal → 提交 → 删 journal」,
+    // 在网络盘上会把 NAS 日志刷爆而且极慢(用户反馈过)
+    await Metadata.sequelize.transaction(async (tx) => {
+      for (const row of rows) {
+        const tags = row.tags
+        const arr = tags && tags[cat]
+        if (!Array.isArray(arr) || !arr.includes(oldName)) continue
+        await Metadata.update({ tags: { ...tags, [cat]: arr.map(v => (v === oldName ? newName : v)) } }, { where: { hash: row.hash }, transaction: tx })
+        count++
+      }
+    })
     return { ok: true, count }
   } catch (e) {
     return { ok: false, error: String(e.message || e) }
@@ -4179,17 +4183,20 @@ ipcMain.handle('delete-tag', async (event, { cat, name } = {}) => {
     // 标签是全局的(metadata.sqlite):遍历全部元数据行,不受当前库/切换框影响
     const rows = await Metadata.findAll()
     let count = 0
-    for (const row of rows) {
-      const tags = row.tags
-      const arr = tags && tags[cat]
-      if (!Array.isArray(arr) || !arr.includes(name)) continue
-      const next = arr.filter(t => t !== name)
-      const nextTags = { ...tags }
-      if (next.length) nextTags[cat] = next
-      else delete nextTags[cat]
-      await Metadata.update({ tags: nextTags }, { where: { hash: row.hash } })
-      count++
-    }
+    // 同改名:整批一个事务,避免几千次 journal 增删
+    await Metadata.sequelize.transaction(async (tx) => {
+      for (const row of rows) {
+        const tags = row.tags
+        const arr = tags && tags[cat]
+        if (!Array.isArray(arr) || !arr.includes(name)) continue
+        const next = arr.filter(v => v !== name)
+        const nextTags = { ...tags }
+        if (next.length) nextTags[cat] = next
+        else delete nextTags[cat]
+        await Metadata.update({ tags: nextTags }, { where: { hash: row.hash }, transaction: tx })
+        count++
+      }
+    })
     return { ok: true, count }
   } catch (e) {
     return { ok: false, error: String(e.message || e) }
