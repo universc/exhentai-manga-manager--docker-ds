@@ -1501,63 +1501,6 @@
               <span style="flex: 1"></span>
               <el-button type="danger" plain size="small" @click="logout">{{$t('m.logout')}}</el-button>
             </div>
-            <!-- ③ 远程模式(桌面版):连接 NAS 上的网页版/Docker,像网页一样取 NAS 上的漫画。
-                 本地模式与远程模式用一条分割线分开。 -->
-            <template v-if="showDesktopUI">
-              <div class="account-divider"></div>
-              <div class="account-section-title">{{$t('m.serverMode')}}</div>
-              <div class="setting-line toolbar-tip">{{$t('m.remoteModeSectionHint')}}</div>
-              <!-- 已连接:显示当前服务器,可退回本地模式 -->
-              <template v-if="isRemoteDesktop">
-                <div class="setting-line">
-                  <span class="setting-label">{{$t('m.remoteCurrentServer')}}</span>
-                  <b style="margin-left: 8px;">{{setting.remoteServer}}</b>
-                </div>
-                <div class="setting-line function-button-row">
-                  <el-button class="function-button" type="danger" plain @click="exitServerMode">{{$t('m.exitServerMode')}}</el-button>
-                </div>
-              </template>
-              <!-- 未连接:填地址与账户后连接 -->
-              <template v-else>
-                <el-row :gutter="8">
-                  <el-col :span="12">
-                    <div class="setting-line">
-                      <el-input v-model="remoteIp" :placeholder="$t('m.remoteIpPlaceholder')" @change="syncRemoteServer">
-                        <template #prepend><span class="setting-label">{{$t('m.remoteIp')}}</span></template>
-                      </el-input>
-                    </div>
-                  </el-col>
-                  <el-col :span="12">
-                    <div class="setting-line">
-                      <el-input v-model.number="remotePort" placeholder="10000" @change="syncRemoteServer">
-                        <template #prepend><span class="setting-label">{{$t('m.remotePort')}}</span></template>
-                      </el-input>
-                    </div>
-                  </el-col>
-                  <el-col :span="12">
-                    <div class="setting-line">
-                      <el-input v-model="setting.remoteUsername" :placeholder="$t('m.loginUsername')" @change="saveSetting">
-                        <template #prepend><span class="setting-label">{{$t('m.remoteUsername')}}</span></template>
-                      </el-input>
-                    </div>
-                  </el-col>
-                  <el-col :span="12">
-                    <div class="setting-line">
-                      <el-input v-model="setting.remotePassword" type="password" show-password :placeholder="$t('m.loginPassword')" @change="saveSetting">
-                        <template #prepend><span class="setting-label">{{$t('m.remotePassword')}}</span></template>
-                      </el-input>
-                    </div>
-                  </el-col>
-                  <el-col :span="24">
-                    <div class="setting-line function-button-row">
-                      <el-button class="function-button" plain @click="testRemoteServer">{{$t('m.testConnection')}}</el-button>
-                      <el-button class="function-button" type="primary" plain :disabled="!remoteIp" @click="relaunchRemoteMode">{{$t('m.relaunchConnect')}}</el-button>
-                    </div>
-                  </el-col>
-                </el-row>
-              </template>
-              <div class="setting-line toolbar-tip">{{$t('m.webModeHint')}}</div>
-            </template>
             <template v-if="isAdmin && !isRemoteDesktop">
               <div class="setting-line toolbar-tip" style="margin-top: 14px;">{{$t('m.accountsTip')}}</div>
               <div class="account-list">
@@ -1616,6 +1559,63 @@
               <span class="setting-line toolbar-tip" style="display: inline-block; margin-left: 10px;">{{$t('m.ipRulesNote')}}</span>
             </div>
             </template>
+            </template>
+            <!-- ③ 远程模式(桌面版):连接 NAS 上的网页版/Docker,像网页一样取 NAS 上的漫画。
+                 本地模式与远程模式用一条分割线分开。 -->
+            <template v-if="showDesktopUI">
+              <div class="account-divider"></div>
+              <div class="account-section-title">{{$t('m.serverMode')}}</div>
+              <div class="setting-line toolbar-tip">{{$t('m.remoteModeSectionHint')}}</div>
+              <!-- 已连接:显示当前服务器,可退回本地模式 -->
+              <template v-if="isRemoteDesktop">
+                <div class="setting-line">
+                  <span class="setting-label">{{$t('m.remoteCurrentServer')}}</span>
+                  <b style="margin-left: 8px;">{{setting.remoteServer}}</b>
+                </div>
+                <div class="setting-line function-button-row">
+                  <el-button class="function-button" type="danger" plain @click="exitServerMode">{{$t('m.exitServerMode')}}</el-button>
+                </div>
+              </template>
+              <!-- 未连接:填地址与账户后连接 -->
+              <template v-else>
+                <el-row :gutter="8">
+                  <el-col :span="12">
+                    <div class="setting-line">
+                      <el-input v-model="remoteIp" :placeholder="$t('m.remoteIpPlaceholder')" @change="syncRemoteServer">
+                        <template #prepend><span class="setting-label">{{$t('m.remoteIp')}}</span></template>
+                      </el-input>
+                    </div>
+                  </el-col>
+                  <el-col :span="12">
+                    <div class="setting-line">
+                      <el-input v-model.number="remotePort" placeholder="10000" @change="syncRemoteServer">
+                        <template #prepend><span class="setting-label">{{$t('m.remotePort')}}</span></template>
+                      </el-input>
+                    </div>
+                  </el-col>
+                  <el-col :span="12">
+                    <div class="setting-line">
+                      <el-input v-model="setting.remoteUsername" :placeholder="$t('m.loginUsername')" @change="saveSetting">
+                        <template #prepend><span class="setting-label">{{$t('m.remoteUsername')}}</span></template>
+                      </el-input>
+                    </div>
+                  </el-col>
+                  <el-col :span="12">
+                    <div class="setting-line">
+                      <el-input v-model="setting.remotePassword" type="password" show-password :placeholder="$t('m.loginPassword')" @change="saveSetting">
+                        <template #prepend><span class="setting-label">{{$t('m.remotePassword')}}</span></template>
+                      </el-input>
+                    </div>
+                  </el-col>
+                  <el-col :span="24">
+                    <div class="setting-line function-button-row">
+                      <el-button class="function-button" plain @click="testRemoteServer">{{$t('m.testConnection')}}</el-button>
+                      <el-button class="function-button" type="primary" plain :disabled="!remoteIp" @click="relaunchRemoteMode">{{$t('m.relaunchConnect')}}</el-button>
+                    </div>
+                  </el-col>
+                </el-row>
+              </template>
+              <div class="setting-line toolbar-tip">{{$t('m.webModeHint')}}</div>
             </template>
             </template>
           </el-col>
@@ -3409,6 +3409,9 @@ const ipWhitelistInput = ref('')
 const ipBlacklistInput = ref('')
 const loadIpRules = async () => {
   if (!isAdmin.value) return
+  // IP 访问控制只有网页版有:桌面版没有 auth-get-ip-rules 通道,
+  // 调用会在主进程刷出「No handler registered for 'auth-get-ip-rules'」
+  if (!isWebMode.value) return
   let rules = null
   try {
     rules = await ipcRenderer.invoke('auth-get-ip-rules')
