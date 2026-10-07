@@ -27,14 +27,9 @@
         <el-row :gutter="8" v-if="showDesktopUI && runMode === 'local'">
           <el-col :span="24">
             <div class="setting-line">
-              <el-input v-model="dataPathText">
+              <el-input v-model="dataPathText" @change="applyDataPath">
                 <template #prepend><span class="setting-label">{{$t('m.dataPath')}}</span></template>
-                <template #append>
-                  <el-button-group>
-                    <el-button @click="selectDataPath">{{$t('m.select')}}</el-button>
-                    <el-button type="primary" @click="saveDataPath">{{$t('m.dataPathSaveRestart')}}</el-button>
-                  </el-button-group>
-                </template>
+                <template #append><el-button @click="selectDataPath">{{$t('m.select')}}</el-button></template>
               </el-input>
             </div>
             <div class="setting-line toolbar-tip">{{$t('m.dataPathHint')}}</div>
@@ -2728,7 +2723,7 @@ const activeLibrary = computed(() => libraries.value.find(l => l.id === activeLi
 const libraryDataDirs = ref({})
 const libraryBusy = ref(false)
 // 每排「库数据存放位置」的 placeholder:显示后端解析出的默认目录(留空即用它)
-const libraryDataDirPlaceholder = (lib) => (lib && libraryDataDirs.value[lib.id]) || t('m.libraryDataPathDefault')
+const libraryDataDirPlaceholder = () => t('m.libraryDataPathDefault')
 
 const applyLibrariesResponse = (res) => {
   const valid = res.libraries.map(l => ({ id: l.id, name: l.name, path: l.path, dataPath: l.dataPath }))
@@ -3147,18 +3142,33 @@ const syncRemoteServer = () => {
 
 // ---------- 本地模式:数据文件位置 ----------
 const dataPathText = ref('')
+// 当前生效的数据目录(用来判断「值真的改了」才重启,避免只是点进来又点走也重启一次)
+const currentDataPath = ref('')
 const loadDataPath = async () => {
   if (!showDesktopUI.value) return
   const info = await ipcRenderer.invoke('get-data-path')
-  if (info) dataPathText.value = info.dataPath
+  if (info) {
+    dataPathText.value = info.dataPath
+    currentDataPath.value = info.dataPath
+  }
 }
 const selectDataPath = async () => {
   const folder = await ipcRenderer.invoke('select-folder', t('m.dataPath'))
-  if (folder) dataPathText.value = folder
+  if (folder) {
+    dataPathText.value = folder
+    applyDataPath()
+  }
 }
-const saveDataPath = async () => {
-  if (!dataPathText.value.trim()) return
-  await ipcRenderer.invoke('set-data-path', dataPathText.value.trim())
+// 填完(回车 / 点别处)立即生效:写入 bootstrap.json 并自动重启一次 ——
+// 数据目录是 App 启动时最先确定的东西(setting.json 自己就在里面),只能靠重启切换,但不用你再点按钮
+const applyDataPath = async () => {
+  const next = String(dataPathText.value || '').trim()
+  if (!next || next === currentDataPath.value) return
+  const res = await ipcRenderer.invoke('set-data-path', next)
+  if (res && res.ok === false) {
+    ElMessage.error(res.error || t('m.librarySaveFailed'))
+    loadDataPath()
+  }
 }
 
 // ---------- NAS 远程漫画库 ----------
