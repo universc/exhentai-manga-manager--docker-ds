@@ -142,10 +142,6 @@ let LIBRARY_DATA_DIR = startupLibraryPaths.dataDir
 let LIBRARY_VIEWCACHE_DIR = startupLibraryPaths.viewcacheDir
 // 封面缓存也属于「那个库」(用户要求:每个库独自生成封面)—— 用可变变量,随运行时切库走
 let CURRENT_COVER_DIR = startupLibraryPaths.coverDir
-// 老版本的封面全在这一个全局目录里。改成按库存放后如果不管它,每个库第一次浏览都要
-// 把每一本封面**重新生成**一遍(一万多本 = 一万多次写库 + 解压封面),在网络盘上就是
-// 「journal 被反复增删」刷屏。这里做个只读兜底:库目录里没有就沿用老的,不再重做。
-const LEGACY_COVER_DIR = path.join(STORE_PATH, 'cover')
 try { fs.mkdirSync(CURRENT_COVER_DIR, { recursive: true }) } catch (e) { /* 稍后生成封面时再试 */ }
 // 首次升级:把旧版放在数据存放目录根部的库数据搬进库数据目录(绝不覆盖已有文件)
 let libraryDataMigration = (activeLibrary && !dataPathFallback) ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
@@ -1191,9 +1187,11 @@ const ensureBookCover = (book) => {
         // basename 兜底:共享 cover 目录里可能存在其他平台生成的文件
         const base = String(book.coverPath).replace(/[\\/]+$/, '').split(/[\\/]/).pop()
         if (base) {
-          // 老版本的全局 cover 目录:直接沿用(只读,不写库、不重新生成)
-          const legacy = path.join(LEGACY_COVER_DIR, base)
-          if (fs.existsSync(legacy)) return legacy
+          const fallback = path.join(CURRENT_COVER_DIR, base)
+          if (fs.existsSync(fallback)) {
+            await updateBookCoverPath(book.id, fallback)
+            return fallback
+          }
         }
       }
       await takeCoverSlot()
