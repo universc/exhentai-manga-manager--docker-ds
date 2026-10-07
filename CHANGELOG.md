@@ -1,3 +1,37 @@
+## v1.11.0 (docker-ds fork) — 2026-10-07
+
+多漫画库 · 每库独立数据目录 · 标签全局化。
+
+### 多漫画库
+- 新增库模型:\`setting.libraries = [{id,name,path,dataPath}]\` + \`setting.activeLibraryId\`;旧字段 \`setting.library\` 保留为活动库镜像。\`modules/libraries.js\` 负责规范化、迁移与唯一命名。
+- 设置 → 常用:一行 = 一个库(库名可改、库文件夹只读、带删除按钮、库数据存放位置可手填或选择)。
+- **库数据存放位置为空 = 该库不生效**(不加载、不扫描、不能设为当前库),界面显示「未生效」。
+- 「库切换」区:一个框 = 一组库;工具栏「切换库」按钮**点一下切到下一个框**(循环),书架显示该框内所有库**合并**的漫画(同一本书不去重,各带 \`libraryId\`/\`libraryName\`)。
+- 每库一个 sequelize 实例(\`modelForLibrary\`);扫描按钮**依次扫描每个已生效的库**,各写各的数据库。
+- 删除记录按库写入(\`<库数据目录>/delete-log.jsonl\`),回收站与删除记录合并展示并标出所属库。
+
+### 标签与元数据
+- 新增 IPC \`get-all-tags\`:标签列表取自全局 \`metadata.sqlite\`,与当前库 / 切换框无关。
+- \`rename-tag\` / \`delete-tag\` 改为遍历 \`Metadata\` 全表(对所有库生效),并用单个事务批处理。
+
+### 写入路由(合并书架的正确性)
+- 每本书带 \`libraryId\`;\`saveBookToDatabase\` 写回**它自己所属的库**,元数据始终写全局库。
+- 新增 \`bookLibraryById\` / \`bookLibraryByHash\` / \`modelForBookId\` / \`findBookAcrossLibraries\`;封面写回、按 id 查书、按 filepath 查 / 删、按 hash 查(LAN 缩略图、AI 元数据)全部按库路由。
+- 新增 \`libraryForPath(路径)\`:删除整本 / 单图、移动文件、文件夹树都按「路径属于哪个库」判断,不再依赖全局 \`setting.library\`。
+
+### 封面与缓存
+- 封面缓存按库:\`CURRENT_COVER_DIR = <库数据目录>/cover\`,随运行时切库同步;缩略图缓存、扫描快照、数据库同样落在各库自己的数据目录。
+
+### SQLite(网络盘)
+- 新增 \`applySqliteTuning()\`:\`journal_mode=PERSIST\`(提交后不再删除 journal)、\`synchronous=NORMAL\`、\`busy_timeout=8000\`。修复在 NAS/SMB 上 \`database.sqlite-journal\` 被反复增删刷爆 NAS 日志的问题。
+
+### 稳定性修复
+- \`setting.json\` 原子写改用唯一临时名(\`setting.json.<pid>.<seq>.tmp\`),修复并发写导致的 \`ENOENT: rename setting.json.tmp -> setting.json\`。
+- 数据目录不可用**不再静默回退**:记录 \`dataPathFallback\`,启动后弹出明确警告;降级期间不迁移、不落盘。
+- 工具栏新增「切换库」按钮(carbon \`Catalog\` 图标),可拖动 / 隐藏;修复 Options API 模板直接使用 import 图标导致按钮空白的问题。
+- 增删库、改库数据目录、改切换框之后**立即重读书架**,不必等切库或重启。
+- 版本号 1.10.6 → **1.11.0**;Docker 镜像 tag 同步为 \`1.11.0\`。
+
 ## v1.10.6 (docker-ds fork) — 2026-10-06
 
 > 本版是「删除漫画没有任何后悔药」的修复版:**删除先移入回收站**,并且**每一次删除/恢复都留下日志**;单张图片的删除同样进回收站。

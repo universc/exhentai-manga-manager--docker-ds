@@ -38,7 +38,7 @@
 本项目支持以网页服务方式运行(无需桌面环境),可直接部署到飞牛 NAS 等 Docker 设备上,
 电脑与手机通过浏览器访问全部功能。详见 [docker/README.md](docker/README.md)。
 
-镜像已发布到 Docker Hub,直接拉取即可:`docker pull universc/exhentai-manga-manager--docker-ds:1.10.6`
+镜像已发布到 Docker Hub,直接拉取即可:`docker pull universc/exhentai-manga-manager--docker-ds:1.11.0`
 (国内直连会超时,挂加速源;也可以 `docker load -i` 导入 Release 里的镜像包)。
 
 ![cover.jpg](https://raw.githubusercontent.com/SchneeHertz/exhentai-manga-manager/master/screenshots/cover.jpg)

@@ -38,8 +38,8 @@
 > **最快的方式(推荐)**:镜像已经发布到 Docker Hub,不需要构建、也不用导入 tar.gz:
 >
 > ```bash
-> sudo docker pull universc/exhentai-manga-manager--docker-ds:1.10.6
-> sudo docker tag  universc/exhentai-manga-manager--docker-ds:1.10.6 exhentai-manga-manager:1.10.6
+> sudo docker pull universc/exhentai-manga-manager--docker-ds:1.11.0
+> sudo docker tag  universc/exhentai-manga-manager--docker-ds:1.11.0 exhentai-manga-manager:1.11.0
 > sudo docker compose up -d
 > ```
 >
