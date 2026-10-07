@@ -19,12 +19,20 @@ try {
 } catch {
   customDataPath = null
 }
+// 自定义数据目录不可用时的降级记录:交给 index.js 明确告知用户,并且**不迁移/不落盘**,
+// 避免像以前那样「静默换目录」把默认目录里的旧数据当成真数据(用户会以为数据丢了)
+let dataPathFallback = null
 if (customDataPath) {
   try {
     fs.mkdirSync(customDataPath, { recursive: true })
     STORE_PATH = customDataPath
   } catch (e) {
-    console.log('自定义数据目录不可用,回退默认目录:', String(e.message || e))
+    dataPathFallback = {
+      configured: String(customDataPath),
+      actual: STORE_PATH,
+      error: String((e && e.message) || e)
+    }
+    console.log('[data-path] 自定义数据目录不可用:', dataPathFallback.error, '→ 本次临时使用:', STORE_PATH)
   }
 } else {
   try {
@@ -254,4 +262,5 @@ module.exports = {
   preparePath,
   _mange_reader,
   setBootstrapDataPath,
+  dataPathFallback,
 }

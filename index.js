@@ -26,6 +26,7 @@ const {
   TEMP_PATH, VIEWER_PATH,
   prepareSetting, prepareCollectionList, preparePath,
   setBootstrapDataPath,
+  dataPathFallback,
   _mange_reader
 } = require('./modules/init_folder_setting.js')
 const { findSameFile } = require('./fileLoader/folder.js')
@@ -93,8 +94,9 @@ const activeBoxOf = (s = setting) => {
 const boxLibraries = (s = setting) => {
   const active = (s.libraries || []).filter(isLibraryActive)
   const box = activeBoxOf(s)
-  const ids = box && Array.isArray(box.libraryIds) ? box.libraryIds : null
-  if (!ids || !ids.length) return active
+  if (!box) return active              // 完全没配置切换框 → 退化成「所有已生效的库」
+  const ids = Array.isArray(box.libraryIds) ? box.libraryIds : []
+  if (!ids.length) return []           // 框存在但没选库 → 什么都不显示(不再等于「所有库」)
   return active.filter(l => ids.includes(l.id))
 }
 // 每个库一个 sequelize 实例:合并书架要同时读多个库数据库
@@ -142,7 +144,7 @@ let LIBRARY_VIEWCACHE_DIR = startupLibraryPaths.viewcacheDir
 let CURRENT_COVER_DIR = startupLibraryPaths.coverDir
 try { fs.mkdirSync(CURRENT_COVER_DIR, { recursive: true }) } catch (e) { /* 稍后生成封面时再试 */ }
 // 首次升级:把旧版放在数据存放目录根部的库数据搬进库数据目录(绝不覆盖已有文件)
-let libraryDataMigration = activeLibrary ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
+let libraryDataMigration = (activeLibrary && !dataPathFallback) ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
 let SNAPSHOT_FILE = startupLibraryPaths.snapshotFile
 let LIBRARY_DB_FILE = startupLibraryPaths.dbFile
 
@@ -206,7 +208,7 @@ const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir) => {
   const lib = activeLibraryOf(setting)
   const paths = libraryRuntimePaths(STORE_PATH, lib)
   // 同一个库改了「库数据存放位置」:先把原库数据整体搬到新目录(绝不覆盖)
-  const movedFromOldDir = shouldMoveLibraryData(prevLibrary, lib, prevDataDir, paths.dataDir)
+  const movedFromOldDir = (!dataPathFallback && shouldMoveLibraryData(prevLibrary, lib, prevDataDir, paths.dataDir))
     ? migrateLibraryData(prevDataDir, paths.dataDir)
     : { moved: [], kept: [] }
   LIBRARY_DATA_DIR = paths.dataDir
@@ -265,7 +267,7 @@ if (libraryState.migrated || libraryState.changed) {
   console.log(`[libraries] 漫画库列表已初始化:${setting.libraries.map(l => `${l.name}(${l.path})`).join('、') || '(空)'}`)
   // 只在本地模式落盘:容器模式(共享 /data/setting.json)下 library 会写回 Windows 侧,
   // 这里避免把容器路径 /library 覆盖进跨平台共享的 setting.json。
-  if (!process.env.WEB_LIBRARY) {
+  if (!process.env.WEB_LIBRARY && !dataPathFallback) {
     try {
       const settingPath = path.join(STORE_PATH, 'setting.json')
       const settingTempPath = settingTmpPath()
@@ -985,6 +987,23 @@ if (!WEB_MODE) {
       }
       mainWindow = createWindow()
       registerGlobalHotkey()
+      // 数据目录不可用:明确弹窗,绝不静默换目录
+      if (dataPathFallback) {
+        setTimeout(() => {
+          dialog.showMessageBox({
+            type: 'warning',
+            title: '数据目录不可用',
+            message: '你设置的数据目录打不开,本次已临时改用默认目录。',
+            detail: '设置的目录:' + dataPathFallback.configured
+              + '\n错误:' + dataPathFallback.error
+              + '\n本次实际使用:' + dataPathFallback.actual
+              + '\n\n为避免弄乱默认目录里的旧数据,本次启动不会搬迁、也不会写入任何设置与库数据。'
+              + '\n请检查该目录(例如网络盘/NAS 是否已挂载)后重启客户端。',
+            buttons: ['知道了'],
+            noLink: true
+          }).catch(() => {})
+        }, 1500)
+      }
     })
   }
   app.on('activate', () => {
@@ -2963,6 +2982,8 @@ const applySetting = async (receiveSetting) => {
   }
   // 刷新托盘菜单(置顶/开机启动勾选状态与设置同步)
   if (tray) buildTrayMenu()
+  // 降级模式(用户设置的数据目录打不开):只改内存,不落盘,避免污染默认目录里的旧数据
+  if (dataPathFallback) return
   const targetPath = path.join(STORE_PATH, 'setting.json')
   const tempPath = settingTmpPath()
   await fs.promises.writeFile(tempPath, JSON.stringify(fileSetting, null, '  '), { encoding: 'utf-8' })

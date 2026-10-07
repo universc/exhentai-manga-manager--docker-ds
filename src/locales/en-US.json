@@ -76,6 +76,7 @@
     "switchBoxes": "Library switch",
     "switchLibraryCurrent": "Current libraries",
     "switchBoxKeepOne": "At least one switch box must remain",
+    "switchBoxNeedMore": "There is only one switch box, so nothing changes. Add another one in Settings → General → Library switch.",
     "switchBoxLibraries": "Pick the libraries in this box",
     "switchBoxAdd": "Add switch box",
     "switchBoxCurrent": "Current",

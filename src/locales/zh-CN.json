@@ -76,6 +76,7 @@
     "switchBoxes": "库切换",
     "switchLibraryCurrent": "当前库",
     "switchBoxKeepOne": "至少要保留一个切换框",
+    "switchBoxNeedMore": "只有一条「库切换」框,点它不会变;先在 设置 → 常用 → 库切换 里再加一条",
     "switchBoxLibraries": "选择这个框里的库",
     "switchBoxAdd": "添加切换框",
     "switchBoxCurrent": "当前",

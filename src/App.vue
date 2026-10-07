@@ -265,7 +265,7 @@ import { defineComponent } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { Setting as SettingIcon, FullScreen, Edit } from '@element-plus/icons-vue'
 import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular } from '@vicons/fluent'
-import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
+import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdAlbums, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
 
 import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes } from './utils.js'
@@ -460,7 +460,8 @@ export default defineComponent({
     // ⚠️ Options API 的模板拿不到 <script> 里 import 的组件(要靠 this.xxx),
     // 所以图标必须经 computed 暴露,否则按钮是空白的(用户报的 bug)
     switchLibraryIcon () {
-      return MdBook
+      // 用 MdAlbums(集合)和「切换阅读器」的 MdBook 区分开
+      return MdAlbums
     },
     boxLabel () {
       const boxes = Array.isArray(this.setting?.switchBoxes) ? this.setting.switchBoxes : []
@@ -1221,8 +1222,16 @@ export default defineComponent({
     },
     // 切换库(工具栏):点一下 = 切到下一个「库切换」框,书架显示该框内所有库合并的漫画
     async switchBox () {
+      const boxes = Array.isArray(this.setting?.switchBoxes) ? this.setting.switchBoxes : []
+      if (boxes.length <= 1) {
+        this.$message.info(this.$t('m.switchBoxNeedMore'))
+        return
+      }
+      // 由前端算好「下一个框」的序号再传给后端:避免前后端状态不同步时出现「点了没反应」
+      const cur = Number.isInteger(this.setting?.activeBoxIndex) ? this.setting.activeBoxIndex : 0
+      const next = ((cur + 1) % boxes.length + boxes.length) % boxes.length
       try {
-        const res = await ipcRenderer.invoke('set-active-box', {})
+        const res = await ipcRenderer.invoke('set-active-box', { index: next })
         if (res && res.ok) {
           this.setting.activeBoxIndex = res.activeBoxIndex
           this.setting.activeLibraryId = res.activeLibraryId
