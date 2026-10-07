@@ -62,6 +62,8 @@ export const useAppStore = defineStore('appStore', {
   bookTaskPaused: {},
   bookTaskAborted: {},
     bookList: [],
+    // 全局标签(来自 metadata.sqlite,与当前库/切换框无关)
+    allTags: [],
     displayBookList: [],
     chunkDisplayBookList: [],
     collectionList: [],
@@ -113,12 +115,16 @@ export const useAppStore = defineStore('appStore', {
       })
     },
     tagListRaw (state) {
-      const tagArray = _(state.bookList.map(b => {
-        return _.map(b.tags, (tags, cat) => {
-          return _.map(tags, tag => `${cat}##${tag}`)
-        })
-      }))
-      .flattenDeep().value()
+      // 标签是全局的:优先用 metadata.sqlite 的全量标签(get-all-tags),不受当前库/切换框影响;
+      // 还没加载到全量标签时退回「当前书架的书」,避免设置页标签列表空着
+      const tagArray = (Array.isArray(state.allTags) && state.allTags.length)
+        ? state.allTags.map(t => `${t.cat}##${t.tag}`)
+        : _(state.bookList.map(b => {
+            return _.map(b.tags, (tags, cat) => {
+              return _.map(tags, tag => `${cat}##${tag}`)
+            })
+          }))
+          .flattenDeep().value()
       // 去重键用英文分类名,使「角色##X」与「character##X」合并为一条(避免下拉/标签栏重复)
       const seen = new Set()
       const uniqedTagArray = []
@@ -189,6 +195,13 @@ export const useAppStore = defineStore('appStore', {
     },
   },
   actions: {
+    // 拉取全局标签列表(设置 → 标签 用;来自 metadata.sqlite)
+    async loadAllTags () {
+      try {
+        const res = await ipcRenderer.invoke('get-all-tags')
+        this.allTags = (res && Array.isArray(res.tags)) ? res.tags : []
+      } catch (e) { /* 忽略 */ }
+    },
     // 统一任务入口:批量 = 单次任务的复用
     runBookTask (book, kind) {
       const id = book && book.id

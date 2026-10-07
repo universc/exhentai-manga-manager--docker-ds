@@ -781,6 +781,7 @@ export default defineComponent({
   },
   methods: {
     ...mapActions(useAppStore, [
+      'loadAllTags',
       'runBookTask',
       'pauseBookTask',
       'resumeBookTask',
@@ -1230,6 +1231,8 @@ export default defineComponent({
       }
     },
     async loadBookList (scan) {
+      // 顺带刷新全局标签列表(设置 → 标签 用)
+      this.loadAllTags()
       try {
         this.buttonLoadBookListLoading = true
         if (scan) this.scanning = true

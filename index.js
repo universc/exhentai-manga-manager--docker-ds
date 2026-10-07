@@ -110,6 +110,28 @@ const modelForLibrary = async (libraryId) => {
   mangaModels.set(lib.id, model)
   return model
 }
+// 合并书架:记住「哪本书属于哪个库」——写操作/查找必须回到它自己的库,不然会写脏别的库
+const bookLibraryById = new Map()
+const bookLibraryByHash = new Map()
+const rememberBookLibrary = (b) => {
+  if (!b || !b.libraryId) return
+  if (b.id) bookLibraryById.set(b.id, b.libraryId)
+  if (b.hash) bookLibraryByHash.set(b.hash, b.libraryId)
+}
+const modelForBookId = async (id) => modelForLibrary(bookLibraryById.get(id))
+// 在「当前框的所有库 + 当前库」里找一条记录,返回 { model, row, libraryId }
+const findBookAcrossLibraries = async (where) => {
+  const entries = []
+  for (const lib of boxLibraries()) entries.push({ lib, model: await modelForLibrary(lib.id) })
+  if (!entries.some(e => e.model === Manga)) entries.push({ lib: activeLibraryOf(setting), model: Manga })
+  for (const e of entries) {
+    try {
+      const row = await e.model.findOne({ where, raw: true })
+      if (row) return { model: e.model, row, libraryId: e.lib ? e.lib.id : undefined }
+    } catch (err) { /* 忽略:某个库查不动不影响其它库 */ }
+  }
+  return { model: Manga, row: null, libraryId: undefined }
+}
 const libraryState = ensureLibraries(setting, { nameHint: setting.externalLibraryRoot })
 const activeLibrary = libraryState.active
 // 活动库的运行时路径:切换活动库时由 switchActiveLibraryRuntime() 重新计算,所以都是 let
@@ -1099,7 +1121,9 @@ const generateCoverByName = async (book) => {
 // 把封面路径写回共享数据库(路径按当前环境转外部格式)
 const updateBookCoverPath = async (id, coverPath) => {
   const ext = toExternalPath(coverPath, 'coverPath')
-  await Manga.update({ coverPath: ext }, { where: { id } })
+  // 合并书架下必须写回这本书自己的库
+  const model = await modelForBookId(id)
+  await model.update({ coverPath: ext }, { where: { id } })
   return ext
 }
 
@@ -1160,8 +1184,11 @@ const ensureBookCover = (book) => {
 
 ipcMain.handle('ensure-book-cover', async (event, id) => {
   try {
-    const book = await Manga.findOne({ where: { id }, raw: true })
+    const found = await findBookAcrossLibraries({ id })
+    const book = found.row
     if (!book) return null
+    book.libraryId = found.libraryId || bookLibraryById.get(id)
+    if (book.libraryId) rememberBookLibrary(book)
     const coverPath = await ensureBookCover(book)
     return coverPath ? { coverPath } : null
   } catch (e) {
@@ -1184,6 +1211,7 @@ const loadBookListFromDatabase = async () => {
         b.libraryName = lib.name
         b.filepath = translateBookPath(b.filepath, 'filepath')
         b.coverPath = translateBookPath(b.coverPath, 'coverPath')
+        rememberBookLibrary(b)
         bookList.push(b)
       }
     }
@@ -2156,7 +2184,7 @@ ipcMain.handle('delete-local-book', async (event, filepath) => {
   }
   let info = {}
   try {
-    const row = await Manga.findOne({ where: { filepath }, raw: true })
+    const row = (await findBookAcrossLibraries({ filepath })).row
     if (row) info = { id: row.id, title: row.title, title_jpn: row.title_jpn, tags: row.tags }
   } catch (e) { /* 拿不到不影响删除 */ }
   try {
@@ -2174,7 +2202,7 @@ ipcMain.handle('delete-local-book', async (event, filepath) => {
     sendMessageToWebContents('删除 ' + filepath + ' 失败:' + result.error)
     return result
   }
-  try { await Manga.destroy({ where: { filepath: filepath } }) } catch (e) { /* 忽略 */ }
+  try { await (await findBookAcrossLibraries({ filepath })).model.destroy({ where: { filepath } }) } catch (e) { /* 忽略 */ }
   result.ok = true
   sendMessageToWebContents('已移入回收站:' + (info.title || path.basename(filepath)) + '(可在 设置 → 常用 → 回收站 里恢复)')
   return result
@@ -2587,7 +2615,7 @@ ipcMain.handle('delete-image', async (event, filename, filepath, type) => {
   }
   let info = {}
   try {
-    const row = await Manga.findOne({ where: { filepath: bookPath }, raw: true })
+    const row = (await findBookAcrossLibraries({ filepath: bookPath })).row
     if (row) info = { bookId: row.id, title: row.title, title_jpn: row.title_jpn }
   } catch (e) { /* 拿不到元数据不影响删除 */ }
   const meta = { kind: 'image', bookPath, bookType: type, image: rel, ...info }
@@ -3020,6 +3048,32 @@ ipcMain.handle('set-active-box', async (event, arg) => {
   } catch (e) {
     console.error(e)
     return { ok: false, error: String(e && e.message ? e.message : e) }
+  }
+})
+
+// 全局标签列表(来自 metadata.sqlite,和当前库/切换框无关)—— 设置 → 标签 用它
+ipcMain.handle('get-all-tags', async () => {
+  try {
+    const rows = await Metadata.findAll({ attributes: ['tags'] })
+    const seen = new Set()
+    const out = []
+    for (const row of rows) {
+      const tags = row.tags
+      if (!tags || typeof tags !== 'object') continue
+      for (const [cat, arr] of Object.entries(tags)) {
+        if (!Array.isArray(arr)) continue
+        for (const tag of arr) {
+          if (!tag) continue
+          const key = cat + '##' + tag
+          if (seen.has(key)) continue
+          seen.add(key)
+          out.push({ cat, tag })
+        }
+      }
+    }
+    return { ok: true, tags: out }
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e), tags: [] }
   }
 })
 
@@ -4046,15 +4100,15 @@ ipcMain.handle('rename-tag', async (event, { cat, oldName, newName } = {}) => {
   try {
     if (!cat || !oldName || !newName) return { ok: false, error: '参数错误' }
     if (oldName === newName) return { ok: true, count: 0 }
-    const bookList = await loadBookListFromDatabase()
+    // 标签是全局的(metadata.sqlite):遍历全部元数据行,不受当前库/切换框影响
+    const rows = await Metadata.findAll()
     let count = 0
-    for (const book of bookList) {
-      const arr = book.tags?.[cat]
-      if (Array.isArray(arr) && arr.includes(oldName)) {
-        book.tags[cat] = arr.map(t => (t === oldName ? newName : t))
-        await saveBookToDatabase(book)
-        count++
-      }
+    for (const row of rows) {
+      const tags = row.tags
+      const arr = tags && tags[cat]
+      if (!Array.isArray(arr) || !arr.includes(oldName)) continue
+      await Metadata.update({ tags: { ...tags, [cat]: arr.map(t => (t === oldName ? newName : t)) } }, { where: { hash: row.hash } })
+      count++
     }
     return { ok: true, count }
   } catch (e) {
@@ -4066,17 +4120,19 @@ ipcMain.handle('rename-tag', async (event, { cat, oldName, newName } = {}) => {
 ipcMain.handle('delete-tag', async (event, { cat, name } = {}) => {
   try {
     if (!cat || !name) return { ok: false, error: '参数错误' }
-    const bookList = await loadBookListFromDatabase()
+    // 标签是全局的(metadata.sqlite):遍历全部元数据行,不受当前库/切换框影响
+    const rows = await Metadata.findAll()
     let count = 0
-    for (const book of bookList) {
-      const arr = book.tags?.[cat]
-      if (Array.isArray(arr) && arr.includes(name)) {
-        const next = arr.filter(t => t !== name)
-        if (next.length) book.tags[cat] = next
-        else delete book.tags[cat]
-        await saveBookToDatabase(book)
-        count++
-      }
+    for (const row of rows) {
+      const tags = row.tags
+      const arr = tags && tags[cat]
+      if (!Array.isArray(arr) || !arr.includes(name)) continue
+      const next = arr.filter(t => t !== name)
+      const nextTags = { ...tags }
+      if (next.length) nextTags[cat] = next
+      else delete nextTags[cat]
+      await Metadata.update({ tags: nextTags }, { where: { hash: row.hash } })
+      count++
     }
     return { ok: true, count }
   } catch (e) {
@@ -4324,7 +4380,7 @@ LANBrowsing.delete('/api/archives/:hash/isnew', async (req, res) => {
 // 处理封面图片请求
 LANBrowsing.get('/api/archives/:hash/thumbnail', async (req, res) => {
   const hash = req.params.hash
-  const manga = await Manga.findOne({where: {hash: hash}})
+  const manga = (await findBookAcrossLibraries({ hash })).row
   if (!manga || !manga.coverPath) {
     return res.status(404).send('Cover not found')
   }
@@ -4348,7 +4404,7 @@ LANBrowsing.get('/api/archives/:hash/files', async (req, res) => {
     const mangaHash = req.params.hash
 
     // 从数据库找到对应的漫画
-    const manga = await Manga.findOne({where: {hash: mangaHash}})
+    const manga = (await findBookAcrossLibraries({ hash: mangaHash })).row
 
     if (!manga) {
       return res.status(404).send('Manga not found')
@@ -4382,7 +4438,7 @@ LANBrowsing.get('/api/archives/:hash/page', async (req, res) => {
     return res.status(400).send('Invalid page number')
   }
 
-  const manga = await Manga.findOne({where: {hash: hash}})
+  const manga = (await findBookAcrossLibraries({ hash })).row
   if (!manga || !manga.filepath) {
     return res.status(404).send('File not found')
   }
@@ -4425,7 +4481,7 @@ LANBrowsing.get('/api/archives/:hash/page', async (req, res) => {
 // 处理webview请求
 LANBrowsing.get('/reader', async (req, res) => {
   const id = req.query.id
-  const manga = await Manga.findOne({where: {hash: id}})
+  const manga = (await findBookAcrossLibraries({ hash: id })).row
 
   // 重定向至manga.url
   if (manga && manga.url) {
