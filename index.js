@@ -3092,7 +3092,12 @@ ipcMain.handle('select-file', async (event, title, filters, presetPath) => {
 })
 
 ipcMain.handle('load-setting', async (event, arg) => {
-  return setting
+  // ⚠️ 必须返回「普通对象」:setting 是 Proxy(按账户隔离用的),
+  //    Electron 的结构化克隆无法克隆 Proxy,会抛 "An object could not be cloned",
+  //    于是渲染进程的 load-setting 直接失败 ——
+  //    表现:设置界面读不到任何值(开关全变默认关闭)、本地模型等依赖它的区块不加载。
+  //    (网页版走 JSON 序列化,所以那边看不出问题。)
+  return { ...setting }
 })
 
 // 应用设置变更并写入本地 setting.json(本地模式 IPC 与远程模式本地代理共用)
