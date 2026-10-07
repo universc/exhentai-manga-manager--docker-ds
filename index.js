@@ -31,7 +31,7 @@ const {
 const { findSameFile } = require('./fileLoader/folder.js')
 const { inventoryLibrary, diffInventory, snapshotFromInventory, loadSnapshotFile, saveSnapshotFile, archiveTypeOf } = require('./fileLoader/incremental.js')
 const localModels = require('./modules/localModels.js')
-const { ensureLibraries, libraryDataDir, migrateLibraryData } = require('./modules/libraries.js')
+const { ensureLibraries, libraryDataDir, libraryRuntimePaths, shouldMoveLibraryData, migrateLibraryData } = require('./modules/libraries.js')
 
 const WEB_MODE = process.env.WEB_MODE === '1'
 
@@ -73,18 +73,22 @@ if (process.env.WEB_LIBRARY) {
 // 继续同步为活动库路径 —— 扫描/删除等现有逻辑不用改。
 // 数据归属:scan-snapshot.json / database.sqlite / viewcache 属于「库」,放库数据目录;
 // metadata.sqlite / setting.json / collectionList.json / cover 等属于「用户统一配置」,仍在数据存放目录。
+// 当前活动库(多库管理 UI 切换的就是它)
+const activeLibraryOf = (s = setting) => (s.libraries || []).find(l => l.id === s.activeLibraryId) || (s.libraries || [])[0] || null
 const libraryState = ensureLibraries(setting, { nameHint: setting.externalLibraryRoot })
 const activeLibrary = libraryState.active
-const LIBRARY_DATA_DIR = activeLibrary ? libraryDataDir(STORE_PATH, activeLibrary) : STORE_PATH
-const LIBRARY_VIEWCACHE_DIR = path.join(LIBRARY_DATA_DIR, 'viewcache')
+// 活动库的运行时路径:切换活动库时由 switchActiveLibraryRuntime() 重新计算,所以都是 let
+const startupLibraryPaths = libraryRuntimePaths(STORE_PATH, activeLibrary)
+let LIBRARY_DATA_DIR = startupLibraryPaths.dataDir
+let LIBRARY_VIEWCACHE_DIR = startupLibraryPaths.viewcacheDir
 // 首次升级:把旧版放在数据存放目录根部的库数据搬进库数据目录(绝不覆盖已有文件)
-const libraryDataMigration = activeLibrary ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
-const SNAPSHOT_FILE = path.join(LIBRARY_DATA_DIR, 'scan-snapshot.json')
-const LIBRARY_DB_FILE = path.join(LIBRARY_DATA_DIR, 'database.sqlite')
+let libraryDataMigration = activeLibrary ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
+let SNAPSHOT_FILE = startupLibraryPaths.snapshotFile
+let LIBRARY_DB_FILE = startupLibraryPaths.dbFile
 
 let collectionList = prepareCollectionList()
 
-const Manga = prepareMangaModel(LIBRARY_DB_FILE)
+let Manga = prepareMangaModel(LIBRARY_DB_FILE)
 let metadataSqliteFile
 if (setting.metadataPath) {
   metadataSqliteFile = path.join(setting.metadataPath, './metadata.sqlite')
@@ -97,34 +101,61 @@ const getColumns = async (sequelize, tableName) => {
   const [results] = await sequelize.query(query)
   return results.map(column => column.name)
 }
-;(async () => {
-  // sqlite 下 sequelize 的 sync({alter:true}) 采用"备份表"策略,复制数据时会引用
-  // 旧表尚不存在的列而失败,因此新增可选列统一用原生 ALTER TABLE ADD COLUMN 幂等补列
-  const ensureColumns = async (sequelize, tableName, columnDefs) => {
-    const columns = await getColumns(sequelize, tableName)
-    for (const [column, definition] of Object.entries(columnDefs)) {
-      if (!columns.includes(column)) {
-        await sequelize.query(`ALTER TABLE ${tableName} ADD COLUMN ${column} ${definition}`)
-      }
+// sqlite 下 sequelize 的 sync({alter:true}) 采用"备份表"策略,复制数据时会引用
+// 旧表尚不存在的列而失败,因此新增可选列统一用原生 ALTER TABLE ADD COLUMN 幂等补列
+const ensureColumns = async (sequelize, tableName, columnDefs) => {
+  const columns = await getColumns(sequelize, tableName)
+  for (const [column, definition] of Object.entries(columnDefs)) {
+    if (!columns.includes(column)) {
+      await sequelize.query(`ALTER TABLE ${tableName} ADD COLUMN ${column} ${definition}`)
     }
   }
-  // 先建表再补列:全新数据库(无表)时 ALTER 会失败
-  await Manga.sync()
-  await Metadata.sync()
-  await ensureColumns(Manga.sequelize, 'Mangas', {
+}
+// 保证一个「库数据库」的表结构与索引就绪(新库建表;老库幂等补列/补索引)。
+// 切换活动库时会拿新库的 model 再调一次。
+const ensureMangaSchema = async (model) => {
+  await model.sync()
+  await ensureColumns(model.sequelize, 'Mangas', {
     hiddenBook: 'BOOLEAN DEFAULT false',
     readCount: 'INTEGER DEFAULT 0',
     title_cn: 'TEXT',
     description: 'TEXT'
   })
+  await model.sequelize.query('CREATE INDEX IF NOT EXISTS idx_mangas_filepath ON Mangas (filepath)')
+  await model.sequelize.query('CREATE INDEX IF NOT EXISTS idx_mangas_hash ON Mangas (hash)')
+  await model.sequelize.query('CREATE INDEX IF NOT EXISTS idx_mangas_bundle_mtime ON Mangas (bundleSize, mtime)')
+}
+// 切换活动库:关闭旧库数据库连接 → 切到新库的数据目录/快照/缓存 → 重新打开并同步库数据库。
+// 多库管理 UI 的 apply-libraries 会调用它。
+const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir) => {
+  try { await Manga.sequelize.close() } catch (e) { console.error('关闭旧库数据库失败', e) }
+  const lib = activeLibraryOf(setting)
+  const paths = libraryRuntimePaths(STORE_PATH, lib)
+  // 同一个库改了「库数据存放位置」:先把原库数据整体搬到新目录(绝不覆盖)
+  const movedFromOldDir = shouldMoveLibraryData(prevLibrary, lib, prevDataDir, paths.dataDir)
+    ? migrateLibraryData(prevDataDir, paths.dataDir)
+    : { moved: [], kept: [] }
+  LIBRARY_DATA_DIR = paths.dataDir
+  LIBRARY_VIEWCACHE_DIR = paths.viewcacheDir
+  // 首次升级:旧版放在数据存放目录根部的库数据
+  libraryDataMigration = lib ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
+  SNAPSHOT_FILE = paths.snapshotFile
+  LIBRARY_DB_FILE = paths.dbFile
+  Manga = prepareMangaModel(LIBRARY_DB_FILE)
+  await ensureMangaSchema(Manga)
+  console.log(`[libraries] 已切换活动库「${lib ? lib.name : '(无)'}」;库数据目录:${LIBRARY_DATA_DIR}`)
+  console.log(`[libraries] 库数据库:${LIBRARY_DB_FILE};扫描快照:${SNAPSHOT_FILE};缩略图缓存:${LIBRARY_VIEWCACHE_DIR}`)
+  if (movedFromOldDir.moved.length) console.log(`[libraries] 已把库数据从旧位置搬到新位置:${movedFromOldDir.moved.join('、')}`)
+  if (libraryDataMigration.moved.length) console.log(`[libraries] 已把库数据搬进库数据目录:${libraryDataMigration.moved.join('、')}`)
+}
+;(async () => {
+  // 先建表再补列:全新数据库(无表)时 ALTER 会失败
+  await ensureMangaSchema(Manga)
+  await Metadata.sync()
   await ensureColumns(Metadata.sequelize, 'Metadata', {
     title_cn: 'TEXT',
     description: 'TEXT'
   })
-  // 为已有数据库幂等补建索引,加速 filepath/hash 精确查询与文件查重(bundleSize+mtime)
-  await Manga.sequelize.query('CREATE INDEX IF NOT EXISTS idx_mangas_filepath ON Mangas (filepath)')
-  await Manga.sequelize.query('CREATE INDEX IF NOT EXISTS idx_mangas_hash ON Mangas (hash)')
-  await Manga.sequelize.query('CREATE INDEX IF NOT EXISTS idx_mangas_bundle_mtime ON Mangas (bundleSize, mtime)')
 })()
 
 const logFile = fs.createWriteStream(path.join(STORE_PATH, 'log.txt'), { flags: 'w' })
@@ -909,12 +940,12 @@ process.on('exit', () => {
 // base function
 const loadBookListFromBrFile = async () => {
   try {
-    const buffer = await fs.promises.readFile(path.join(STORE_PATH, 'bookList.json.br'))
+    const buffer = await fs.promises.readFile(path.join(LIBRARY_DATA_DIR, 'bookList.json.br'))
     const decodeBuffer = await promisify(brotliDecompress)(buffer)
     return JSON.parse(decodeBuffer.toString())
   } catch {
     try {
-      return JSON.parse(await fs.promises.readFile(path.join(STORE_PATH, 'bookList.json'), { encoding: 'utf-8' }))
+      return JSON.parse(await fs.promises.readFile(path.join(LIBRARY_DATA_DIR, 'bookList.json'), { encoding: 'utf-8' }))
     } catch {
       return []
     }
@@ -924,8 +955,8 @@ const loadBookListFromBrFile = async () => {
 const loadLegecyBookListFromFile = async () => {
   const bookList = await loadBookListFromBrFile()
   try {
-    shell.trashItem(path.join(STORE_PATH, 'bookList.json.br'))
-    shell.trashItem(path.join(STORE_PATH, 'bookList.json'))
+    shell.trashItem(path.join(LIBRARY_DATA_DIR, 'bookList.json.br'))
+    shell.trashItem(path.join(LIBRARY_DATA_DIR, 'bookList.json'))
   } catch {
     console.log('Remove Legecy BookList Failed')
   }
@@ -2784,6 +2815,52 @@ const applySetting = async (receiveSetting) => {
 
 ipcMain.handle('save-setting', async (event, receiveSetting) => {
   return applySetting(receiveSetting)
+})
+
+// ---------- 多库管理(第二十九轮) ----------
+// 返回给设置页的库列表:额外带上解析后的「库数据目录」,方便 UI 显示
+const librariesSnapshot = () => ({
+  libraries: (setting.libraries || []).map(l => ({
+    id: l.id,
+    name: l.name,
+    path: l.path,
+    dataPath: l.dataPath || '',
+    dataDir: libraryDataDir(STORE_PATH, l)
+  })),
+  activeLibraryId: setting.activeLibraryId || '',
+  library: setting.library || ''
+})
+
+ipcMain.handle('get-libraries', async () => librariesSnapshot())
+
+// 设置页提交整份库列表 + 活动库:先规范化,再落盘;活动库变了才重建运行时(切库)
+ipcMain.handle('apply-libraries', async (event, arg) => {
+  try {
+    const payload = arg || {}
+    const draft = {
+      ...setting,
+      libraries: Array.isArray(payload.libraries) ? payload.libraries : [],
+      activeLibraryId: payload.activeLibraryId || ''
+    }
+    // preferList:以 UI 提交的库列表为准,否则旧的 setting.library 会把刚选中的库路径覆盖掉
+    ensureLibraries(draft, { preferList: true, nameHint: setting.externalLibraryRoot })
+    const prev = activeLibraryOf(setting)
+    const next = activeLibraryOf(draft)
+    const activeChanged = !prev || !next || prev.id !== next.id || prev.path !== next.path || (prev.dataPath || '') !== (next.dataPath || '')
+    // 扫描过程中换库会把「旧库的书」写进「新库的数据库」,必须等扫描结束
+    if (activeChanged && isScanning) {
+      return { ok: false, error: '正在扫描漫画库,请等扫描结束后再切换库' }
+    }
+    const prevDataDir = LIBRARY_DATA_DIR
+    setting = draft
+    // 复用 applySetting 的落盘规则(容器模式下 library 会写回 Windows 侧)
+    await applySetting({})
+    if (activeChanged) await switchActiveLibraryRuntime(prev, prevDataDir)
+    return { ok: true, activeChanged, ...librariesSnapshot() }
+  } catch (e) {
+    console.error(e)
+    return { ok: false, error: String(e && e.message ? e.message : e) }
+  }
 })
 
 ipcMain.handle('export-database', async (event, folder) => {

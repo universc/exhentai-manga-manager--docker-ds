@@ -93,11 +93,13 @@ const ensureLibraries = (setting, options = {}) => {
   // 活动库:优先 activeLibraryId,失效则退回第一个
   let active = list.find(l => l.id === setting.activeLibraryId) || null
   if (!active) active = list[0] || null
-  // 旧字段优先:设置页现在改的仍是 setting.library,把它同步进活动库;
-  // 反过来(库列表存在但 library 为空)则用活动库路径回填 setting.library,保证老代码可用。
+  // 旧字段优先(默认):设置页改的是 setting.library,把它同步进活动库。
+  // options.preferList = true 时反过来 —— 以传入的 libraries 为准(多库管理 UI 用),
+  // 由活动库路径回填 setting.library,避免旧值把用户刚选中的新库路径覆盖掉。
   if (active) {
     const legacy = String(setting.library || '').trim()
-    if (legacy) active.path = legacy
+    if (options.preferList) setting.library = active.path
+    else if (legacy) active.path = legacy
     else setting.library = active.path
   }
   state.active = active
@@ -114,8 +116,29 @@ const ensureLibraries = (setting, options = {}) => {
   return state
 }
 
+// 某个库的运行时路径集合(库数据目录 / 缩略图缓存 / 扫描快照 / 库数据库)。
+// 启动与「切换活动库」共用同一套计算,保证两处不会算出不同路径。
+const libraryRuntimePaths = (storePath, lib) => {
+  const dataDir = lib ? libraryDataDir(storePath, lib) : storePath
+  return {
+    dataDir,
+    viewcacheDir: path.join(dataDir, 'viewcache'),
+    snapshotFile: path.join(dataDir, 'scan-snapshot.json'),
+    dbFile: path.join(dataDir, 'database.sqlite')
+  }
+}
+
+// 是否该把「库数据」从旧目录搬到新目录:只有同一个库改了库数据存放位置时才搬。
+// 切换到另一个库时绝不能搬(否则会把 A 库的数据倒进 B 库)。
+const shouldMoveLibraryData = (prevLib, nextLib, prevDataDir, nextDataDir) => {
+  if (!prevLib || !nextLib) return false
+  if (prevLib.id !== nextLib.id) return false
+  if (!prevDataDir || !nextDataDir) return false
+  return path.resolve(prevDataDir) !== path.resolve(nextDataDir)
+}
+
 // 属于「某个库」的数据文件名(第二十八轮起从「数据存放目录」根部搬进库数据目录)
-const LIBRARY_DATA_FILES = ['scan-snapshot.json', 'viewcache', 'database.sqlite']
+const LIBRARY_DATA_FILES = ['scan-snapshot.json', 'viewcache', 'database.sqlite', 'bookList.json', 'bookList.json.br']
 const SQLITE_SIDECAR_RE = /^database\.sqlite-(journal|wal|shm)$/
 
 // 把旧版放在「数据存放目录」根部的库数据搬进该库的库数据目录:
@@ -165,6 +188,8 @@ module.exports = {
   libraryNameFromPath,
   safeDirName,
   libraryDataDir,
+  libraryRuntimePaths,
+  shouldMoveLibraryData,
   ensureLibraries,
   migrateLibraryData
 }

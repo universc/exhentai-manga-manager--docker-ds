@@ -94,12 +94,40 @@
             </div>
           </el-col>
           <el-col :span="24">
+            <div class="setting-line library-row">
+              <span class="setting-label library-row-label">{{$t('m.library')}}</span>
+              <el-select v-model="activeLibraryId" @change="onActiveLibraryChange" class="library-select" :placeholder="$t('m.library')">
+                <el-option v-for="lib in libraries" :key="lib.id" :label="lib.name" :value="lib.id">
+                  <span class="library-option-name">{{ lib.name }}</span>
+                  <span class="library-option-path">{{ lib.path }}</span>
+                </el-option>
+              </el-select>
+              <el-button :loading="libraryBusy" @click="addLibrary">{{$t('m.libraryAdd')}}</el-button>
+              <el-button :disabled="!activeLibrary" @click="renameLibrary">{{$t('m.libraryRename')}}</el-button>
+              <el-button :disabled="libraries.length <= 1" @click="removeLibrary">{{$t('m.libraryRemove')}}</el-button>
+            </div>
+          </el-col>
+          <el-col :span="24">
             <div class="setting-line">
-              <el-input v-model="setting.library">
-                <template #prepend><span class="setting-label">{{$t('m.library')}}</span></template>
+              <el-input :model-value="activeLibrary ? activeLibrary.path : ''" :placeholder="$t('m.libraryPathPlaceholder')" @change="onLibraryPathChange">
+                <template #prepend><span class="setting-label">{{$t('m.libraryPath')}}</span></template>
                 <template #append><el-button @click="selectLibraryPath">{{$t('m.select')}}</el-button></template>
               </el-input>
             </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line">
+              <el-input :model-value="activeLibrary ? (activeLibrary.dataPath || '') : ''" :placeholder="libraryDataDirPlaceholder" @change="onLibraryDataPathChange">
+                <template #prepend><span class="setting-label">{{$t('m.libraryDataPath')}}</span></template>
+                <template #append>
+                  <el-button-group>
+                    <el-button @click="selectLibraryDataPath">{{$t('m.select')}}</el-button>
+                    <el-button v-if="activeLibrary && activeLibrary.dataPath" @click="followLibraryDataPath">{{$t('m.metadataPathFollow')}}</el-button>
+                  </el-button-group>
+                </template>
+              </el-input>
+            </div>
+            <div class="setting-line toolbar-tip">{{$t('m.libraryDataPathHint')}}</div>
           </el-col>
           <!-- 元数据存放目录:只在本地模式出现(服务器/网页版的数据目录由服务端决定) -->
           <el-col :span="24" v-if="showDesktopUI && runMode === 'local'">
@@ -2535,6 +2563,8 @@ onMounted(() => {
       // 桌面版:同步运行模式(本地/网页)与数据目录显示
       syncRunMode()
       loadDataPath()
+      // 多库:刷新库列表与每个库的「库数据目录」显示
+      refreshLibraries()
 
       // set default value
       if (res.autoCheckUpdates === undefined) setting.value.autoCheckUpdates = true
@@ -2696,14 +2726,144 @@ onMounted(() => {
     })
 })
 
-const selectLibraryPath = () => {
-  ipcRenderer.invoke('select-folder', t('m.library'))
-  .then(res => {
-    if (res) {
-      setting.value.library = res
-      saveSetting()
+// ---------- 多库管理(第二十九轮) ----------
+// 库列表来自 setting.libraries;所有增删改都提交给后端 apply-libraries,
+// 由后端规范化、落盘,并在活动库变化时重建运行时(Manga 库数据库 / 快照 / 缩略图缓存)。
+const libraries = computed(() => (setting.value && Array.isArray(setting.value.libraries)) ? setting.value.libraries : [])
+const activeLibraryId = computed({
+  get: () => (setting.value && setting.value.activeLibraryId) || (libraries.value[0] ? libraries.value[0].id : ''),
+  set: (v) => { if (setting.value) setting.value.activeLibraryId = v }
+})
+const activeLibrary = computed(() => libraries.value.find(l => l.id === activeLibraryId.value) || libraries.value[0] || null)
+// 库 id -> 后端解析出的「库数据目录」(仅用于显示;不写回设置,避免脏字段落盘)
+const libraryDataDirs = ref({})
+const libraryBusy = ref(false)
+const libraryDataDirPlaceholder = computed(() => {
+  const lib = activeLibrary.value
+  return (lib && libraryDataDirs.value[lib.id]) || t('m.libraryDataPathDefault')
+})
+
+const applyLibrariesResponse = (res) => {
+  setting.value.libraries = res.libraries.map(l => ({ id: l.id, name: l.name, path: l.path, dataPath: l.dataPath }))
+  setting.value.activeLibraryId = res.activeLibraryId
+  setting.value.library = res.library
+  const map = {}
+  res.libraries.forEach(l => { map[l.id] = l.dataDir })
+  libraryDataDirs.value = map
+}
+
+// 用函数声明(会提升):onMounted 里也会调用它,避免 <script setup> 顶层的前向引用告警
+async function refreshLibraries () {
+  try {
+    const res = await ipcRenderer.invoke('get-libraries')
+    if (res && Array.isArray(res.libraries)) applyLibrariesResponse(res)
+  } catch (e) { /* 忽略 */ }
+}
+
+const applyLibraries = async () => {
+  if (libraryBusy.value) return
+  libraryBusy.value = true
+  try {
+    const res = await ipcRenderer.invoke('apply-libraries', {
+      libraries: JSON.parse(JSON.stringify(libraries.value)),
+      activeLibraryId: activeLibraryId.value
+    })
+    if (res && res.ok) {
+      applyLibrariesResponse(res)
+      // 活动库变了:库数据库/快照/缓存都换了,让主界面重新读一次书架
+      if (res.activeChanged) emit('loadBookList')
+    } else {
+      ElMessage.error((res && res.error) || t('m.librarySaveFailed'))
     }
-  })
+  } catch (e) {
+    ElMessage.error(String((e && e.message) || e))
+  } finally {
+    libraryBusy.value = false
+  }
+}
+
+const addLibrary = async () => {
+  const picked = await ipcRenderer.invoke('select-folder', t('m.library'))
+  if (!picked) return
+  const p = String(picked)
+  const key = p.replace(/[\\/]+$/, '').toLowerCase()
+  if (libraries.value.some(l => String(l.path || '').replace(/[\\/]+$/, '').toLowerCase() === key)) {
+    ElMessage.warning(t('m.libraryAlreadyExists'))
+    return
+  }
+  const base = p.replace(/[\\/]+$/, '').split(/[\\/]/).pop()
+  const lib = { id: 'lib-' + Math.random().toString(16).slice(2, 12), name: base || t('m.libraryDefaultName'), path: p, dataPath: '' }
+  setting.value.libraries = [...libraries.value, lib]
+  setting.value.activeLibraryId = lib.id
+  await applyLibraries()
+}
+
+const renameLibrary = async () => {
+  const lib = activeLibrary.value
+  if (!lib) return
+  try {
+    const res = await ElMessageBox.prompt(t('m.libraryRenamePrompt'), t('m.libraryRename'), {
+      inputValue: lib.name,
+      inputPattern: /\S/,
+      inputErrorMessage: t('m.libraryNameRequired')
+    })
+    const name = String((res && res.value) || '').trim()
+    if (!name || name === lib.name) return
+    lib.name = name
+    await applyLibraries()
+  } catch (e) { /* 用户取消 */ }
+}
+
+const removeLibrary = async () => {
+  const lib = activeLibrary.value
+  if (!lib || libraries.value.length <= 1) return
+  try {
+    await ElMessageBox.confirm(t('m.libraryRemoveConfirm', { name: lib.name }), t('m.libraryRemove'), { type: 'warning' })
+  } catch (e) { return }
+  setting.value.libraries = libraries.value.filter(l => l.id !== lib.id)
+  if (setting.value.activeLibraryId === lib.id) setting.value.activeLibraryId = setting.value.libraries[0].id
+  await applyLibraries()
+}
+
+const onActiveLibraryChange = () => { applyLibraries() }
+
+const selectLibraryPath = async () => {
+  const lib = activeLibrary.value
+  if (!lib) return
+  const picked = await ipcRenderer.invoke('select-folder', t('m.library'))
+  if (!picked) return
+  lib.path = String(picked)
+  await applyLibraries()
+}
+const onLibraryPathChange = async (val) => {
+  const lib = activeLibrary.value
+  if (!lib) return
+  const next = String(val || '').trim()
+  if (!next || next === lib.path) return
+  lib.path = next
+  await applyLibraries()
+}
+const selectLibraryDataPath = async () => {
+  const lib = activeLibrary.value
+  if (!lib) return
+  const picked = await ipcRenderer.invoke('select-folder', t('m.libraryDataPath'))
+  if (!picked) return
+  lib.dataPath = String(picked)
+  await applyLibraries()
+}
+const onLibraryDataPathChange = async (val) => {
+  const lib = activeLibrary.value
+  if (!lib) return
+  const next = String(val || '').trim()
+  if (next === (lib.dataPath || '')) return
+  lib.dataPath = next
+  await applyLibraries()
+}
+const followLibraryDataPath = async () => {
+  const lib = activeLibrary.value
+  if (!lib || !lib.dataPath) return
+  lib.dataPath = ''
+  await applyLibraries()
 }
 
 // ---------- 回收站 ----------
@@ -3787,6 +3947,14 @@ defineExpose({
     margin-right: 8px
     margin-bottom: 8px
     border-width: 0
+
+/* 多库管理(设置 → 常用):库下拉 + 添加/改名/删除 + 每库数据目录 */
+.library-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.library-row-label { flex: 0 0 auto; }
+.library-select { flex: 1 1 260px; min-width: 200px; }
+.library-option-name { margin-right: 10px; }
+.library-option-path { color: #909399; font-size: 12px; }
+
 // 标签设置:当前库中的全部标签
 .tag-cat-list
   display: flex

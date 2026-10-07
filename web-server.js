@@ -246,7 +246,9 @@ app.post('/api/ipc/:channel', async (req, res) => {
 // ---------- 文件服务(封面 / 阅读图片) ----------
 const allowedRoots = () => {
   const setting = getSetting() || {}
-  const roots = [STORE_PATH, setting.library, setting.metadataPath].filter(Boolean)
+  // 多库:数据目录 + 活动库 + 所有库路径 + 元数据目录
+  const libraryPaths = Array.isArray(setting.libraries) ? setting.libraries.map(l => l.path) : []
+  const roots = [STORE_PATH, setting.library, setting.metadataPath, ...libraryPaths].filter(Boolean)
   return roots.map(p => path.resolve(p))
 }
 
