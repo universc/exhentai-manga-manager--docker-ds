@@ -33,6 +33,9 @@ const {
   getSettingFilePath,
   getActiveProfile,
   setActiveProfile,
+  resolveSettingReadPath,
+  safeProfile,
+  runWithProfile,
   _mange_reader
 } = require('./modules/init_folder_setting.js')
 const { findSameFile } = require('./fileLoader/folder.js')
@@ -46,7 +49,30 @@ const {
 const WEB_MODE = process.env.WEB_MODE === '1'
 
 preparePath()
-let setting = prepareSetting()
+let defaultSetting = prepareSetting()
+// ---------- 每个账户一份设置(网页版多账户并发时互不干扰) ----------
+// 键 = 配置名(账户名);'' = 未登录 / 桌面版默认。
+// 谁在请求由 modules/init_folder_setting.js 的 AsyncLocalStorage 决定(getActiveProfile),
+// web-server 用 withAccount() 把每个请求包进对应账户的上下文里。
+const settingsByProfile = new Map([[safeProfile(getActiveProfile() || ''), defaultSetting]])
+const currentSettingObj = () => settingsByProfile.get(getActiveProfile()) || defaultSetting
+// index.js 里大量 setting.xxx 读写不用改:Proxy 把它们代理到「当前账户那一份」
+let setting = new Proxy({}, {
+  get: (_, key) => currentSettingObj()[key],
+  set: (_, key, value) => { currentSettingObj()[key] = value; return true },
+  deleteProperty: (_, key) => { delete currentSettingObj()[key]; return true },
+  has: (_, key) => key in currentSettingObj(),
+  ownKeys: () => Reflect.ownKeys(currentSettingObj()),
+  getOwnPropertyDescriptor: (_, key) => {
+    const d = Reflect.getOwnPropertyDescriptor(currentSettingObj(), key)
+    return d ? { ...d, configurable: true } : undefined
+  },
+})
+// 整体替换「当前账户那份设置」(原来是 setting = xxx)
+const replaceCurrentSetting = (obj) => {
+  settingsByProfile.set(getActiveProfile(), obj)
+  return obj
+}
 
 // 本地超分模型目录:<数据目录>/models/upscale/<模型 id>
 localModels.init(STORE_PATH)
@@ -354,22 +380,51 @@ const persistSetting = () => {
   fs.renameSync(tempPath, targetPath)
 }
 
-// ---------- 按账户切换设置文件(设置按账户名保存,同名账户两端通用) ----------
-//   桌面版:登录成功后立即切换(本次会话就用该账户的配置),并写进 bootstrap.json 供下次启动;
-//   网页版:每个 IPC 请求按会话账户惰性切换(见 index.js 末尾注入 web-server.js 的 switchProfile)。
-// 只重载「设置 + 活动库运行时」:不重启、不搬库数据、不动库数据库连接缓存。
+// ---------- 设置按账户隔离(同名账户在 Win 与 NAS 上共用同一份) ----------
+// 网页版一个进程要服务多个账户,所以:
+//   · ensureProfileSetting —— 每个账户一份设置对象,首次用到时读它自己的 setting.<账户>.json
+//     (不存在则回退 setting.json 平滑迁移),之后一直复用缓存;
+//   · withAccount —— 把一次请求包进该账户的上下文(AsyncLocalStorage),
+//     请求内所有 setting 读写与落盘路径都指向这个账户,多账户并发互不干扰;
+//   · switchProfile —— 桌面版登录后切到该账户(单进程单用户,连活动库运行时一起切)。
+const ensureProfileSetting = async (username) => {
+  const key = safeProfile(username || '')
+  const cached = settingsByProfile.get(key)
+  if (cached) return cached
+  const prev = getActiveProfile()
+  let obj
+  try {
+    // prepareSetting 是同步读文件,这里临时切一下 profile 只为算出正确的文件名,读完立刻还原
+    setActiveProfile(key)
+    obj = prepareSetting()
+    applyContainerLibraryMapping(obj)
+    ensureLibraries(obj, { nameHint: obj.externalLibraryRoot || setting.externalLibraryRoot })
+  } finally {
+    setActiveProfile(prev)
+  }
+  settingsByProfile.set(key, obj)
+  console.log(`[profile] 已加载账户配置「${key || '(默认)'}」:${resolveSettingReadPath(key)}`)
+  return obj
+}
+
+// 网页版:按账户处理一次请求(返回 Promise;请求内 setting 全部指向该账户)
+const withAccount = async (username, fn) => {
+  const profile = safeProfile(username || '')
+  await ensureProfileSetting(profile)
+  return runWithProfile(profile, () => fn(profile))
+}
+
+// 桌面版:登录后切到该账户的设置(下次启动由 bootstrap.json 的 profile 决定)
 const switchProfile = async (username) => {
-  if (!setActiveProfile(username || '')) return { ok: true, changed: false, profile: getActiveProfile() }
+  const key = safeProfile(username || '')
+  const prevProfile = getActiveProfile()
   const prevLib = activeLibraryOf(setting)
   const prevDataDir = LIBRARY_DATA_DIR
-  const next = prepareSetting()
-  // 容器模式的路径映射字段与账户无关,换了一份设置必须重新套用
-  applyContainerLibraryMapping(next)
-  const state = ensureLibraries(next, { nameHint: next.externalLibraryRoot || setting.externalLibraryRoot })
-  setting = next
+  const obj = await ensureProfileSetting(key)
+  setActiveProfile(key)
   // 元数据目录可能跟着账户变(metadata.sqlite 属于用户统一配置)
-  const newMetaFile = setting.metadataPath
-    ? path.join(setting.metadataPath, './metadata.sqlite')
+  const newMetaFile = obj.metadataPath
+    ? path.join(obj.metadataPath, './metadata.sqlite')
     : path.join(STORE_PATH, './metadata.sqlite')
   if (newMetaFile !== metadataSqliteFile) {
     metadataSqliteFile = newMetaFile
@@ -380,12 +435,12 @@ const switchProfile = async (username) => {
     } catch (err) { console.log('[profile] 元数据库初始化失败:', String((err && err.message) || err)) }
   }
   await switchActiveLibraryRuntime(prevLib, prevDataDir, { allowMove: false })
-  // 桌面端:把规范化后的库列表落盘(容器端沿用启动时的策略,不写盘)
-  if (state.changed && !process.env.WEB_LIBRARY && !dataPathFallback) {
+  // 桌面端:把该账户的设置落盘(首次登录会把 setting.json 的内容平滑写进 setting.<账户>.json)
+  if (!process.env.WEB_LIBRARY && !dataPathFallback) {
     try { persistSetting() } catch (err) { console.log('[profile] 写回设置失败:', String((err && err.message) || err)) }
   }
-  console.log(`[profile] 已切换到账户配置「${getActiveProfile() || '(默认 setting.json)'}」;文件:${getSettingFilePath()}`)
-  return { ok: true, changed: true, profile: getActiveProfile(), librariesChanged: state.changed }
+  console.log(`[profile] 已切换到账户配置「${key || '(默认)'}」:${resolveSettingReadPath(key)}`)
+  return { ok: true, changed: key !== prevProfile, profile: key }
 }
 
 const showMainWindow = () => {
@@ -3081,7 +3136,7 @@ const applySetting = async (receiveSetting) => {
     }
     if (receiveSetting.externalLibraryRoot) fileSetting.windowsLibraryRoot = receiveSetting.externalLibraryRoot
   }
-  setting = receiveSetting
+  replaceCurrentSetting(receiveSetting)
   if (tray && !setting.minimizeToTray && !setting.closeToTray) {
     tray.destroy()
     tray = null
@@ -3163,7 +3218,7 @@ ipcMain.handle('apply-libraries', async (event, arg) => {
       }
     }
     const prevDataDir = LIBRARY_DATA_DIR
-    setting = draft
+    replaceCurrentSetting(draft)
     // 复用 applySetting 的落盘规则(容器模式下 library 会写回 Windows 侧)
     await applySetting({})
     if (activeChanged) await switchActiveLibraryRuntime(prev, prevDataDir)
@@ -4748,7 +4803,9 @@ ipcMain.handle('enable-LAN-browsing', async (event, arg) => {
 if (WEB_MODE) {
   require('./web-server.js').start({
     getSetting: () => setting,
-    // 按登录账户切换设置文件(同名账户在 Win 与 NAS 上共用同一份设置)
-    switchProfile
+    // 每个账户读自己那份 setting.<账户名>.json(同名账户在 Win 与 NAS 共用);
+    // withAccount 把每个请求包进对应账户的上下文 → 多账户并发时互不干扰
+    withAccount,
+    settingForAccount: (username) => ensureProfileSetting(username)
   })
 }

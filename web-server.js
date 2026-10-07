@@ -19,17 +19,17 @@ const PORT = parseInt(process.env.WEB_PORT || '10000', 10)
 const DIST_DIR = path.join(__dirname, 'dist')
 const INDEX_HTML = path.join(DIST_DIR, 'index.html')
 
-// index.js 通过 start({ getSetting, switchProfile }) 注入:
-//   getSetting —— /api/file 的目录白名单
-//   switchProfile —— 按登录账户切换设置文件(setting.<账户名>.json,与桌面版同名账户通用)
+// index.js 通过 start({ getSetting, withAccount, settingForAccount }) 注入:
+//   getSetting        —— 当前上下文下的设置(兼容保留)
+//   withAccount       —— 把一次请求包进「该账户」的上下文(多账户并发互不干扰)
+//   settingForAccount —— 取出某账户的设置对象(/api/file 的目录白名单用)
 let getSetting = () => ({})
-let switchProfile = async () => ({ ok: true, changed: false })
-// 把当前会话账户同步到「当前设置文件」:同一个进程要服务不同账户,谁在请求就用谁的设置
-const syncProfileForSession = async (session) => {
+let withAccount = async (username, fn) => fn(username)
+let settingForAccount = async () => getSetting()
+// 会话 → 配置名:白名单 IP 的伪会话没有真实账户,沿用默认配置(setting.json)
+const profileNameOf = (session) => {
   const name = session && session.username
-  // 白名单 IP 的伪会话(whitelist)不切:它没有真实账户,沿用默认 setting.json
-  if (!name || name === 'whitelist') return
-  try { await switchProfile(name) } catch (e) { console.log('[profile] 切换账户设置失败:', String((e && e.message) || e)) }
+  return (!name || name === 'whitelist') ? '' : name
 }
 
 const app = express()
@@ -181,8 +181,8 @@ app.post('/api/auth/login', async (req, res) => {
   throttleCheck(username) && loginThrottle.delete(username)
   const token = auth.createSession(user)
   setSessionCookie(res, token)
-  // 登录即切到该账户的设置文件(同名账户在 Win 与 NAS 共用同一份)
-  await syncProfileForSession(user)
+  // 登录即加载该账户的设置(同名账户在 Win 与 NAS 共用同一份)
+  try { await settingForAccount(user.username) } catch (e) { console.log('[profile] 加载账户设置失败:', String((e && e.message) || e)) }
   res.json({ ok: true, username: user.username, role: user.role })
 })
 
@@ -221,11 +221,10 @@ app.post('/api/ipc/:channel', async (req, res) => {
     returnValue: undefined,
   }
   // 账户权限:未登录 401;普通账户(viewer)只允许浏览类通道,写操作 403
+  let session = null
   if (auth.isEnabled()) {
-    const session = sessionOf(req)
+    session = sessionOf(req)
     if (!session) return res.status(401).json({ ok: false, error: '未登录,请先登录' })
-    // 该账户的设置在 setting.<账户名>.json(没变就是空操作,不会反复重载)
-    await syncProfileForSession(session)
     if (session.role !== 'admin') {
       // load-book-list(scan=true) 会触发扫描建库(写操作),普通账户只能加载现有列表
       if (channel === 'load-book-list' && args[0] === true) {
@@ -236,6 +235,8 @@ app.post('/api/ipc/:channel', async (req, res) => {
       }
     }
   }
+  // 用「该账户自己的设置」处理这次请求:多账户同时在线也互不干扰
+  return withAccount(profileNameOf(session), async () => {
   try {
     const handler = ipcMain._handlers.get(channel)
     if (handler) {
@@ -255,29 +256,31 @@ app.post('/api/ipc/:channel', async (req, res) => {
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e?.message || e) })
   }
+  })
 })
 
 // ---------- 文件服务(封面 / 阅读图片) ----------
-const allowedRoots = () => {
-  const setting = getSetting() || {}
+const allowedRoots = (setting) => {
+  const s = setting || getSetting() || {}
   // 多库:数据目录 + 活动库 + 所有库的路径 + 元数据目录。
   // ⚠️ 桌面路径(path)与网页/容器路径(pathWeb)都要放行 ——
   //    以前只放行 path,网页版读 NAS 上的书时图片一律 403,表现就是「阅读器一直白」。
   // 库数据目录(每库的 cover / viewcache / 缩放缓存)也要放行:
   // 用户把它指到数据目录之外时,封面与阅读缓存在网页版会 403
-  const libraryPaths = Array.isArray(setting.libraries)
-    ? setting.libraries.flatMap(l => [l.path, l.pathWeb, l.dataPath, l.dataPathWeb])
+  const libraryPaths = Array.isArray(s.libraries)
+    ? s.libraries.flatMap(l => [l.path, l.pathWeb, l.dataPath, l.dataPathWeb])
     : []
-  const roots = [STORE_PATH, setting.library, setting.metadataPath, ...libraryPaths].filter(Boolean)
+  const roots = [STORE_PATH, s.library, s.metadataPath, ...libraryPaths].filter(Boolean)
   return roots.map(p => path.resolve(p))
 }
 
-app.get('/api/file', requireLogin, (req, res) => {
+app.get('/api/file', requireLogin, async (req, res) => {
   const raw = String(req.query.path || '')
   // 前端 img 标签可能自带 ?id= 缓存参数,去掉
   const clean = raw.split('?id=')[0]
   const p = path.resolve(clean)
-  const roots = allowedRoots()
+  // 用「这个账户」的库列表放行(桌面路径与容器路径都算),多账户并发各读各的
+  const roots = allowedRoots(await settingForAccount(profileNameOf(sessionOf(req))))
   const ok = roots.some(root => p === root || p.startsWith(root + path.sep))
   if (!ok) return res.status(403).send('Forbidden')
   if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).send('Not found')
@@ -395,7 +398,8 @@ function getLanAddresses () {
 
 function start (options) {
   if (options?.getSetting) getSetting = options.getSetting
-  if (options?.switchProfile) switchProfile = options.switchProfile
+  if (options?.withAccount) withAccount = options.withAccount
+  if (options?.settingForAccount) settingForAccount = options.settingForAccount
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('')
     console.log('============================================')

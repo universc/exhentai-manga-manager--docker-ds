@@ -1,6 +1,7 @@
 const { app } = require('electron')
 const fs = require('fs')
 const path = require('path')
+const { AsyncLocalStorage } = require('async_hooks')
 const { getRootPath } = require('./utils.js')
 
 
@@ -61,11 +62,20 @@ const safeProfile = (v) => String(v || '').replace(/[^\w\u4e00-\u9fa5.-]/g, '').
 // 运行中网页版会随登录账户切换(见 setActiveProfile 与 index.js 的 switchProfile)。
 const STARTUP_PROFILE = safeProfile(process.env.WEB_PROFILE || bootstrapConfig.profile || '')
 let ACTIVE_PROFILE = STARTUP_PROFILE
+// 网页版一个进程要同时服务多个账户:用 AsyncLocalStorage 记住「当前请求属于哪个账户」,
+// 于是 getActiveProfile() / getSettingFilePath() 在这条异步链里始终指向该账户的配置文件,
+// 多账户并发时不会互相覆盖。桌面版没有上下文,自动回落到 ACTIVE_PROFILE。
+const profileStore = new AsyncLocalStorage()
+const runWithProfile = (profile, fn) => profileStore.run({ profile: safeProfile(profile || '') }, fn)
 const settingFileNameOf = (profile) => profile ? ('setting.' + profile + '.json') : 'setting.json'
 const settingFilePathOf = (profile) => path.join(STORE_PATH, settingFileNameOf(profile))
-// 当前账户对应的设置文件(随账户切换 —— 同名账户在 Win 与 NAS 上共用同一份)
-const getSettingFilePath = () => settingFilePathOf(ACTIVE_PROFILE)
-const getActiveProfile = () => ACTIVE_PROFILE
+// 当前账户对应的设置文件(随请求上下文切换 —— 同名账户在 Win 与 NAS 上共用同一份)
+const getSettingFilePath = () => settingFilePathOf(getActiveProfile())
+const getActiveProfile = () => {
+  const ctx = profileStore.getStore()
+  if (ctx && typeof ctx.profile === 'string') return ctx.profile
+  return ACTIVE_PROFILE
+}
 // 切换「配置名」(账户名);返回是否真的变化了(没变就不必重载设置)
 const setActiveProfile = (name) => {
   const safe = safeProfile(name || '')
@@ -311,6 +321,9 @@ module.exports = {
   getActiveProfile,
   setActiveProfile,
   resolveSettingReadPath,
+  settingFileNameOf,
+  safeProfile,
+  runWithProfile,
   prepareCollectionList,
   preparePath,
   _mange_reader,
