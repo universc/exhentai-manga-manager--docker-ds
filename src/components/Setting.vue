@@ -101,13 +101,20 @@
               </el-input>
             </div>
           </el-col>
-          <el-col :span="24">
+          <!-- 元数据存放目录:只在本地模式出现(服务器/网页版的数据目录由服务端决定) -->
+          <el-col :span="24" v-if="showDesktopUI && runMode === 'local'">
             <div class="setting-line">
-              <el-input v-model="setting.metadataPath" :placeholder="$t('m.metadataPathDefault')">
+              <el-input v-model="setting.metadataPath" :placeholder="$t('m.metadataPathDefault')" @change="saveSetting">
                 <template #prepend><span class="setting-label">{{$t('m.metadataPath')}}</span></template>
-                <template #append><el-button @click="selectMetadataPath">{{$t('m.select')}}</el-button></template>
+                <template #append>
+                  <el-button-group>
+                    <el-button @click="selectMetadataPath">{{$t('m.select')}}</el-button>
+                    <el-button v-if="setting.metadataPath" @click="followDataPath">{{$t('m.metadataPathFollow')}}</el-button>
+                  </el-button-group>
+                </template>
               </el-input>
             </div>
+            <div class="setting-line toolbar-tip">{{$t('m.metadataPathHint')}}</div>
           </el-col>
           <el-col :span="24">
             <div class="setting-line">
@@ -2774,6 +2781,11 @@ const loadTrashLog = async () => {
   trashLogVisible.value = true
 }
 
+// 清空元数据目录 = 跟随「数据文件位置」(和 Docker 版一样,元数据库放在数据目录里)
+const followDataPath = () => {
+  setting.value.metadataPath = ''
+  saveSetting()
+}
 const selectMetadataPath = () => {
   ipcRenderer.invoke('select-folder', t('m.metadataPath'))
   .then(res => {

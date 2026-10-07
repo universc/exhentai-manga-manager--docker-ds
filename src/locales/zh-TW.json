@@ -73,6 +73,8 @@
     "library": "庫資料夾",
     "metadataPath": "元數據保存目錄",
     "metadataPathDefault": "默認為資料目錄(桌面版為Roaming資料夾)",
+    "metadataPathHint": "留空 = 與「資料檔案位置」相同(建議,和 Docker 版行為一致);填寫後只有元資料庫 metadata.sqlite 放到該目錄,資料庫/設定/回收站/日誌等其它資料仍在「資料檔案位置」。",
+    "metadataPathFollow": "跟隨資料目錄",
     "select": "選取",
     "imageViewer": "外置閱讀器",
     "requestGap": "請求間隔(毫秒)",

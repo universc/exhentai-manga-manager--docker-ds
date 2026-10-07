@@ -73,6 +73,8 @@
     "library": "Library Folder",
     "metadataPath": "Metadata Path",
     "metadataPathDefault": "Defaults to the data directory (Roaming folder on desktop)",
+    "metadataPathHint": "Leave empty to use the same folder as \"Data location\" (recommended, same as the Docker build). If set, only metadata.sqlite goes there; the database, settings, recycle bin and logs stay in the data folder.",
+    "metadataPathFollow": "Use data folder",
     "select": "Select",
     "imageViewer": "External Viewer",
     "requestGap": "Request Gap(ms)",
