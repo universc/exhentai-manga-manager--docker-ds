@@ -94,40 +94,27 @@
             </div>
           </el-col>
           <el-col :span="24">
-            <div class="setting-line library-row">
-              <span class="setting-label library-row-label">{{$t('m.library')}}</span>
-              <el-select v-model="activeLibraryId" @change="onActiveLibraryChange" class="library-select" :placeholder="$t('m.library')">
-                <el-option v-for="lib in libraries" :key="lib.id" :label="lib.name" :value="lib.id">
-                  <span class="library-option-name">{{ lib.name }}</span>
-                  <span class="library-option-path">{{ lib.path }}</span>
-                </el-option>
-              </el-select>
-              <el-button :loading="libraryBusy" @click="addLibrary">{{$t('m.libraryAdd')}}</el-button>
-              <el-button :disabled="!activeLibrary" @click="renameLibrary">{{$t('m.libraryRename')}}</el-button>
-              <el-button :disabled="libraries.length <= 1" @click="removeLibrary">{{$t('m.libraryRemove')}}</el-button>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input :model-value="activeLibrary ? activeLibrary.path : ''" :placeholder="$t('m.libraryPathPlaceholder')" @change="onLibraryPathChange">
-                <template #prepend><span class="setting-label">{{$t('m.libraryPath')}}</span></template>
-                <template #append><el-button @click="selectLibraryPath">{{$t('m.select')}}</el-button></template>
+            <!-- 一排 = 一个漫画库:库名(就是「库文件夹」这几个字,可改名)+ 库文件夹 + 库数据存放位置 -->
+            <div v-for="lib in libraries" :key="lib.id" class="setting-line library-row">
+              <el-radio v-model="activeLibraryId" :label="lib.id" class="library-active-radio" @change="onActiveLibraryChange" :title="$t('m.libraryCurrent')" />
+              <el-input v-model="lib.name" class="library-name-input" @change="onLibraryNameChange" />
+              <el-input class="library-path-input" :model-value="lib.path" :placeholder="$t('m.libraryPathPlaceholder')" @change="(v) => onLibraryPathChange(lib, v)">
+                <template #append><el-button @click="selectLibraryPath(lib)">{{$t('m.select')}}</el-button></template>
               </el-input>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input :model-value="activeLibrary ? (activeLibrary.dataPath || '') : ''" :placeholder="libraryDataDirPlaceholder" @change="onLibraryDataPathChange">
+              <el-input class="library-data-input" :model-value="lib.dataPath || ''" :placeholder="libraryDataDirPlaceholder(lib)" @change="(v) => onLibraryDataPathChange(lib, v)">
                 <template #prepend><span class="setting-label">{{$t('m.libraryDataPath')}}</span></template>
                 <template #append>
                   <el-button-group>
-                    <el-button @click="selectLibraryDataPath">{{$t('m.select')}}</el-button>
-                    <el-button v-if="activeLibrary && activeLibrary.dataPath" @click="followLibraryDataPath">{{$t('m.metadataPathFollow')}}</el-button>
+                    <el-button @click="selectLibraryDataPath(lib)">{{$t('m.select')}}</el-button>
+                    <el-button v-if="lib.dataPath" @click="followLibraryDataPath(lib)">{{$t('m.metadataPathFollow')}}</el-button>
                   </el-button-group>
                 </template>
               </el-input>
             </div>
-            <div class="setting-line toolbar-tip">{{$t('m.libraryDataPathHint')}}</div>
+            <div class="setting-line library-actions">
+              <el-button :loading="libraryBusy" @click="addLibrary">{{$t('m.libraryAdd')}}</el-button>
+              <span class="toolbar-tip">{{$t('m.libraryHint')}}</span>
+            </div>
           </el-col>
           <!-- 元数据存放目录:只在本地模式出现(服务器/网页版的数据目录由服务端决定) -->
           <el-col :span="24" v-if="showDesktopUI && runMode === 'local'">
@@ -2738,13 +2725,15 @@ const activeLibrary = computed(() => libraries.value.find(l => l.id === activeLi
 // 库 id -> 后端解析出的「库数据目录」(仅用于显示;不写回设置,避免脏字段落盘)
 const libraryDataDirs = ref({})
 const libraryBusy = ref(false)
-const libraryDataDirPlaceholder = computed(() => {
-  const lib = activeLibrary.value
-  return (lib && libraryDataDirs.value[lib.id]) || t('m.libraryDataPathDefault')
-})
+// 每排「库数据存放位置」的 placeholder:显示后端解析出的默认目录(留空即用它)
+const libraryDataDirPlaceholder = (lib) => (lib && libraryDataDirs.value[lib.id]) || t('m.libraryDataPathDefault')
 
 const applyLibrariesResponse = (res) => {
-  setting.value.libraries = res.libraries.map(l => ({ id: l.id, name: l.name, path: l.path, dataPath: l.dataPath }))
+  const valid = res.libraries.map(l => ({ id: l.id, name: l.name, path: l.path, dataPath: l.dataPath }))
+  const validIds = new Set(valid.map(l => l.id))
+  // 保留还没填「库文件夹」的草稿行(点了添加但还没选目录),别让下一次提交把它冲掉
+  const drafts = libraries.value.filter(l => !l.path && !validIds.has(l.id))
+  setting.value.libraries = [...valid, ...drafts]
   setting.value.activeLibraryId = res.activeLibraryId
   setting.value.library = res.library
   const map = {}
@@ -2760,13 +2749,19 @@ async function refreshLibraries () {
   } catch (e) { /* 忽略 */ }
 }
 
+// 提交整份库列表:只提交填了「库文件夹」的行(空行是前端草稿);
+// 后端会按库名去重、落盘,并在活动库变化时重建运行时
 const applyLibraries = async () => {
   if (libraryBusy.value) return
   libraryBusy.value = true
   try {
+    const payload = libraries.value
+      .filter(l => l.path)
+      .map(l => ({ id: l.id, name: l.name, path: l.path, dataPath: l.dataPath || '' }))
+    const activeId = payload.some(l => l.id === activeLibraryId.value) ? activeLibraryId.value : (payload[0] ? payload[0].id : '')
     const res = await ipcRenderer.invoke('apply-libraries', {
-      libraries: JSON.parse(JSON.stringify(libraries.value)),
-      activeLibraryId: activeLibraryId.value
+      libraries: JSON.parse(JSON.stringify(payload)),
+      activeLibraryId: activeId
     })
     if (res && res.ok) {
       applyLibrariesResponse(res)
@@ -2774,96 +2769,65 @@ const applyLibraries = async () => {
       if (res.activeChanged) emit('loadBookList')
     } else {
       ElMessage.error((res && res.error) || t('m.librarySaveFailed'))
+      refreshLibraries()
     }
   } catch (e) {
     ElMessage.error(String((e && e.message) || e))
+    refreshLibraries()
   } finally {
     libraryBusy.value = false
   }
 }
 
-const addLibrary = async () => {
-  const picked = await ipcRenderer.invoke('select-folder', t('m.library'))
-  if (!picked) return
-  const p = String(picked)
-  const key = p.replace(/[\\/]+$/, '').toLowerCase()
-  if (libraries.value.some(l => String(l.path || '').replace(/[\\/]+$/, '').toLowerCase() === key)) {
-    ElMessage.warning(t('m.libraryAlreadyExists'))
-    return
-  }
-  const base = p.replace(/[\\/]+$/, '').split(/[\\/]/).pop()
-  const lib = { id: 'lib-' + Math.random().toString(16).slice(2, 12), name: base || t('m.libraryDefaultName'), path: p, dataPath: '' }
+// 「+ 添加库」:在列表末尾加一排空行(库文件夹 / 库数据存放位置),填了才会真正保存
+const addLibrary = () => {
+  const n = libraries.value.length + 1
+  const lib = { id: 'lib-' + Math.random().toString(16).slice(2, 12), name: t('m.libraryDefaultName') + n, path: '', dataPath: '' }
   setting.value.libraries = [...libraries.value, lib]
-  setting.value.activeLibraryId = lib.id
-  await applyLibraries()
 }
 
-const renameLibrary = async () => {
-  const lib = activeLibrary.value
-  if (!lib) return
-  try {
-    const res = await ElMessageBox.prompt(t('m.libraryRenamePrompt'), t('m.libraryRename'), {
-      inputValue: lib.name,
-      inputPattern: /\S/,
-      inputErrorMessage: t('m.libraryNameRequired')
-    })
-    const name = String((res && res.value) || '').trim()
-    if (!name || name === lib.name) return
-    lib.name = name
-    await applyLibraries()
-  } catch (e) { /* 用户取消 */ }
+// 清空一排的「库文件夹 + 库数据存放位置」两格 → 自动删掉这一排(不动磁盘上的文件)
+const dropLibraryRow = (lib) => {
+  const next = libraries.value.filter(l => l.id !== lib.id)
+  if (!next.length) return
+  setting.value.libraries = next
+  if (setting.value.activeLibraryId === lib.id) setting.value.activeLibraryId = next[0].id
+  applyLibraries()
 }
 
-const removeLibrary = async () => {
-  const lib = activeLibrary.value
-  if (!lib || libraries.value.length <= 1) return
-  try {
-    await ElMessageBox.confirm(t('m.libraryRemoveConfirm', { name: lib.name }), t('m.libraryRemove'), { type: 'warning' })
-  } catch (e) { return }
-  setting.value.libraries = libraries.value.filter(l => l.id !== lib.id)
-  if (setting.value.activeLibraryId === lib.id) setting.value.activeLibraryId = setting.value.libraries[0].id
-  await applyLibraries()
-}
-
+const onLibraryNameChange = () => { applyLibraries() }
 const onActiveLibraryChange = () => { applyLibraries() }
 
-const selectLibraryPath = async () => {
-  const lib = activeLibrary.value
+const onLibraryPathChange = (lib, val) => {
+  if (!lib) return
+  lib.path = String(val || '').trim()
+  if (!lib.path && !lib.dataPath) { dropLibraryRow(lib); return }
+  applyLibraries()
+}
+const onLibraryDataPathChange = (lib, val) => {
+  if (!lib) return
+  lib.dataPath = String(val || '').trim()
+  if (!lib.path && !lib.dataPath) { dropLibraryRow(lib); return }
+  applyLibraries()
+}
+const selectLibraryPath = async (lib) => {
   if (!lib) return
   const picked = await ipcRenderer.invoke('select-folder', t('m.library'))
   if (!picked) return
   lib.path = String(picked)
-  await applyLibraries()
+  applyLibraries()
 }
-const onLibraryPathChange = async (val) => {
-  const lib = activeLibrary.value
-  if (!lib) return
-  const next = String(val || '').trim()
-  if (!next || next === lib.path) return
-  lib.path = next
-  await applyLibraries()
-}
-const selectLibraryDataPath = async () => {
-  const lib = activeLibrary.value
+const selectLibraryDataPath = async (lib) => {
   if (!lib) return
   const picked = await ipcRenderer.invoke('select-folder', t('m.libraryDataPath'))
   if (!picked) return
   lib.dataPath = String(picked)
-  await applyLibraries()
+  applyLibraries()
 }
-const onLibraryDataPathChange = async (val) => {
-  const lib = activeLibrary.value
-  if (!lib) return
-  const next = String(val || '').trim()
-  if (next === (lib.dataPath || '')) return
-  lib.dataPath = next
-  await applyLibraries()
-}
-const followLibraryDataPath = async () => {
-  const lib = activeLibrary.value
+const followLibraryDataPath = (lib) => {
   if (!lib || !lib.dataPath) return
   lib.dataPath = ''
-  await applyLibraries()
+  applyLibraries()
 }
 
 // ---------- 回收站 ----------
@@ -3948,12 +3912,14 @@ defineExpose({
     margin-bottom: 8px
     border-width: 0
 
-/* 多库管理(设置 → 常用):库下拉 + 添加/改名/删除 + 每库数据目录 */
+/* 多库管理(设置 → 常用):一排 = 一个库(库名 / 库文件夹 / 库数据存放位置),下方「添加库」 */
 .library-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.library-row-label { flex: 0 0 auto; }
-.library-select { flex: 1 1 260px; min-width: 200px; }
-.library-option-name { margin-right: 10px; }
-.library-option-path { color: #909399; font-size: 12px; }
+.library-active-radio { margin-right: 2px; flex: 0 0 auto; }
+.library-name-input { width: 120px; flex: 0 0 auto; }
+.library-name-input .el-input__inner { font-weight: 600; }
+.library-path-input { flex: 1 1 220px; min-width: 160px; }
+.library-data-input { flex: 1 1 260px; min-width: 200px; }
+.library-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 // 标签设置:当前库中的全部标签
 .tag-cat-list

@@ -2851,12 +2851,44 @@ ipcMain.handle('apply-libraries', async (event, arg) => {
     if (activeChanged && isScanning) {
       return { ok: false, error: '正在扫描漫画库,请等扫描结束后再切换库' }
     }
+    // 库改名或改「库数据存放位置」:把该库的数据从旧目录搬到新目录(同名同目录不搬)
+    // 库改名 → 默认目录按新库名变 → 数据要跟着搬,否则书架会「看起来空了」
+    for (const nextLib of draft.libraries) {
+      const prevLib = (setting.libraries || []).find(l => l.id === nextLib.id)
+      if (!prevLib) continue
+      const prevDir = libraryDataDir(STORE_PATH, prevLib)
+      const nextDir = libraryDataDir(STORE_PATH, nextLib)
+      if (shouldMoveLibraryData(prevLib, nextLib, prevDir, nextDir)) {
+        const moved = migrateLibraryData(prevDir, nextDir)
+        if (moved.moved.length) console.log(`[libraries] 库「${nextLib.name}」改名/改目录,已搬进新目录:${moved.moved.join('、')}`)
+      }
+    }
     const prevDataDir = LIBRARY_DATA_DIR
     setting = draft
     // 复用 applySetting 的落盘规则(容器模式下 library 会写回 Windows 侧)
     await applySetting({})
     if (activeChanged) await switchActiveLibraryRuntime(prev, prevDataDir)
     return { ok: true, activeChanged, ...librariesSnapshot() }
+  } catch (e) {
+    console.error(e)
+    return { ok: false, error: String(e && e.message ? e.message : e) }
+  }
+})
+
+// 切换当前漫画库(工具栏「切换库」):只改活动库并重建运行时,不要求提交整份列表
+ipcMain.handle('set-active-library', async (event, id) => {
+  try {
+    const lib = (setting.libraries || []).find(l => l.id === id)
+    if (!lib) return { ok: false, error: '找不到该漫画库' }
+    const prev = activeLibraryOf(setting)
+    if (prev && prev.id === lib.id) return { ok: true, activeChanged: false, ...librariesSnapshot() }
+    if (isScanning) return { ok: false, error: '正在扫描漫画库,请等扫描结束后再切换库' }
+    const prevDataDir = LIBRARY_DATA_DIR
+    setting.activeLibraryId = lib.id
+    setting.library = lib.path
+    await applySetting({})
+    await switchActiveLibraryRuntime(prev, prevDataDir)
+    return { ok: true, activeChanged: true, ...librariesSnapshot() }
   } catch (e) {
     console.error(e)
     return { ok: false, error: String(e && e.message ? e.message : e) }

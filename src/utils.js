@@ -433,6 +433,8 @@ const toolbarButtonDefinitions = [
   { id: 'manageCollection', labelKey: 'm.manageCollection' },
   { id: 'manageTag', labelKey: 'm.manageTag' },
   { id: 'viewerSwitch', labelKey: 'm.viewerSwitch' },
+  // 切换当前漫画库(多库):工具栏下拉,列出所有库
+  { id: 'switchLibrary', labelKey: 'm.switchLibrary' },
   { id: 'themeSwitch', labelKey: 'm.themeSwitch' },
   { id: 'fullscreen', labelKey: 'm.fullscreenButton' },
   { id: 'sortSelect', labelKey: 'm.toolbarSortSelect' },
@@ -445,7 +447,7 @@ const defaultToolbarButtons = () => toolbarButtonDefinitions.map(b => b.id)
 // 后来新增、老配置里不存在的工具栏元素:升级后默认仍然显示,只有用户显式关掉才隐藏
 // 「显式关掉」记在设置项 toolbarButtonsHidden 里(不是只看 toolbarButtons 缺不缺 ——
 // 老配置本来就缺这几项,分不清「没有」和「被关掉」)
-const TOOLBAR_NEW_ITEMS = ['searchInput', 'searchButton', 'sortSelect', 'uiMode']
+const TOOLBAR_NEW_ITEMS = ['searchInput', 'searchButton', 'sortSelect', 'uiMode', 'switchLibrary']
 // 常驻元素:能拖动排序,但永远显示(设置列表里点击不生效)
 const TOOLBAR_ALWAYS_ITEMS = ['setting']
 // 补齐老配置里缺失的新元素;返回值只决定「显示与否」,排列顺序另由 toolbarButtonOrder 决定

@@ -60,6 +60,15 @@
             <el-button v-else-if="id === 'uiMode'" :icon="uiModeIcon" plain @click="switchUiMode" :title="$t('m.switchUiMode') + ': ' + $t(uiModeLabelKey)"></el-button>
             <!-- 设置按钮:与界面模式按钮一套样式(纯 plain,图标不跟主色调) -->
             <el-button v-else-if="id === 'setting'" :icon="SettingIcon" plain @click="$refs.SettingRef.dialogVisibleSetting = true" :title="$t('m.setting')"></el-button>
+            <!-- 切换库:下拉列出所有漫画库(当前库不可选) -->
+            <el-dropdown v-else-if="id === 'switchLibrary'" trigger="click" @command="switchLibrary" class="switch-library-dropdown">
+              <el-button type="primary" plain :icon="MdBook" :title="$t('m.switchLibrary') + (activeLibraryName ? ': ' + activeLibraryName : '')"></el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item v-for="lib in libraries" :key="lib.id" :command="lib.id" :disabled="lib.id === setting.activeLibraryId">{{ lib.name }}</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <!-- 可自定义的界面按钮 -->
             <el-button
               v-else-if="toolbarButtonMap[id]"
@@ -437,7 +446,7 @@ export default defineComponent({
       const viewerBlock = new Set(['manualScan', 'incrementalScan', 'batchMetadata', 'manageCollection', 'manageTag'])
       // ⚠️ 搜索框/搜索按钮/排序框不是 toolbarButtonMap 里的普通按钮(模板里各有一段 v-if 分支),
       //    不能被 map[id] 判空挡掉,必须单独放行
-      const plainItems = new Set(['searchInput', 'searchButton', 'sortSelect', 'uiMode'])
+      const plainItems = new Set(['searchInput', 'searchButton', 'sortSelect', 'uiMode', 'switchLibrary'])
       return fullOrder.filter(id => {
         // 常驻元素(设置按钮)不参与「显示/隐藏」判断,永远显示
         if (!TOOLBAR_ALWAYS_ITEMS.includes(id) && !enabledButtons.includes(id)) return false
@@ -449,6 +458,14 @@ export default defineComponent({
     bookTaskCount () {
       const store = useAppStore()
       return Object.keys(store.bookTasks || {}).length
+    },
+    // 多库:所有漫画库 / 当前库名(工具栏「切换库」下拉用)
+    libraries () {
+      return Array.isArray(this.setting?.libraries) ? this.setting.libraries : []
+    },
+    activeLibraryName () {
+      const lib = this.libraries.find(l => l.id === this.setting?.activeLibraryId)
+      return lib ? lib.name : ''
     },
     // 网页版标志(Vue 模板不能直接访问 window,需经 computed)
     isWebMode () {
@@ -1194,6 +1211,23 @@ export default defineComponent({
         } else {
           return 0
         }
+      }
+    },
+    // 切换当前漫画库(工具栏「切换库」):后端切库并重建运行时,前端重读书架
+    async switchLibrary (libraryId) {
+      const id = String(libraryId || '')
+      if (!id || id === this.setting?.activeLibraryId) return
+      try {
+        const res = await ipcRenderer.invoke('set-active-library', id)
+        if (res && res.ok) {
+          this.setting.activeLibraryId = res.activeLibraryId
+          this.setting.library = res.library
+          if (res.activeChanged) await this.loadBookList()
+        } else {
+          this.$message.error((res && res.error) || this.$t('m.librarySaveFailed'))
+        }
+      } catch (e) {
+        this.$message.error(String((e && e.message) || e))
       }
     },
     async loadBookList (scan) {

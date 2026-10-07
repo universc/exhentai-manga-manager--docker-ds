@@ -157,7 +157,7 @@ const prepareSetting = () => {
       // 自定义网站图标
       customIconPath: '',
       // 工具栏元素(设置按钮始终保留;搜索框/搜索按钮/排序框/界面模式框也参与排序)
-      toolbarButtons: ['searchInput', 'searchButton', 'folderTree', 'shuffle', 'manualScan', 'incrementalScan', 'batchMetadata', 'tagAnalysis', 'manageCollection', 'manageTag', 'viewerSwitch', 'themeSwitch', 'fullscreen', 'sortSelect', 'uiMode'],
+      toolbarButtons: ['searchInput', 'searchButton', 'folderTree', 'shuffle', 'manualScan', 'incrementalScan', 'batchMetadata', 'tagAnalysis', 'manageCollection', 'manageTag', 'viewerSwitch', 'switchLibrary', 'themeSwitch', 'fullscreen', 'sortSelect', 'uiMode'],
       // 用户显式关掉的工具栏元素(搜索框/搜索按钮/排序框/界面模式框)
       toolbarButtonsHidden: [],
       // 工具栏元素的完整排列顺序(含隐藏项;空 = 定义顺序)

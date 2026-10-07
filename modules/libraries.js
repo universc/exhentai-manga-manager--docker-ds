@@ -104,6 +104,16 @@ const ensureLibraries = (setting, options = {}) => {
   }
   state.active = active
 
+  // 库名唯一:默认库数据目录按「库名」生成,同名会指向同一个目录(用户明确要求库名不重复)
+  const usedNames = new Set()
+  for (const lib of list) {
+    const base = String(lib.name || '').trim() || libraryNameFromPath(lib.path, 0)
+    let name = base
+    let n = 2
+    while (usedNames.has(name.toLowerCase())) { name = base + n; n++ }
+    usedNames.add(name.toLowerCase())
+    lib.name = name
+  }
   setting.libraries = list.map(l => ({ id: l.id, name: l.name, path: l.path, dataPath: l.dataPath }))
   setting.activeLibraryId = active ? active.id : ''
 
