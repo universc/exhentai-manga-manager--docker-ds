@@ -134,7 +134,10 @@ const libraryRuntimePaths = (storePath, lib) => {
     dataDir,
     viewcacheDir: path.join(dataDir, 'viewcache'),
     snapshotFile: path.join(dataDir, 'scan-snapshot.json'),
-    dbFile: path.join(dataDir, 'database.sqlite')
+    dbFile: path.join(dataDir, 'database.sqlite'),
+    // 封面缓存与删除记录也属于「那个库」,各放各的
+    coverDir: path.join(dataDir, 'cover'),
+    deleteLogFile: path.join(dataDir, 'delete-log.jsonl')
   }
 }
 

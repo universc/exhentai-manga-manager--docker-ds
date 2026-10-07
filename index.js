@@ -2101,7 +2101,15 @@ ipcMain.handle('get-default-manga-reader', async (event, arg) => {
 //     只有「清空回收站」才真正清理它们 —— 这样恢复时元数据还在。
 const TRASH_DIR = path.join(STORE_PATH, '.trash')
 const TRASH_INDEX = path.join(TRASH_DIR, 'index.json')
-const DELETE_LOG = path.join(STORE_PATH, 'delete-log.jsonl')
+// 旧版的全局删除记录:仍然读它(兼容),但新记录按库写进各自的数据目录
+const LEGACY_DELETE_LOG = path.join(STORE_PATH, 'delete-log.jsonl')
+// 按路径判断它属于哪个库(路径前缀最长匹配)——「每个操作都对应相应的库」的基础
+const libraryForPath = (p) => {
+  const list = (setting.libraries || []).filter(isLibraryActive)
+  const s = String(p || '')
+  if (!s) return null
+  return list.filter(l => s.startsWith(l.path)).sort((a, b) => b.path.length - a.path.length)[0] || null
+}
 
 const readTrashIndex = async () => {
   try {
@@ -2119,8 +2127,13 @@ const writeTrashIndex = async (list) => {
 // 追加一条删除日志(JSON Lines,不会被运行日志轮转清掉)
 const appendDeleteLog = async (entry) => {
   try {
-    await fs.promises.mkdir(STORE_PATH, { recursive: true })
-    await fs.promises.appendFile(DELETE_LOG, JSON.stringify(entry) + '\n', 'utf8')
+    // 写到「这条记录所属库」的目录里,并带上库名(回收站界面要显示属于哪个库)
+    const lib = (entry && entry.libraryId ? (setting.libraries || []).find(l => l.id === entry.libraryId) : null)
+      || libraryForPath(entry && (entry.src || entry.from))
+    const line = { ...entry, libraryId: lib ? lib.id : undefined, libraryName: lib ? lib.name : undefined }
+    const file = lib ? libraryRuntimePaths(STORE_PATH, lib).deleteLogFile : LEGACY_DELETE_LOG
+    await fs.promises.mkdir(path.dirname(file), { recursive: true })
+    await fs.promises.appendFile(file, JSON.stringify(line) + '\n', 'utf8')
   } catch (e) { /* 日志失败不影响删除本身 */ }
 }
 // 把路径移入回收站:同盘 rename,跨盘复制后删除
@@ -2177,15 +2190,17 @@ const movePathToTrash = async (srcPath, meta = {}, options = {}) => {
 
 ipcMain.handle('delete-local-book', async (event, filepath) => {
   const result = { ok: false, trashed: false, src: filepath }
-  if (!filepath || !filepath.startsWith(setting.library)) {
-    result.error = '路径不在漫画库内,已拒绝'
+  const ownerLibrary = libraryForPath(filepath)
+  if (!filepath || !ownerLibrary) {
+    result.error = '路径不在任何已生效的漫画库内,已拒绝'
     await appendDeleteLog({ deletedAt: Date.now(), deletedAtText: new Date().toLocaleString(), src: filepath, ok: false, error: result.error })
     return result
   }
   let info = {}
   try {
     const row = (await findBookAcrossLibraries({ filepath })).row
-    if (row) info = { id: row.id, title: row.title, title_jpn: row.title_jpn, tags: row.tags }
+    if (row) info = { id: row.id, title: row.title, title_jpn: row.title_jpn, tags: row.tags, libraryId: ownerLibrary.id, libraryName: ownerLibrary.name }
+    else info = { libraryId: ownerLibrary.id, libraryName: ownerLibrary.name }
   } catch (e) { /* 拿不到不影响删除 */ }
   try {
     const stats = await fs.promises.stat(filepath)
@@ -2243,7 +2258,7 @@ ipcMain.handle('trash-list', async () => {
     } catch (e) { exists = false }
     out.push({ ...item, exists, fileCount })
   }
-  return { ok: true, list: out, trashDir: TRASH_DIR, logFile: DELETE_LOG }
+  return { ok: true, list: out, trashDir: TRASH_DIR, logFile: LEGACY_DELETE_LOG }
 })
 
 // 从回收站还原(优先还原回原路径;原路径已被占用则报错,不覆盖)
@@ -2298,20 +2313,25 @@ ipcMain.handle('trash-purge', async (event, id) => {
 
 // 读取删除记录(最多最近 200 条,倒序)—— 用户抱怨过「删了没日志」,这里把 delete-log.jsonl 直接摆到界面上
 ipcMain.handle('trash-log', async () => {
+  // 每个库各有一份删除记录:全部读出来合并,按时间倒序,界面上标出属于哪个库
+  const files = (setting.libraries || []).filter(isLibraryActive).map(l => libraryRuntimePaths(STORE_PATH, l).deleteLogFile)
+  files.push(LEGACY_DELETE_LOG)
   const out = []
-  try {
-    const st = await fs.promises.stat(DELETE_LOG)
-    const start = Math.max(0, st.size - 2 * 1024 * 1024) // 日志再大也只读最后 2MB
-    const fh = await fs.promises.open(DELETE_LOG, 'r')
-    const buf = Buffer.alloc(st.size - start)
-    await fh.read(buf, 0, buf.length, start)
-    await fh.close()
-    const lines = buf.toString('utf8').split('\n').filter(Boolean)
-    for (const line of lines.slice(-200)) {
-      try { out.push(JSON.parse(line)) } catch (e) { /* 跳过坏行 */ }
-    }
-  } catch (e) { /* 还没有日志文件 */ }
-  return { ok: true, list: out.reverse(), logFile: DELETE_LOG }
+  for (const file of files) {
+    try {
+      const st = await fs.promises.stat(file)
+      const start = Math.max(0, st.size - 2 * 1024 * 1024) // 单份日志最多只读最后 2MB
+      const fh = await fs.promises.open(file, 'r')
+      const buf = Buffer.alloc(st.size - start)
+      await fh.read(buf, 0, buf.length, start)
+      await fh.close()
+      for (const line of buf.toString('utf8').split('\n').filter(Boolean).slice(-200)) {
+        try { out.push(JSON.parse(line)) } catch (e) { /* 跳过坏行 */ }
+      }
+    } catch (e) { /* 还没有日志文件 */ }
+  }
+  out.sort((a, b) => Number(b.deletedAt || b.restoredAt || b.purgedAt || 0) - Number(a.deletedAt || a.restoredAt || a.purgedAt || 0))
+  return { ok: true, list: out.slice(0, 200), logFile: LEGACY_DELETE_LOG }
 })
 
 ipcMain.handle('move-local-book', async (event, oldPath, folderArr) => {
@@ -2621,7 +2641,7 @@ ipcMain.handle('delete-image', async (event, filename, filepath, type) => {
   const meta = { kind: 'image', bookPath, bookType: type, image: rel, ...info }
   if (type === 'folder') {
     const abs = path.isAbsolute(rel) ? rel : path.join(bookPath, rel)
-    if (!abs.startsWith(setting.library)) {
+    if (!libraryForPath(abs)) {
       result.error = '路径不在漫画库内,已拒绝'
       await appendDeleteLog({ deletedAt: Date.now(), deletedAtText: new Date().toLocaleString(), src: abs, ok: false, error: result.error, ...meta })
       return result
@@ -3031,19 +3051,15 @@ ipcMain.handle('set-active-box', async (event, arg) => {
   try {
     const boxes = Array.isArray(setting.switchBoxes) ? setting.switchBoxes : []
     if (!boxes.length) return { ok: false, error: '还没有配置「库切换」框(设置 → 常用)' }
-    if (isScanning) return { ok: false, error: '正在扫描漫画库,请等扫描结束后再切换' }
     const n = boxes.length
     let idx = Number.isInteger(setting.activeBoxIndex) ? setting.activeBoxIndex : 0
     if (arg && Number.isInteger(arg.index)) idx = arg.index
     else idx += 1
     idx = ((idx % n) + n) % n
-    const prev = activeLibraryOf(setting)
-    const prevDataDir = LIBRARY_DATA_DIR
+    // 切框只改「书架显示哪几个库」:不碰扫描/写操作的运行时,所以**扫描中也可以切**。
+    // 每本书自带 libraryId 决定写回哪个库;扫描也是自带库循环逐个扫,两者互不干扰。
     setting.activeBoxIndex = idx
-    const target = boxLibraries()[0] || null
-    if (target) setting.activeLibraryId = target.id
     await applySetting({})
-    await switchActiveLibraryRuntime(prev, prevDataDir)
     return { ok: true, activeChanged: true, ...librariesSnapshot() }
   } catch (e) {
     console.error(e)
