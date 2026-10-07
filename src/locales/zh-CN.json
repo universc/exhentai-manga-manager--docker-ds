@@ -275,7 +275,7 @@
     "remoteServerFail": "连接失败",
     "runMode": "运行模式",
     "localMode": "本地模式",
-    "serverMode": "服务器模式",
+    "serverMode": "远程模式",
     "exitServerMode": "退出服务器",
     "dataPath": "数据存放目录",
     "dataPathSaveRestart": "保存并重启",

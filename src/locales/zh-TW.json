@@ -275,7 +275,7 @@
     "remoteServerFail": "連線失敗",
     "runMode": "執行模式",
     "localMode": "本機模式",
-    "serverMode": "伺服器模式",
+    "serverMode": "遠端模式",
     "exitServerMode": "退出伺服器",
     "dataPath": "資料存放目錄",
     "dataPathSaveRestart": "儲存並重啟",

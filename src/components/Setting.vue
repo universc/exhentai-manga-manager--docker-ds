@@ -36,50 +36,6 @@
           </el-col>
         </el-row>
         <!-- 服务器模式:服务器 IP / 端口 + 账户 + 连接/退出 -->
-        <el-row :gutter="8" v-if="showDesktopUI && runMode === 'remote'">
-          <el-col :span="12">
-            <div class="setting-line">
-              <el-input v-model="remoteIp" :placeholder="$t('m.remoteIpPlaceholder')" @change="syncRemoteServer">
-                <template #prepend><span class="setting-label">{{$t('m.remoteIp')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="12">
-            <div class="setting-line">
-              <el-input v-model.number="remotePort" placeholder="10000" @change="syncRemoteServer">
-                <template #prepend><span class="setting-label">{{$t('m.remotePort')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="12">
-            <div class="setting-line">
-              <el-input v-model="setting.remoteUsername" :placeholder="$t('m.loginUsername')" @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.remoteUsername')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="12">
-            <div class="setting-line">
-              <el-input v-model="setting.remotePassword" type="password" show-password :placeholder="$t('m.loginPassword')" @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.remotePassword')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line function-button-row">
-              <el-button class="function-button" plain @click="testRemoteServer">{{$t('m.testConnection')}}</el-button>
-              <el-button class="function-button" type="primary" plain :disabled="!remoteIp" @click="relaunchRemoteMode">{{$t('m.relaunchConnect')}}</el-button>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line function-button-row">
-              <el-button class="function-button" type="danger" plain @click="exitServerMode">{{$t('m.exitServerMode')}}</el-button>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line toolbar-tip">{{$t('m.webModeHint')}}</div>
-          </el-col>
-        </el-row>
         <el-row :gutter="8">
           <el-col :span="24">
             <div class="setting-line">
@@ -1549,6 +1505,51 @@
             </div>
             <template v-if="isAdmin">
               <div class="setting-line toolbar-tip" style="margin-top: 14px;">{{$t('m.accountsTip')}}</div>
+
+        <el-row :gutter="8" v-if="showDesktopUI && runMode === 'remote'">
+          <el-col :span="12">
+            <div class="setting-line">
+              <el-input v-model="remoteIp" :placeholder="$t('m.remoteIpPlaceholder')" @change="syncRemoteServer">
+                <template #prepend><span class="setting-label">{{$t('m.remoteIp')}}</span></template>
+              </el-input>
+            </div>
+          </el-col>
+          <el-col :span="12">
+            <div class="setting-line">
+              <el-input v-model.number="remotePort" placeholder="10000" @change="syncRemoteServer">
+                <template #prepend><span class="setting-label">{{$t('m.remotePort')}}</span></template>
+              </el-input>
+            </div>
+          </el-col>
+          <el-col :span="12">
+            <div class="setting-line">
+              <el-input v-model="setting.remoteUsername" :placeholder="$t('m.loginUsername')" @change="saveSetting">
+                <template #prepend><span class="setting-label">{{$t('m.remoteUsername')}}</span></template>
+              </el-input>
+            </div>
+          </el-col>
+          <el-col :span="12">
+            <div class="setting-line">
+              <el-input v-model="setting.remotePassword" type="password" show-password :placeholder="$t('m.loginPassword')" @change="saveSetting">
+                <template #prepend><span class="setting-label">{{$t('m.remotePassword')}}</span></template>
+              </el-input>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line function-button-row">
+              <el-button class="function-button" plain @click="testRemoteServer">{{$t('m.testConnection')}}</el-button>
+              <el-button class="function-button" type="primary" plain :disabled="!remoteIp" @click="relaunchRemoteMode">{{$t('m.relaunchConnect')}}</el-button>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line function-button-row">
+              <el-button class="function-button" type="danger" plain @click="exitServerMode">{{$t('m.exitServerMode')}}</el-button>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line toolbar-tip">{{$t('m.webModeHint')}}</div>
+          </el-col>
+        </el-row>
               <div class="account-list">
               <div class="account-row" v-for="user in accountList" :key="user.username">
                 <span class="account-name">{{user.username}}</span>

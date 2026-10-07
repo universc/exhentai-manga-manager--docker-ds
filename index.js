@@ -3511,6 +3511,20 @@ ipcMain.handle('auth-login', async (event, { username, password } = {}) => {
   const user = auth.verify(String(username || '').trim(), String(password || ''))
   if (!user) return { ok: false, error: '用户名或密码不正确' }
   currentAuth = { username: user.username, role: user.role, token: auth.createSession(user) }
+  // 需求:配置文件以账户命名 —— 把登录名记成「配置名」,下次启动就加载该账户的 setting.<账户>.json。
+  // 这里不重启(避免打断当前使用),下次启动自然生效。
+  if (!WEB_MODE) {
+    try {
+      const bf = path.join(app.getPath('userData'), 'bootstrap.json')
+      let cfg = {}
+      try { cfg = JSON.parse(fs.readFileSync(bf, 'utf-8')) || {} } catch (e) { cfg = {} }
+      if (cfg.profile !== user.username) {
+        fs.mkdirSync(path.dirname(bf), { recursive: true })
+        fs.writeFileSync(bf, JSON.stringify({ ...cfg, profile: user.username }, null, '  '), 'utf-8')
+        console.log('[auth] 配置名已设为账户:', user.username, '(下次启动生效)')
+      }
+    } catch (e) { console.log('[auth] 写入配置名失败:', String((e && e.message) || e)) }
+  }
   return { ok: true, role: user.role, username: user.username }
 })
 ipcMain.handle('auth-logout', async () => {

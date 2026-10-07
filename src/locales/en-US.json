@@ -276,7 +276,7 @@
     "remoteServerFail": "Connection failed",
     "runMode": "Run Mode",
     "localMode": "Local Mode",
-    "serverMode": "Server Mode",
+    "serverMode": "Remote mode",
     "exitServerMode": "Exit Server Mode",
     "dataPath": "Data directory",
     "dataPathSaveRestart": "Save & Restart",
