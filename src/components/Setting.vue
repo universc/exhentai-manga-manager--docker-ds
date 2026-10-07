@@ -94,13 +94,10 @@
             </div>
           </el-col>
           <el-col :span="24">
-            <!-- 一排 = 一个漫画库:库名(就是「库文件夹」这几个字,可改名)+ 库文件夹 + 库数据存放位置 -->
+            <!-- 一排 = 一个漫画库:库名(就是「库文件夹」这几个字,可改名)+ 库文件夹(只读,不能输入/清空)+ 库数据存放位置 -->
             <div v-for="lib in libraries" :key="lib.id" class="setting-line library-row">
-              <el-radio v-model="activeLibraryId" :label="lib.id" class="library-active-radio" @change="onActiveLibraryChange" :title="$t('m.libraryCurrent')" />
               <el-input v-model="lib.name" class="library-name-input" @change="onLibraryNameChange" />
-              <el-input class="library-path-input" :model-value="lib.path" :placeholder="$t('m.libraryPathPlaceholder')" @change="(v) => onLibraryPathChange(lib, v)">
-                <template #append><el-button @click="selectLibraryPath(lib)">{{$t('m.select')}}</el-button></template>
-              </el-input>
+              <el-input class="library-path-input" :model-value="lib.path" readonly />
               <el-input class="library-data-input" :model-value="lib.dataPath || ''" :placeholder="libraryDataDirPlaceholder(lib)" @change="(v) => onLibraryDataPathChange(lib, v)">
                 <template #prepend><span class="setting-label">{{$t('m.libraryDataPath')}}</span></template>
                 <template #append>
@@ -115,21 +112,6 @@
               <el-button :loading="libraryBusy" @click="addLibrary">{{$t('m.libraryAdd')}}</el-button>
               <span class="toolbar-tip">{{$t('m.libraryHint')}}</span>
             </div>
-          </el-col>
-          <!-- 元数据存放目录:只在本地模式出现(服务器/网页版的数据目录由服务端决定) -->
-          <el-col :span="24" v-if="showDesktopUI && runMode === 'local'">
-            <div class="setting-line">
-              <el-input v-model="setting.metadataPath" :placeholder="$t('m.metadataPathDefault')" @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.metadataPath')}}</span></template>
-                <template #append>
-                  <el-button-group>
-                    <el-button @click="selectMetadataPath">{{$t('m.select')}}</el-button>
-                    <el-button v-if="setting.metadataPath" @click="followDataPath">{{$t('m.metadataPathFollow')}}</el-button>
-                  </el-button-group>
-                </template>
-              </el-input>
-            </div>
-            <div class="setting-line toolbar-tip">{{$t('m.metadataPathHint')}}</div>
           </el-col>
           <el-col :span="24">
             <div class="setting-line">
@@ -1208,6 +1190,24 @@
           </el-col>
           <el-col :span="24">
             <div class="setting-hint">{{$t('m.clickPolicyHint')}}</div>
+          </el-col>
+        </el-row>
+
+        <!-- 方案 A:元数据单独存放从「常用」降级到这里(只影响 metadata.sqlite 一个文件) -->
+        <el-row :gutter="8" v-if="showDesktopUI && runMode === 'local'">
+          <el-col :span="24">
+            <div class="setting-line">
+              <el-input v-model="setting.metadataPath" :placeholder="$t('m.metadataPathDefault')" @change="saveSetting">
+                <template #prepend><span class="setting-label">{{$t('m.metadataPath')}}</span></template>
+                <template #append>
+                  <el-button-group>
+                    <el-button @click="selectMetadataPath">{{$t('m.select')}}</el-button>
+                    <el-button v-if="setting.metadataPath" @click="followDataPath">{{$t('m.metadataPathFollow')}}</el-button>
+                  </el-button-group>
+                </template>
+              </el-input>
+            </div>
+            <div class="setting-line toolbar-tip">{{$t('m.metadataPathHint')}}</div>
           </el-col>
         </el-row>
 
@@ -2779,11 +2779,21 @@ const applyLibraries = async () => {
   }
 }
 
-// 「+ 添加库」:在列表末尾加一排空行(库文件夹 / 库数据存放位置),填了才会真正保存
-const addLibrary = () => {
+// 「添加库」:直接弹文件夹选择框,选完在列表末尾加一排
+// (库文件夹是只读展示,不能再手输/清空,所以新增时必须先把目录选好)
+const addLibrary = async () => {
+  const picked = await ipcRenderer.invoke('select-folder', t('m.library'))
+  if (!picked) return
+  const p = String(picked)
+  const key = p.replace(/[\\/]+$/, '').toLowerCase()
+  if (libraries.value.some(l => String(l.path || '').replace(/[\\/]+$/, '').toLowerCase() === key)) {
+    ElMessage.warning(t('m.libraryAlreadyExists'))
+    return
+  }
   const n = libraries.value.length + 1
-  const lib = { id: 'lib-' + Math.random().toString(16).slice(2, 12), name: t('m.libraryDefaultName') + n, path: '', dataPath: '' }
+  const lib = { id: 'lib-' + Math.random().toString(16).slice(2, 12), name: t('m.libraryDefaultName') + n, path: p, dataPath: '' }
   setting.value.libraries = [...libraries.value, lib]
+  applyLibraries()
 }
 
 // 清空一排的「库文件夹 + 库数据存放位置」两格 → 自动删掉这一排(不动磁盘上的文件)
