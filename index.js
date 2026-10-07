@@ -96,7 +96,7 @@ const boxLibraries = (s = setting) => {
   const box = activeBoxOf(s)
   if (!box) return active              // 完全没配置切换框 → 退化成「所有已生效的库」
   const ids = Array.isArray(box.libraryIds) ? box.libraryIds : []
-  if (!ids.length) return []           // 框存在但没选库 → 什么都不显示(不再等于「所有库」)
+  if (!ids.length) return active       // 框里没选库 → 显示全部已生效的库(下拉/设置里都写明「未选库 = 显示全部」)
   return active.filter(l => ids.includes(l.id))
 }
 // 每个库一个 sequelize 实例:合并书架要同时读多个库数据库

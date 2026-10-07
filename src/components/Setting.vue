@@ -110,7 +110,7 @@
             <div v-for="(box, bi) in switchBoxes" :key="box.id" class="setting-line library-box-row">
               <span class="library-box-index">{{ bi + 1 }}</span>
               <el-select v-model="box.libraryIds" multiple class="library-box-select" :placeholder="$t('m.switchBoxLibraries')" @change="onBoxesChange">
-                <el-option v-for="lib in activeLibraries" :key="lib.id" :label="lib.name" :value="lib.id" />
+                <el-option v-for="lib in libraries" :key="lib.id" :label="isLibActive(lib) ? lib.name : lib.name + ' ' + $t('m.libraryInactive')" :value="lib.id" :disabled="!isLibActive(lib)" />
               </el-select>
               <el-button type="danger" plain :icon="Delete" :disabled="switchBoxes.length <= 1" :title="$t('m.libraryRemove')" @click="removeSwitchBox(bi)" />
               <span v-if="activeBoxIndex === bi" class="library-box-current">{{$t('m.switchBoxCurrent')}}</span>
@@ -2819,8 +2819,10 @@ const addLibrary = async () => {
   if (!picked) return
   const p = String(picked)
   const key = p.replace(/[\\/]+$/, '').toLowerCase()
-  if (libraries.value.some(l => String(l.path || '').replace(/[\\/]+$/, '').toLowerCase() === key)) {
-    ElMessage.warning(t('m.libraryAlreadyExists'))
+  const dup = libraries.value.find(l => String(l.path || '').replace(/[\\/]+$/, '').toLowerCase() === key)
+  if (dup) {
+    // 库其实还在列表里 —— 只是没进「库切换」框(或没生效),书架就看不到它。这里要说清楚,别让用户以为丢了
+    ElMessage.warning(t('m.libraryAlreadyExistsIn', { name: dup.name }))
     return
   }
   const n = libraries.value.length + 1

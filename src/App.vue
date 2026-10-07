@@ -61,7 +61,17 @@
             <!-- 设置按钮:与界面模式按钮一套样式(纯 plain,图标不跟主色调) -->
             <el-button v-else-if="id === 'setting'" :icon="SettingIcon" plain @click="$refs.SettingRef.dialogVisibleSetting = true" :title="$t('m.setting')"></el-button>
             <!-- 切换库:点一下 = 切到下一个「库切换」框(书架显示该框内所有库合并的漫画) -->
-            <el-button v-else-if="id === 'switchLibrary'" type="primary" plain :icon="switchLibraryIcon" @click="switchBox" :title="$t('m.switchLibraryCurrent') + ':' + (boxLabel || '—')"></el-button>
+            <el-dropdown v-else-if="id === 'switchLibrary'" trigger="click" @command="switchBox" class="switch-library-dropdown">
+              <el-button type="primary" plain :icon="switchLibraryIcon" :title="$t('m.switchLibraryCurrent') + ':' + (boxLabel || '—')"></el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item v-for="(box, i) in switchBoxes" :key="box.id" :command="i" :disabled="i === activeBoxIndex">
+                    {{ (i + 1) + '. ' + boxLibraryNames(box) }}
+                  </el-dropdown-item>
+                  <el-dropdown-item v-if="!switchBoxes.length" disabled>{{ $t('m.switchBoxNeedMore') }}</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <!-- 可自定义的界面按钮 -->
             <el-button
               v-else-if="toolbarButtonMap[id]"
@@ -265,8 +275,8 @@ import { defineComponent } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { Setting as SettingIcon, FullScreen, Edit } from '@element-plus/icons-vue'
 import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular } from '@vicons/fluent'
-import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdAlbums, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
-import { TreeViewAlt, CicsSystemGroup, TagGroup } from '@vicons/carbon'
+import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop } from '@vicons/ionicons4'
+import { TreeViewAlt, CicsSystemGroup, TagGroup, Catalog } from '@vicons/carbon'
 
 import { getWidth, fetchRecentReads, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes } from './utils.js'
 import { extractCoverColors, pixelateToDataUrl } from './cover-color.js'
@@ -460,8 +470,14 @@ export default defineComponent({
     // ⚠️ Options API 的模板拿不到 <script> 里 import 的组件(要靠 this.xxx),
     // 所以图标必须经 computed 暴露,否则按钮是空白的(用户报的 bug)
     switchLibraryIcon () {
-      // 用 MdAlbums(集合)和「切换阅读器」的 MdBook 区分开
-      return MdAlbums
+      // 用 carbon 的 Catalog(目录本)和「切换阅读器」的 MdBook 区分开
+      return Catalog
+    },
+    switchBoxes () {
+      return Array.isArray(this.setting?.switchBoxes) ? this.setting.switchBoxes : []
+    },
+    activeBoxIndex () {
+      return Number.isInteger(this.setting?.activeBoxIndex) ? this.setting.activeBoxIndex : 0
     },
     boxLabel () {
       const boxes = Array.isArray(this.setting?.switchBoxes) ? this.setting.switchBoxes : []
@@ -1221,17 +1237,24 @@ export default defineComponent({
       }
     },
     // 切换库(工具栏):点一下 = 切到下一个「库切换」框,书架显示该框内所有库合并的漫画
-    async switchBox () {
-      const boxes = Array.isArray(this.setting?.switchBoxes) ? this.setting.switchBoxes : []
-      if (boxes.length <= 1) {
+    // 下拉里每一行显示的库名(没选库时明确说「显示全部」)
+    boxLibraryNames (box) {
+      const ids = box && Array.isArray(box.libraryIds) ? box.libraryIds : []
+      const names = this.libraries.filter(l => ids.includes(l.id)).map(l => l.name)
+      return names.length ? names.join(' + ') : this.$t('m.switchBoxEmptyMeansAll')
+    },
+    // 从下拉里选第 index 条「库切换」框
+    async switchBox (index) {
+      const boxes = this.switchBoxes
+      if (!boxes.length) {
         this.$message.info(this.$t('m.switchBoxNeedMore'))
         return
       }
-      // 由前端算好「下一个框」的序号再传给后端:避免前后端状态不同步时出现「点了没反应」
-      const cur = Number.isInteger(this.setting?.activeBoxIndex) ? this.setting.activeBoxIndex : 0
-      const next = ((cur + 1) % boxes.length + boxes.length) % boxes.length
+      const n = boxes.length
+      const idx = Number.isInteger(index) ? ((index % n) + n) % n : 0
+      if (idx === this.activeBoxIndex) return
       try {
-        const res = await ipcRenderer.invoke('set-active-box', { index: next })
+        const res = await ipcRenderer.invoke('set-active-box', { index: idx })
         if (res && res.ok) {
           this.setting.activeBoxIndex = res.activeBoxIndex
           this.setting.activeLibraryId = res.activeLibraryId
