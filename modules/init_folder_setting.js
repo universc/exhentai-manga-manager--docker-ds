@@ -74,6 +74,9 @@ const prepareSetting = () => {
     setting = {
       proxy: undefined,
       library: app.getPath('downloads'),
+      // 漫画库列表(多库只读兼容层):留空则启动时用上面的 library 自动迁移出一个默认库
+      libraries: [],
+      activeLibraryId: '',
       metadataPath: undefined,
       imageExplorer: _mange_reader,
       pageSize: 42,

@@ -31,6 +31,7 @@ const {
 const { findSameFile } = require('./fileLoader/folder.js')
 const { inventoryLibrary, diffInventory, snapshotFromInventory, loadSnapshotFile, saveSnapshotFile, archiveTypeOf } = require('./fileLoader/incremental.js')
 const localModels = require('./modules/localModels.js')
+const { ensureLibraries, libraryDataDir } = require('./modules/libraries.js')
 
 const WEB_MODE = process.env.WEB_MODE === '1'
 
@@ -137,6 +138,31 @@ process
     console.log(err, 'Uncaught Exception thrown')
     process.exit(1)
   })
+
+// ---------- 漫画库列表(第二十七轮:多库只读兼容层) ----------
+// 旧版只有一个 setting.library;这里自动迁移出 setting.libraries(默认库,名字取文件夹名),
+// 并把 setting.library 继续同步为活动库路径 —— 扫描/删除等现有逻辑一行都不用改。
+// 本层只读:libraries 不参与扫描,仅落盘 + 记录日志,供后续按库拆分数据目录使用。
+const libraryState = ensureLibraries(setting)
+if (libraryState.migrated || libraryState.changed) {
+  console.log(`[libraries] 漫画库列表已初始化:${setting.libraries.map(l => `${l.name}(${l.path})`).join('、') || '(空)'}`)
+  setting.libraries.forEach(l => {
+    console.log(`[libraries] 库「${l.name}」默认数据目录:${libraryDataDir(STORE_PATH, l)}`)
+  })
+  // 只在本地模式落盘:容器模式(共享 /data/setting.json)下 library 会写回 Windows 侧,
+  // 这里避免把容器路径 /library 覆盖进跨平台共享的 setting.json。
+  if (!process.env.WEB_LIBRARY) {
+    try {
+      const settingPath = path.join(STORE_PATH, 'setting.json')
+      const settingTempPath = settingPath + '.tmp'
+      fs.writeFileSync(settingTempPath, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
+      fs.renameSync(settingTempPath, settingPath)
+      console.log('[libraries] 已写入 setting.json')
+    } catch (e) {
+      console.error('[libraries] 写入 setting.json 失败', e)
+    }
+  }
+}
 
 const sendMessageToWebContents = (message) => {
   console.log(message)
