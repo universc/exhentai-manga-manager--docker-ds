@@ -3492,21 +3492,45 @@ ipcMain.handle('set-data-path', async (event, dataPath) => {
   return { ok: true }
 })
 
-// ---------- 网页版(Docker)账户管理:仅管理员可用(权限在 web-server.js 拦截) ----------
+// ---------- 账户系统:桌面版与网页版共用 ----------
+// 网页版的登录走 HTTP(web-server.js 的 /api/auth/*);桌面版没有 HTTP 服务,走这里的 IPC。
+// 默认账户 admin / admin(见 modules/auth.js:没有任何账户时自动创建)。
+const auth = require('./modules/auth.js')
+auth.loadUsers(STORE_PATH)
+// 桌面版当前登录用户(渲染进程刷新页面也不丢;退出应用即失效)
+let currentAuth = null
+const authStatus = () => ({
+  enabled: auth.isEnabled(),
+  role: currentAuth ? currentAuth.role : null,
+  username: currentAuth ? currentAuth.username : null
+})
+// 同步通道:渲染进程必须在加载界面之前就知道"要不要弹登录框"
+ipcMain.on('auth-status', (event) => { event.returnValue = authStatus() })
+ipcMain.handle('auth-current', async () => authStatus())
+ipcMain.handle('auth-login', async (event, { username, password } = {}) => {
+  const user = auth.verify(String(username || '').trim(), String(password || ''))
+  if (!user) return { ok: false, error: '用户名或密码不正确' }
+  currentAuth = { username: user.username, role: user.role, token: auth.createSession(user) }
+  return { ok: true, role: user.role, username: user.username }
+})
+ipcMain.handle('auth-logout', async () => {
+  if (currentAuth && currentAuth.token) auth.destroySession(currentAuth.token)
+  currentAuth = null
+  return { ok: true }
+})
+ipcMain.handle('auth-list-users', async () => auth.listUsers())
+ipcMain.handle('auth-add-user', async (event, { username, password, role } = {}) => {
+  return auth.addUser(username, password, role)
+})
+ipcMain.handle('auth-remove-user', async (event, username) => {
+  return auth.removeUser(username)
+})
+ipcMain.handle('auth-change-password', async (event, { username, newPassword } = {}) => {
+  return auth.changePassword(username, newPassword)
+})
+// 网页版专属:IP 访问控制(白名单免登录 / 黑名单拒绝连接)
 if (WEB_MODE) {
-  const auth = require('./modules/auth.js')
   const iprules = require('./modules/iprules.js')
-  ipcMain.handle('auth-list-users', async () => auth.listUsers())
-  ipcMain.handle('auth-add-user', async (event, { username, password, role } = {}) => {
-    return auth.addUser(username, password, role)
-  })
-  ipcMain.handle('auth-remove-user', async (event, username) => {
-    return auth.removeUser(username)
-  })
-  ipcMain.handle('auth-change-password', async (event, { username, newPassword } = {}) => {
-    return auth.changePassword(username, newPassword)
-  })
-  // IP 访问控制:白名单免登录(视为管理员)/ 黑名单拒绝连接
   ipcMain.handle('auth-get-ip-rules', async () => iprules.getRules())
   ipcMain.handle('auth-set-ip-rules', async (event, { whitelist, blacklist } = {}) => {
     return iprules.setRules(whitelist, blacklist)

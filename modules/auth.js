@@ -53,16 +53,14 @@ const loadUsers = (dataDir) => {
   }
   loadSessions()
   if (Object.keys(users).length === 0) {
+    // 默认账户:admin / admin(用户要求 Win 与 NAS 都自带一个默认账户)。
+    // 环境变量 WEB_ADMIN_USER / WEB_ADMIN_PASSWORD 仍可覆盖,便于部署时指定。
     const adminUser = process.env.WEB_ADMIN_USER || 'admin'
-    const adminPass = process.env.WEB_ADMIN_PASSWORD
-    if (adminPass) {
-      const salt = crypto.randomBytes(16).toString('hex')
-      users[adminUser] = { salt, hash: hashPassword(adminPass, salt), role: 'admin', createdAt: Date.now() }
-      persistUsers()
-      console.log(`[auth] 已从环境变量创建管理员账户: ${adminUser}(密码已加盐加密存储)`)
-    } else {
-      console.log('[auth] 未配置 WEB_ADMIN_PASSWORD,账户系统未启用(保持匿名访问)')
-    }
+    const adminPass = process.env.WEB_ADMIN_PASSWORD || 'admin'
+    const salt = crypto.randomBytes(16).toString('hex')
+    users[adminUser] = { salt, hash: hashPassword(adminPass, salt), role: 'admin', createdAt: Date.now() }
+    persistUsers()
+    console.log(`[auth] 已创建默认管理员账户: ${adminUser}(可在设置 → 账户里新建账户后删除它)`)
   }
   authEnabled = Object.keys(users).length > 0
   return { authEnabled, users: Object.keys(users) }
@@ -87,7 +85,11 @@ const addUser = (username, password, role = 'viewer') => {
 
 const removeUser = (username) => {
   if (!users[username]) return { ok: false, error: '用户不存在' }
-  if (users[username].role === 'admin') return { ok: false, error: '不能删除管理员账户' }
+  // 允许删除默认的 admin —— 但必须至少保留一个管理员,否则没人能再管理账户
+  const adminCount = Object.values(users).filter(u => u.role === 'admin').length
+  if (users[username].role === 'admin' && adminCount <= 1) {
+    return { ok: false, error: '至少需要保留一个管理员账户' }
+  }
   delete users[username]
   persistUsers()
   return { ok: true }

@@ -1527,7 +1527,7 @@
         </el-row>
       </el-tab-pane>
       <!-- 账户(网页版/Docker,所有登录用户可见;管理员另有账户管理/IP 控制) -->
-      <el-tab-pane v-if="isWebMode" :label="$t('m.accounts')" name="accounts">
+      <el-tab-pane v-if="isWebLoggedIn || !isWebMode" :label="$t('m.accounts')" name="accounts">
         <el-row :gutter="8">
           <el-col :span="24">
             <!-- 未登录(网页版已启用鉴权但无会话):在设置内直接登录,避免整页空白 -->

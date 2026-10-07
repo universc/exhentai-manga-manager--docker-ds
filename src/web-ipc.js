@@ -48,6 +48,7 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
   // ---------- /api/info(同步获取 pathSep / version / webMode / 账户信息) ----------
   let pathSep = '\\'
   let webVersion = ''
+  let infoOk = false
   window.__WEB_MODE__ = false
   window.__REMOTE_DESKTOP__ = false
   window.__AUTH__ = { enabled: false, role: null, username: null }
@@ -56,6 +57,7 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
     xhr.open('GET', '/api/info', false)
     xhr.send()
     if (xhr.status === 200) {
+      infoOk = true
       const info = JSON.parse(xhr.responseText)
       pathSep = info.pathSep || pathSep
       webVersion = info.version || ''
@@ -69,6 +71,18 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
       }
     }
   } catch (e) {}
+  // 桌面版没有 HTTP 服务器(/api/info 拿不到)→ 账户状态改从主进程的同步 IPC 取。
+  // 这样 Windows 客户端也能像 Docker 版一样弹登录框(默认账户 admin/admin)。
+  if (!infoOk && window.ipcRenderer && typeof window.ipcRenderer.sendSync === 'function') {
+    try {
+      const st = window.ipcRenderer.sendSync('auth-status') || {}
+      window.__AUTH__ = {
+        enabled: !!st.enabled,
+        role: st.role || null,
+        username: st.username || null,
+      }
+    } catch (e) {}
+  }
 
   // ---------- SSE 事件分发 ----------
   const listeners = new Map()

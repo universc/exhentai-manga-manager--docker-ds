@@ -52,6 +52,16 @@ export default {
       loading.value = true
       error.value = ''
       try {
+        // 桌面版(没有 HTTP 服务)走主进程 IPC;网页版走 /api/auth/login
+        if (!window.__WEB_MODE__ && window.ipcRenderer && window.ipcRenderer.invoke) {
+          const st = await window.ipcRenderer.invoke('auth-login', { username: username.value.trim(), password: password.value })
+          if (st && st.ok) {
+            window.location.reload()
+            return
+          }
+          error.value = (st && st.error) || '登录失败'
+          return
+        }
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
