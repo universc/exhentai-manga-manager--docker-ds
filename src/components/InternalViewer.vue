@@ -385,6 +385,7 @@ const closeComicReader = () => {
   if (comicReadElement) comicReadElement.remove()
   ipcRenderer.invoke('release-sendimagelock')
   ipcRenderer.invoke('set-viewer-active', false)
+if (viewerHeartbeat) { clearInterval(viewerHeartbeat); viewerHeartbeat = null }
   ipcRenderer.invoke('update-window-title')
 }
 
@@ -876,6 +877,7 @@ onUnmounted(() => {
     imageStateRaf = null
   }
   ipcRenderer.invoke('set-viewer-active', false)
+if (viewerHeartbeat) { clearInterval(viewerHeartbeat); viewerHeartbeat = null }
 })
 const handleWindowResize = _.debounce(() => {
   updateImageSize()
@@ -895,10 +897,15 @@ const requestThumbnails = () => {
 }
 
 let viewerLoading = null
+// 阅读心跳定时器:每 60 秒向主进程报一次「还在阅读」
+let viewerHeartbeat = null
 const viewManga = (book, viewerHeight = '100%') => {
   readyDestroyViewer.value = false
   // 通知主进程正在阅读:后台扫描暂停,让出 CPU/磁盘
   ipcRenderer.invoke('set-viewer-active', true)
+  // 心跳:浏览器被强关时前端来不及发 false,主进程靠「3 分钟没心跳」自动放开后台任务
+  if (viewerHeartbeat) clearInterval(viewerHeartbeat)
+  viewerHeartbeat = setInterval(() => { ipcRenderer.invoke('set-viewer-active', true) }, 60000)
   drawerHeight.value = viewerHeight
   viewerImageList.value = []
   receiveThumbnailList.value = []
@@ -946,6 +953,7 @@ const viewManga = (book, viewerHeight = '100%') => {
     console.log(err)
     viewerLoading.close()
     ipcRenderer.invoke('set-viewer-active', false)
+if (viewerHeartbeat) { clearInterval(viewerHeartbeat); viewerHeartbeat = null }
   })
 
   if (localStorage.getItem('showViewerSide') === 'true') {
@@ -1447,6 +1455,7 @@ const handleStopReadManga = () => {
   ipcRenderer.invoke('release-sendimagelock')
   ipcRenderer.invoke('update-window-title')
   ipcRenderer.invoke('set-viewer-active', false)
+if (viewerHeartbeat) { clearInterval(viewerHeartbeat); viewerHeartbeat = null }
 }
 
 // ---------- 阅读器惯性滚动(仅卷轴模式) ----------

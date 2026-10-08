@@ -100,6 +100,7 @@
           :key="book.id"
           class="book-card-frame"
           :tabindex="index + 1"
+          :style="{ '--emm-in-delay': Math.min(index, 40) * 14 + 'ms' }"
         >
           <transition name="pop">
             <!-- show book card when book isn't a collection, book isn't hidden because collected,
@@ -2225,7 +2226,17 @@ body
 .pop-enter-active, .pop-leave-active
   transition: opacity .2s ease
 
-.pop-enter-from, .pop-leave-to
+// 卡片逐个淡入:一页 500 张一次渲染时,给前 41 张依次加一点延迟,
+// 观感是"一张张出现"而不是整片同时弹出(超过 40 张不再延迟,免得等太久)。
+// 延迟值由 App.vue 的 v-for 通过 --emm-in-delay 传进来。
+.pop-enter-active
+  transition-delay: var(--emm-in-delay, 0ms)
+
+.pop-enter-from
+  opacity: 0
+  transform: translateY(8px)
+
+.pop-leave-to
   opacity: 0
 
 // ---------- 全局动画微调(更丝滑) ----------

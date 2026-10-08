@@ -1714,10 +1714,13 @@ const endScan = (error) => {
   broadcastScanStatus()
 }
 let viewerActive = false
+let viewerActiveAt = 0
+const VIEWER_IDLE_TIMEOUT = 3 * 60 * 1000
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 // 用户正在阅读漫画时,扫描暂停,把 CPU/磁盘让给阅读器
 const waitViewerIdle = async () => {
-  while (viewerActive) await sleep(500)
+  // 超过 3 分钟没有心跳 = 阅读器已不在(网页被强关),不再无限等待
+  while (viewerActive && Date.now() - viewerActiveAt < VIEWER_IDLE_TIMEOUT) await sleep(500)
 }
 
 // ---------- 元信息后台补全(页数 / hash) ----------
@@ -1736,6 +1739,8 @@ const broadcastBackfill = () => {
 }
 ipcMain.handle('scan-status', async () => ({ ...scanState }))
 ipcMain.handle('meta-backfill-status', async () => ({ ...metaBackfill }))
+// 启动后延迟补全:容器/客户端重启时,把上次没补完的页数/hash/封面接着补上
+setTimeout(() => { runMetaBackfill().catch(() => {}) }, 90000)
 ipcMain.handle('meta-backfill-stop', async () => {
   metaBackfill.stop = true
   return { ok: true }
@@ -1767,7 +1772,13 @@ const runMetaBackfill = async () => {
       if (isScanning) { metaBackfill.stop = true; break }
       try {
         const filepath = translateBookPath(row.filepath, 'filepath')
-        const r = await geneCover(filepath, row.type, null, coverDirOf(lib))
+        const coverDir = coverDirOf(lib)
+        // 用户要求:后台补全时把封面一并生成(以前只探测信息)。
+        // 走 ensureBookCover:自带每本一次的任务锁 + 全局 4 路并发限制。
+        try {
+          await ensureBookCover({ ...row, filepath, libraryId: lib.id })
+        } catch (e) { /* 封面失败不影响补页数/hash */ }
+        const r = await geneCover(filepath, row.type, null, coverDir)
         await model.update({
           hash: r.hash || null,
           pageCount: r.pageCount || null,
@@ -1835,6 +1846,10 @@ const mergeBookInfo = (book, info) => {
 
 ipcMain.handle('set-viewer-active', (event, active) => {
   viewerActive = !!active
+  // 记录最后一次上报时间:浏览器被强关/断网时前端来不及发 false,
+  // viewerActive 会永远停在 true,让扫描/补全/封面任务全部卡在 waitViewerIdle。
+  // 前端阅读时每 60 秒心跳一次,超过 3 分钟没上报就视为不活跃。
+  viewerActiveAt = Date.now()
 })
 
 // 自动排除规则:这些是「软件自己的数据」,绝不能被当成漫画扫描进来
@@ -2233,6 +2248,8 @@ ipcMain.handle('incremental-scan', async () => {
     setImmediate(async () => {
       try {
         await runIncrementalScan()
+      // 增量扫描完成后同样要触发后台补全(以前只有全量扫描才触发,导致增量扫完的书一直没补) 
+      setImmediate(() => { runMetaBackfill().catch(() => {}) })
         endScan(null)
       } catch (e) {
         console.error(e)
