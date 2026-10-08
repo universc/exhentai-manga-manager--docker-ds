@@ -805,8 +805,6 @@
               <span class="setting-line toolbar-tip" style="display: inline-block;">{{$t('m.coverConcurrencyHint')}}</span>
             </div>
           </el-col>
-            </div>
-          </el-col>
         </el-row>
         <div class="advanced-section-title">{{$t('m.cardStyle')}}</div>
         <!-- 卡片相关开关(自其它分区归并到此):各元素显隐独立 + 填充封面 -->
