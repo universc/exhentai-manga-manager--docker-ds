@@ -16,11 +16,18 @@ const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif']
 // 与 archive.js / zip.js 的扩展名清单保持一致
 const ARCHIVE_TYPE = {
   '.rar': 'archive', '.7z': 'archive', '.cb7': 'archive', '.cbr': 'archive',
-  '.zip': 'zip', '.cbz': 'zip'
+  '.zip': 'zip', '.cbz': 'zip',
+  // epub 本质就是 zip:封面/图片都按压缩包的方式取
+  '.epub': 'epub'
 }
+// 纯文本小说(txt):没有图,按"文字模式"阅读,封面用书名渲染
+const NOVEL_EXTS = ['.txt']
 
 const isImageName = (name) => IMAGE_EXTS.includes(path.extname(name).toLowerCase())
 const archiveTypeOf = (filepath) => ARCHIVE_TYPE[path.extname(filepath).toLowerCase()] || null
+const novelTypeOf = (filepath) => NOVEL_EXTS.includes(path.extname(filepath).toLowerCase()) ? 'novel' : null
+// 统一:按扩展名判断这是哪一类"书"(压缩包 / epub / txt 小说)
+const typeOfFile = (filepath) => archiveTypeOf(filepath) || novelTypeOf(filepath)
 
 // mtime 容差(ms):仅用于消除对"未变化目录"重复 stat 时的浮点噪声。
 // 不能设大:文件系统目录 mtime 是粗粒度/延迟刷新的(如 NTFS 目录元数据批量刷新),
@@ -81,12 +88,12 @@ const inventoryLibrary = async (libraryPath, { concurrency = 24, excludeRe = nul
               if (!seen.has(full)) { seen.add(full); stack.push(full) }
             } else if (targetStat.isFile()) {
               if (isImageName(entry.name)) hasImage = true
-              else if (archiveTypeOf(entry.name)) archFiles.push({ p: full, s: targetStat.size, m: targetStat.mtimeMs })
+              else if (typeOfFile(entry.name)) archFiles.push({ p: full, s: targetStat.size, m: targetStat.mtimeMs })
             }
           } catch (e) { /* broken symlink */ }
         } else if (entry.isFile()) {
           if (isImageName(entry.name)) hasImage = true
-          else if (archiveTypeOf(entry.name)) archFiles.push({ p: full })
+          else if (typeOfFile(entry.name)) archFiles.push({ p: full })
         }
       }
       const dirStat = await statNoThrow(dir)
@@ -103,7 +110,7 @@ const inventoryLibrary = async (libraryPath, { concurrency = 24, excludeRe = nul
           m = st.mtimeMs
         }
         arch[af.p] = { m, s }
-        if (!isExcluded(af.p)) books.push({ filepath: af.p, type: archiveTypeOf(af.p) })
+        if (!isExcluded(af.p)) books.push({ filepath: af.p, type: typeOfFile(af.p) })
       }
     }
   })
@@ -209,12 +216,12 @@ const diffInventory = async (libraryPath, snap, { concurrency = 24, excludeRe = 
           if (st.isDirectory()) subdirs.push(full)
           else if (st.isFile()) {
             if (isImageName(entry.name)) hasImage = true
-            else if (archiveTypeOf(entry.name)) archNow.push({ p: full, m: st.mtimeMs, s: st.size })
+            else if (typeOfFile(entry.name)) archNow.push({ p: full, m: st.mtimeMs, s: st.size })
           }
         } catch (e) { /* broken symlink */ }
       } else if (entry.isFile()) {
         if (isImageName(entry.name)) hasImage = true
-        else if (archiveTypeOf(entry.name)) archNow.push({ p: full })
+        else if (typeOfFile(entry.name)) archNow.push({ p: full })
       }
     }
     const known = !!dirs0[p]
@@ -313,6 +320,9 @@ module.exports = {
   loadSnapshotFile,
   saveSnapshotFile,
   archiveTypeOf,
+  novelTypeOf,
+  typeOfFile,
+  NOVEL_EXTS,
   isImageName,
   IMAGE_EXTS
 }

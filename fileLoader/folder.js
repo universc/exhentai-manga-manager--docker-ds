@@ -95,7 +95,7 @@ const solveBookTypeFolder = async (folderpath, TEMP_PATH, COVER_PATH, coverName)
   const coverPath = coverName === undefined
     ? path.join(COVER_PATH, nanoid() + '.webp')
     : coverName
-      ? path.join(COVER_PATH, coverName)
+      ? (path.isAbsolute(coverName) ? coverName : path.join(COVER_PATH, coverName))
       : null
   const fileStat = await stat(folderpath)
   const bundleSize = await dirSize(folderpath)

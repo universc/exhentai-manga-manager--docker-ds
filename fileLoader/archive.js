@@ -63,7 +63,7 @@ const solveBookTypeArchive = async (filepath, TEMP_PATH, COVER_PATH, coverName) 
   coverPath = coverName === undefined
     ? path.join(COVER_PATH, nanoid() + '.webp')
     : coverName
-      ? path.join(COVER_PATH, coverName)
+      ? (path.isAbsolute(coverName) ? coverName : path.join(COVER_PATH, coverName))
       : null
 
   const fileStat = await fs.promises.stat(filepath)
