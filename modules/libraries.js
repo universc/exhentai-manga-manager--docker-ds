@@ -90,16 +90,13 @@ const ensureLibraries = (setting, options = {}) => {
 
   const raw = Array.isArray(setting.libraries) ? setting.libraries : []
   const list = []
-  const seen = new Set()
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue
     const p = String(item.path || '').trim()
     const pw = String(item.pathWeb || '').trim()
     // 只配了「这一端」路径的库同样保留(另一端的路径可以以后再补),两端都空才丢弃
     if (!p && !pw) continue
-    const key = normalizePathKey(p || pw)
-    if (seen.has(key)) continue
-    seen.add(key)
+    // 不再按路径去重:同一个文件夹可以建多个库(各自有库名与库数据目录,互不覆盖)
     list.push({
       id: String(item.id || '') || newLibraryId(),
       name: String(item.name || '').trim() || libraryNameFromPath(p || pw, list.length),

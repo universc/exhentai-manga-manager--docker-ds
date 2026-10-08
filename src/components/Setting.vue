@@ -2859,13 +2859,7 @@ const addLibrary = async () => {
   const picked = await ipcRenderer.invoke('select-folder', t('m.library'))
   if (!picked) return
   const p = String(picked)
-  const key = p.replace(/[\\/]+$/, '').toLowerCase()
-  const dup = libraries.value.find(l => String(l.path || '').replace(/[\\/]+$/, '').toLowerCase() === key)
-  if (dup) {
-    // 库其实还在列表里 —— 只是没进「库切换」框(或没生效),书架就看不到它。这里要说清楚,别让用户以为丢了
-    ElMessage.warning(t('m.libraryAlreadyExistsIn', { name: dup.name }))
-    return
-  }
+  // 同一个文件夹可以建多个库(用户要求):各自有独立库名与库数据目录,互不覆盖
   const n = libraries.value.length + 1
   const lib = { id: 'lib-' + Math.random().toString(16).slice(2, 12), name: t('m.libraryDefaultName') + n, path: p, dataPath: '' }
   setting.value.libraries = [...libraries.value, lib]
@@ -2875,10 +2869,7 @@ const addLibrary = async () => {
 // 删除一排(每排右侧的删除按钮):只从列表移除,不动磁盘文件与库数据目录;至少保留一个库
 const removeLibraryRow = async (lib) => {
   if (!lib) return
-  if (libraries.value.filter(l => l.path).length <= 1) {
-    ElMessage.warning(t('m.libraryKeepOne'))
-    return
-  }
+  // 不再限制「至少保留一个库」:可以全部删掉,书架就是空的(随时能再加回来)
   try {
     await ElMessageBox.confirm(t('m.libraryRemoveConfirm', { name: lib.name }), t('m.libraryRemove'), { type: 'warning' })
   } catch (e) { return }
