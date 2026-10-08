@@ -1870,7 +1870,7 @@ const AUTO_EXCLUDE_PATTERNS = [
   '(@eaDir)', '(#recycle)', '(\\$RECYCLE.BIN)', '(System Volume Information)', '(Thumbs.db)', '(.DS_Store)',
 ]
 // 正则元字符转义:数据目录路径里可能有 \\ ( ) 等字符
-const escapeRegExp = (str) => String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\const AUTO_EXCLUDE_PATTERNS = ['(.trash)', 'viewcache', '(database.sqlite)', '(metadata.sqlite)', '(setting.json)', '(scan-snapshot.json)', '(delete-log.jsonl)', '(.deleted-)']')
+const escapeRegExp = (str) => String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 // 编译排除规则正则:用户规则 + 自动规则(任一命中即排除)
 const compileExclude = () => {
   const user = _.isEmpty(setting.excludeFile) ? '' : String(setting.excludeFile)

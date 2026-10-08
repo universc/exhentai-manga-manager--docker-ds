@@ -26,6 +26,11 @@ const NOVEL_EXTS = ['.txt']
 const isImageName = (name) => IMAGE_EXTS.includes(path.extname(name).toLowerCase())
 const archiveTypeOf = (filepath) => ARCHIVE_TYPE[path.extname(filepath).toLowerCase()] || null
 const novelTypeOf = (filepath) => NOVEL_EXTS.includes(path.extname(filepath).toLowerCase()) ? 'novel' : null
+// 漫画夹带的小文件(说明/intro/广告/群号)不该被当成小说塞进书架:
+// 按文件名关键词过滤,名字正常的 txt(例如《302宿舍.txt》)一律保留。
+const NOVEL_JUNK_RE = /(^|[/\\])(info|log|readme|说明|簡介|简介|目录|廣告|广告|声明|公告|版权|下载说明|免责|招募|合购|合購|众筹|眾籌|资源来自|資源來自|解压密码|解壓密碼)[^/\\]*\.txt$/i
+const NOVEL_JUNK_TEXT_RE = /(https?:|www\.|ppacg|acg\.top|q群|QQ群|加群|防走失|收藏本站|最新地址|合购|合購|众筹|眾籌|资源来自|資源來自|解压密码|解壓密碼|招募|频道|頻道|\d{7,})/i
+const isJunkNovelName = (name) => NOVEL_JUNK_RE.test(name) || NOVEL_JUNK_TEXT_RE.test(name)
 // 统一:按扩展名判断这是哪一类"书"(压缩包 / epub / txt 小说)
 const typeOfFile = (filepath) => archiveTypeOf(filepath) || novelTypeOf(filepath)
 
@@ -110,7 +115,8 @@ const inventoryLibrary = async (libraryPath, { concurrency = 24, excludeRe = nul
           m = st.mtimeMs
         }
         arch[af.p] = { m, s }
-        if (!isExcluded(af.p)) books.push({ filepath: af.p, type: typeOfFile(af.p) })
+        const tType = typeOfFile(af.p)
+        if (!isExcluded(af.p) && !(tType === 'novel' && isJunkNovelName(af.p))) books.push({ filepath: af.p, type: tType })
       }
     }
   })
@@ -323,6 +329,7 @@ module.exports = {
   novelTypeOf,
   typeOfFile,
   NOVEL_EXTS,
+  isJunkNovelName,
   isImageName,
   IMAGE_EXTS
 }
