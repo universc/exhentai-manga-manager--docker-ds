@@ -162,6 +162,14 @@ const boxLibraries = (s = setting) => {
 }
 // 每个库一个 sequelize 实例:合并书架要同时读多个库数据库
 const mangaModels = new Map()
+// 丢掉某个库的数据库连接:库被删除、或库数据目录被换到别处时必须调用 ——
+// 否则旧实例一直指向老文件(读出来的是旧数据),Windows 下还会锁住文件让目录删不掉。
+const closeLibraryModel = (libraryId) => {
+  const model = mangaModels.get(libraryId)
+  if (!model) return
+  mangaModels.delete(libraryId)
+  try { model.sequelize.close() } catch (e) { /* 忽略:连接可能已断 */ }
+}
 const modelForLibrary = async (libraryId) => {
   const lib = (setting.libraries || []).find(l => l.id === libraryId)
   if (!lib || !isLibraryActive(lib)) return Manga
@@ -3250,6 +3258,18 @@ ipcMain.handle('apply-libraries', async (event, arg) => {
       if (shouldMoveLibraryData(prevLib, nextLib, prevDir, nextDir)) {
         const moved = migrateLibraryData(prevDir, nextDir)
         if (moved.moved.length) console.log(`[libraries] 库「${nextLib.name}」改名/改目录,已搬进新目录:${moved.moved.join('、')}`)
+        // 数据被搬到新目录了,旧连接还指着老文件 → 丢弃,后面按需重开
+        closeLibraryModel(nextLib.id)
+      }
+    }
+    // 已经不在列表里的库:把它的连接关掉,别让残留实例锁着文件
+    {
+      const nextIds = new Set(draft.libraries.map(l => l.id))
+      for (const id of [...mangaModels.keys()]) {
+        if (!nextIds.has(id)) {
+          console.log(`[libraries] 库已从列表移除,关闭其数据库连接: ${id}`)
+          closeLibraryModel(id)
+        }
       }
     }
     const prevDataDir = LIBRARY_DATA_DIR
@@ -3668,11 +3688,21 @@ if (!WEB_MODE) {
     console.log('[auth] 已恢复上次登录:', restored.username, '(' + restored.role + ')')
   }
 }
-const authStatus = () => ({
-  enabled: auth.isEnabled(),
-  role: currentAuth ? currentAuth.role : null,
-  username: currentAuth ? currentAuth.username : null
-})
+const authStatus = () => {
+  // 以「会话是否仍然有效」为准:改密码、删账户都会作废会话,
+  // 桌面版内存里的 currentAuth 也要跟着失效,否则界面还显示已登录。
+  if (currentAuth && currentAuth.token && !auth.getSession(currentAuth.token)) currentAuth = null
+  return {
+    enabled: auth.isEnabled(),
+    role: currentAuth ? currentAuth.role : null,
+    username: currentAuth ? currentAuth.username : null
+  }
+}
+// 账户管理类 IPC 的权限闸门:只有管理员能列/增/删账户、改密码
+// (网页版由 web-server 的 VIEWER_ALLOWED_CHANNELS 拦截,桌面版本地 IPC 原先没有任何校验)
+const requireAdmin = () => (!currentAuth || currentAuth.role !== 'admin')
+  ? { ok: false, error: '需要管理员权限(请用管理员账户登录)' }
+  : null
 // 同步通道:渲染进程必须在加载界面之前就知道"要不要弹登录框"
 ipcMain.on('auth-status', (event) => { event.returnValue = authStatus() })
 ipcMain.handle('auth-current', async () => authStatus())
@@ -3709,15 +3739,33 @@ ipcMain.handle('auth-logout', async () => {
   currentAuth = null
   return { ok: true }
 })
-ipcMain.handle('auth-list-users', async () => auth.listUsers())
+ipcMain.handle('auth-list-users', async () => {
+  const denied = requireAdmin()
+  return denied || auth.listUsers()
+})
 ipcMain.handle('auth-add-user', async (event, { username, password, role } = {}) => {
-  return auth.addUser(username, password, role)
+  const denied = requireAdmin()
+  return denied || auth.addUser(username, password, role)
 })
 ipcMain.handle('auth-remove-user', async (event, username) => {
-  return auth.removeUser(username)
+  const denied = requireAdmin()
+  if (denied) return denied
+  const res = auth.removeUser(username)
+  // 删掉的正是当前登录的账户 → 立刻退出登录状态
+  if (res.ok && currentAuth && currentAuth.username === username) {
+    currentAuth = null
+  }
+  return res
 })
 ipcMain.handle('auth-change-password', async (event, { username, newPassword } = {}) => {
-  return auth.changePassword(username, newPassword)
+  const denied = requireAdmin()
+  if (denied) return denied
+  const res = auth.changePassword(username, newPassword)
+  // 改的是自己的密码 → 会话已被作废,这里同步退出登录(让用户用新密码重新登录)
+  if (res.ok && currentAuth && currentAuth.username === username) {
+    currentAuth = null
+  }
+  return res
 })
 // 网页版专属:IP 访问控制(白名单免登录 / 黑名单拒绝连接)
 if (WEB_MODE) {

@@ -24,12 +24,19 @@ const hashPassword = (password, salt) => {
 const validPassword = (password) => String(password || '').length >= 4
 
 // 会话持久化:写/读 <数据目录>/sessions.json,容器重启后保持登录
+// 原子写:先写临时文件再改名。直接覆盖写一旦中途失败(断电/进程被杀),
+// users.json 会变成半截 JSON —— 下次启动解析失败就等于「所有账户都没了」。
+const writeFileAtomic = (file, text) => {
+  const tmp = file + '.' + process.pid + '.tmp'
+  fs.writeFileSync(tmp, text, 'utf-8')
+  fs.renameSync(tmp, file)
+}
 const persistSessions = () => {
   if (!sessionsFile) return
   try {
     const now = Date.now()
     const alive = [...sessions.entries()].filter(([, s]) => s.expires > now)
-    fs.writeFileSync(sessionsFile, JSON.stringify(Object.fromEntries(alive), null, 2), 'utf-8')
+    writeFileAtomic(sessionsFile, JSON.stringify(Object.fromEntries(alive), null, 2))
   } catch {}
 }
 const loadSessions = () => {
@@ -46,14 +53,18 @@ const loadSessions = () => {
 const loadUsers = (dataDir) => {
   usersFile = path.join(dataDir, 'users.json')
   sessionsFile = path.join(dataDir, 'sessions.json')
+  // 区分两种情况:① 文件根本不存在 = 首次启动 → 建默认管理员;
+  //              ② 文件存在但没有账户 = 用户主动删光了 → 不能偷偷重建一个弱密码 admin/admin。
+  let fileExists = true
   try {
     const parsed = JSON.parse(fs.readFileSync(usersFile, 'utf-8'))
     users = parsed.users || {}
   } catch {
+    fileExists = fs.existsSync(usersFile)
     users = {}
   }
   loadSessions()
-  if (Object.keys(users).length === 0) {
+  if (!fileExists) {
     // 默认账户:admin / admin(用户要求 Win 与 NAS 都自带一个默认账户)。
     // 环境变量 WEB_ADMIN_USER / WEB_ADMIN_PASSWORD 仍可覆盖,便于部署时指定。
     const adminUser = process.env.WEB_ADMIN_USER || 'admin'
@@ -69,7 +80,7 @@ const loadUsers = (dataDir) => {
 
 const persistUsers = () => {
   if (!usersFile) return
-  fs.writeFileSync(usersFile, JSON.stringify({ users }, null, '  '), 'utf-8')
+  writeFileAtomic(usersFile, JSON.stringify({ users }, null, '  '))
 }
 
 const addUser = (username, password, role = 'viewer') => {
@@ -92,7 +103,14 @@ const removeUser = (username) => {
     return { ok: false, error: '至少需要保留一个管理员账户' }
   }
   delete users[username]
+  // 该账户的所有会话一并作废,否则被删掉的人照样能用旧 token 继续访问
+  for (const [token, s] of [...sessions.entries()]) {
+    if (s && s.username === username) sessions.delete(token)
+  }
+  persistSessions()
   persistUsers()
+  // 删光账户后 authEnabled 必须跟着变,否则会锁死:仍要求登录却没有任何账户能登录
+  authEnabled = Object.keys(users).length > 0
   return { ok: true }
 }
 
@@ -101,6 +119,11 @@ const changePassword = (username, newPassword) => {
   if (!validPassword(newPassword)) return { ok: false, error: '密码至少 4 位' }
   users[username].salt = crypto.randomBytes(16).toString('hex')
   users[username].hash = hashPassword(newPassword, users[username].salt)
+  // 改密码后把该账户的旧会话全部作废(否则密码改了、旧 token 还能继续用)
+  for (const [token, s] of [...sessions.entries()]) {
+    if (s && s.username === username) sessions.delete(token)
+  }
+  persistSessions()
   persistUsers()
   return { ok: true }
 }
@@ -108,7 +131,10 @@ const changePassword = (username, newPassword) => {
 const verify = (username, password) => {
   const u = users[username]
   if (!u) return null
-  if (hashPassword(password, u.salt) !== u.hash) return null
+  const got = Buffer.from(hashPassword(password, u.salt), 'hex')
+  const want = Buffer.from(String(u.hash || ''), 'hex')
+  // 常量时间比较(长度不同直接判否,避免抛异常)
+  if (got.length !== want.length || !crypto.timingSafeEqual(got, want)) return null
   return { username, role: u.role }
 }
 
@@ -123,10 +149,23 @@ const getSession = (token) => {
   if (!token) return null
   const s = sessions.get(token)
   if (!s) return null
-  if (Date.now() > s.expires) {
+  // 账户被删掉的会话立即失效(否则旧 token 还能继续用)
+  if (!s.username || !users[s.username]) {
     sessions.delete(token)
     persistSessions()
     return null
+  }
+  const now = Date.now()
+  if (now > s.expires) {
+    sessions.delete(token)
+    persistSessions()
+    return null
+  }
+  // 滑动续期:用掉一半有效期就把服务端过期时间也续满,
+  // 否则 cookie 一直在续期、服务端却会在一年后突然失效(用户莫名掉登录)
+  if (s.expires - now < TOKEN_TTL / 2) {
+    s.expires = now + TOKEN_TTL
+    persistSessions()
   }
   return s
 }

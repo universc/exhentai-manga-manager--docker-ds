@@ -24,15 +24,8 @@
             <div class="setting-line toolbar-tip">{{$t('m.dataPathHint')}}</div>
           </el-col>
         </el-row>
-        <!-- 应用名称 / 漫画库 / 图片查看器 / 主题(远程模式的服务器设置已移到「账户」页) -->
+        <!-- 漫画库 / 图片查看器 / 主题(应用名称已移到「高级 → 自定义主题」;远程模式的服务器设置已移到「账户」页) -->
         <el-row :gutter="8">
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input v-model="setting.appName" :placeholder="$t('m.appNamePlaceholder')" @change="handleAppNameChange">
-                <template #prepend><span class="setting-label">{{$t('m.appNameSetting')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
           <el-col :span="24">
             <!-- 一排 = 一个漫画库:库名(就是「库文件夹」这几个字,可改名)+ 库文件夹(只读,不能输入/清空)+ 库数据存放位置 -->
             <div v-for="lib in libraries" :key="lib.id" class="setting-line library-row">
@@ -1025,6 +1018,13 @@
                   <el-input v-model="setting.customIconPath" size="small" :placeholder="$t('m.customIconPlaceholder')" @change="handleCustomIconChange" />
                   <el-button size="small" @click="selectCustomImage('icon')">{{$t('m.select')}}</el-button>
                   <el-button v-if="setting.customIconPath" size="small" text type="danger" @click="clearCustomImage('icon')">{{$t('m.clear')}}</el-button>
+                </div>
+              </div>
+              <!-- 应用名称(浏览器标签页 / 窗口标题显示的名字):原来在「常用」,按用户要求移到这里 -->
+              <div class="theme-row theme-row-wide">
+                <span class="theme-label">{{$t('m.appNameSetting')}}</span>
+                <div class="theme-value">
+                  <el-input v-model="setting.appName" size="small" :placeholder="$t('m.appNamePlaceholder')" @change="handleAppNameChange" />
                 </div>
               </div>
             </div>
