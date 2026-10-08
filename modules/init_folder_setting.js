@@ -178,6 +178,10 @@ const prepareSetting = () => {
   let setting
   try {
     setting = JSON.parse(fs.readFileSync(resolveSettingReadPath(), { encoding: 'utf-8' }))
+    // 新版本新增的设置项:老设置文件里没有这些键,补上默认值,
+    // 否则设置界面里对应输入框是空白的(功能本身会用默认值跑)
+    if (setting.scanConcurrency === undefined) setting.scanConcurrency = 4
+    if (setting.coverConcurrency === undefined) setting.coverConcurrency = 4
     if (setting.imageExplorer === '"C:\\Windows\\explorer.exe"') {
       setting.imageExplorer = _mange_reader
       fs.writeFileSync(getSettingFilePath(), JSON.stringify((() => { const o = { ...setting }; for (const k of LIBRARY_CONFIG_KEYS) delete o[k]; return o })(), null, '  '), { encoding: 'utf-8' })
