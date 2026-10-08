@@ -2784,7 +2784,12 @@ const applyLibrariesResponse = (res) => {
       path: web ? (webPath || deskPath) : deskPath,
       dataPath: web ? (webData || deskData) : deskData,
       pathOther: web ? deskPath : webPath,
-      dataPathOther: web ? deskData : webData
+      dataPathOther: web ? deskData : webData,
+      // ⚠️ 必须把后端字段一起留在内存里:前端为了「不覆盖另一端」把它们转成了 pathOther,
+      //    结果任何一次 save-setting(例如 App.vue 启动时的自动保存)都会把 pathWeb 抹掉,
+      //    跨端路径翻译(封面/阅读)随之失效 —— 表现就是封面不加载、阅读一直转圈。
+      pathWeb: webPath,
+      dataPathWeb: webData
     }
   })
   const validIds = new Set(valid.map(l => l.id))
@@ -2822,7 +2827,7 @@ const applyLibraries = async () => {
       .map(l => (web
         // 网页端:界面上的 path/dataPath 是容器路径 → 写进 pathWeb/dataPathWeb,桌面那组原样带回
         ? { id: l.id, name: l.name, path: l.pathOther || '', dataPath: l.dataPathOther || '', pathWeb: l.path, dataPathWeb: l.dataPath || '' }
-        : { id: l.id, name: l.name, path: l.path, dataPath: l.dataPath || '', pathWeb: l.pathOther || '', dataPathWeb: l.dataPathOther || '' }))
+        : { id: l.id, name: l.name, path: l.path, dataPath: l.dataPath || '', pathWeb: l.pathWeb || l.pathOther || '', dataPathWeb: l.dataPathWeb || l.dataPathOther || '' }))
     const activeId = payload.some(l => l.id === activeLibraryId.value) ? activeLibraryId.value : (payload[0] ? payload[0].id : '')
     const res = await ipcRenderer.invoke('apply-libraries', {
       libraries: JSON.parse(JSON.stringify(payload)),

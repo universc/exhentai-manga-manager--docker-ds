@@ -107,29 +107,16 @@ const ensureLibraries = (setting, options = {}) => {
       dataPath: typeof item.dataPath === 'string' ? item.dataPath : '',
       // 双环境路径:同一份 setting.json 可能被桌面版与网页版共用,
       // path/dataPath 是桌面(Windows)那组,pathWeb/dataPathWeb 是容器那组
-      pathWeb: typeof item.pathWeb === 'string' ? item.pathWeb : '',
-      dataPathWeb: typeof item.dataPathWeb === 'string' ? item.dataPathWeb : ''
+      // 兼容历史字段名 pathOther / dataPathOther(早期前端用的名字):
+      // 不兼容的话,旧配置升级后「另一端」的路径会直接丢失,跨端翻译失效。
+      pathWeb: (typeof item.pathWeb === 'string' && item.pathWeb)
+        ? item.pathWeb
+        : (typeof item.pathOther === 'string' ? item.pathOther : ''),
+      dataPathWeb: (typeof item.dataPathWeb === 'string' && item.dataPathWeb)
+        ? item.dataPathWeb
+        : (typeof item.dataPathOther === 'string' ? item.dataPathOther : '')
     })
   }
-
-  // ── 按「库名」归并 ─────────────────────────────────────────────────────
-  // setting.<账户>.json 会被 Win 与 NAS 共用:两端各自添加过「同名库」时,
-  // 它们其实是同一个库(数据目录按库名生成),必须合并成一条 ——
-  // 各自保留自己那一端的路径(path / pathWeb),书架里也只出现一个「漫画」。
-  const byName = new Map()
-  const mergedList = []
-  for (const lib of list) {
-    const key = String(lib.name || '').toLowerCase()
-    const kept = byName.get(key)
-    if (!kept) { byName.set(key, lib); mergedList.push(lib); continue }
-    // 后面这条与前面同名:非空的那一组路径补给前面那条(各端保留自己的路径)
-    if (!kept.path && lib.path) kept.path = lib.path
-    if (!kept.pathWeb && lib.pathWeb) kept.pathWeb = lib.pathWeb
-    if (!kept.dataPath && lib.dataPath) kept.dataPath = lib.dataPath
-    if (!kept.dataPathWeb && lib.dataPathWeb) kept.dataPathWeb = lib.dataPathWeb
-  }
-  list.length = 0
-  list.push(...mergedList)
 
   const state = { migrated: false, changed: false, active: null }
 
