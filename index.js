@@ -3700,9 +3700,15 @@ const authStatus = () => {
 }
 // 账户管理类 IPC 的权限闸门:只有管理员能列/增/删账户、改密码
 // (网页版由 web-server 的 VIEWER_ALLOWED_CHANNELS 拦截,桌面版本地 IPC 原先没有任何校验)
-const requireAdmin = () => (!currentAuth || currentAuth.role !== 'admin')
-  ? { ok: false, error: '需要管理员权限(请用管理员账户登录)' }
-  : null
+const requireAdmin = () => {
+  // 网页版(Docker)的登录走 web-server 的 HTTP 层,不经过这里的 auth-login,
+  // 所以 currentAuth 在网页版永远是空的 —— 不能拿它做判断,否则管理员自己也会被拒。
+  // 网页版的角色校验由 web-server 的 /api/ipc 完成(auth-* 通道不在 viewer 白名单里)。
+  if (WEB_MODE) return null
+  return (!currentAuth || currentAuth.role !== 'admin')
+    ? { ok: false, error: '需要管理员权限(请用管理员账户登录)' }
+    : null
+}
 // 同步通道:渲染进程必须在加载界面之前就知道"要不要弹登录框"
 ipcMain.on('auth-status', (event) => { event.returnValue = authStatus() })
 ipcMain.handle('auth-current', async () => authStatus())
