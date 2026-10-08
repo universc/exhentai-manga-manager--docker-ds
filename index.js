@@ -21,6 +21,7 @@ const { prepareMangaModel, prepareMetadataModel } = require('./modules/database'
 const { translateBookTitle, translateTitle, listTitleTranslationModels, queryCharacterOrigins, analyzeTitleCharacters, extractBookInfo, extractImageText, extractImageTextWithUrl } = require('./modules/translate')
 const { prepareTemplate } = require('./modules/prepare_menu.js')
 const { getBookFilelist, geneCover, getImageListByBook, deleteImageFromBook } = require('./fileLoader/index.js')
+const { decodeTextBuffer, getEpubText } = require('./fileLoader/novel.js')
 const {
   STORE_PATH, isPortable,
   TEMP_PATH, VIEWER_PATH,
@@ -3004,6 +3005,31 @@ ipcMain.handle('request-thumbnails', async (event, bookId) => {
 })
 
 // viewer
+// 取小说正文(txt / 纯文字 epub 的「文字模式」阅读用)
+// 有图的内容依然走 load-manga-image-list,这里只负责纯文字
+ipcMain.handle('load-novel-content', async (event, book) => {
+  try {
+    const filepath = translateBookPath(book && book.filepath, 'filepath')
+    if (!filepath) return { ok: false, error: '没有文件路径' }
+    let text = ''
+    let chapters = []
+    if (book.type === 'novel') {
+      const buf = await fs.promises.readFile(filepath)
+      text = decodeTextBuffer(buf)
+    } else if (book.type === 'epub') {
+      text = await getEpubText(filepath)
+    } else {
+      return { ok: false, error: '这本书不是文字类型' }
+    }
+    // 统一换行,并按「空行分段」切成段落,前端渲染更省事
+    text = String(text || '').replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+    const charCount = text.replace(/\s/g, '').length
+    return { ok: true, text, charCount }
+  } catch (e) {
+    console.error('读取小说失败:', e)
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
 ipcMain.handle('load-manga-image-list', async (event, book) => {
   // 后台清理(不 await):清掉上一本书遗留的临时文件,同时不拖慢本次打开
   cleanupViewerTemp()
@@ -3011,6 +3037,12 @@ ipcMain.handle('load-manga-image-list', async (event, book) => {
 
   const { filepath, type, id: bookId } = book
   const list = await getImageListByBook(filepath, type)
+  // 纯文字内容(txt / 没有图片的 epub):没有"图片页"可读,
+  // 直接告诉前端「走文字模式」,不要让它空等一串永远不会来的图片消息。
+  if (!list.length && (type === 'epub' || type === 'novel')) {
+    sendImageLock = false
+    return { ok: true, textOnly: true, total: 0 }
+  }
 
   const token = ++viewerToken
   sendImageLock = true

@@ -105,7 +105,7 @@ const throttleFail = (username) => {
 
 // 只读账户(viewer)允许的 IPC 通道:浏览/阅读/搜索类;写操作一律 403
 const VIEWER_ALLOWED_CHANNELS = new Set([
-  'load-setting', 'load-book-list', 'get-folder-tree', 'load-collection-list', 'load-manga-image-list',
+  'load-setting', 'load-book-list', 'get-folder-tree', 'load-collection-list', 'load-manga-image-list', 'load-novel-content',
   'open-url', 'show-file', 'open-local-book', 'get-default-manga-reader',
   'get-locale', 'get-path-sep', 'copy-text-to-clipboard', 'copy-image-to-clipboard', 'image-file-info',
   'read-text-from-clipboard', 'update-window-title', 'switch-fullscreen',

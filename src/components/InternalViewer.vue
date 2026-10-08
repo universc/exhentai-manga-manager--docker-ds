@@ -47,8 +47,14 @@
         @mousemove="handleViewerMouseMove"
         @mouseleave="nextMangaButtonsVisible = false"
       >
-        <div class="drawer-image-content"
-          v-if="!showThumbnail"
+                  <!-- 文字模式:txt / 没有图片的 epub -->
+          <div class="drawer-novel-content" v-if="!showThumbnail && isNovelMode">
+            <div class="novel-body" :style="novelStyle">
+              <p v-for="(para, i) in novelParas" :key="i" class="novel-para">{{ para }}</p>
+            </div>
+          </div>
+<div class="drawer-image-content"
+          v-if="!showThumbnail && !isNovelMode"
           @click="handleViewerAreaClick"
         >
           <!-- ① 卷轴 + 左右 / 右左:整排横向排列,横向连续滚动(单双不区分;右左时整排反向) -->
@@ -226,7 +232,14 @@
         >
           <!-- 顺序 / 显隐完全由「设置 → 内置阅读器 → 设置栏按钮」决定 -->
           <template v-for="id in viewerToolbarList" :key="id">
-            <span class="viewer-toolbar-divider" v-if="viewerToolbarDividerBefore(id)"></span>
+            <!-- 文字模式才有的字号 / 行距调节 -->
+          <span v-if="isNovelMode && id === viewerToolbarList[0]" class="viewer-toolbar-group">
+            <el-button class="viewer-toolbar-btn" size="small" :icon="ZoomOut" :title="$t('m.novelFontSmaller')" @click="adjustNovelFont(-1)"></el-button>
+            <span class="viewer-toolbar-value">{{ novelFontSize }}</span>
+            <el-button class="viewer-toolbar-btn" size="small" :icon="ZoomIn" :title="$t('m.novelFontLarger')" @click="adjustNovelFont(1)"></el-button>
+            <el-button class="viewer-toolbar-btn" size="small" :title="$t('m.novelLineHeight')" @click="adjustNovelLine(0.1)">{{ $t('m.novelLineHeightShort') }}</el-button>
+          </span>
+          <span class="viewer-toolbar-divider" v-if="viewerToolbarDividerBefore(id)"></span>
             <!-- 放大 / 缩小是一个整体(设置里也是一项) -->
             <span v-if="id === 'zoom'" class="viewer-toolbar-group">
               <el-button class="viewer-toolbar-btn" size="small" :icon="ZoomOut" :title="$t('m.zoomOut')" @click="zoomViewerImage(-1)"></el-button>
@@ -759,6 +772,28 @@ const currentImageId = ref('')
 const insertEmptyPage = ref(true)
 const insertEmptyPageIndex = ref(0)
 const viewerImageList = ref([])
+// ── 文字模式(txt 小说 / 没有图片的 epub):有图的内容仍走上面的图片阅读器 ──
+const isNovelMode = ref(false)
+const novelText = ref('')
+const novelFontSize = ref(Number(localStorage.getItem('emm-novel-font-size')) || 19)
+const novelLineHeight = ref(Number(localStorage.getItem('emm-novel-line-height')) || 1.9)
+const novelParas = computed(() => String(novelText.value || '').split(/\n+/).map(t => t.trim()).filter(Boolean))
+const novelStyle = computed(() => ({ '--novel-font-size': novelFontSize.value + 'px', '--novel-line-height': String(novelLineHeight.value) }))
+const adjustNovelFont = (d) => {
+  novelFontSize.value = Math.min(34, Math.max(13, novelFontSize.value + d))
+  localStorage.setItem('emm-novel-font-size', String(novelFontSize.value))
+}
+const adjustNovelLine = (d) => {
+  novelLineHeight.value = Math.min(3, Math.max(1.2, Number((novelLineHeight.value + d).toFixed(1))))
+  localStorage.setItem('emm-novel-line-height', String(novelLineHeight.value))
+}
+const loadNovelText = async (book) => {
+  try {
+    const res = await ipcRenderer.invoke('load-novel-content', _.cloneDeep(book))
+    if (res && res.ok) { novelText.value = res.text || ''; isNovelMode.value = true }
+    else { novelText.value = ''; isNovelMode.value = false; if (res) console.log('读取小说失败:', res.error) }
+  } catch (e) { console.log(e); isNovelMode.value = false }
+}
 const viewerImageListDouble = computed(() => {
   // 双页模式,以及「卷轴 + 并排两页」都走这套配对(横图独占一行,竖图两两一行)
   if (imageStyleType.value === 'double' || (imageStyleType.value === 'scroll' && scrollDoubleMode.value)) {
@@ -903,6 +938,9 @@ const viewManga = (book, viewerHeight = '100%') => {
   readyDestroyViewer.value = false
   // 通知主进程正在阅读:后台扫描暂停,让出 CPU/磁盘
   ipcRenderer.invoke('set-viewer-active', true)
+  // 换书先清掉上一本的文字状态(有图的书会走图片模式)
+  isNovelMode.value = false
+  novelText.value = ''
   // 心跳:浏览器被强关时前端来不及发 false,主进程靠「3 分钟没心跳」自动放开后台任务
   if (viewerHeartbeat) clearInterval(viewerHeartbeat)
   viewerHeartbeat = setInterval(() => { ipcRenderer.invoke('set-viewer-active', true) }, 60000)
@@ -928,7 +966,16 @@ const viewManga = (book, viewerHeight = '100%') => {
   emit('updateWindowTitle', book)
   insertLocalReadRecord(book.id)
   ipcRenderer.invoke('load-manga-image-list', _.cloneDeep(book))
-  .then(() => {
+  .then((res) => {
+    // 纯文字书:后端直接说"没有图片页" → 切文字模式,不再等永远不会来的图片消息
+    if (res && res.textOnly) {
+      viewerLoading.close()
+      drawerVisibleViewer.value = true
+      loadNovelText(book)
+      book.readCount += 1
+      saveBook(book)
+      return
+    }
     // 只有确实要看缩略图(侧栏开着 / 缩略图视图)时才请求生成,否则一个缩略图都不算
     if (showViewerSide.value || showThumbnail.value) requestThumbnails()
     if (!setting.value.viewerType || setting.value.viewerType === 'original') {
@@ -2043,6 +2090,30 @@ defineExpose({
 .viewer-drawer-modal
   background-color: var(--el-mask-color-extra-light)
 
+// ── 文字模式(txt / 纯文字 epub):跟随主题配色,字号行距可当场调 ──
+.drawer-novel-content
+  width: 100%
+  height: 100%
+  overflow-y: auto
+  overflow-x: hidden
+  background: var(--el-bg-color, #fff)
+  color: var(--el-text-color-primary, #303133)
+  -webkit-overflow-scrolling: touch
+.novel-body
+  max-width: 820px
+  margin: 0 auto
+  padding: 56px 32px 140px
+  font-size: var(--novel-font-size, 19px)
+  line-height: var(--novel-line-height, 1.9)
+  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', serif
+  letter-spacing: .02em
+.novel-para
+  margin: 0 0 .9em
+  text-indent: 2em
+  white-space: pre-wrap
+  overflow-wrap: break-word
+  word-break: break-word
+  text-align: justify
 .viewer-container
   display: flex
   width: 100%

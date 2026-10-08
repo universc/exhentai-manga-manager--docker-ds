@@ -169,7 +169,12 @@ const getImageListFromEpub = async (filepath, VIEWER_PATH) => {
   for (const name of images) {
     // maintainEntryPath=true → 会按包内目录结构解压,所以返回路径也要按同样结构拼
     zip.extractEntryTo(name, folder, true, true)
-    out.push(path.join(folder, ...String(name).split('/')))
+    // 必须与 folder/zip/archive 的返回结构一致:{ relativePath, absolutePath }
+    // (阅读器按 item.absolutePath 取图,返回纯字符串会让它崩)
+    out.push({
+      relativePath: String(name).split('/').pop(),
+      absolutePath: path.join(folder, ...String(name).split('/'))
+    })
   }
   return out
 }

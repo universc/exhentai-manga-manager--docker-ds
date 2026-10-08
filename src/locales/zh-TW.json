@@ -696,7 +696,11 @@
     "scanConcurrency": "掃描並行數",
     "scanConcurrencyHint": "同時處理幾本書(1-16,預設 4)。NAS 或機械碟建議 2-4;SSD/效能好可以調高。調太高會拖慢裝置、也會影響閱讀。",
     "coverConcurrency": "封面生成並行數",
-    "coverConcurrencyHint": "同時生成幾張封面(1-16,預設 4)。調高封面出得更快,但更吃磁碟/CPU;它在背景慢慢跑,不影響閱讀。"
+    "coverConcurrencyHint": "同時生成幾張封面(1-16,預設 4)。調高封面出得更快,但更吃磁碟/CPU;它在背景慢慢跑,不影響閱讀。",
+    "novelFontSmaller": "字號變小",
+    "novelFontLarger": "字號變大",
+    "novelLineHeight": "行距變寬",
+    "novelLineHeightShort": "行距"
   },
   "cm": {
     "title": "標題右鍵/長按選單",
