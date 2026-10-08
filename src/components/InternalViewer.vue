@@ -233,6 +233,12 @@
           <!-- 顺序 / 显隐完全由「设置 → 内置阅读器 → 设置栏按钮」决定 -->
           <template v-for="id in viewerToolbarList" :key="id">
             <!-- 文字模式才有的字号 / 行距调节 -->
+          <!-- 图文 epub:图片 / 文字 来回切 -->
+          <span v-if="hasImagePages && novelText" class="viewer-toolbar-group">
+            <el-button class="viewer-toolbar-btn" size="small" :title="$t('m.switchTextImage')" @click="toggleNovelMode">
+              {{ isNovelMode ? $t('m.showImages') : $t('m.showText') }}
+            </el-button>
+          </span>
           <span v-if="isNovelMode && id === viewerToolbarList[0]" class="viewer-toolbar-group">
             <el-button class="viewer-toolbar-btn" size="small" :icon="ZoomOut" :title="$t('m.novelFontSmaller')" @click="adjustNovelFont(-1)"></el-button>
             <span class="viewer-toolbar-value">{{ novelFontSize }}</span>
@@ -775,6 +781,12 @@ const viewerImageList = ref([])
 // ── 文字模式(txt 小说 / 没有图片的 epub):有图的内容仍走上面的图片阅读器 ──
 const isNovelMode = ref(false)
 const novelText = ref('')
+// 这本书既图片页又有正文(图文 epub):给一个「看图 / 看文字」切换
+const hasImagePages = ref(false)
+const toggleNovelMode = () => {
+  isNovelMode.value = !isNovelMode.value
+  if (isNovelMode.value && !novelText.value && bookDetail.value) loadNovelText(bookDetail.value)
+}
 const novelFontSize = ref(Number(localStorage.getItem('emm-novel-font-size')) || 19)
 const novelLineHeight = ref(Number(localStorage.getItem('emm-novel-line-height')) || 1.9)
 const novelParas = computed(() => String(novelText.value || '').split(/\n+/).map(t => t.trim()).filter(Boolean))
@@ -968,6 +980,15 @@ const viewManga = (book, viewerHeight = '100%') => {
   ipcRenderer.invoke('load-manga-image-list', _.cloneDeep(book))
   .then((res) => {
     // 纯文字书:后端直接说"没有图片页" → 切文字模式,不再等永远不会来的图片消息
+    hasImagePages.value = !!(!res || !res.textOnly)
+    // 图文 epub:并行取正文;正文够长(>800 字)就默认显示文字,用户可随时切回看图
+    if (book && book.type === 'epub' && res && !res.textOnly) {
+      loadNovelText(book).then(() => {
+        const plain = String(novelText.value || '').replace(/\s/g, '')
+        if (plain.length > 800) isNovelMode.value = true
+        else isNovelMode.value = false
+      })
+    }
     if (res && res.textOnly) {
       viewerLoading.close()
       drawerVisibleViewer.value = true

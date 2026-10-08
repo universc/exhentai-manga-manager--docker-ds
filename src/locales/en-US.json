@@ -700,7 +700,10 @@
     "novelFontSmaller": "Smaller font",
     "novelFontLarger": "Larger font",
     "novelLineHeight": "Wider line spacing",
-    "novelLineHeightShort": "Spacing"
+    "novelLineHeightShort": "Spacing",
+    "switchTextImage": "Switch text/images",
+    "showImages": "Images",
+    "showText": "Text"
   },
   "cm": {
     "title": "Title menu (right-click / long-press)",

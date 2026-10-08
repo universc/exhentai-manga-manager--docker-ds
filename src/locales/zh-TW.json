@@ -700,7 +700,10 @@
     "novelFontSmaller": "字號變小",
     "novelFontLarger": "字號變大",
     "novelLineHeight": "行距變寬",
-    "novelLineHeightShort": "行距"
+    "novelLineHeightShort": "行距",
+    "switchTextImage": "切換文字/圖片",
+    "showImages": "看圖片",
+    "showText": "看文字"
   },
   "cm": {
     "title": "標題右鍵/長按選單",

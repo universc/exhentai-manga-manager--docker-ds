@@ -1862,11 +1862,22 @@ ipcMain.handle('set-viewer-active', (event, active) => {
 
 // 自动排除规则:这些是「软件自己的数据」,绝不能被当成漫画扫描进来
 // (设置 → 高级 → 排除文件 下方会用灰字列出来,让用户知道它们始终生效)
-const AUTO_EXCLUDE_PATTERNS = ['(.trash)', 'viewcache', '(database.sqlite)', '(metadata.sqlite)', '(setting.json)', '(scan-snapshot.json)', '(delete-log.jsonl)', '(.deleted-)']
+const AUTO_EXCLUDE_PATTERNS = [
+  // 库自身产生的目录/文件:绝不能被当成漫画扫描进来
+  '(.trash)', 'viewcache', 'cover', 'viewer', 'libraries', 'models', 'tmp',
+  '(database.sqlite)', '(metadata.sqlite)', '(setting.json)', '(scan-snapshot.json)', '(delete-log.jsonl)', '(.deleted-)',
+  // 系统/网盘常见的缩略图与回收站目录
+  '(@eaDir)', '(#recycle)', '(\\$RECYCLE.BIN)', '(System Volume Information)', '(Thumbs.db)', '(.DS_Store)',
+]
+// 正则元字符转义:数据目录路径里可能有 \\ ( ) 等字符
+const escapeRegExp = (str) => String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\const AUTO_EXCLUDE_PATTERNS = ['(.trash)', 'viewcache', '(database.sqlite)', '(metadata.sqlite)', '(setting.json)', '(scan-snapshot.json)', '(delete-log.jsonl)', '(.deleted-)']')
 // 编译排除规则正则:用户规则 + 自动规则(任一命中即排除)
 const compileExclude = () => {
   const user = _.isEmpty(setting.excludeFile) ? '' : String(setting.excludeFile)
-  const all = (user ? [user] : []).concat(AUTO_EXCLUDE_PATTERNS)
+  // 数据目录本身必须排除:漫画库常常把数据目录放在自己内部(例如 /library/S/数据存放),
+  // 里面的 cover / viewer / tmp / models / 数据库 全都不该出现在书架里。
+  const store = STORE_PATH ? escapeRegExp(STORE_PATH) : ''
+  const all = (user ? [user] : []).concat(store ? [store] : []).concat(AUTO_EXCLUDE_PATTERNS)
   try {
     return new RegExp('(' + all.join(')|(') + ')')
   } catch (e) {
