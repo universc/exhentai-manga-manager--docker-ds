@@ -408,9 +408,16 @@ const applyCoverStyle = (setting) => {
   //   --emm-cover-height: 经典布局的封面图高度 = 卡片高度 - 标题等固定区域(约 84px)
   const widthCustom = Number(s.coverWidth) > 0 && Number(s.coverWidth) !== 220
   const heightCustom = Number(s.coverHeight) > 0 && Number(s.coverHeight) !== 360
-  root.style.setProperty('--emm-card-width', widthCustom ? size + 'px' : '')
-  root.style.setProperty('--emm-card-height', heightCustom ? height + 'px' : '')
-  root.style.setProperty('--emm-cover-height', heightCustom ? Math.max(60, height - 84) + 'px' : '')
+  // ⚠️ 不能写空字符串:CSS 里「变量已定义但值为空」会让 var(--x, fallback) 整体失效
+  //    (不是回退到 fallback,而是整条声明作废)。表现就是封面高度塌成 0、
+  //    没生成封面的卡片被压扁。必须 removeProperty 才是真正的"没设置"。
+  const setOrRemove = (name, value) => {
+    if (value) root.style.setProperty(name, value)
+    else root.style.removeProperty(name)
+  }
+  setOrRemove('--emm-card-width', widthCustom ? size + 'px' : '')
+  setOrRemove('--emm-card-height', heightCustom ? height + 'px' : '')
+  setOrRemove('--emm-cover-height', heightCustom ? Math.max(60, height - 84) + 'px' : '')
   root.style.setProperty('--emm-card-gap-v', gapV + 'px')
   root.style.setProperty('--emm-card-gap-h', gapH + 'px')
   // 兼容旧引用

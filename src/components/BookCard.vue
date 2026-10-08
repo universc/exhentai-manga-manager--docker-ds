@@ -458,6 +458,9 @@ const onMangaTitleContextMenu = (e, book) => {
   position: relative
   width: calc(var(--emm-cover-size, 220px) - 20px)
   margin: 0 auto
+  // 兜底:无论封面有没有生成/加载成功,封面区都占住固定高度,
+  // 避免"没封面的卡片被压扁"这种形状不一致
+  height: var(--emm-cover-height, calc((var(--emm-cover-size, 220px) - 20px) * 1.415))
   .book-card-language
     left: 0
     top: 0
