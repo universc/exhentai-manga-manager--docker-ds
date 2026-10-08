@@ -6,8 +6,21 @@ const { Sequelize, DataTypes } = require('sequelize')
 //     PERSIST 提交后**不删除** journal,只把文件头写回 → 不再反复增删文件(该设置持久化在数据库里,设一次就行)。
 //   · synchronous=NORMAL:少一次 fsync,网络盘上收益很大。
 //   · busy_timeout:网络盘偶发锁等待时不要立刻抛 SQLITE_BUSY。
+// ⚠️ 同一个数据库文件只调一次 PRAGMA:
+//    journal_mode 切换需要独占锁;以前每建一个模型(库模型 / 全局模型 / 元数据模型)
+//    都异步跑一次,多个连接同时切换日志模式会让 SQLite 报
+//    SQLITE_IOERR: disk I/O error,并连锁成
+//    「Transaction cannot be rolled back because it has been finished with state: commit」。
+const tunedSqliteFiles = new Set()
+const pragmaChain = { p: Promise.resolve() }
 const applySqliteTuning = (sequelize) => {
-  ;(async () => {
+  const file = (sequelize && sequelize.options && sequelize.options.storage) || ''
+  if (file) {
+    if (tunedSqliteFiles.has(file)) return sequelize
+    tunedSqliteFiles.add(file)
+  }
+  // 串行执行:不同文件的 PRAGMA 也不并发,避免互相抢锁
+  pragmaChain.p = pragmaChain.p.then(async () => {
     try {
       await sequelize.query('PRAGMA journal_mode = PERSIST')
       await sequelize.query('PRAGMA synchronous = NORMAL')
@@ -15,7 +28,7 @@ const applySqliteTuning = (sequelize) => {
     } catch (e) {
       console.log('[sqlite] pragma 设置失败(不影响使用):', String((e && e.message) || e))
     }
-  })()
+  }).catch(() => {})
   return sequelize
 }
 

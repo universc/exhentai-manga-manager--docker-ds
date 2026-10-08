@@ -205,8 +205,16 @@ const modelForLibrary = async (libraryId) => {
   const cached = mangaModels.get(lib.id)
   if (cached) return cached
   const paths = libraryRuntimePaths(STORE_PATH, lib)
+  // ⚠️ 先按「文件路径」找:同一个数据库文件(例如库数据目录就是数据目录时)
+  //    必须复用同一个 sequelize 实例,否则两个连接会互相锁死(SQLITE_IOERR)。
+  const byFile = mangaModelsByFile.get(paths.dbFile)
+  if (byFile) {
+    mangaModels.set(lib.id, byFile)
+    return byFile
+  }
   const model = prepareMangaModel(paths.dbFile)
   await ensureMangaSchema(model)
+  mangaModelsByFile.set(paths.dbFile, model)
   mangaModels.set(lib.id, model)
   return model
 }
@@ -248,7 +256,12 @@ let LIBRARY_DB_FILE = startupLibraryPaths.dbFile
 
 let collectionList = prepareCollectionList()
 
+// 按「数据库文件路径」复用同一个 sequelize 实例:
+// 同一个 .sqlite 被两个连接打开时,Windows 上会直接报
+// SQLITE_IOERR: disk I/O error(进而连锁成 Transaction cannot be rolled back)。
+const mangaModelsByFile = new Map()
 let Manga = prepareMangaModel(LIBRARY_DB_FILE)
+mangaModelsByFile.set(LIBRARY_DB_FILE, Manga)
 let metadataSqliteFile
 if (setting.metadataPath) {
   metadataSqliteFile = path.join(setting.metadataPath, './metadata.sqlite')
@@ -256,6 +269,18 @@ if (setting.metadataPath) {
   metadataSqliteFile = path.join(STORE_PATH, './metadata.sqlite')
 }
 let Metadata = prepareMetadataModel(metadataSqliteFile)
+// 重建 Metadata 模型:必须先关掉旧连接 —— 同一个 metadata.sqlite 被两个连接打开,
+// SQLite 会报 SQLITE_IOERR: disk I/O error,并连锁成
+// "Transaction cannot be rolled back because it has been finished with state: commit"。
+const rebuildMetadataModel = (file) => {
+  const prev = Metadata
+  metadataSqliteFile = file
+  Metadata = prepareMetadataModel(file)
+  if (prev && prev !== Metadata) {
+    try { prev.sequelize.close() } catch (e) { /* 已关就忽略 */ }
+  }
+  return Metadata
+}
 const getColumns = async (sequelize, tableName) => {
   const query = `PRAGMA table_info(${tableName})`
   const [results] = await sequelize.query(query)
@@ -321,7 +346,23 @@ const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}
   SNAPSHOT_FILE = paths.snapshotFile
   LIBRARY_DB_FILE = paths.dbFile
   // 不关旧连接:每个库的 model 缓存在 mangaModels 里复用,关掉会破坏合并书架
-  Manga = lib ? await modelForLibrary(lib.id) : prepareMangaModel(LIBRARY_DB_FILE)
+  // ⚠️ 替换全局 Manga 之前,先关掉「没人认领」的旧实例:
+  //   启动时会先用 LIBRARY_DB_FILE 建一个 Manga;若某个库的「库数据目录」
+  //   正好等于数据目录,那个库的数据库就是同一个文件 ——
+  //   两个连接同时写会报 SQLITE_IOERR: disk I/O error(SQLite 是单写者的)。
+  const prevManga = Manga
+  let nextManga
+  if (lib) {
+    nextManga = await modelForLibrary(lib.id)
+  } else {
+    const byFile = mangaModelsByFile.get(LIBRARY_DB_FILE)
+    nextManga = byFile || prepareMangaModel(LIBRARY_DB_FILE)
+    mangaModelsByFile.set(LIBRARY_DB_FILE, nextManga)
+  }
+  if (prevManga && prevManga !== nextManga && ![...mangaModels.values()].includes(prevManga)) {
+    try { prevManga.sequelize.close() } catch (e) { /* 已关就忽略 */ }
+  }
+  Manga = nextManga
   if (!lib) await ensureMangaSchema(Manga)
   console.log(`[libraries] 已切换活动库「${lib ? lib.name : '(无)'}」;库数据目录:${LIBRARY_DATA_DIR}`)
   console.log(`[libraries] 库数据库:${LIBRARY_DB_FILE};扫描快照:${SNAPSHOT_FILE};缩略图缓存:${LIBRARY_VIEWCACHE_DIR}`)
@@ -488,7 +529,7 @@ const switchProfile = async (username) => {
     : path.join(STORE_PATH, './metadata.sqlite')
   if (newMetaFile !== metadataSqliteFile) {
     metadataSqliteFile = newMetaFile
-    Metadata = prepareMetadataModel(metadataSqliteFile)
+    rebuildMetadataModel(metadataSqliteFile)
     try {
       await Metadata.sync()
       await ensureColumns(Metadata.sequelize, 'Metadata', { title_cn: 'TEXT', description: 'TEXT' })
@@ -1484,7 +1525,14 @@ const loadBookListFromDatabase = async () => {
   if (libs.length) {
     for (const lib of libs) {
       const model = await modelForLibrary(lib.id)
-      const rows = await model.findAll()
+      let rows = []
+      try {
+        rows = await model.findAll()
+      } catch (e) {
+        // 单个库读失败(例如数据库正被写)不能把整个书架打崩
+        console.error(`读取库「${lib.name}」失败:`, String((e && e.message) || e))
+        continue
+      }
       for (const row of rows) {
         const b = row.toJSON()
         b.libraryId = lib.id
@@ -1684,6 +1732,7 @@ const broadcastBackfill = () => {
     else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('meta-backfill', payload)
   } catch (e) { /* 没人听无所谓 */ }
 }
+ipcMain.handle('scan-status', async () => ({ ...scanState }))
 ipcMain.handle('meta-backfill-status', async () => ({ ...metaBackfill }))
 ipcMain.handle('meta-backfill-stop', async () => {
   metaBackfill.stop = true
@@ -1707,31 +1756,27 @@ const runMetaBackfill = async () => {
     metaBackfill.total = pending.length
     console.log(`[meta] 待补全 ${pending.length} 本`)
     broadcastBackfill()
-    let cursor = 0
-    const worker = async () => {
-      while (!metaBackfill.stop) {
-        const i = cursor++
-        if (i >= pending.length) return
-        // 有人在阅读 → 一直等,把磁盘/CPU 让给阅读器
-        await waitViewerIdle()
-        if (isScanning) { metaBackfill.stop = true; return }
-        const { lib, model, row } = pending[i]
-        try {
-          const filepath = translateBookPath(row.filepath, 'filepath')
-          const r = await geneCover(filepath, row.type, null, coverDirOf(lib))
-          await model.update({
-            hash: r.hash || null,
-            pageCount: r.pageCount || null,
-            bundleSize: r.bundleSize,
-            mtime: r.mtime ? r.mtime.toJSON() : row.mtime,
-            coverHash: r.coverHash || null
-          }, { where: { id: row.id } })
-        } catch (e) { /* 单本失败跳过,不影响其它 */ }
-        metaBackfill.done++
-        if (metaBackfill.done % 20 === 0) broadcastBackfill()
-      }
+    // ⚠️ 必须串行:SQLite 是单写者,两路 update 并发会把事务冲掉,
+    //    连带"读书架"都会报 Transaction cannot be rolled back。
+    //    探测本身不并发,但配合「有人在阅读就等」已经够温和。
+    for (const { lib, model, row } of pending) {
+      if (metaBackfill.stop) break
+      await waitViewerIdle()
+      if (isScanning) { metaBackfill.stop = true; break }
+      try {
+        const filepath = translateBookPath(row.filepath, 'filepath')
+        const r = await geneCover(filepath, row.type, null, coverDirOf(lib))
+        await model.update({
+          hash: r.hash || null,
+          pageCount: r.pageCount || null,
+          bundleSize: r.bundleSize,
+          mtime: r.mtime ? r.mtime.toJSON() : row.mtime,
+          coverHash: r.coverHash || null
+        }, { where: { id: row.id } })
+      } catch (e) { /* 单本失败跳过,不影响其它 */ }
+      metaBackfill.done++
+      if (metaBackfill.done % 20 === 0) broadcastBackfill()
     }
-    await Promise.all(Array.from({ length: Math.min(2, pending.length || 1) }, worker))
   } catch (e) {
     console.log('[meta] 后台补全出错:', String((e && e.message) || e))
   } finally {
@@ -3326,7 +3371,7 @@ const applySetting = async (receiveSetting) => {
   if (receiveSetting.metadataPath !== setting.metadataPath) {
     // metadataPath 可能为 undefined/null/空(前端缺键或用户清空):回退默认数据目录
     const target = receiveSetting.metadataPath || STORE_PATH
-    Metadata = prepareMetadataModel(path.join(target, './metadata.sqlite'))
+    rebuildMetadataModel(path.join(target, './metadata.sqlite'))
     await Metadata.sync()
   }
   // 网页版(Docker)不需要局域网浏览 API:本身就是通过网页/网络访问的
@@ -3579,7 +3624,7 @@ ipcMain.handle('import-database', async (event, arg) => {
     await fs.promises.copyFile(metadataSqlitePath, metadataSqliteFile)
     if (WEB_MODE) {
       // 网页版无法重启进程:重新加载模型并提示前端刷新即可
-      Metadata = prepareMetadataModel(metadataSqliteFile)
+      rebuildMetadataModel(metadataSqliteFile)
       await Metadata.sync()
       sendMessageToWebContents('导入完成,请刷新页面查看')
     } else {
