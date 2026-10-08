@@ -1578,7 +1578,9 @@ const loadBookListFromDatabase = async () => {
     } else {
       // 每 50 本才刷新一次进度,减少 IPC 往返
       if ((i + 1) % 50 === 0) setProgressBar((i + 1) / bookListLength)
-      pendingUpserts.push(book)
+      // ⚠️ Metadata 表主键是 hash:两阶段扫描里还没探测过的新书 hash 为 null,
+      //    写进去会 notNull Violation,让整个书架 500。跳过,等补全补上 hash 再写。
+      if (book.hash) pendingUpserts.push(book)
     }
   }
   // 所有缺失元数据一次性事务写入,避免逐条 fsync
