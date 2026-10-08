@@ -788,6 +788,17 @@
 
 
         <!-- ================= 卡片样式 ================= -->
+        <!-- 扫描与性能 -->
+        <div class="advanced-section-title">{{$t('m.scanPerfSection')}}</div>
+        <el-row :gutter="8">
+          <el-col :span="24">
+            <div class="setting-line" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+              <span class="setting-label">{{$t('m.scanConcurrency')}}</span>
+              <el-input-number v-model="setting.scanConcurrency" :min="1" :max="16" :step="1" @change="saveSetting" />
+              <span class="setting-line toolbar-tip" style="display: inline-block;">{{$t('m.scanConcurrencyHint')}}</span>
+            </div>
+          </el-col>
+        </el-row>
         <div class="advanced-section-title">{{$t('m.cardStyle')}}</div>
         <!-- 卡片相关开关(自其它分区归并到此):各元素显隐独立 + 填充封面 -->
         <el-row :gutter="8">

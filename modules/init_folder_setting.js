@@ -95,6 +95,54 @@ const SETTING_FILE_NAME = settingFileNameOf(STARTUP_PROFILE)
 const SETTING_FILE = settingFilePathOf(STARTUP_PROFILE)
 const SETTING_PROFILE = STARTUP_PROFILE
 
+// ── 库配置与账户解耦:库列表 / 活动库 / 切换框 单独存 <数据目录>/libraries.json ──
+// 理由:库是「这个数据目录」的属性(漫画放哪、库数据放哪),不该跟着账户设置走;
+//       账户只负责"设置"(主题/按钮/显示项等)。首次运行会从现有设置里平滑迁移出来。
+const LIBRARIES_FILE = path.join(STORE_PATH, 'libraries.json')
+const LIBRARY_CONFIG_KEYS = ['libraries', 'activeLibraryId', 'switchBoxes', 'activeBoxIndex']
+const readLibrariesFile = () => {
+  try {
+    const j = JSON.parse(fs.readFileSync(LIBRARIES_FILE, 'utf-8'))
+    return (j && typeof j === 'object') ? j : null
+  } catch { return null }
+}
+const writeLibrariesFile = (cfg) => {
+  try {
+    const out = {}
+    for (const k of LIBRARY_CONFIG_KEYS) if (cfg && cfg[k] !== undefined) out[k] = cfg[k]
+    const tmp = LIBRARIES_FILE + '.' + process.pid + '.tmp'
+    fs.writeFileSync(tmp, JSON.stringify(out, null, '  '), 'utf-8')
+    fs.renameSync(tmp, LIBRARIES_FILE)
+  } catch (e) { console.log('[libraries] 写 libraries.json 失败:', String((e && e.message) || e)) }
+}
+const extractLibraryConfig = (setting) => {
+  const out = {}
+  for (const k of LIBRARY_CONFIG_KEYS) if (setting && setting[k] !== undefined) out[k] = setting[k]
+  return out
+}
+const applyLibraryConfig = (setting, cfg) => {
+  if (!setting || !cfg) return setting
+  for (const k of LIBRARY_CONFIG_KEYS) setting[k] = cfg[k]
+  return setting
+}
+// 从现有 setting*.json 里找一份"真的有库"的配置(平滑迁移:
+// 例如 setting.json 里库被删空了,而 setting.<账户>.json 里还留着库)
+const findLibrariesInSettingFiles = () => {
+  try {
+    const files = fs.readdirSync(STORE_PATH).filter(n => /^setting(\..+)?\.json$/.test(n))
+    let best = null
+    for (const n of files) {
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(STORE_PATH, n), 'utf-8'))
+        const libs = Array.isArray(j.libraries) ? j.libraries : []
+        if (!libs.length) continue
+        if (!best || libs.length > (best.libraries || []).length) best = extractLibraryConfig(j)
+      } catch { /* 跳过坏文件 */ }
+    }
+    return best
+  } catch { return null }
+}
+
 // 写入自定义数据目录设置(设置 → 常用 → 数据文件位置 → 保存并重启)
 const setBootstrapDataPath = (dataPath) => {
   const userData = app.getPath('userData')
@@ -132,7 +180,7 @@ const prepareSetting = () => {
     setting = JSON.parse(fs.readFileSync(resolveSettingReadPath(), { encoding: 'utf-8' }))
     if (setting.imageExplorer === '"C:\\Windows\\explorer.exe"') {
       setting.imageExplorer = _mange_reader
-      fs.writeFileSync(getSettingFilePath(), JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
+      fs.writeFileSync(getSettingFilePath(), JSON.stringify((() => { const o = { ...setting }; for (const k of LIBRARY_CONFIG_KEYS) delete o[k]; return o })(), null, '  '), { encoding: 'utf-8' })
     }
   } catch {
     setting = {
@@ -226,6 +274,8 @@ const prepareSetting = () => {
       toolbarButtonsHidden: [],
       // 工具栏元素的完整排列顺序(含隐藏项;空 = 定义顺序)
       toolbarButtonOrder: [],
+      // 扫描并发数(1~16,默认 4):按设备性能调;NAS 上开太高会拖慢磁盘/CPU,也影响阅读
+      scanConcurrency: 4,
       // 每页条数选项
       customPageSizes: '12,24,42,72,500,5000,1000000',
       // 惯性滚动力度:off / low / medium / high
@@ -291,7 +341,7 @@ const prepareSetting = () => {
       ocrApiUrl: '',
       ocrApiModel: 'qwen2.5-vl:7b',
     }
-    fs.writeFileSync(getSettingFilePath(), JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
+    fs.writeFileSync(getSettingFilePath(), JSON.stringify((() => { const o = { ...setting }; for (const k of LIBRARY_CONFIG_KEYS) delete o[k]; return o })(), null, '  '), { encoding: 'utf-8' })
   }
   return setting
 }
@@ -324,6 +374,12 @@ module.exports = {
   settingFileNameOf,
   safeProfile,
   runWithProfile,
+  LIBRARIES_FILE,
+  readLibrariesFile,
+  writeLibrariesFile,
+  extractLibraryConfig,
+  applyLibraryConfig,
+  findLibrariesInSettingFiles,
   prepareCollectionList,
   preparePath,
   _mange_reader,

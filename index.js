@@ -36,6 +36,11 @@ const {
   resolveSettingReadPath,
   safeProfile,
   runWithProfile,
+  readLibrariesFile,
+  writeLibrariesFile,
+  extractLibraryConfig,
+  applyLibraryConfig,
+  findLibrariesInSettingFiles,
   _mange_reader
 } = require('./modules/init_folder_setting.js')
 const { findSameFile } = require('./fileLoader/folder.js')
@@ -50,6 +55,30 @@ const WEB_MODE = process.env.WEB_MODE === '1'
 
 preparePath()
 let defaultSetting = prepareSetting()
+
+// ---------- 库配置与账户解耦(库单独存 <数据目录>/libraries.json) ----------
+// 库是「这个数据目录」的属性,不该跟着账户设置走。启动时:
+//   ① 有 libraries.json → 直接用它覆盖设置里的库字段;
+//   ② 没有 → 从现有设置里迁移一份(优先挑"真的有库"的那份,例如 setting.<账户>.json)。
+const LIBRARY_CONFIG_KEYS = ['libraries', 'activeLibraryId', 'switchBoxes', 'activeBoxIndex']
+const bootstrapLibrariesConfig = (() => {
+  let cfg = readLibrariesFile()
+  const hasLibs = (c) => Array.isArray(c && c.libraries) && c.libraries.length > 0
+  if (!hasLibs(cfg)) {
+    const mine = extractLibraryConfig(defaultSetting)
+    const migrated = hasLibs(mine) ? mine : findLibrariesInSettingFiles()
+    if (hasLibs(migrated)) {
+      cfg = migrated
+      writeLibrariesFile(cfg)
+      console.log(`[libraries] 已把库配置迁移到 libraries.json(${cfg.libraries.length} 个库)`)
+    } else if (!cfg) {
+      cfg = { libraries: [], activeLibraryId: '', switchBoxes: [], activeBoxIndex: 0 }
+      writeLibrariesFile(cfg)
+    }
+  }
+  return cfg
+})()
+applyLibraryConfig(defaultSetting, bootstrapLibrariesConfig)
 // ---------- 每个账户一份设置(网页版多账户并发时互不干扰) ----------
 // 键 = 配置名(账户名);'' = 未登录 / 桌面版默认。
 // 谁在请求由 modules/init_folder_setting.js 的 AsyncLocalStorage 决定(getActiveProfile),
@@ -398,9 +427,13 @@ let sendImageLock = false
 let settingWriteSeq = 0
 const settingTmpPath = () => getSettingFilePath() + '.' + process.pid + '.' + (++settingWriteSeq) + '.tmp'
 const persistSetting = () => {
+  // 库配置单独落盘,不写进按账户的设置文件(库跟数据目录走,不跟账户走)
+  writeLibrariesFile(extractLibraryConfig(setting))
+  const forFile = { ...setting }
+  for (const k of LIBRARY_CONFIG_KEYS) delete forFile[k]
   const targetPath = getSettingFilePath()
   const tempPath = settingTmpPath()
-  fs.writeFileSync(tempPath, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
+  fs.writeFileSync(tempPath, JSON.stringify(forFile, null, '  '), { encoding: 'utf-8' })
   fs.renameSync(tempPath, targetPath)
 }
 
@@ -422,6 +455,9 @@ const ensureProfileSetting = async (username) => {
     setActiveProfile(key)
     obj = prepareSetting()
     applyContainerLibraryMapping(obj)
+    // 库配置与账户无关:一律以 libraries.json 为准(账户文件里即使残留旧库也不认)
+    const libCfg = readLibrariesFile()
+    if (libCfg) applyLibraryConfig(obj, libCfg)
     ensureLibraries(obj, { nameHint: obj.externalLibraryRoot || setting.externalLibraryRoot })
   } finally {
     setActiveProfile(prev)
@@ -1417,6 +1453,22 @@ ipcMain.handle('ensure-book-cover', async (event, id) => {
     book.libraryId = found.libraryId || bookLibraryById.get(id)
     if (book.libraryId) rememberBookLibrary(book)
     const coverPath = await ensureBookCover(book)
+    // 建库阶段跳过了页数/hash 的探测(那步要打开压缩包,很贵):
+    // 用户浏览到这本书时顺便补上 —— 补完它才会出现在「按页数排序」、也才能关联到标签。
+    if (!book.hash || book.pageCount === null || book.pageCount === undefined) {
+      try {
+        const lib = (setting.libraries || []).find(l => l.id === book.libraryId)
+        const fp2 = translateBookPath(book.filepath, 'filepath')
+        const r = await geneCover(fp2, book.type, null, coverDirOf(lib))
+        await found.model.update({
+          hash: r.hash || null,
+          pageCount: r.pageCount || null,
+          bundleSize: r.bundleSize,
+          mtime: r.mtime ? r.mtime.toJSON() : book.mtime,
+          coverHash: r.coverHash || null
+        }, { where: { id: book.id } })
+      } catch (e) { /* 补不上就算了,不影响封面 */ }
+    }
     return coverPath ? { coverPath } : null
   } catch (e) {
     console.error(e)
@@ -1424,6 +1476,7 @@ ipcMain.handle('ensure-book-cover', async (event, id) => {
   }
 })
 
+let noLibraryNotified = false
 const loadBookListFromDatabase = async () => {
   // 多库:当前「切换框」里所有已生效的库各读各的库数据库,合并成一个书架(同一本书不去重)
   const libs = boxLibraries()
@@ -1443,18 +1496,24 @@ const loadBookListFromDatabase = async () => {
       }
     }
   } else {
-    // 没有任何已生效的库:退回「当前库数据库」,避免界面直接空掉
-    const rows = await Manga.findAll()
-    bookList = rows.map(b => b.toJSON())
-    const fallbackDir = coverDirOf(activeLibraryOf(setting))
-    for (const b of bookList) {
-      b.filepath = translateBookPath(b.filepath, 'filepath')
-      b.coverPath = translateBookPath(b.coverPath, 'coverPath', fallbackDir)
+    // 没有任何已生效的库:不再退回"全局默认库数据库" ——
+    // 那会让同一个数据目录里出现一个跟设置无关的库文件(libraries/library/database.sqlite),
+    // 扫描/书架各写一处、互相看不见。这里直接给空列表,界面提示去添加漫画库。
+    if (!noLibraryNotified) {
+      noLibraryNotified = true
+      sendMessageToWebContents('还没有可用的漫画库:请在 设置 → 常用 里「添加库」并选好文件夹')
     }
+    bookList = []
   }
-  if (_.isEmpty(bookList)) {
-    bookList = await loadLegecyBookListFromFile()
-    await saveBookListToDatabase(bookList)
+  if (_.isEmpty(bookList) && boxLibraries().length) {
+    // ⚠️ 这里以前会 saveBookListToDatabase(空数组) —— 那是"读到空就清库",
+    // 现在整表重建必须显式声明(见 saveBookListToDatabase 的 guard)。
+    // 旧版 bookList.json 若确实有内容,才迁移进库(并标记为显式重建,扫描中会被 guard 挡住)。
+    const legacy = await loadLegecyBookListFromFile()
+    if (!_.isEmpty(legacy)) {
+      bookList = legacy
+      await saveBookListToDatabase(bookList, { rebuild: true })
+    }
   }
   let metadataList = await Metadata.findAll()
   metadataList = metadataList.map(m => m.toJSON())
@@ -1491,8 +1550,19 @@ const loadBookListFromDatabase = async () => {
   return bookList
 }
 
-const saveBookListToDatabase = async (data) => {
-  console.log('Empty Exist BookList and Saved New BookList')
+// ⚠️ 整表重建是危险操作:会先 truncate 再写入。
+// 只允许「显式重建库」调用(force-gene-book-list),并且扫描进行中一律拒绝 ——
+// 以前它被「书架读到空」这条路径顺带调用,等于谁都能把库清空。
+const saveBookListToDatabase = async (data, options = {}) => {
+  if (!options.rebuild) {
+    console.error('[guard] 拒绝整表重建:saveBookListToDatabase 只能由显式「重建库」触发')
+    return
+  }
+  if (isScanning) {
+    console.error('[guard] 拒绝整表重建:扫描进行中')
+    return
+  }
+  console.log(`[guard] 显式重建书库:清空后写入 ${Array.isArray(data) ? data.length : 0} 条`)
   await Manga.destroy({ truncate: true })
   await Manga.bulkCreate(data)
 }
@@ -1552,12 +1622,126 @@ const clearFolder = async (Folder) => {
 
 // library and metadata
 let isScanning = false
+// 扫描并发:可按设备性能在 设置 → 高级 里调(1~16,默认 4)。
+// 太高会拖慢 NAS 上的磁盘/CPU,也会影响你同时在阅读时的体验。
+const scanConcurrency = () => {
+  const n = Number(setting && setting.scanConcurrency)
+  if (!Number.isFinite(n) || n < 1) return 4
+  return Math.min(16, Math.floor(n))
+}
+// 扫描状态:网页版关掉页面后重开也能立刻知道「扫描还在后台跑」(SSE 建连时会补推一次)
+const scanState = {
+  scanning: false,
+  message: '',
+  found: 0,
+  saved: 0,
+  startedAt: 0,
+  finishedAt: 0,
+  error: ''
+}
+const broadcastScanStatus = () => {
+  const payload = { ...scanState }
+  try {
+    if (WEB_MODE) require('./web-electron-shim.js').broadcast('scan-status', payload)
+    else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('scan-status', payload)
+  } catch (e) { /* 没人听也无所谓 */ }
+}
+const beginScan = (message) => {
+  scanState.scanning = true
+  scanState.message = message || '开始加载漫画库'
+  scanState.found = 0
+  scanState.saved = 0
+  scanState.error = ''
+  scanState.startedAt = Date.now()
+  scanState.finishedAt = 0
+  broadcastScanStatus()
+}
+const endScan = (error) => {
+  scanState.scanning = false
+  scanState.message = error ? ('扫描失败:' + error) : 'Scan complete'
+  scanState.error = error ? String(error) : ''
+  scanState.finishedAt = Date.now()
+  broadcastScanStatus()
+}
 let viewerActive = false
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 // 用户正在阅读漫画时,扫描暂停,把 CPU/磁盘让给阅读器
 const waitViewerIdle = async () => {
   while (viewerActive) await sleep(500)
 }
+
+// ---------- 元信息后台补全(页数 / hash) ----------
+// 建库阶段只登记「路径 + 指纹」(秒级完成),页数/hash 由这里补:
+//   · 只在「没有扫描、且没人在阅读」时跑(waitViewerIdle 会让路);
+//   · 并发固定 2,后台任务不抢资源;
+//   · 只探测信息,不生成封面(coverName 传 null → 封面仍按需生成)。
+// 补完之后这些书才会出现在「按页数排序」里、也才能关联到 metadata 的标签。
+const metaBackfill = { running: false, done: 0, total: 0, stop: false }
+const broadcastBackfill = () => {
+  const payload = { running: metaBackfill.running, done: metaBackfill.done, total: metaBackfill.total }
+  try {
+    if (WEB_MODE) require('./web-electron-shim.js').broadcast('meta-backfill', payload)
+    else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('meta-backfill', payload)
+  } catch (e) { /* 没人听无所谓 */ }
+}
+ipcMain.handle('meta-backfill-status', async () => ({ ...metaBackfill }))
+ipcMain.handle('meta-backfill-stop', async () => {
+  metaBackfill.stop = true
+  return { ok: true }
+})
+const runMetaBackfill = async () => {
+  if (metaBackfill.running) return { ok: true, already: true }
+  metaBackfill.running = true
+  metaBackfill.stop = false
+  metaBackfill.done = 0
+  metaBackfill.total = 0
+  broadcastBackfill()
+  try {
+    const pending = []
+    for (const lib of boxLibraries()) {
+      const model = await modelForLibrary(lib.id)
+      // 只挑还没探测过的书(hash 为空)
+      const rows = await model.findAll({ where: { hash: null }, raw: true })
+      for (const row of rows) pending.push({ lib, model, row })
+    }
+    metaBackfill.total = pending.length
+    console.log(`[meta] 待补全 ${pending.length} 本`)
+    broadcastBackfill()
+    let cursor = 0
+    const worker = async () => {
+      while (!metaBackfill.stop) {
+        const i = cursor++
+        if (i >= pending.length) return
+        // 有人在阅读 → 一直等,把磁盘/CPU 让给阅读器
+        await waitViewerIdle()
+        if (isScanning) { metaBackfill.stop = true; return }
+        const { lib, model, row } = pending[i]
+        try {
+          const filepath = translateBookPath(row.filepath, 'filepath')
+          const r = await geneCover(filepath, row.type, null, coverDirOf(lib))
+          await model.update({
+            hash: r.hash || null,
+            pageCount: r.pageCount || null,
+            bundleSize: r.bundleSize,
+            mtime: r.mtime ? r.mtime.toJSON() : row.mtime,
+            coverHash: r.coverHash || null
+          }, { where: { id: row.id } })
+        } catch (e) { /* 单本失败跳过,不影响其它 */ }
+        metaBackfill.done++
+        if (metaBackfill.done % 20 === 0) broadcastBackfill()
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(2, pending.length || 1) }, worker))
+  } catch (e) {
+    console.log('[meta] 后台补全出错:', String((e && e.message) || e))
+  } finally {
+    metaBackfill.running = false
+    broadcastBackfill()
+    console.log(`[meta] 后台补全结束:${metaBackfill.done}/${metaBackfill.total}`)
+  }
+  return { ok: true, done: metaBackfill.done, total: metaBackfill.total }
+}
+
 
 // ---------- AI 批量任务暂停控制 ----------
 let aiTaskPaused = false
@@ -1625,15 +1809,17 @@ const compileExclude = () => {
 // 全新 → geneCover 探测并推入 batchNewBooks(由调用方批量入库)
 // 封面懒加载为固定行为:扫描只探测信息不生成封面(geneCover 传 null),
 // 封面由用户浏览时按需生成(见 ensureBookCover),不再提供切换开关
-const processScanItem = async (ctx, filepath, type) => {
-  const { bookMap, bookIdMap, batchNewBooks } = ctx
+// fp = inventoryLibrary 顺手拿到的指纹 { m: mtimeMs, s?: size } —— 免费,不用再 stat/dirSize
+const processScanItem = async (ctx, filepath, type, fp) => {
+  const { bookMap, bookIdMap, batchNewBooks, skipRelocateLookup } = ctx
   const foundData = bookMap.get(filepath)
   if (foundData === undefined) {
     /*
     * check whether the file is the relocated only
     * return the existing data if and only if there is one match
     * */
-    const existingManga = await findSameFile(filepath, type, Manga)
+    // 首次建库(库里一条记录都没有)不可能存在"搬家的老书" → 直接跳过这趟全表查询
+    const existingManga = skipRelocateLookup ? null : await findSameFile(filepath, type, Manga, fp)
     if (existingManga) {
       // the file is relocated only, so no need to regenerate the cover
       const foundPrevBook = bookIdMap.get(existingManga.id)
@@ -1655,27 +1841,26 @@ const processScanItem = async (ctx, filepath, type) => {
         )
       }
     } else {
-      // this is the new file, so generate the cover(懒加载:只探测信息,封面为空)
+      // 新书:轻量入库 —— 只用遍历时拿到的指纹,不打开文件。
+      // 页数 / hash / 封面 由「浏览到时」或「空闲后台补全」再补上
+      // (以前这里每次都 geneCover:压缩包要调 7z 解压出封面、还要 sha1 读整图,
+      //  14343 本就要跑很久;现在建库阶段只登记路径与指纹)。
       const id = nanoid()
-      const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null, CURRENT_COVER_DIR)
-      // 懒加载模式下 coverPath 为 null(封面按需生成),书仍然入库
-      if (targetFilePath) {
-        batchNewBooks.push({
-          title: path.basename(filepath),
-          coverPath,
-          hash,
-          filepath,
-          type,
-          id,
-          pageCount,
-          bundleSize,
-          mtime: mtime.toJSON(),
-          coverHash,
-          status: 'non-tag',
-          exist: true,
-          date: Date.now()
-        })
-      }
+      batchNewBooks.push({
+        title: path.basename(filepath),
+        coverPath: null,
+        hash: null,
+        filepath,
+        type,
+        id,
+        pageCount: null,
+        bundleSize: (fp && fp.s !== undefined) ? fp.s : null,
+        mtime: new Date((fp && fp.m) || Date.now()).toJSON(),
+        coverHash: null,
+        status: 'non-tag',
+        exist: true,
+        date: Date.now()
+      })
     }
   } else {
     foundData.exist = true
@@ -1701,6 +1886,8 @@ const runScan = async () => {
   // 用 Map 按 filepath / id 索引,替代 O(n²) 的数组 find
   const bookMap = new Map(bookList.map(b => [b.filepath, b]))
   const bookIdMap = new Map(bookList.map(b => [b.id, b]))
+  // 库里一条记录都没有 = 首次建库:不可能有"搬家的老书",省掉每本一次的全表查询
+  const skipRelocateLookup = bookMap.size === 0
 
   // 枚举阶段先给一点进度,避免界面长时间无反馈
   setProgressBar(0.02)
@@ -1712,7 +1899,7 @@ const runScan = async () => {
   const listLength = list.length
   sendMessageToWebContents(`从漫画库找到 ${listLength} 本漫画`)
 
-  const CONCURRENCY = 4
+  const CONCURRENCY = scanConcurrency()
   const BATCH_SIZE = 200
   setProgressBar(0.05)
   // 分批并发处理,批次间清理 TEMP_PATH(替代原来每 50 本就递归删除一次)
@@ -1727,7 +1914,7 @@ const runScan = async () => {
       // 用户在阅读时暂停任务,让出 CPU/磁盘
       await waitViewerIdle()
       try {
-        await processScanItem({ bookMap, bookIdMap, batchNewBooks }, filepath, type)
+        await processScanItem({ bookMap, bookIdMap, batchNewBooks, skipRelocateLookup }, filepath, type, inv.dirs[filepath] || inv.arch[filepath])
       } catch (e) {
         sendMessageToWebContents(`加载 ${filepath} 失败:${e}(${i + 1}/${listLength})`)
       }
@@ -1830,17 +2017,22 @@ ipcMain.handle('load-book-list', async (event, scan) => {
       sendMessageToWebContents('扫描正在进行中,已跳过重复扫描')
     } else {
       isScanning = true
+      beginScan('开始加载漫画库')
       sendMessageToWebContents('开始加载漫画库')
       // 后台扫描:立即返回当前列表,不阻塞 UI,扫描完成后再通知前端刷新
       setImmediate(async () => {
         try {
           await runScanAll()
+          endScan(null)
         } catch (e) {
           console.error(e)
           sendMessageToWebContents(`扫描失败:${e}`)
+          endScan(e)
         } finally {
           isScanning = false
           setProgressBar(-1)
+          // 扫描(建库/刷新)完成后:空闲时把还没探测过的书的页数/hash 补上
+          setImmediate(() => { runMetaBackfill().catch(() => {}) })
         }
       })
     }
@@ -1879,6 +2071,7 @@ const runIncrementalScan = async () => {
   })
   const bookMap = new Map(bookList.map(b => [b.filepath, b]))
   const bookIdMap = new Map(bookList.map(b => [b.id, b]))
+  const skipRelocateLookup = bookMap.size === 0
   // 候选 = 目录变化发现的新书 + 快照有记录但数据库缺失的书(补上次探测失败的书)
   const candidates = [...diff.newBooks]
   const seenCand = new Set(candidates.map(c => c.filepath))
@@ -1905,7 +2098,7 @@ const runIncrementalScan = async () => {
     sendMessageToWebContents('Scan complete')
     return
   }
-  const CONCURRENCY = 4
+  const CONCURRENCY = scanConcurrency()
   const BATCH_SIZE = 200
   setProgressBar(0.1)
   for (let start = 0; start < candidates.length; start += BATCH_SIZE) {
@@ -1987,14 +2180,17 @@ ipcMain.handle('incremental-scan', async () => {
     sendMessageToWebContents('扫描正在进行中,已跳过重复扫描')
   } else {
     isScanning = true
+    beginScan('开始增量扫描')
     sendMessageToWebContents('开始加载漫画库')
     // 后台执行:立即返回当前列表,不阻塞 UI,完成后通知前端刷新
     setImmediate(async () => {
       try {
         await runIncrementalScan()
+        endScan(null)
       } catch (e) {
         console.error(e)
         sendMessageToWebContents(`扫描失败:${e}`)
+        endScan(e)
       } finally {
         isScanning = false
         setProgressBar(-1)
@@ -2005,6 +2201,11 @@ ipcMain.handle('incremental-scan', async () => {
 })
 
 ipcMain.handle('force-gene-book-list', async (event, arg) => {
+  // 重建库会清空数据库与封面目录,扫描进行中绝不能执行
+  if (isScanning) {
+    sendMessageToWebContents('正在扫描漫画库,请等扫描结束后再重建')
+    return await loadBookListFromDatabase()
+  }
   // 封面懒加载为固定行为:重建库也不生成封面,由用户浏览时按需生成
   await Manga.destroy({ truncate: true })
   await clearFolder(TEMP_PATH)
@@ -2023,7 +2224,7 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
   }
   const listLength = list.length
   sendMessageToWebContents(`从漫画库找到 ${listLength} 本漫画`)
-  const CONCURRENCY = 4
+  const CONCURRENCY = scanConcurrency()
   const BATCH_SIZE = 200
   setProgressBar(0.05)
   for (let start = 0; start < listLength; start += BATCH_SIZE) {
@@ -2081,7 +2282,7 @@ ipcMain.handle('patch-local-metadata', async (event, arg) => {
   await clearFolder(TEMP_PATH)
   await clearFolder(CURRENT_COVER_DIR)
 
-  const CONCURRENCY = 4
+  const CONCURRENCY = scanConcurrency()
   const BATCH_SIZE = 200
   setProgressBar(0.05)
   for (let start = 0; start < bookListLength; start += BATCH_SIZE) {
@@ -3188,9 +3389,13 @@ const applySetting = async (receiveSetting) => {
   if (tray) buildTrayMenu()
   // 降级模式(用户设置的数据目录打不开):只改内存,不落盘,避免污染默认目录里的旧数据
   if (dataPathFallback) return
+  // 库配置单独落盘(与账户无关):账户设置文件里不再保存 libraries/library/switchBoxes
+  writeLibrariesFile(extractLibraryConfig(setting))
+  const forFile = { ...fileSetting }
+  for (const k of LIBRARY_CONFIG_KEYS) delete forFile[k]
   const targetPath = getSettingFilePath()
   const tempPath = settingTmpPath()
-  await fs.promises.writeFile(tempPath, JSON.stringify(fileSetting, null, '  '), { encoding: 'utf-8' })
+  await fs.promises.writeFile(tempPath, JSON.stringify(forFile, null, '  '), { encoding: 'utf-8' })
   return await fs.promises.rename(tempPath, targetPath)
 }
 
