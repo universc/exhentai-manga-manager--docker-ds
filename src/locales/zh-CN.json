@@ -694,7 +694,9 @@
     "renameTag": "重命名标签(双击)",
     "scanPerfSection": "扫描与性能",
     "scanConcurrency": "扫描并发数",
-    "scanConcurrencyHint": "同时处理几本书(1-16,默认 4)。NAS 或机械盘建议 2-4;SSD/性能好可以调高。调太高会拖慢设备、也会影响阅读。"
+    "scanConcurrencyHint": "同时处理几本书(1-16,默认 4)。NAS 或机械盘建议 2-4;SSD/性能好可以调高。调太高会拖慢设备、也会影响阅读。",
+    "coverConcurrency": "封面生成并发数",
+    "coverConcurrencyHint": "同时生成几张封面(1-16,默认 4)。调高封面出得更快,但更吃磁盘/CPU;它在后台慢慢跑,不影响阅读。"
   },
   "cm": {
     "title": "标题右键/长按菜单",

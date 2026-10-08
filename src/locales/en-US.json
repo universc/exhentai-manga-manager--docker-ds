@@ -694,7 +694,9 @@
     "renameTag": "Rename Tag (double-click)",
     "scanPerfSection": "Scanning & performance",
     "scanConcurrency": "Scan concurrency",
-    "scanConcurrencyHint": "How many books to process at once (1-16, default 4). 2-4 for a NAS or spinning disk; higher on fast SSDs. Too high will slow the device down and affect reading."
+    "scanConcurrencyHint": "How many books to process at once (1-16, default 4). 2-4 for a NAS or spinning disk; higher on fast SSDs. Too high will slow the device down and affect reading.",
+    "coverConcurrency": "Cover concurrency",
+    "coverConcurrencyHint": "How many covers to generate at once (1-16, default 4). Higher fills covers faster but uses more disk/CPU; it runs in the background and does not block reading."
   },
   "cm": {
     "title": "Title menu (right-click / long-press)",

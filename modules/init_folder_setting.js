@@ -276,6 +276,8 @@ const prepareSetting = () => {
       toolbarButtonOrder: [],
       // 扫描并发数(1~16,默认 4):按设备性能调;NAS 上开太高会拖慢磁盘/CPU,也影响阅读
       scanConcurrency: 4,
+      // 封面生成并发(1~16,默认 4)
+      coverConcurrency: 4,
       // 每页条数选项
       customPageSizes: '12,24,42,72,500,5000,1000000',
       // 惯性滚动力度:off / low / medium / high

@@ -1424,7 +1424,8 @@ const updateBookCoverPath = async (id, coverPath, coverDir) => {
 let coverSlots = 0
 const coverWaiters = []
 const takeCoverSlot = () => new Promise(resolve => {
-  if (coverSlots < 4) { coverSlots++; resolve() } else coverWaiters.push(resolve)
+  const max = coverConcurrency()
+  if (coverSlots < max) { coverSlots++; resolve() } else coverWaiters.push(resolve)
 })
 const releaseCoverSlot = () => {
   coverSlots--
@@ -1674,6 +1675,12 @@ const clearFolder = async (Folder) => {
 let isScanning = false
 // 扫描并发:可按设备性能在 设置 → 高级 里调(1~16,默认 4)。
 // 太高会拖慢 NAS 上的磁盘/CPU,也会影响你同时在阅读时的体验。
+// 封面生成并发(设置 → 高级 → 扫描与性能):解压 + sharp 较吃磁盘/CPU,默认 4
+const coverConcurrency = () => {
+  const n = Number(setting && setting.coverConcurrency)
+  if (!Number.isFinite(n) || n < 1) return 4
+  return Math.min(16, Math.floor(n))
+}
 const scanConcurrency = () => {
   const n = Number(setting && setting.scanConcurrency)
   if (!Number.isFinite(n) || n < 1) return 4
