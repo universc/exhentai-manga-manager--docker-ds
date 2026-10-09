@@ -703,7 +703,16 @@
     "novelLineHeightShort": "行距",
     "switchTextImage": "切换文字/图片",
     "showImages": "看图片",
-    "showText": "看文字"
+    "showText": "看文字",
+    "novelFontSizeTip": "字号 {n}",
+    "novelLineHeightTip": "行距 {n}",
+    "novelTwoCol": "双栏",
+    "novelOneCol": "单栏",
+    "novelVertical": "竖排",
+    "novelHorizontal": "横排",
+    "novelPaged": "分页",
+    "novelScroll": "连续滚动",
+    "novelNoToc": "这本书没有章节标题"
   },
   "cm": {
     "title": "标题右键/长按菜单",

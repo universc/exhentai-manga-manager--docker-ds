@@ -703,7 +703,16 @@
     "novelLineHeightShort": "Spacing",
     "switchTextImage": "Switch text/images",
     "showImages": "Images",
-    "showText": "Text"
+    "showText": "Text",
+    "novelFontSizeTip": "Font size {n}",
+    "novelLineHeightTip": "Line spacing {n}",
+    "novelTwoCol": "Two columns",
+    "novelOneCol": "One column",
+    "novelVertical": "Vertical",
+    "novelHorizontal": "Horizontal",
+    "novelPaged": "Paged",
+    "novelScroll": "Continuous",
+    "novelNoToc": "No chapter titles in this book"
   },
   "cm": {
     "title": "Title menu (right-click / long-press)",

@@ -703,7 +703,16 @@
     "novelLineHeightShort": "行距",
     "switchTextImage": "切換文字/圖片",
     "showImages": "看圖片",
-    "showText": "看文字"
+    "showText": "看文字",
+    "novelFontSizeTip": "字號 {n}",
+    "novelLineHeightTip": "行距 {n}",
+    "novelTwoCol": "雙欄",
+    "novelOneCol": "單欄",
+    "novelVertical": "直排",
+    "novelHorizontal": "橫排",
+    "novelPaged": "分頁",
+    "novelScroll": "連續捲動",
+    "novelNoToc": "這本書沒有章節標題"
   },
   "cm": {
     "title": "標題右鍵/長按選單",
