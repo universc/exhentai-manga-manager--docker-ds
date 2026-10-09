@@ -21,7 +21,7 @@ const { prepareMangaModel, prepareMetadataModel } = require('./modules/database'
 const { translateBookTitle, translateTitle, listTitleTranslationModels, queryCharacterOrigins, analyzeTitleCharacters, extractBookInfo, extractImageText, extractImageTextWithUrl } = require('./modules/translate')
 const { prepareTemplate } = require('./modules/prepare_menu.js')
 const { getBookFilelist, geneCover, getImageListByBook, deleteImageFromBook } = require('./fileLoader/index.js')
-const { decodeTextBuffer, getEpubText } = require('./fileLoader/novel.js')
+const { parseTxtStructured, parseEpubStructured } = require('./fileLoader/novel.js')
 const {
   STORE_PATH, isPortable,
   TEMP_PATH, VIEWER_PATH,
@@ -3018,24 +3018,28 @@ ipcMain.handle('request-thumbnails', async (event, bookId) => {
 // viewer
 // 取小说正文(txt / 纯文字 epub 的「文字模式」阅读用)
 // 有图的内容依然走 load-manga-image-list,这里只负责纯文字
+// 取小说内容(文字阅读模式用):返回「内容块」序列,插图留在它原本的位置上
+//   { kind:'chapter', title } / { kind:'text', text } / { kind:'image', absolutePath }
 ipcMain.handle('load-novel-content', async (event, book) => {
   try {
     const filepath = translateBookPath(book && book.filepath, 'filepath')
     if (!filepath) return { ok: false, error: '没有文件路径' }
-    let text = ''
-    let chapters = []
     if (book.type === 'novel') {
-      const buf = await fs.promises.readFile(filepath)
-      text = decodeTextBuffer(buf)
-    } else if (book.type === 'epub') {
-      text = await getEpubText(filepath)
-    } else {
-      return { ok: false, error: '这本书不是文字类型' }
+      const { blocks, chapters } = await parseTxtStructured(filepath)
+      const charCount = blocks.reduce((n, b) => n + (b.kind === 'text' ? String(b.text).replace(/\s/g, '').length : 0), 0)
+      return { ok: true, blocks, chapters, charCount, kind: 'novel' }
     }
-    // 统一换行,并按「空行分段」切成段落,前端渲染更省事
-    text = String(text || '').replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
-    const charCount = text.replace(/\s/g, '').length
-    return { ok: true, text, charCount }
+    if (book.type === 'epub') {
+      // 插图解压到本次阅读的临时目录(和图片阅读器一样的 viewer 目录,前端用 /api/file 取)
+      const dumpDir = path.join(VIEWER_PATH, 'novel_' + nanoid(8))
+      const { blocks, chapters } = await parseEpubStructured(filepath, dumpDir)
+      // 插图给前端一个能直接用的地址:网页版走 /api/file(带鉴权),桌面版直接用本地路径
+      const toImgUrl = (p) => WEB_MODE ? ('/api/file?path=' + encodeURIComponent(String(p)) + '&id=' + nanoid(6)) : String(p)
+      for (const b of blocks) if (b.kind === 'image' && b.absolutePath) b.url = toImgUrl(b.absolutePath)
+      const charCount = blocks.reduce((n, b) => n + (b.kind === 'text' ? String(b.text).replace(/\s/g, '').length : 0), 0)
+      return { ok: true, blocks, chapters, charCount, kind: 'epub' }
+    }
+    return { ok: false, error: '这本书不是文字类型' }
   } catch (e) {
     console.error('读取小说失败:', e)
     return { ok: false, error: String((e && e.message) || e) }

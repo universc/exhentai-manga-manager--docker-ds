@@ -201,6 +201,158 @@ const getEpubText = async (filepath) => {
   return parts.join('\n\n')
 }
 
+
+// ────────────────────────────────────────────────────────────────
+// 结构化解析:产出「内容块」序列,让前端把插图插在它原本的位置上
+//   { kind:'chapter', title }           章标题(同时进目录)
+//   { kind:'heading', text, level }     h1~h6
+//   { kind:'text',    text }            正文段落
+//   { kind:'image',   absolutePath }    插图(已解压到 dumpDir,前端用 /api/file 取)
+// ────────────────────────────────────────────────────────────────
+const decodeEntities = (t) => String(t || '')
+  .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+  .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+const stripTags = (t) => decodeEntities(String(t || '').replace(/<[^>]*>/g, '')).replace(/[ \t]+/g, ' ').trim()
+const resolveEntry = (baseEntry, src) => {
+  let rel = String(src || '').split('#')[0].split('?')[0]
+  try { rel = decodeURIComponent(rel) } catch (e) { /* 原样 */ }
+  if (!rel) return ''
+  if (rel.startsWith('/')) return rel.slice(1)
+  const baseDir = baseEntry.includes('/') ? baseEntry.slice(0, baseEntry.lastIndexOf('/')) : ''
+  const parts = (baseDir ? baseDir.split('/') : []).concat(rel.split('/'))
+  const out = []
+  for (const p of parts) {
+    if (!p || p === '.') continue
+    if (p === '..') out.pop()
+    else out.push(p)
+  }
+  return out.join('/')
+}
+
+// 把一个 xhtml 拆成内容块;插图按需解压到 dumpDir 并回填绝对路径
+const parseXhtmlBlocks = (zip, entryName, html, dumpDir, imageOut) => {
+  const blocks = []
+  // 先按块级标签切,再逐个判断是标题/段落/图片
+  const cleaned = String(html || '')
+    .replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+  const re = /<(h[1-6]|p|div|img|figure|blockquote|li)\b([^>]*)>([\s\S]*?)(?:<\/\1>|$)/gi
+  let m
+  while ((m = re.exec(cleaned)) !== null) {
+    const tag = m[1].toLowerCase()
+    const attrs = m[2] || ''
+    const inner = m[3] || ''
+    if (tag === 'img') {
+      const srcMatch = /src\s*=\s*["']([^"']+)["']/i.exec(attrs)
+      if (srcMatch) pushImage(blocks, resolveEntry(entryName, srcMatch[1]), imageOut)
+      continue
+    }
+    // 块内可能还有 <img>(例如 <p><img src=.../></p>)
+    const imgRe = /<img\b[^>]*src\s*=\s*["']([^"']+)["'][^>]*>/gi
+    let im
+    let lastIndex = 0
+    let hadImage = false
+    while ((im = imgRe.exec(inner)) !== null) {
+      hadImage = true
+      const before = stripTags(inner.slice(lastIndex, im.index))
+      if (before) blocks.push({ kind: 'text', text: before })
+      pushImage(blocks, resolveEntry(entryName, im[1]), imageOut)
+      lastIndex = im.index + im[0].length
+    }
+    const rest = stripTags(hadImage ? inner.slice(lastIndex) : inner)
+    if (rest) blocks.push(/^h[1-6]$/.test(tag) ? { kind: 'heading', text: rest, level: Number(tag[1]) } : { kind: 'text', text: rest })
+  }
+  return blocks
+}
+const pushImage = (blocks, entry, imageOut) => {
+  if (!entry) return
+  const hit = imageOut.get(entry)
+  if (hit) blocks.push({ kind: 'image', absolutePath: hit })
+}
+
+// 章节标题行:第N章 / 第N节 / 第N回 / Chapter N 等
+// 章节标题行:第N章 / 第N节 / 第N回 / Chapter N 等
+const isChapterLine = (l) => l.length <= 40 && (
+  /^第[0-9一二三四五六七八九十百千万零两〇]+[章节回卷篇部集]/.test(l) ||
+  l.indexOf('Chapter ') === 0 || l.indexOf('CHAPTER ') === 0
+)
+const parseEpubStructured = async (filepath, dumpDir) => {
+  const { zip, images, docs } = readEpubEntries(filepath)
+  fs.mkdirSync(dumpDir, { recursive: true })
+  // 按需解压:只有被正文引用到的图片才落盘
+  const imageOut = new Map()
+  const ensureImage = (entry) => {
+    if (!entry) return null
+    if (imageOut.has(entry)) return imageOut.get(entry)
+    const target = path.join(dumpDir, ...entry.split('/'))
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      zip.extractEntryTo(entry, path.dirname(target), false, true)
+      // extractEntryTo(maintainEntryPath=false) 会平铺到目标目录 → 用 basename 找
+      const flat = path.join(path.dirname(target), path.basename(entry))
+      const real = fs.existsSync(flat) ? flat : target
+      imageOut.set(entry, real)
+      return real
+    } catch (e) {
+      imageOut.set(entry, null)
+      return null
+    }
+  }
+  const blocks = []
+  const chapters = []
+  const source = docs
+  for (const doc of source) {
+    let html = ''
+    try {
+      const buf = zip.readFile(doc)
+      html = buf ? decodeTextBuffer(buf) : ''
+    } catch (e) { continue }
+    if (!html) continue
+    const docBlocks = parseXhtmlBlocks(zip, doc, html, dumpDir, {
+      get: (entry) => ensureImage(entry),
+      has: (entry) => imageOut.has(entry),
+    })
+    // 给这一章起个名字:第一个 heading 或文件名
+    const firstHeading = docBlocks.find(b => b.kind === 'heading' || b.kind === 'chapter')
+    const title = firstHeading ? firstHeading.text : path.basename(doc).replace(/\.[^.]+$/, '')
+    blocks.push({ kind: 'chapter', title })
+    chapters.push({ title, blockIndex: blocks.length - 1 })
+    // 章标题已经在上面作为 chapter 块推过:文档里那个同名标题不再重复渲染
+    for (const b of docBlocks) {
+      if (b.kind === 'heading' && String(b.text).trim() === String(title).trim()) continue
+      blocks.push(b)
+    }
+  }
+  // 没有任何图片被引用 → 已经全部是文字
+  return { blocks, chapters }
+}
+
+// txt → 内容块(空行分段 + 章节行识别)
+const parseTxtStructured = async (filepath) => {
+  const buf = await fs.promises.readFile(filepath)
+  const text = String(decodeTextBuffer(buf) || '').replace(/\r\n?/g, '\n')
+  const blocks = []
+  const chapters = []
+  let pending = []
+  const flush = () => {
+    const t = pending.join('\n').trim()
+    if (t) blocks.push({ kind: 'text', text: t })
+    pending = []
+  }
+  for (const line of text.split('\n')) {
+    const l = line.trim()
+    if (!l) { flush(); continue }
+    if (isChapterLine(l)) {
+      flush()
+      blocks.push({ kind: 'chapter', title: l })
+      chapters.push({ title: l, blockIndex: blocks.length - 1 })
+      continue
+    }
+    pending.push(line)
+  }
+  flush()
+  return { blocks, chapters }
+}
 module.exports = {
   isNovelName,
   isEpubName,
@@ -210,5 +362,7 @@ module.exports = {
   getEpubText,
   decodeTextBuffer,
   renderTextCover,
+  parseEpubStructured,
+  parseTxtStructured,
   NOVEL_CHARS_PER_PAGE
 }
