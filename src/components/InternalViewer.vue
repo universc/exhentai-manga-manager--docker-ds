@@ -53,7 +53,7 @@
         @mouseleave="nextMangaButtonsVisible = false"
       >
                   <!-- 文字模式:txt / 没有图片的 epub -->
-          <div class="drawer-novel-content" v-if="!showThumbnail && isNovelMode" :class="{ 'novel-paged': novelPaged }">
+          <div class="drawer-novel-content" v-if="!showThumbnail && isNovelMode" ref="novelScrollRef" :class="{ 'novel-paged': novelPaged }" @wheel.stop="onNovelWheel">
             <div class="novel-body" :style="novelStyle" :class="{ 'novel-two-col': novelTwoCol, 'novel-vertical': novelVertical }">
               <template v-for="(blk, i) in novelBlocks" :key="i">
                 <div v-if="blk.kind === 'chapter'" :id="'nb-' + i" class="novel-chapter">{{ blk.title }}</div>
@@ -593,8 +593,8 @@ const viewerToolbarClick = (id) => {
       singleDouble: toggleNovelTwoCol,
       direction: toggleNovelVertical,
       fit: cycleNovelLineHeight,
-      sidebar: () => { showViewerSide.value = true; showThumbnail.value = false },
-      thumbnail: () => { showViewerSide.value = true; showThumbnail.value = false },
+      sidebar: () => { showThumbnail.value = false; toggleSidebar() },
+      thumbnail: () => { showThumbnail.value = false; toggleSidebar() },
       pin: toggleToolbarPin,
     }
     if (novelActions[id]) { novelActions[id](); return }
@@ -805,6 +805,15 @@ const novelLineHeight = ref(Number(localStorage.getItem('emm-novel-line-height')
 const novelTwoCol = ref(localStorage.getItem('emm-novel-two-col') === '1')
 const novelVertical = ref(localStorage.getItem('emm-novel-vertical') === '1')
 const novelPaged = ref(localStorage.getItem('emm-novel-paged') === '1')
+const novelScrollRef = ref(null)
+// 分页(单页)模式:滚轮一次翻一屏,而不是连续滚动
+const onNovelWheel = (e) => {
+  if (!novelPaged.value || !isNovelMode.value) return
+  e.preventDefault()
+  const el = novelScrollRef.value
+  if (!el) return
+  el.scrollTop += (e.deltaY > 0 ? 1 : -1) * Math.max(80, el.clientHeight * 0.92)
+}
 const NOVEL_LINE_HEIGHTS = [1.5, 1.9, 2.4]
 const novelStyle = computed(() => ({
   '--novel-font-size': novelFontSize.value + 'px',
@@ -2210,6 +2219,12 @@ defineExpose({
   overflow-x: auto
 .novel-toc
   padding: 12px 8px
+// 分页(单页)模式:滚轮一屏一翻,滚动条隐藏
+.drawer-novel-content.novel-paged
+  scroll-behavior: smooth
+  &::-webkit-scrollbar
+    width: 0
+    height: 0
 .novel-toc-item
   padding: 8px 10px
   border-radius: 4px
