@@ -833,10 +833,21 @@ const novelScrollRef = ref(null)
 // 分页(单页)模式:滚轮一次翻一屏,而不是连续滚动
 const onNovelWheel = (e) => {
   if (!novelPaged.value || !isNovelMode.value) return
+  // 分页模式:内容被排成横向多列(一列 = 一屏宽),滚轮/触摸板横向翻一屏
   e.preventDefault()
   const el = novelScrollRef.value
   if (!el) return
-  el.scrollTop += (e.deltaY > 0 ? 1 : -1) * Math.max(80, el.clientHeight * 0.92)
+  const step = Math.max(120, el.clientWidth * 0.94)
+  const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
+  el.scrollLeft += (delta > 0 ? 1 : -1) * step
+}
+// 分页模式的左右键翻页
+const onNovelKeydown = (e) => {
+  if (!isNovelMode.value || !novelPaged.value) return
+  const el = novelScrollRef.value
+  if (!el) return
+  if (e.key === 'PageDown' || e.key === 'ArrowRight') { e.preventDefault(); el.scrollLeft += Math.max(120, el.clientWidth * 0.94) }
+  else if (e.key === 'PageUp' || e.key === 'ArrowLeft') { e.preventDefault(); el.scrollLeft -= Math.max(120, el.clientWidth * 0.94) }
 }
 const NOVEL_LINE_HEIGHTS = [1.5, 1.9, 2.4]
 const novelStyle = computed(() => ({
@@ -2244,11 +2255,30 @@ defineExpose({
 .novel-toc
   padding: 12px 8px
 // 分页(单页)模式:滚轮一屏一翻,滚动条隐藏
+// 分页(单页)模式:把正文排成「横向多列」,一列正好一屏 —— 这才是真正的翻页,
+// 而不是"滚轮一次滚一屏"(那种观感上仍然是滚动)。
 .drawer-novel-content.novel-paged
+  overflow-x: auto
+  overflow-y: hidden
   scroll-behavior: smooth
+  scroll-snap-type: x proximity
   &::-webkit-scrollbar
     width: 0
     height: 0
+  .novel-body
+    height: 100%
+    max-width: none
+    width: auto
+    column-width: calc(100vw - 56px)
+    column-gap: 56px
+    column-fill: auto
+    padding: 28px 28px 24px
+  .novel-chapter
+    column-span: none
+    break-before: column
+  .novel-image
+    break-inside: avoid
+    max-height: 62%
 .novel-toc-item
   padding: 8px 10px
   border-radius: 4px
