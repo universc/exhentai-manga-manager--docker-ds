@@ -563,7 +563,29 @@ const viewerToolbarList = computed(() => {
 })
 // 分组竖线:适应 / 缩放 之前各一条
 const viewerToolbarDividerBefore = (id) => id === 'fit' || id === 'zoom'
-const viewerToolbarTitle = (id) => ({
+// 文字模式:同一排按钮,标题与按钮文字换成语义相符的说法
+const novelToolbarTitle = (id) => {
+  if (!isNovelMode.value) return ''
+  return {
+    scroll: t('m.novelScrollPagedTip'),
+    singleDouble: t('m.novelColumnTip'),
+    direction: t('m.novelDirectionTip'),
+    fit: t('m.novelLineHeightTip', { n: novelLineHeight.value }),
+    thumbnail: t('m.novelToc'),
+    sidebar: showViewerSide.value ? t('m.novelHideToc') : t('m.novelShowToc'),
+    pin: viewerToolbarPinned.value ? t('m.unpinToolbar') : t('m.pinToolbar'),
+  }[id] || ''
+}
+const novelToolbarText = (id) => {
+  if (!isNovelMode.value) return ''
+  return {
+    scroll: novelPaged.value ? t('m.novelPaged') : t('m.novelScroll'),
+    singleDouble: novelTwoCol.value ? t('m.novelTwoCol') : t('m.novelOneCol'),
+    direction: novelVertical.value ? t('m.novelVertical') : t('m.novelHorizontal'),
+    fit: t('m.novelLineHeightShort') + ' ' + novelLineHeight.value,
+  }[id] || ''
+}
+const viewerToolbarTitle = (id) => novelToolbarTitle(id) || ({
   scroll: t('m.scrolling'),
   singleDouble: t('m.singlePage') + ' / ' + t('m.doublePage'),
   direction: t('m.dirTip'),
@@ -572,7 +594,7 @@ const viewerToolbarTitle = (id) => ({
   sidebar: showViewerSide.value ? t('m.hideSidebar') : t('m.showSidebar'),
   pin: viewerToolbarPinned.value ? t('m.unpinToolbar') : t('m.pinToolbar'),
 }[id] || '')
-const viewerToolbarText = (id) => ({
+const viewerToolbarText = (id) => novelToolbarText(id) || ({
   scroll: imageStyleType.value === 'scroll' ? t('m.scrollModeLabel') : t('m.pagingModeLabel'),
   singleDouble: isDoubleActive.value ? t('m.doublePage') : t('m.singlePage'),
   direction: readingDirectionLabel.value,
@@ -682,6 +704,8 @@ const zoomViewerImage = (dir) => {
 }
 // Ctrl+滚轮:以鼠标位置为锚点缩放,缩放后指针下的内容尽量保持不动
 const zoomByWheel = (event) => {
+  // 文字模式:Ctrl+滚轮同样用来调字号
+  if (isNovelMode.value) { adjustNovelFont(event.deltaY < 0 ? 1 : -1); return }
   const el = drawerViewerBody.value
   const dir = event.deltaY < 0 ? 1 : -1
   if (!el) { zoomViewerImage(dir); return }
@@ -1068,7 +1092,7 @@ const viewManga = (book, viewerHeight = '100%') => {
       })
     }
     // 只有确实要看缩略图(侧栏开着 / 缩略图视图)时才请求生成,否则一个缩略图都不算
-    if (showViewerSide.value || showThumbnail.value) requestThumbnails()
+    if (!isNovelMode.value && (showViewerSide.value || showThumbnail.value)) requestThumbnails()
     if (!setting.value.viewerType || setting.value.viewerType === 'original') {
       drawerVisibleViewer.value = true
       // 先亮 3 秒,让用户知道顶部有设置栏(鼠标移到顶部可随时唤出)

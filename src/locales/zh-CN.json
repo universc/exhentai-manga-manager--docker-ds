@@ -712,7 +712,13 @@
     "novelHorizontal": "横排",
     "novelPaged": "分页",
     "novelScroll": "连续滚动",
-    "novelNoToc": "这本书没有章节标题"
+    "novelNoToc": "这本书没有章节标题",
+    "novelScrollPagedTip": "连续滚动 / 单页翻页",
+    "novelColumnTip": "单栏 / 双栏",
+    "novelDirectionTip": "横排 / 竖排",
+    "novelToc": "章节目录",
+    "novelShowToc": "显示章节目录",
+    "novelHideToc": "隐藏章节目录"
   },
   "cm": {
     "title": "标题右键/长按菜单",

@@ -712,7 +712,13 @@
     "novelHorizontal": "橫排",
     "novelPaged": "分頁",
     "novelScroll": "連續捲動",
-    "novelNoToc": "這本書沒有章節標題"
+    "novelNoToc": "這本書沒有章節標題",
+    "novelScrollPagedTip": "連續捲動 / 單頁翻頁",
+    "novelColumnTip": "單欄 / 雙欄",
+    "novelDirectionTip": "橫排 / 直排",
+    "novelToc": "章節目錄",
+    "novelShowToc": "顯示章節目錄",
+    "novelHideToc": "隱藏章節目錄"
   },
   "cm": {
     "title": "標題右鍵/長按選單",

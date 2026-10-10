@@ -712,7 +712,13 @@
     "novelHorizontal": "Horizontal",
     "novelPaged": "Paged",
     "novelScroll": "Continuous",
-    "novelNoToc": "No chapter titles in this book"
+    "novelNoToc": "No chapter titles in this book",
+    "novelScrollPagedTip": "Continuous / Paged",
+    "novelColumnTip": "One / Two columns",
+    "novelDirectionTip": "Horizontal / Vertical",
+    "novelToc": "Chapters",
+    "novelShowToc": "Show chapters",
+    "novelHideToc": "Hide chapters"
   },
   "cm": {
     "title": "Title menu (right-click / long-press)",
