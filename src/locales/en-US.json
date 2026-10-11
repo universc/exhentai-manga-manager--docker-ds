@@ -722,7 +722,8 @@
     "novelWidthTip": "Text width {n}%",
     "novelWidthShort": "Width",
     "novelTwoPage": "Two pages",
-    "novelOnePage": "One page"
+    "novelOnePage": "One page",
+    "novelCloseToc": "Hide chapters"
   },
   "cm": {
     "title": "Title menu (right-click / long-press)",

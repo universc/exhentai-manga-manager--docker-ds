@@ -20,6 +20,7 @@
       >
         <!-- 文字模式:侧栏换成章节目录 -->
         <div class="sidebar-thumbnail-content novel-toc" v-if="isNovelMode">
+          <div class="novel-toc-close" @click="handleSidebarChange(false)">{{ $t('m.novelCloseToc') }}</div>
           <div v-for="(c, i) in novelChapters" :key="i" class="novel-toc-item" @click="novelJumpTo(c)">{{ c.title }}</div>
           <div v-if="!novelChapters.length" class="novel-toc-item">{{ $t('m.novelNoToc') }}</div>
         </div>
@@ -583,6 +584,9 @@ const novelToolbarText = (id) => {
     singleDouble: novelTwoCol.value ? t('m.novelTwoPage') : t('m.novelOnePage'),
     direction: novelVertical.value ? t('m.novelVertical') : t('m.novelHorizontal'),
     fit: t('m.novelWidthShort') + ' ' + novelWidthPercent.value + '%',
+    thumbnail: showViewerSide.value ? t('m.novelHideToc') : t('m.novelShowToc'),
+    sidebar: showViewerSide.value ? t('m.novelHideToc') : t('m.novelShowToc'),
+    pin: viewerToolbarPinned.value ? t('m.unpinToolbar') : t('m.pinToolbar'),
   }[id] || ''
 }
 const viewerToolbarTitle = (id) => novelToolbarTitle(id) || ({
@@ -974,6 +978,8 @@ const loadNovelContent = async (book) => {
       novelKind.value = res.kind || ''
       novelCharCount.value = res.charCount || 0
       isNovelMode.value = true
+      // 文字模式默认收起侧栏:目录要点开,不要一进来就占着半屏
+      showViewerSide.value = false
       // ⚠️ 必须立刻测一次:否则分页模式页宽停留在保底值(240px)、页数停在 1,
       //    表现就是「排版错乱 + 只能翻一页」。
       nextTick(() => { novelMeasure(); novelPageIndex.value = 0; startNovelResizeWatch() })
@@ -1175,6 +1181,8 @@ const viewManga = (book, viewerHeight = '100%') => {
           drawerVisibleViewer.value = true
           book.readCount += 1
           saveBook(book)
+      // 文字模式默认收起侧栏:目录要点开,不要一进来就占着半屏
+      showViewerSide.value = false
         } else if (r.charCount > 800) {
           isNovelMode.value = true
         nextTick(() => { novelMeasure(); novelPageIndex.value = 0; startNovelResizeWatch() })

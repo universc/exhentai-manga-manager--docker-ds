@@ -722,7 +722,8 @@
     "novelWidthTip": "正文寬度 {n}%",
     "novelWidthShort": "寬度",
     "novelTwoPage": "雙頁",
-    "novelOnePage": "單頁"
+    "novelOnePage": "單頁",
+    "novelCloseToc": "收起目錄"
   },
   "cm": {
     "title": "標題右鍵/長按選單",
