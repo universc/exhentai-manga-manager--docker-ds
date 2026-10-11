@@ -826,6 +826,8 @@ const novelKind = ref('')
 const novelCharCount = ref(0)
 const novelFontSize = ref(Number(localStorage.getItem('emm-novel-font-size')) || 19)
 // 「适应」按钮 = 正文宽度占比:100% → 90% → 80% → 70% → 60% → 回到 100%
+// 行距不再单独设按钮(按钮改成了正文宽度占比),排版用一个舒服的固定值
+const novelLineHeight = ref(1.9)
 const NOVEL_WIDTH_STEPS = [100, 90, 80, 70, 60]
 const novelWidthPercent = ref(Number(localStorage.getItem('emm-novel-width-percent')) || 100)
 // 双栏 = 一屏同时显示两页
