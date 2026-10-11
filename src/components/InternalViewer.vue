@@ -53,7 +53,7 @@
         @mouseleave="nextMangaButtonsVisible = false"
       >
                   <!-- 文字模式:txt / 没有图片的 epub -->
-          <div class="drawer-novel-content" v-if="!showThumbnail && isNovelMode" ref="novelScrollRef" :class="{ 'novel-paged': novelPaged }" @wheel.stop="onNovelWheel">
+          <div class="drawer-novel-content" v-if="!showThumbnail && isNovelMode" ref="novelScrollRef" :class="{ 'novel-paged': novelPaged }" @wheel.stop="onNovelWheel" @keydown="onNovelKeydown" @click="onNovelClick" tabindex="0">
             <div class="novel-body" :style="novelStyle" :class="{ 'novel-two-col': novelTwoCol, 'novel-vertical': novelVertical }">
               <template v-for="(blk, i) in novelBlocks" :key="i">
                 <div v-if="blk.kind === 'chapter'" :id="'nb-' + i" class="novel-chapter">{{ blk.title }}</div>
@@ -570,7 +570,7 @@ const novelToolbarTitle = (id) => {
     scroll: t('m.novelScrollPagedTip'),
     singleDouble: t('m.novelColumnTip'),
     direction: t('m.novelDirectionTip'),
-    fit: t('m.novelLineHeightTip', { n: novelLineHeight.value }),
+    fit: t('m.novelWidthTip', { n: novelWidthPercent.value }),
     thumbnail: t('m.novelToc'),
     sidebar: showViewerSide.value ? t('m.novelHideToc') : t('m.novelShowToc'),
     pin: viewerToolbarPinned.value ? t('m.unpinToolbar') : t('m.pinToolbar'),
@@ -580,9 +580,9 @@ const novelToolbarText = (id) => {
   if (!isNovelMode.value) return ''
   return {
     scroll: novelPaged.value ? t('m.novelPaged') : t('m.novelScroll'),
-    singleDouble: novelTwoCol.value ? t('m.novelTwoCol') : t('m.novelOneCol'),
+    singleDouble: novelTwoCol.value ? t('m.novelTwoPage') : t('m.novelOnePage'),
     direction: novelVertical.value ? t('m.novelVertical') : t('m.novelHorizontal'),
-    fit: t('m.novelLineHeightShort') + ' ' + novelLineHeight.value,
+    fit: t('m.novelWidthShort') + ' ' + novelWidthPercent.value + '%',
   }[id] || ''
 }
 const viewerToolbarTitle = (id) => novelToolbarTitle(id) || ({
@@ -825,55 +825,73 @@ const novelChapters = ref([])
 const novelKind = ref('')
 const novelCharCount = ref(0)
 const novelFontSize = ref(Number(localStorage.getItem('emm-novel-font-size')) || 19)
-const novelLineHeight = ref(Number(localStorage.getItem('emm-novel-line-height')) || 1.9)
+// 「适应」按钮 = 正文宽度占比:100% → 90% → 80% → 70% → 60% → 回到 100%
+const NOVEL_WIDTH_STEPS = [100, 90, 80, 70, 60]
+const novelWidthPercent = ref(Number(localStorage.getItem('emm-novel-width-percent')) || 100)
+// 双栏 = 一屏同时显示两页
 const novelTwoCol = ref(localStorage.getItem('emm-novel-two-col') === '1')
 const novelVertical = ref(localStorage.getItem('emm-novel-vertical') === '1')
+// 分页 = 像书一样一页一页翻(不是滚动)
 const novelPaged = ref(localStorage.getItem('emm-novel-paged') === '1')
 const novelScrollRef = ref(null)
-// 分页(单页)模式:滚轮一次翻一屏,而不是连续滚动
-const onNovelWheel = (e) => {
-  if (!novelPaged.value || !isNovelMode.value) return
-  // 分页模式:内容被排成横向多列(一列 = 一屏宽),滚轮/触摸板横向翻一屏
-  e.preventDefault()
-  const el = novelScrollRef.value
-  if (!el) return
-  const step = Math.max(120, el.clientWidth * 0.94)
-  const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
-  el.scrollLeft += (delta > 0 ? 1 : -1) * step
-}
-// 分页模式的左右键翻页
-const onNovelKeydown = (e) => {
-  if (!isNovelMode.value || !novelPaged.value) return
-  const el = novelScrollRef.value
-  if (!el) return
-  if (e.key === 'PageDown' || e.key === 'ArrowRight') { e.preventDefault(); el.scrollLeft += Math.max(120, el.clientWidth * 0.94) }
-  else if (e.key === 'PageUp' || e.key === 'ArrowLeft') { e.preventDefault(); el.scrollLeft -= Math.max(120, el.clientWidth * 0.94) }
-}
-const NOVEL_LINE_HEIGHTS = [1.5, 1.9, 2.4]
-const novelStyle = computed(() => ({
-  '--novel-font-size': novelFontSize.value + 'px',
-  '--novel-line-height': String(novelLineHeight.value),
-  '--novel-columns': novelTwoCol.value ? 2 : 1
-}))
+const NOVEL_GAP = 48
+const novelViewportW = ref(0)
+const novelPageIndex = ref(0)
+const novelPageCount = ref(1)
+// 一「页」的宽度:单页 = 可视宽;双页 = 可视宽的一半(即一屏两页)
+const novelPageWidth = computed(() => {
+  const avail = Math.max(240, novelViewportW.value - 32)
+  return novelTwoCol.value ? Math.max(160, Math.floor((avail - NOVEL_GAP) / 2)) : avail
+})
+const novelStep = computed(() => (novelTwoCol.value ? 2 : 1) * (novelPageWidth.value + NOVEL_GAP))
+// 正文样式:分页时用精确列宽排版;连续滚动时只限制正文宽度(宽度占比)
+const novelStyle = computed(() => {
+  const base = {
+    '--novel-font-size': novelFontSize.value + 'px',
+    '--novel-line-height': String(novelLineHeight.value),
+  }
+  if (novelPaged.value) {
+    return { ...base, columnWidth: novelPageWidth.value + 'px', columnGap: NOVEL_GAP + 'px' }
+  }
+  return { ...base, maxWidth: Math.round((novelWidthPercent.value / 100) * 900) + 'px' }
+})
 const novelImageSrc = (blk) => (blk && (blk.url || blk.absolutePath)) || ''
-// 字号:直接复用工具栏那个放大/缩小按钮
+const novelMeasure = () => {
+  const el = novelScrollRef.value
+  if (!el) return
+  novelViewportW.value = el.clientWidth
+  const step = novelStep.value || 1
+  novelPageCount.value = Math.max(1, Math.round(el.scrollWidth / step))
+}
+const goNovelPage = (delta) => {
+  const el = novelScrollRef.value
+  if (!el || !novelPaged.value) return
+  const next = Math.min(novelPageCount.value - 1, Math.max(0, novelPageIndex.value + delta))
+  if (next === novelPageIndex.value) return
+  novelPageIndex.value = next
+  el.scrollLeft = next * novelStep.value
+}
+// 字号:仍然用原来的放大/缩小按钮
 const adjustNovelFont = (d) => {
   novelFontSize.value = Math.min(34, Math.max(13, novelFontSize.value + d))
   localStorage.setItem('emm-novel-font-size', String(novelFontSize.value))
   showViewerTip(t('m.novelFontSizeTip', { n: novelFontSize.value }))
+  nextTick(() => { novelMeasure(); novelPageIndex.value = 0; const el = novelScrollRef.value; if (el) el.scrollLeft = 0 })
 }
-// 行距:复用工具栏的「适应」按钮,三档循环
-const cycleNovelLineHeight = () => {
-  const i = NOVEL_LINE_HEIGHTS.indexOf(Number(novelLineHeight.value))
-  const next = NOVEL_LINE_HEIGHTS[(i + 1) % NOVEL_LINE_HEIGHTS.length]
-  novelLineHeight.value = next
-  localStorage.setItem('emm-novel-line-height', String(next))
-  showViewerTip(t('m.novelLineHeightTip', { n: next }))
+// 「适应」按钮:正文宽度占比,点一下小 10%
+const cycleNovelWidth = () => {
+  const i = NOVEL_WIDTH_STEPS.indexOf(Number(novelWidthPercent.value))
+  const next = NOVEL_WIDTH_STEPS[(i + 1) % NOVEL_WIDTH_STEPS.length]
+  novelWidthPercent.value = next
+  localStorage.setItem('emm-novel-width-percent', String(next))
+  showViewerTip(t('m.novelWidthTip', { n: next }))
+  nextTick(() => { novelMeasure(); novelPageIndex.value = 0; const el = novelScrollRef.value; if (el) el.scrollLeft = 0 })
 }
 const toggleNovelTwoCol = () => {
   novelTwoCol.value = !novelTwoCol.value
   localStorage.setItem('emm-novel-two-col', novelTwoCol.value ? '1' : '0')
-  showViewerTip(novelTwoCol.value ? t('m.novelTwoCol') : t('m.novelOneCol'))
+  showViewerTip(novelTwoCol.value ? t('m.novelTwoPage') : t('m.novelOnePage'))
+  nextTick(() => { novelMeasure(); novelPageIndex.value = 0; const el = novelScrollRef.value; if (el) el.scrollLeft = 0 })
 }
 const toggleNovelVertical = () => {
   novelVertical.value = !novelVertical.value
@@ -884,6 +902,35 @@ const toggleNovelPaged = () => {
   novelPaged.value = !novelPaged.value
   localStorage.setItem('emm-novel-paged', novelPaged.value ? '1' : '0')
   showViewerTip(novelPaged.value ? t('m.novelPaged') : t('m.novelScroll'))
+  nextTick(() => { novelMeasure(); novelPageIndex.value = 0; const el = novelScrollRef.value; if (el) el.scrollLeft = 0 })
+}
+// 分页模式:滚轮 = 翻页(不是滚动),所以永远不会出现「滚到半页、内容错乱」
+const onNovelWheel = (e) => {
+  if (!isNovelMode.value || !novelPaged.value) return
+  e.preventDefault()
+  const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
+  if (Math.abs(delta) < 4) return
+  goNovelPage(delta > 0 ? 1 : -1)
+}
+// 分页模式:像图片那样点画面翻页 —— 左半屏上一页,右半屏下一页
+const onNovelClick = (e) => {
+  if (!isNovelMode.value) return
+  if (!novelPaged.value) return
+  const el = novelScrollRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const x = e.clientX - rect.left
+  // 记住上一次点的位置,避免误拖;区域判定与图片阅读器一致(中间 1/4 留给工具栏唤出)
+  // 与图片阅读器一致:中间 1/4 区域用来唤出设置栏,不翻页;左半屏上一页,右半屏下一页
+  const w = rect.width
+  if (x > w * 0.375 && x < w * 0.625) { flashViewerToolbar(); return }
+  if (x < rect.width * 0.5) goNovelPage(-1)
+  else goNovelPage(1)
+}
+const onNovelKeydown = (e) => {
+  if (!isNovelMode.value || !novelPaged.value) return
+  if (e.key === 'PageDown' || e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); goNovelPage(1) }
+  else if (e.key === 'PageUp' || e.key === 'ArrowLeft') { e.preventDefault(); goNovelPage(-1) }
 }
 // 目录跳转:章节块都带 id(nb-<块序号>)
 const novelJumpTo = (chapter) => {
@@ -2258,10 +2305,11 @@ defineExpose({
 // 分页(单页)模式:把正文排成「横向多列」,一列正好一屏 —— 这才是真正的翻页,
 // 而不是"滚轮一次滚一屏"(那种观感上仍然是滚动)。
 .drawer-novel-content.novel-paged
-  overflow-x: auto
-  overflow-y: hidden
-  scroll-behavior: smooth
-  scroll-snap-type: x proximity
+  // 分页模式不许手动滚:只能一页页翻,避免滚到半页导致内容错乱
+  overflow: hidden
+  user-select: none
+  -webkit-user-select: none
+  cursor: pointer
   &::-webkit-scrollbar
     width: 0
     height: 0
@@ -2269,16 +2317,16 @@ defineExpose({
     height: 100%
     max-width: none
     width: auto
-    column-width: calc(100vw - 56px)
-    column-gap: 56px
     column-fill: auto
-    padding: 28px 28px 24px
+    padding: 26px 16px 18px
+    user-select: none
+    -webkit-user-select: none
   .novel-chapter
     column-span: none
     break-before: column
   .novel-image
     break-inside: avoid
-    max-height: 62%
+    max-height: 58vh
 .novel-toc-item
   padding: 8px 10px
   border-radius: 4px

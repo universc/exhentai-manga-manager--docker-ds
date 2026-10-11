@@ -718,7 +718,11 @@
     "novelDirectionTip": "Horizontal / Vertical",
     "novelToc": "Chapters",
     "novelShowToc": "Show chapters",
-    "novelHideToc": "Hide chapters"
+    "novelHideToc": "Hide chapters",
+    "novelWidthTip": "Text width {n}%",
+    "novelWidthShort": "Width",
+    "novelTwoPage": "Two pages",
+    "novelOnePage": "One page"
   },
   "cm": {
     "title": "Title menu (right-click / long-press)",

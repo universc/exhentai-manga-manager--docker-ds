@@ -718,7 +718,11 @@
     "novelDirectionTip": "横排 / 竖排",
     "novelToc": "章节目录",
     "novelShowToc": "显示章节目录",
-    "novelHideToc": "隐藏章节目录"
+    "novelHideToc": "隐藏章节目录",
+    "novelWidthTip": "正文宽度 {n}%",
+    "novelWidthShort": "宽度",
+    "novelTwoPage": "双页",
+    "novelOnePage": "单页"
   },
   "cm": {
     "title": "标题右键/长按菜单",

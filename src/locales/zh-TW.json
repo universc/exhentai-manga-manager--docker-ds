@@ -718,7 +718,11 @@
     "novelDirectionTip": "橫排 / 直排",
     "novelToc": "章節目錄",
     "novelShowToc": "顯示章節目錄",
-    "novelHideToc": "隱藏章節目錄"
+    "novelHideToc": "隱藏章節目錄",
+    "novelWidthTip": "正文寬度 {n}%",
+    "novelWidthShort": "寬度",
+    "novelTwoPage": "雙頁",
+    "novelOnePage": "單頁"
   },
   "cm": {
     "title": "標題右鍵/長按選單",
