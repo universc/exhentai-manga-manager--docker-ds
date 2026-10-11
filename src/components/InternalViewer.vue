@@ -858,6 +858,15 @@ const novelStyle = computed(() => {
   return { ...base, maxWidth: Math.round((novelWidthPercent.value / 100) * 900) + 'px' }
 })
 const novelImageSrc = (blk) => (blk && (blk.url || blk.absolutePath)) || ''
+let novelResizeObserver = null
+// 容器尺寸变化(窗口缩放、侧栏开合)就重测页宽
+const startNovelResizeWatch = () => {
+  const el = novelScrollRef.value
+  if (!el || typeof ResizeObserver === 'undefined') return
+  if (novelResizeObserver) novelResizeObserver.disconnect()
+  novelResizeObserver = new ResizeObserver(() => { novelMeasure() })
+  novelResizeObserver.observe(el)
+}
 const novelMeasure = () => {
   const el = novelScrollRef.value
   if (!el) return
@@ -868,10 +877,25 @@ const novelMeasure = () => {
 const goNovelPage = (delta) => {
   const el = novelScrollRef.value
   if (!el || !novelPaged.value) return
-  const next = Math.min(novelPageCount.value - 1, Math.max(0, novelPageIndex.value + delta))
-  if (next === novelPageIndex.value) return
+  const step = novelStep.value || 1
+  // 直接按当前位置反推页码:比「预估页数」可靠(预估会因 padding/取整差一页)
+  const cur = Math.round(el.scrollLeft / step)
+  const max = Math.max(0, Math.ceil((el.scrollWidth - el.clientWidth) / step))
+  const next = Math.min(max, Math.max(0, cur + delta))
   novelPageIndex.value = next
-  el.scrollLeft = next * novelStep.value
+  el.scrollLeft = next * step
+}
+// 目录跳转:分页模式下必须按「页」跳,否则 scrollIntoView 会破坏分页又变回自由滚动
+const novelJumpToPageOf = (blockIndex) => {
+  const el = novelScrollRef.value
+  if (!el || !novelPaged.value) return false
+  const target = document.getElementById('nb-' + blockIndex)
+  if (!target) return false
+  const step = novelStep.value || 1
+  const page = Math.max(0, Math.floor((target.offsetLeft - 16) / step))
+  novelPageIndex.value = page
+  el.scrollLeft = page * step
+  return true
 }
 // 字号:仍然用原来的放大/缩小按钮
 const adjustNovelFont = (d) => {
@@ -937,6 +961,7 @@ const onNovelKeydown = (e) => {
 // 目录跳转:章节块都带 id(nb-<块序号>)
 const novelJumpTo = (chapter) => {
   if (!chapter) return
+  if (novelJumpToPageOf(chapter.blockIndex)) return
   const el = document.getElementById('nb-' + chapter.blockIndex)
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
@@ -949,6 +974,9 @@ const loadNovelContent = async (book) => {
       novelKind.value = res.kind || ''
       novelCharCount.value = res.charCount || 0
       isNovelMode.value = true
+      // ⚠️ 必须立刻测一次:否则分页模式页宽停留在保底值(240px)、页数停在 1,
+      //    表现就是「排版错乱 + 只能翻一页」。
+      nextTick(() => { novelMeasure(); novelPageIndex.value = 0; startNovelResizeWatch() })
     } else {
       novelBlocks.value = []
       isNovelMode.value = false
@@ -1109,6 +1137,7 @@ const viewManga = (book, viewerHeight = '100%') => {
   isNovelMode.value = false
   novelBlocks.value = []
   novelChapters.value = []
+  if (novelResizeObserver) { novelResizeObserver.disconnect(); novelResizeObserver = null }
   // 心跳:浏览器被强关时前端来不及发 false,主进程靠「3 分钟没心跳」自动放开后台任务
   if (viewerHeartbeat) clearInterval(viewerHeartbeat)
   viewerHeartbeat = setInterval(() => { ipcRenderer.invoke('set-viewer-active', true) }, 60000)
@@ -1148,6 +1177,7 @@ const viewManga = (book, viewerHeight = '100%') => {
           saveBook(book)
         } else if (r.charCount > 800) {
           isNovelMode.value = true
+        nextTick(() => { novelMeasure(); novelPageIndex.value = 0; startNovelResizeWatch() })
         }
       })
     }
@@ -2338,6 +2368,8 @@ defineExpose({
   &:hover
     background: var(--el-fill-color-light, rgba(0, 0, 0, .05))
 .drawer-novel-content
+  user-select: none          // 禁止复制(和图片阅读器一致)
+  -webkit-user-select: none
   width: 100%
   height: 100%
   overflow-y: auto
