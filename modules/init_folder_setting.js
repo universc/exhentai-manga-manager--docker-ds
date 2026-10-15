@@ -211,6 +211,20 @@ const prepareSetting = () => {
       ipb_pass_hash: '',
       ipb_member_id: '',
       star: '',
+      // EH 在线漫画库(设置 → 常用 → EH设置 → 登录后出现):
+      // ehOnlineUser    = 登录成功后拿到的论坛用户名(只用于显示「已登录:xxx」)
+      // ehOnlineEnabled = 是否在库列表/切换库循环里显示「EH在线」这一站
+      // ehOnlineSource  = EH在线 上次选择的来源(front 首页 / favorites 收藏 / search 搜索)
+      ehOnlineUser: '',
+      ehOnlineEnabled: false,
+      ehOnlineSource: 'front',
+      // 下载(设置 → 高级 → 下载设置):
+      // downloadPath        = 下载到哪个文件夹(空 = 没设置,点下载时提示先去设置)
+      // downloadConcurrency = 同时下载几张图(1-10)
+      // downloadOriginal    = 整本下载默认是否下「原图」(每个入口仍可单独选)
+      downloadPath: '',
+      downloadConcurrency: 4,
+      downloadOriginal: false,
       showComment: true,
       requireGap: 3000,
       thumbnailColumn: 10,

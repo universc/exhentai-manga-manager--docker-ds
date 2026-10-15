@@ -12,6 +12,7 @@ const { ipcMain, setBroadcast } = require('./web-electron-shim.js')
 const { STORE_PATH } = require('./modules/init_folder_setting.js')
 const auth = require('./modules/auth.js')
 const iprules = require('./modules/iprules.js')
+const ehLogin = require('./modules/ehLogin.js')
 auth.loadUsers(STORE_PATH)
 iprules.loadRules(STORE_PATH)
 
@@ -310,6 +311,30 @@ app.get('/api/file', requireLogin, async (req, res) => {
 })
 
 // ---------- 目录列表(网页版文件夹/文件选择器) ----------
+// EH 在线图片代理:原图主机(*.hath.network)浏览器直连基本不可达,
+// 在线读图与页预览一律由服务端带 Cookie + 代理取回再转发。
+// 只放行 EH 的几个域名 —— 否则这就是一个「服务端任意 URL 代理」。
+const EX_IMAGE_HOST_RE = /^https:\/\/([^/]+\.)?(hath\.network|ehgt\.org|e-hentai\.org|exhentai\.org)(:\d+)?\//i
+app.get('/api/ex-image', requireLogin, async (req, res) => {
+  const url = String(req.query.url || '')
+  if (!EX_IMAGE_HOST_RE.test(url)) return res.status(400).send('bad url')
+  try {
+    const s = await settingForAccount(profileNameOf(sessionOf(req)))
+    const r = await ehLogin.request(url, {
+      proxy: s.proxy,
+      raw: true,
+      referer: 'https://e-hentai.org/',
+      timeout: 30000
+    })
+    if (r.status !== 200) return res.status(r.status || 502).send('upstream ' + r.status)
+    res.set('Content-Type', r.headers['content-type'] || 'image/jpeg')
+    res.set('Cache-Control', 'private, max-age=3600')
+    res.send(r.buffer)
+  } catch (e) {
+    res.status(502).send(String((e && e.message) || e))
+  }
+})
+
 app.get('/api/list-dir', requireLogin, (req, res) => {
   let p = String(req.query.path || '')
   if (!p) {

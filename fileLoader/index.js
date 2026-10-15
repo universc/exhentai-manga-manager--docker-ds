@@ -3,7 +3,7 @@ const path = require('node:path')
 const { createHash } = require('crypto')
 const sharp = require('sharp')
 const { getFolderlist, solveBookTypeFolder, getImageListFromFolder, deleteImageFromFolder } = require('./folder.js')
-const { getArchivelist, solveBookTypeArchive, getImageListFromArchive, deleteImageFromArchive } = require('./archive.js')
+const { getArchivelist, solveBookTypeArchive, getImageListFromArchive, deleteImageFromArchive, listArchiveImages, extractArchiveFiles } = require('./archive.js')
 const { getZipFilelist, solveBookTypeZip, getImageListFromZip } = require('./zip.js')
 const { solveBookTypeNovel, solveBookTypeEpub, getImageListFromEpub, getEpubText } = require('./novel.js')
 const { TEMP_PATH, COVER_PATH, VIEWER_PATH } = require('../modules/init_folder_setting.js')
@@ -142,6 +142,8 @@ module.exports = {
   getBookFilelist,
   geneCover,
   getImageListByBook,
+  listArchiveImages,
+  extractArchiveFiles,
   deleteImageFromBook,
   sha1File,
   getEpubText

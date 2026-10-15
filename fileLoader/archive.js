@@ -85,6 +85,23 @@ const getImageListFromArchive = async (filepath, VIEWER_PATH) => {
   }))
 }
 
+// 只列出压缩包里的图片条目名(不解压)—— 详情页「预览」用,避免为一个缩略图条解压整包
+const listArchiveImages = async (filepath) => {
+  const output = await spawnPromise(_7z, ['l', filepath, '-slt', '-sccUTF-8', '-p123456'])
+  const paths = output.split(/\r?\n/)
+    .filter(s => s.startsWith('Path') && !s.includes('__MACOSX'))
+    .map(s => (/= (.*)$/.exec(s) || [])[1] || '')
+    .filter(Boolean)
+  const images = paths.filter(p => ['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif'].includes(path.extname(p).toLowerCase()))
+  return images.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+}
+
+// 只解压指定的几个条目到 targetDir(压缩包内部目录结构会被保留)
+const extractArchiveFiles = async (filepath, names, targetDir) => {
+  if (!names || !names.length) return
+  await spawnPromise(_7z, ['x', '-o' + targetDir, '-p123456', '--', filepath, ...names], 2 * 60 * 1000)
+}
+
 const deleteImageFromArchive = async (filename, filepath) => {
   await spawnPromise(_7z, ['d', '-p123456', '--', filepath, filename])
   return true
@@ -119,6 +136,8 @@ const spawnPromise = (commmand, argument, timeoutMs = 30 * 1000) => {
 
 module.exports = {
   getArchivelist,
+  listArchiveImages,
+  extractArchiveFiles,
   solveBookTypeArchive,
   getImageListFromArchive,
   deleteImageFromArchive

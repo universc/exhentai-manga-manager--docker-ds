@@ -215,9 +215,40 @@ if (typeof window !== 'undefined' && !window.ipcRenderer) {
       case 'open-url':
         if (args[0]) window.open(args[0], '_blank')
         return
-      case 'copy-text-to-clipboard':
-        try { await navigator.clipboard.writeText(args[0] || '') } catch (e) { console.warn(e) }
-        return
+      case 'copy-text-to-clipboard': {
+        // ⚠️ 局域网 http 页面(例如 http://192.168.1.10:10000)不是安全上下文,
+        //    navigator.clipboard 根本不存在 —— 以前这里静默失败,用户点「复制磁力」毫无反应。
+        //    退回 textarea + execCommand('copy')(老办法,但这条路上仍然有效),并把成败返回给调用方。
+        const text = String(args[0] == null ? '' : args[0])
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text)
+            return true
+          }
+        } catch (e) { /* 继续走下面的兜底 */ }
+        try {
+          const ta = document.createElement('textarea')
+          ta.value = text
+          ta.setAttribute('readonly', 'readonly')
+          ta.style.position = 'fixed'
+          ta.style.top = '-1000px'
+          ta.style.opacity = '0'
+          document.body.appendChild(ta)
+          ta.select()
+          ta.setSelectionRange(0, text.length)
+          const ok = document.execCommand('copy')
+          document.body.removeChild(ta)
+          return ok
+        } catch (e) {
+          console.warn('[clipboard] 复制失败', e)
+          return false
+        }
+      }
+      case 'read-text-from-clipboard':
+        try {
+          if (navigator.clipboard && window.isSecureContext) return await navigator.clipboard.readText()
+        } catch (e) { /* 下面的兜底同样读不到,返回空串 */ }
+        return ''
       case 'read-text-from-clipboard':
         try { return await navigator.clipboard.readText() } catch (e) { return '' }
       case 'get-locale':

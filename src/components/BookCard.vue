@@ -1,10 +1,20 @@
 <template>
   <div class="book-card" :class="{'fill-cover': fillCover}">
+    <!-- 种子:这个画廊确实有种子时才出现。挂在**卡片框**的右下角(不在封面里),
+         图标是用户给的藤蔓图,压在框角上像是藤蔓缠在框上;不显示数量 -->
+    <button
+      v-if="book.torrentCount > 0"
+      class="book-card-torrent"
+      :title="$t('m.torrent') + ' (' + book.torrentCount + ')'"
+      @click.stop="$emit('openTorrents', book)"
+    >
+      <img :src="vineIcon" alt="torrent" />
+    </button>
     <!-- ================= 经典卡片布局(默认;原版布局原样保留) ================= -->
     <template v-if="!fillCover">
     <p class="book-title" v-if="!setting.hideTitle"
       @click="$emit('titleClick')"
-      @contextmenu="onMangaTitleContextMenu($event, book)"
+      @contextmenu="onTitleContextMenu($event)"
       :title="getDisplayTitle(book)"
     >{{getDisplayTitle(book)}}</p>
     <div class="book-cover-frame">
@@ -23,7 +33,7 @@
         @touchend="endCoverPress"
         @touchmove.passive="cancelCoverPress"
         @touchcancel="cancelCoverPress"
-        @contextmenu="$emit('onBookContextMenu', $event, book)"
+        @contextmenu="onCoverContextMenu($event)"
         @load="coverLoading = false"
         @error="onCoverError"
       />
@@ -32,17 +42,19 @@
         <el-icon class="is-loading" :size="26"><Loading /></el-icon>
         <span class="emm-eq pixel-only"><i></i><i></i><i></i><i></i></span>
       </div>
-      <el-tag class="book-card-language" size="small" v-if="!setting.hideReadCount"
+      <el-tag class="book-card-language" size="small" v-if="book.historyTime || !setting.hideReadCount"
         :type="isChineseTranslatedManga(book) ? 'danger' : 'info'"
-        @click="$emit('handleSearchString', `:count=${book.readCount}`)"
-      >{{book.readCount}}</el-tag>
+        @click="onReadCountClick"
+      >{{ book.historyTime ? historyTimeText : (book.online ? 'EH' : book.readCount) }}</el-tag>
       <el-tag class="book-card-pagecount" size="small" type="danger" v-if="!setting.hidePageCount && book.pageDiff && book.pageCount != null" @click="$emit('pageCountClick')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
       <el-tag class="book-card-pagecount" size="small" type="info" v-else-if="!setting.hidePageCount && book.pageCount != null" @click="$emit('pageCountClick')">{{ book.pageCount }}P</el-tag>
       <el-icon
         v-if="!setting.hideBookmarkButton && !viewerRole"
         :size="30"
-        :color="book.mark ? '#E6A23C' : '#666666'"
-        class="book-card-mark" @click="switchMark(book)"
+        :color="markColor(book)"
+        class="book-card-mark"
+        :title="book.online ? $t('m.favorite') : ''"
+        @click="onMarkClick(book)"
       ><BookmarkTwotone /></el-icon>
     </div>
     <div class="collect-tag">
@@ -67,14 +79,16 @@
         <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('yueClick')">{{$t('m.re')}}</el-button>
         <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('duClick')">{{$t('m.ad')}}</el-button>
       </el-button-group>
+      <!-- 这个「标签」格:有类别就显示所属类别(如 Misc / Western),没有才显示 tagged / non-tag 状态;悬停可看真实状态 -->
       <el-tag
         v-if="!setting.hideNonTag"
         class="book-status-tag"
         effect="plain"
         :type="book.status === 'non-tag' ? 'info' : book.status === 'tagged' ? 'success' : 'warning'"
-        @click="$emit('searchFromTag', book.status)"
-      >{{book.status}}</el-tag>
-      <el-rate v-if="!setting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole" @change="saveBook(Object.assign({}, book, {rating: bookRating}))"/>
+        :title="book.status"
+        @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
+      >{{ book.category || book.status }}</el-tag>
+      <el-rate v-if="!setting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
     </div>
     </template>
     <!-- ================= 填充封面布局(设置 → 显示选项「填充封面」打开后) ================= -->
@@ -89,7 +103,7 @@
         @touchend="endCoverPress"
         @touchmove.passive="cancelCoverPress"
         @touchcancel="cancelCoverPress"
-        @contextmenu="$emit('onBookContextMenu', $event, book)"
+        @contextmenu="onCoverContextMenu($event)"
         @load="coverLoading = false"
         @error="onCoverError"
       />
@@ -105,12 +119,12 @@
         <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
       </div>
       <div class="fill-top" v-if="fillTopShown || (!setting.hideBookmarkButton && !viewerRole)">
-        <el-tag class="fill-badge" size="small" v-if="!setting.hideReadCount"
-          @click="$emit('handleSearchString', `:count=${book.readCount}`)"
-        >{{book.readCount}}</el-tag>
+        <el-tag class="fill-badge" size="small" v-if="book.historyTime || !setting.hideReadCount"
+          @click="onReadCountClick"
+        >{{ book.historyTime ? historyTimeText : (book.online ? 'EH' : book.readCount) }}</el-tag>
         <p class="fill-title" v-if="!setting.hideTitle"
           @click="$emit('titleClick')"
-          @contextmenu="onMangaTitleContextMenu($event, book)"
+          @contextmenu="onTitleContextMenu($event)"
           :title="getDisplayTitle(book)"
         >{{getDisplayTitle(book)}}</p>
         <!-- 收藏按钮:与角标/标题同一行;标题在角标与收藏按钮之间居中,
@@ -118,9 +132,10 @@
         <el-icon
           v-if="!setting.hideBookmarkButton && !viewerRole"
           :size="24"
-          :color="book.mark ? '#F7BA2A' : '#ffffff'"
+          :color="book.online ? (book.favcat == null ? '#ffffff' : '#F7BA2A') : (book.mark ? '#F7BA2A' : '#ffffff')"
           class="fill-mark"
-          @click="switchMark(book)"
+          :title="book.online ? $t('m.favorite') : ''"
+          @click="onMarkClick(book)"
         ><BookmarkTwotone /></el-icon>
       </div>
       <div class="fill-footer" v-if="fillFooterShown">
@@ -150,9 +165,10 @@
           <el-tag
             v-if="!setting.hideNonTag"
             class="fill-badge"
-            @click="$emit('searchFromTag', book.status)"
-          >{{book.status}}</el-tag>
-          <el-rate v-if="!setting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole" @change="saveBook(Object.assign({}, book, {rating: bookRating}))"/>
+            :title="book.status"
+            @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
+          >{{ book.category || book.status }}</el-tag>
+          <el-rate v-if="!setting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
         </div>
       </div>
     </template>
@@ -163,6 +179,8 @@
 import { ref, watchEffect, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { BookmarkTwotone } from '@vicons/material'
+// 用户给的藤蔓图(白底已抠成透明):卡片右下角的「种子」按钮用它
+import vineIcon from '../assets/vine-torrent.png'
 import { Loading } from '@element-plus/icons-vue'
 import ContextMenu from '@imengyu/vue3-context-menu'
 
@@ -224,6 +242,10 @@ const emit = defineEmits([
   'yueClick',
   'duClick',
   'pageCountClick',
+  // EH在线:点收藏星 → 账号收藏(由 App 处理,走 EH 的 gallerypopups.php)
+  'onlineFavorite',
+  // 卡片右下角的种子按钮 → 打开种子列表
+  'openTorrents',
   // 长按卡片上的收藏标签 → 弹出简易标签编辑器(筛选 / 全库重命名 / 全库删除 等)
   'tagLongPress',
 ])
@@ -231,6 +253,37 @@ const emit = defineEmits([
 const props = defineProps({
   book: Object
 })
+
+// 在线画廊不是本地书:本地右键菜单(移动/删除/超分…)、评分写回都不能碰
+const onTitleContextMenu = (e) => { onMangaTitleContextMenu(e, props.book) }
+// 在线画廊不是本地书:本地右键菜单(移动/删除/超分…)、评分写回都不能碰。
+// 例外:历史条目 —— 「从历史中移除」是它唯一的动作,在线画廊也要有这个入口
+// 在线画廊右键也弹菜单(与本地一致);菜单项由 App 按「对在线有没有意义」挑
+const onCoverContextMenu = (e) => { emit('onBookContextMenu', e, props.book) }
+// 收藏星:本地书看 mark,在线画廊看账号收藏状态(favcat 0-9;null = 没收藏)
+const markColor = (book) => book.online
+  ? (book.favcat == null ? '#666666' : '#E6A23C')
+  : (book.mark ? '#E6A23C' : '#666666')
+const onMarkClick = (book) => { if (book.online) emit('onlineFavorite', book); else switchMark(book) }
+
+// 历史模式:用原本那个角标位置显示「阅读时间」(不新增元素),像 JHenTai 的历史那样
+const historyTimeText = computed(() => {
+  const ts = Number(props.book?.historyTime) || 0
+  if (!ts) return ''
+  const diff = Math.floor(Date.now() / 1000) - ts
+  if (diff < 60) return t('m.historyJustNow')
+  if (diff < 3600) return t('m.historyMinutesAgo', { n: Math.floor(diff / 60) })
+  if (diff < 86400) return t('m.historyHoursAgo', { n: Math.floor(diff / 3600) })
+  if (diff < 86400 * 30) return t('m.historyDaysAgo', { n: Math.floor(diff / 86400) })
+  const d = new Date(ts * 1000)
+  return `${d.getMonth() + 1}-${d.getDate()}`
+})
+// 阅读次数角标:在线画廊显示 ☁️(不是本地阅读次数),点它也不做「按次数筛选」
+const onReadCountClick = () => {
+  if (props.book?.online) return
+  emit('handleSearchString', ':count=' + props.book.readCount)
+}
+const onRateChange = () => { if (props.book?.online) return; saveBook(Object.assign({}, props.book, { rating: bookRating.value })) }
 
 const bookRating = ref(props.book.rating)
 
@@ -241,10 +294,15 @@ watchEffect(() => {
 // 封面加载动画:封面路径变化 / 懒加载生成中保持转圈,<img> 加载完成由 @load 关闭
 const coverLoading = ref(true)
 // 封面懒加载:路径为空(扫描未生成)或加载失败时,按需生成封面
-const onCoverError = () => { coverLoading.value = true; ensureBookCover(props.book) }
+const onCoverError = () => {
+  // 在线画廊的封面是远程地址,没有「本地封面生成」这回事
+  if (props.book?.online) { coverLoading.value = false; return }
+  coverLoading.value = true
+  ensureBookCover(props.book)
+}
 watch(() => props.book.coverPath, (v) => {
   coverLoading.value = true
-  if (!v) ensureBookCover(props.book)
+  if (!v && !props.book?.online) ensureBookCover(props.book)
 }, { immediate: true })
 
 // ---------- 封面单击/双击分离:双击时取消单击动作 ----------
@@ -288,6 +346,8 @@ const onCoverDblClick = (e) => {
 let tagPressTimer = null
 let tagLongPressed = false
 const startTagPress = (tag) => {
+  // 在线画廊的标签不在本地库里,长按弹「标签编辑器」没有意义(而且会写库)
+  if (props.book?.online) return
   tagLongPressed = false
   clearTimeout(tagPressTimer)
   tagPressTimer = setTimeout(() => {
@@ -502,7 +562,7 @@ const onMangaTitleContextMenu = (e, book) => {
   padding: 0 2px
   margin-right: 6px
   cursor: pointer
-  width: 56px
+  min-width: 56px
 .el-rate
   display: inline-block
   height: 18px
@@ -641,4 +701,24 @@ const onMangaTitleContextMenu = (e, book) => {
     &.is-disabled .el-rate__item
       color: rgba(255, 255, 255, .55)
       cursor: auto
+// 「种子」按钮:挂在卡片框的右下角(用用户给的藤蔓图,只有确实有种子才出现)
+.book-card-torrent
+  position: absolute
+  right: -6px
+  bottom: -6px
+  z-index: 4
+  padding: 0
+  border: none
+  background: transparent
+  cursor: pointer
+  line-height: 0
+  opacity: .95
+  img
+    width: 34px
+    height: 40px
+    object-fit: contain
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .3))
+  &:hover
+    opacity: 1
+    transform: scale(1.08)
 </style>

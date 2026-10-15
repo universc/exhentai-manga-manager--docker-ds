@@ -37,14 +37,15 @@
         <el-row class="book-detail-function">
           <el-descriptions :column="1">
             <el-descriptions-item :label="$t('m.pageCount')+':'" :class-name="bookDetail.pageDiff ? 'text-red' : ''">
-              {{bookDetail.pageCount}} | {{bookDetail.filecount}}
+              {{ isOnline ? bookDetail.pageCount : (bookDetail.pageCount + ' | ' + bookDetail.filecount) }}
             </el-descriptions-item>
             <el-descriptions-item :label="$t('m.fileSize')+':'">
-              {{Math.floor(bookDetail.bundleSize / 1048576)}} | {{Math.floor(bookDetail.filesize / 1048576)}} MB
+              {{ isOnline ? (bookDetail.size || '—') : (Math.floor(bookDetail.bundleSize / 1048576) + ' | ' + Math.floor(bookDetail.filesize / 1048576) + ' MB') }}
             </el-descriptions-item>
-            <el-descriptions-item :label="$t('m.readCount')+':'">{{bookDetail.readCount}}</el-descriptions-item>
-            <el-descriptions-item :label="$t('m.mtime')+':'">{{new Date(bookDetail.mtime).toLocaleString("zh-CN")}}</el-descriptions-item>
-            <el-descriptions-item :label="$t('m.postTime')+':'">{{new Date(bookDetail.posted * 1000).toLocaleString("zh-CN")}}</el-descriptions-item>
+            <el-descriptions-item v-if="!isOnline" :label="$t('m.readCount')+':'">{{bookDetail.readCount}}</el-descriptions-item>
+            <el-descriptions-item v-if="!isOnline" :label="$t('m.mtime')+':'">{{new Date(bookDetail.mtime).toLocaleString("zh-CN")}}</el-descriptions-item>
+            <el-descriptions-item v-if="isOnline && bookDetail.uploader" :label="$t('m.ehOnlineUploader')+':'">{{bookDetail.uploader}}</el-descriptions-item>
+            <el-descriptions-item :label="$t('m.postTime')+':'">{{ isOnline ? (bookDetail.posted || '—') : new Date(bookDetail.posted * 1000).toLocaleString("zh-CN") }}</el-descriptions-item>
           </el-descriptions>
         </el-row>
         <el-row class="book-detail-function">
@@ -53,14 +54,20 @@
             <el-button type="success" plain @click="$emit('openContentView', bookDetail)">{{$t('m.ad')}}</el-button>
           </el-button-group>
           <el-button class="detail-func-btn" plain @click="triggerShowComment">{{setting.showComment ? $t('m.hideComment') : $t('m.showComment')}}</el-button>
-          <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain @click="editTags">{{editingTag ? $t('m.viewInfo') : $t('m.editInfo')}}</el-button>
+          <el-button v-if="!viewerRole && !isOnline" class="detail-func-btn" type="primary" plain @click="editTags">{{editingTag ? $t('m.viewInfo') : $t('m.editInfo')}}</el-button>
+          <el-button v-if="isOnline" class="detail-func-btn" type="primary" plain @click="openUrl(bookDetail.url)">{{$t('m.ehOnlineOpen')}}</el-button>
+          <!-- 种子:与封面右键/卡片右下角的是同一个入口 -->
+          <el-button v-if="bookDetail.url" class="detail-func-btn" type="primary" plain @click="emit('openTorrents', bookDetail)">{{$t('m.torrent')}}</el-button>
+          <!-- 下载整本(原图可选):与封面右键里的两项一致 -->
+          <el-button v-if="!viewerRole && isOnline" class="detail-func-btn" type="primary" @click="emit('downloadGallery', { book: bookDetail, original: false })">{{$t('m.downloadGallery')}}</el-button>
+          <el-button v-if="!viewerRole && isOnline" class="detail-func-btn" type="primary" plain @click="emit('downloadGallery', { book: bookDetail, original: true })">{{$t('m.downloadGalleryOriginal')}}</el-button>
         </el-row>
-        <el-row class="book-detail-function">
+        <el-row class="book-detail-function" v-if="!isOnline">
           <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain @click="$emit('openSearchDialog')">{{$t('m.getMetadata')}}</el-button>
           <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain @click="triggerHiddenBook(bookDetail)">{{bookDetail.hiddenBook ? $t('m.showManga') : $t('m.hideManga')}}</el-button>
           <el-button class="detail-func-btn" plain @click="showFile(bookDetail.filepath)">{{$t('m.openMangaFileLocation')}}</el-button>
         </el-row>
-        <el-row class="book-detail-function" v-if="!viewerRole">
+        <el-row class="book-detail-function" v-if="!viewerRole && !isOnline">
           <el-button class="detail-func-btn" type="danger" plain @click="deleteLocalBook(bookDetail)">{{$t('m.deleteFile')}}</el-button>
           <el-button class="detail-func-btn" plain @click="rescanBook(bookDetail)">{{$t('m.rescan')}}</el-button>
         </el-row>
@@ -150,11 +157,11 @@
           <div v-else>
             <el-descriptions :column="1">
               <!-- 标题:浏览模式只展示各语言已有标题;需要修改请点「编辑信息」 -->
-              <el-descriptions-item :label="$t('m.titleLangJpn')+':'">{{ bookDetail.title_jpn || '—' }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('m.titleLangCn')+':'">{{ bookDetail.title_cn || '—' }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('m.titleLangEn')+':'">{{ bookDetail.title || '—' }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('m.filename')+':'">{{returnFileNameWithExt(bookDetail.filepath)}}</el-descriptions-item>
-              <el-descriptions-item :label="$t('m.fileLocation')+':'">{{returnDirname(bookDetail.filepath)}}</el-descriptions-item>
+              <el-descriptions-item v-if="bookDetail.title_jpn" :label="$t('m.titleLangJpn')+':'">{{ bookDetail.title_jpn }}</el-descriptions-item>
+              <el-descriptions-item v-if="bookDetail.title_cn" :label="$t('m.titleLangCn')+':'">{{ bookDetail.title_cn }}</el-descriptions-item>
+              <el-descriptions-item v-if="bookDetail.title" :label="$t('m.titleLangEn')+':'">{{ bookDetail.title }}</el-descriptions-item>
+              <el-descriptions-item v-if="!isOnline" :label="$t('m.filename')+':'">{{returnFileNameWithExt(bookDetail.filepath)}}</el-descriptions-item>
+              <el-descriptions-item v-if="!isOnline" :label="$t('m.fileLocation')+':'">{{returnDirname(bookDetail.filepath)}}</el-descriptions-item>
               <el-descriptions-item :label="$t('m.category')+':'">
                 <el-tag type="info" class="book-tag" @click="$emit('searchFromTag', `cat:${bookDetail.category}`)">{{bookDetail.category}}</el-tag>
               </el-descriptions-item>
@@ -180,8 +187,31 @@
               </el-descriptions-item>
             </el-descriptions>
           </div>
-          <!-- 故事简介:标签栏最下方,查看模式只读、编辑模式可填写(存库并随元数据同步) -->
-          <div class="story-summary">
+          <!-- 预览:本地书取前 N 张图;在线画廊用它自己的页预览(雪碧图)。放在「故事简介」上方 -->
+          <div class="book-preview" v-if="previewItems.length || previewLoading">
+            <div class="book-preview-title">
+              <span>{{ $t('m.ehOnlinePagePreview') }}</span>
+              <span class="book-preview-hint" v-if="previewTotal > previewItems.length">{{ previewItems.length }}/{{ previewTotal }}</span>
+            </div>
+            <div class="book-preview-strip">
+              <div
+                v-for="(it, i) in previewItems"
+                :key="i"
+                class="book-preview-item"
+                :title="'P' + (i + 1)"
+                @click="readFromPreview(i)"
+              >
+                <div v-if="it.sprite" class="book-preview-sprite" :style="it.sprite" />
+                <img v-else :src="it.src" loading="lazy" @error="$event.target.style.display='none'" />
+              </div>
+              <div v-if="previewLoading" class="book-preview-loading">
+                <el-icon class="is-loading" :size="20"><Loading /></el-icon>
+              </div>
+            </div>
+          </div>
+          <div class="book-preview-error" v-else-if="previewError">{{ previewError }}</div>
+          <!-- 故事简介:有内容才显示(在线画廊没有简介 → 整块不出现);编辑模式始终显示以便填写 -->
+          <div class="story-summary" v-if="bookDetail.description || (editingTag && !viewerRole)">
             <div class="story-summary-title">{{ $t('m.storySummary') }}</div>
             <el-input
               v-if="editingTag && !viewerRole"
@@ -191,7 +221,7 @@
               :placeholder="$t('m.storySummaryPlaceholder')"
               @change="saveBook(bookDetail)"
             />
-            <div v-else class="story-summary-text">{{ bookDetail.description || '—' }}</div>
+            <div v-else class="story-summary-text">{{ bookDetail.description }}</div>
           </div>
         </el-scrollbar>
       </el-col>
@@ -221,7 +251,8 @@ import ContextMenu from '@imengyu/vue3-context-menu'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, catDisplayName, getDisplayTagName, resolveCatKey } from '../utils.js'
-import  { insertLocalReadRecord } from '../utils.js'
+import  { insertLocalReadRecord, toAssetUrl } from '../utils.js'
+import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc } from '../ehOnline.js'
 
 const appStore = useAppStore()
 const {
@@ -249,7 +280,14 @@ const viewerRole = computed(() => {
   return !!auth.enabled && auth.role === 'viewer'
 })
 
+// 在线画廊(书架上的「EH在线」):没有本地文件,本地专有的入口要隐藏
+const isOnline = computed(() => !!bookDetail.value?.online)
+
 const emit = defineEmits([
+  // EH在线:详情页的「下载整本 / 下载整本(原图)」交给 App 去走 IPC
+  'downloadGallery',
+  // 详情页的「种子」按钮
+  'openTorrents',
   'openContentView',
   'openThumbnailView',
   'saveCollection',
@@ -266,11 +304,104 @@ const dialogVisibleBookDetail = ref(false)
 // 封面加载动画(详情页)
 const detailCoverLoading = ref(true)
 // 封面懒加载:详情页封面缺失/加载失败时按需生成
-const onCoverError = () => { detailCoverLoading.value = true; ensureBookCover(bookDetail.value) }
+const onCoverError = () => {
+  // 在线画廊封面是远程地址,没有「本地封面生成」这回事
+  if (bookDetail.value?.online) { detailCoverLoading.value = false; return }
+  detailCoverLoading.value = true
+  ensureBookCover(bookDetail.value)
+}
 watch(() => bookDetail.value?.coverPath, (v) => {
   detailCoverLoading.value = true
-  if (!v) ensureBookCover(bookDetail.value)
+  if (!v && !bookDetail.value?.online) ensureBookCover(bookDetail.value)
 }, { immediate: true })
+
+// ---------- 预览(放在「故事简介」上方) ----------
+// 本地书:取这本书的前 N 张图(只读 IPC,不占用阅读器的 viewerSession)
+// 在线画廊:用它自己的页预览缩略图(EH 详情页是雪碧图,按 background-position 偏移取页)
+const previewItems = ref([])
+const previewTotal = ref(0)
+const previewLoading = ref(false)
+const previewError = ref('')
+
+// 雪碧图:所有页共用一张图,靠 -Npx 偏移定位;用原尺寸层 + scale 缩到 96px 宽
+const PREVIEW_W = 96
+const spriteStyleOf = (th) => {
+  const w = th.width || 200
+  const s = PREVIEW_W / w
+  return {
+    width: w + 'px',
+    height: (th.height || 287) + 'px',
+    backgroundImage: `url(${ehImageSrc(th.thumb)})`,
+    backgroundPosition: `-${th.offsetX || 0}px 0`,
+    transform: `scale(${s})`,
+    transformOrigin: '0 0',
+    marginRight: '-' + Math.round(w - w * s) + 'px',
+    marginBottom: '-' + Math.round((th.height || 287) - (th.height || 287) * s) + 'px'
+  }
+}
+
+// 在线画廊:详情弹窗自己把 EH 详情页拉回来补齐(日文标题 / 上传者 / 时间 / 大小 / 标签 / 页预览)
+const enrichOnlineBook = async (book) => {
+  previewLoading.value = true
+  try {
+    const cookie = ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star']
+      .map(k => k + '=' + (setting.value[k] || ''))
+      .join('; ')
+    const host = String(book.url).replace(/^https?:\/\//i, '').split('/')[0] || 'e-hentai.org'
+    const html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie })
+    const detail = parseGalleryDetail(html, host)
+    if (!detail.ok) {
+      previewError.value = t('m.ehOnlineFailed')
+      return
+    }
+    Object.assign(bookDetail.value, mergeDetailIntoBook(bookDetail.value, detail))
+    previewItems.value = (detail.thumbnails || []).map(th => ({ sprite: spriteStyleOf(th) }))
+    previewTotal.value = previewItems.value.length
+  } catch (e) {
+    previewError.value = t('m.ehOnlineFailed')
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+const loadLocalPreview = async (book) => {
+  previewLoading.value = true
+  try {
+    const res = await ipcRenderer.invoke('book-preview-images', { filepath: book.filepath, type: book.type })
+    if (res && res.ok && res.files && res.files.length) {
+      previewItems.value = res.files.map(f => ({ src: toAssetUrl(f) }))
+      previewTotal.value = res.total || res.files.length
+    }
+  } catch (e) {
+    // 预览是锦上添花,失败就不显示(不打扰用户)
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+// 换书就重新准备预览(在线书先拉详情页,本地书直接取图)
+watch(() => bookDetail.value?.id, (id) => {
+  previewItems.value = []
+  previewTotal.value = 0
+  previewError.value = ''
+  const b = bookDetail.value
+  if (!id || !b) return
+  if (b.online) {
+    if ((b.thumbnails || []).length) {
+      previewItems.value = b.thumbnails.map(th => ({ sprite: spriteStyleOf(th) }))
+      previewTotal.value = previewItems.value.length
+    } else {
+      enrichOnlineBook(b)
+    }
+    return
+  }
+  if (b.filepath && b.type) loadLocalPreview(b)
+}, { immediate: true })
+
+// 点预览里的某一页 → 直接读(交给主界面打开阅读器)
+const readFromPreview = () => {
+  if (bookDetail.value) emit('openContentView', bookDetail.value)
+}
 
 // ---------- 标签:一排一排的网格选择(替代单列下拉,节省空间) ----------
 const TAG_PAGE = 40            // 每个分类首屏展示的标签数
@@ -422,6 +553,11 @@ const showFile = (filepath) => {
 }
 const openLocalBook = (book) => {
   bookDetail.value = book
+  // 在线画廊没有本地文件:直接进内置阅读器(在线读图)
+  if (book?.online) {
+    emit('openContentView', book)
+    return
+  }
   if (setting.value.imageExplorer) {
     bookDetail.value.readCount += 1
     saveBook(bookDetail.value)
@@ -429,7 +565,7 @@ const openLocalBook = (book) => {
   } else {
     emit('openContentView', book)
   }
-  insertLocalReadRecord(book.id)
+  insertLocalReadRecord(book.id, book)
 }
 const rescanBook = async (book) => {
   const bookInfo = await ipcRenderer.invoke('patch-local-metadata-by-book', _.cloneDeep(book))
@@ -730,6 +866,51 @@ defineExpose({
 </script>
 
 <style lang="stylus">
+/* 详情页「预览」(放在故事简介上方):本地书是图片,在线画廊是雪碧图切片 */
+.book-preview
+  margin-top: 12px
+.book-preview-title
+  display: flex
+  align-items: baseline
+  gap: 8px
+  font-size: 13px
+  font-weight: 600
+  margin-bottom: 6px
+.book-preview-hint
+  font-size: 12px
+  font-weight: 400
+  opacity: .6
+.book-preview-strip
+  display: flex
+  flex-wrap: wrap
+  gap: 6px
+  align-items: flex-start
+.book-preview-item
+  width: 96px
+  height: 128px
+  overflow: hidden
+  border-radius: 4px
+  border: 1px solid var(--el-border-color-lighter)
+  background: var(--el-fill-color-light)
+  cursor: pointer
+  img
+    width: 100%
+    height: 100%
+    object-fit: cover
+    display: block
+.book-preview-sprite
+  background-repeat: no-repeat
+.book-preview-loading
+  width: 96px
+  height: 128px
+  display: flex
+  align-items: center
+  justify-content: center
+  color: var(--el-text-color-secondary)
+.book-preview-error
+  margin-top: 12px
+  font-size: 12px
+  opacity: .6
 .el-dialog.is-fullscreen.dialog-detail
   .detail-book-title
     display: flex

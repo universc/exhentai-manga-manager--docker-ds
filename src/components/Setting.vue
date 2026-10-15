@@ -48,7 +48,7 @@
             <div v-for="(box, bi) in switchBoxes" :key="box.id" class="setting-line library-box-row">
               <span class="library-box-index">{{ bi + 1 }}</span>
               <el-select v-model="box.libraryIds" multiple class="library-box-select" :placeholder="$t('m.switchBoxLibraries')" @change="onBoxesChange">
-                <el-option v-for="lib in libraries" :key="lib.id" :label="isLibActive(lib) ? lib.name : lib.name + ' ' + $t('m.libraryInactive')" :value="lib.id" :disabled="!isLibActive(lib)" />
+                <el-option v-for="lib in boxSelectableLibraries" :key="lib.id" :label="lib.label" :value="lib.id" :disabled="!lib.selectable" />
               </el-select>
               <el-button type="danger" plain :icon="Delete" :disabled="switchBoxes.length <= 1" :title="$t('m.libraryRemove')" @click="removeSwitchBox(bi)" />
               <span v-if="activeBoxIndex === bi" class="library-box-current">{{$t('m.switchBoxCurrent')}}</span>
@@ -57,6 +57,7 @@
               <el-button @click="addSwitchBox">{{$t('m.switchBoxAdd')}}</el-button>
               <span class="toolbar-tip">{{$t('m.switchBoxHint')}}</span>
             </div>
+            <div class="setting-line toolbar-tip">{{$t('m.ehOnlineBoxHint')}}</div>
           </el-col>
           <el-col :span="24">
             <div class="setting-line">
@@ -102,16 +103,6 @@
 
                   </el-popover>
                 </div>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <!-- 四个 ExHentai 账号 Cookie 合并成一个「EH 设置」入口,不再平铺四行 -->
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="100px">
-                <template #prepend><span class="setting-label">{{$t('m.ehSetting')}}</span></template>
-                <el-button @click="ehSettingVisible = true">{{$t('m.open')}}</el-button>
-                <span class="setting-hint" style="margin-left:10px">{{ ehSettingSummary }}</span>
               </NameFormItem>
             </div>
           </el-col>
@@ -199,33 +190,6 @@
         <el-button @click="pixelSettingVisible = false">{{$t('m.close')}}</el-button>
       </template>
     </el-dialog>
-    <!-- EH 设置:四个账号 Cookie -->
-    <el-dialog v-model="ehSettingVisible" :title="$t('m.ehSetting')" width="46em" append-to-body>
-      <div class="setting-hint" style="margin-bottom:8px">{{$t('m.ehSettingHint')}}</div>
-      <div class="setting-line">
-        <el-input v-model="setting.igneous" @change="saveSetting">
-          <template #prepend><span class="setting-label">igneous</span></template>
-        </el-input>
-      </div>
-      <div class="setting-line">
-        <el-input v-model="setting.ipb_pass_hash" @change="saveSetting">
-          <template #prepend><span class="setting-label">ipb_pass_hash</span></template>
-        </el-input>
-      </div>
-      <div class="setting-line">
-        <el-input v-model="setting.ipb_member_id" @change="saveSetting">
-          <template #prepend><span class="setting-label">ipb_member_id</span></template>
-        </el-input>
-      </div>
-      <div class="setting-line">
-        <el-input v-model="setting.star" @change="saveSetting">
-          <template #prepend><span class="setting-label">star</span></template>
-        </el-input>
-      </div>
-      <template #footer>
-        <el-button @click="ehSettingVisible = false">{{$t('m.close')}}</el-button>
-      </template>
-    </el-dialog>
     <el-dialog v-model="trashLogVisible" :title="$t('m.trashLog')" width="52em" append-to-body>
           <div class="setting-line toolbar-tip" style="margin-bottom:6px">{{ trashLogFile }}</div>
           <el-table :data="trashLogList" size="small" max-height="360" style="width:100%">
@@ -280,6 +244,7 @@
                   <el-option :label="$t('m.viewerEndActionExit')" value="exit"></el-option>
                   <el-option :label="$t('m.viewerEndActionNext')" value="next"></el-option>
                   <el-option :label="$t('m.viewerEndActionRandom')" value="random"></el-option>
+                  <el-option :label="$t('m.viewerEndActionDetail')" value="detail"></el-option>
                 </el-select>
               </NameFormItem>
             </div>
@@ -643,22 +608,7 @@
               </el-input>
             </div>
           </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.scrollInertia')}}</span></template>
-                <el-select placeholder=" " v-model="setting.scrollInertiaLevel" @change="saveSetting">
-                  <el-option :label="$t('m.scrollInertiaOff')" value="off"></el-option>
-                  <el-option :label="$t('m.scrollInertiaLow')" value="low"></el-option>
-                  <el-option :label="$t('m.scrollInertiaMedium')" value="medium"></el-option>
-                  <el-option :label="$t('m.scrollInertiaHigh')" value="high"></el-option>
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line toolbar-tip">{{$t('m.scrollInertiaTip')}}</div>
-          </el-col>
+
           <el-col :span="24">
             <NameFormItem class="setting-line" prependWidth="110px" appendWidth="0">
               <template #prepend>{{$t('m.customCss')}}</template>
@@ -803,6 +753,32 @@
               <span class="setting-label">{{$t('m.coverConcurrency')}}</span>
               <el-input-number v-model="setting.coverConcurrency" :min="1" :max="16" :step="1" @change="saveSetting" />
               <span class="setting-line toolbar-tip" style="display: inline-block;">{{$t('m.coverConcurrencyHint')}}</span>
+            </div>
+          </el-col>
+          <el-col :span="24">
+            <div class="setting-line" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+              <span class="setting-label">{{$t('m.scrollInertia')}}</span>
+              <el-switch v-model="setting.inertiaEnabled" @change="saveSetting"></el-switch>
+              <span class="setting-line toolbar-tip" style="display: inline-block;">{{$t('m.scrollInertiaTip')}}</span>
+            </div>
+          </el-col>
+          <el-col :span="24" v-if="setting.inertiaEnabled">
+            <div class="setting-line" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+              <span class="setting-label">{{$t('m.inertiaFriction')}}</span>
+              <el-slider style="flex: 1 1 220px; max-width: 380px;" v-model="setting.inertiaFriction" :min="0.8" :max="0.99" :step="0.01" :show-input="true" :show-input-controls="false" @change="saveSetting"></el-slider>
+            </div>
+          </el-col>
+          <el-col :span="24" v-if="setting.inertiaEnabled">
+            <div class="setting-line" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+              <span class="setting-label">{{$t('m.inertiaMaxVelocity')}}</span>
+              <el-slider style="flex: 1 1 220px; max-width: 380px;" v-model="setting.inertiaMaxVelocity" :min="300" :max="4000" :step="100" :show-input="true" :show-input-controls="false" @change="saveSetting"></el-slider>
+            </div>
+          </el-col>
+          <el-col :span="24" v-if="setting.inertiaEnabled">
+            <div class="setting-line" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+              <span class="setting-label">{{$t('m.inertiaFollow')}}</span>
+              <el-slider style="flex: 1 1 220px; max-width: 380px;" v-model="setting.inertiaFollow" :min="0.05" :max="0.9" :step="0.05" :show-input="true" :show-input-controls="false" @change="saveSetting"></el-slider>
+              <span class="setting-line toolbar-tip" style="display: inline-block;">{{$t('m.inertiaParamsTip')}}</span>
             </div>
           </el-col>
         </el-row>
@@ -1045,6 +1021,36 @@
                   <el-input v-model="setting.appName" size="small" :placeholder="$t('m.appNamePlaceholder')" @change="handleAppNameChange" />
                 </div>
               </div>
+            </div>
+          </el-col>
+        </el-row>
+
+        <!-- 下载设置(EH在线 的整本/单页下载;按用户要求放在「自定义主题」下方) -->
+        <div class="advanced-section-title">{{$t('m.downloadSettings')}}</div>
+        <el-row :gutter="8">
+          <el-col :span="24">
+            <div class="custom-theme-panel download-setting-panel">
+              <div class="theme-row theme-row-wide">
+                <span class="theme-label">{{$t('m.downloadPath')}}</span>
+                <div class="theme-value download-path-value">
+                  <el-input v-model="setting.downloadPath" size="small" :placeholder="$t('m.downloadPathPlaceholder')" @change="saveSetting">
+                    <template #append><el-button size="small" @click="pickDownloadPath">{{$t('m.select')}}</el-button></template>
+                  </el-input>
+                </div>
+              </div>
+              <div class="theme-row theme-row-wide">
+                <span class="theme-label">{{$t('m.downloadConcurrency')}}</span>
+                <div class="theme-value">
+                  <el-input-number v-model="setting.downloadConcurrency" :min="1" :max="10" :step="1" size="small" @change="saveSetting" />
+                </div>
+              </div>
+              <div class="theme-row theme-row-wide">
+                <span class="theme-label">{{$t('m.downloadOriginalDefault')}}</span>
+                <div class="theme-value">
+                  <el-switch v-model="setting.downloadOriginal" @change="saveSetting" />
+                </div>
+              </div>
+              <div class="setting-hint">{{$t('m.downloadSettingsHint')}}</div>
             </div>
           </el-col>
         </el-row>
@@ -1578,6 +1584,57 @@
             </div>
             </template>
             </template>
+            <!-- EH 账号(ExHentai):登录方式 / 四项 Cookie / EH在线 漫画库 —— 全部平铺,不折叠 -->
+            <div class="account-divider"></div>
+            <div class="account-section-title">{{$t('m.ehSetting')}}</div>
+            <!-- 登录状态 -->
+            <div class="setting-line eh-login-bar">
+              <span class="setting-label">{{$t('m.ehLoginStatus')}}</span>
+              <el-tag size="small" :type="ehLoggedIn ? 'success' : 'info'" effect="plain">
+                {{ ehLoggedIn ? $t('m.ehLoggedInAs', { name: setting.ehOnlineUser || setting.ipb_member_id || '-' }) : $t('m.ehNotLoggedIn') }}
+              </el-tag>
+            </div>
+            <!-- ① 账号密码登录:纯 HTTP,桌面版与网页版(Docker)都能用 -->
+            <div class="setting-line eh-login-bar">
+              <el-input v-model="ehUsername" size="small" class="eh-login-input" :placeholder="$t('m.ehAccount')" clearable />
+              <el-input v-model="ehPassword" size="small" class="eh-login-input" type="password" show-password :placeholder="$t('m.ehPassword')" @keyup.enter="doEhLogin" />
+              <el-button type="primary" :loading="ehLoginLoading || ehPasswordLoginLoading" @click="doEhLogin">{{$t('m.ehLogin')}}</el-button>
+            </div>
+            <!-- ② 其余登录方式:登录窗口(桌面)/ 粘贴或手填 Cookie / 退出 -->
+            <div class="setting-line">
+              <el-button v-if="ehLoggedIn" size="small" plain @click="doEhLogout">{{$t('m.ehLogout')}}</el-button>
+              <el-button size="small" @click="pasteEhCookie">{{$t('m.ehPasteCookie')}}</el-button>
+              <el-button size="small" plain @click="clearEhCookie">{{$t('m.ehClearCookie')}}</el-button>
+            </div>
+            <div class="setting-line toolbar-tip">{{ isDesktopClient ? $t('m.ehLoginHint') : $t('m.ehLoginHintWeb') }}</div>
+            <div class="setting-hint" style="margin-bottom:8px">{{$t('m.ehSettingHint')}}</div>
+            <div class="setting-line">
+              <el-input v-model="setting.igneous" @change="onEhCookieChange">
+                <template #prepend><span class="setting-label">igneous</span></template>
+              </el-input>
+            </div>
+            <div class="setting-line">
+              <el-input v-model="setting.ipb_pass_hash" @change="onEhCookieChange">
+                <template #prepend><span class="setting-label">ipb_pass_hash</span></template>
+              </el-input>
+            </div>
+            <div class="setting-line">
+              <el-input v-model="setting.ipb_member_id" @change="onEhCookieChange">
+                <template #prepend><span class="setting-label">ipb_member_id</span></template>
+              </el-input>
+            </div>
+            <div class="setting-line">
+              <el-input v-model="setting.star" @change="onEhCookieChange">
+                <template #prepend><span class="setting-label">star</span></template>
+              </el-input>
+            </div>
+            <!-- EH 在线漫画库:登录后书架多出一个「EH在线」,切过去直接浏览 EH 上的漫画 -->
+            <div class="advanced-section-title" style="margin-top: 18px;">{{$t('m.ehOnline')}}</div>
+            <div class="setting-line">
+              <el-switch v-model="setting.ehOnlineEnabled" :disabled="!ehLoggedIn" @change="saveSetting" />
+              <span class="setting-label" style="margin-left:10px">{{$t('m.ehOnlineEnable')}}</span>
+            </div>
+            <div class="setting-line toolbar-tip">{{ ehLoggedIn ? $t('m.ehOnlineEnableHint') : $t('m.ehOnlineNeedLogin') }}</div>
             <!-- ③ 远程模式(桌面版):连接 NAS 上的网页版/Docker,像网页一样取 NAS 上的漫画。
                  本地模式与远程模式用一条分割线分开。 -->
             <template v-if="showDesktopUI">
@@ -1737,6 +1794,7 @@ import NameFormItem from './NameFormItem.vue'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
+import { EH_ONLINE_ID, hasEhCookies, parseCookieString } from '../ehOnline.js'
 const appStore = useAppStore()
 const { searchTypeList, setting, bookList, resolvedTranslation, localeFile, tagListRaw ,
 } = storeToRefs(appStore)
@@ -1865,6 +1923,17 @@ const appendPageSizeComma = () => {
     setting.value.customPageSizes = current + ','
   }
   saveSetting()
+}
+
+// 下载文件夹:选一个目录(与其它「选择文件夹」入口同一套 IPC)
+const pickDownloadPath = async () => {
+  try {
+    const folder = await ipcRenderer.invoke('select-folder', t('m.downloadPath'))
+    if (folder) {
+      setting.value.downloadPath = folder
+      saveSetting()
+    }
+  } catch (e) { /* 用户取消 */ }
 }
 
 // 每页数量选项变化:若当前每页数量不在列表中,就近切换到列表内的值,避免整页空白
@@ -2196,6 +2265,10 @@ const VIEWER_TOOLBAR_ITEMS = [
   { id: 'zoom', labelKey: 'm.viewerBtnZoom' },
   { id: 'thumbnail', labelKey: 'm.thumbnail' },
   { id: 'sidebar', labelKey: 'm.showSidebar' },
+  // 文字阅读器专用(图片模式不会显示)
+  { id: 'novelFont', labelKey: 'm.novelFont' },
+  { id: 'novelLineHeight', labelKey: 'm.novelLineHeight' },
+  { id: 'novelLetterSpacing', labelKey: 'm.novelLetterSpacing' },
   { id: 'pin', labelKey: 'm.pinToolbar' },
 ]
 // 旧配置里没有这些核心按钮时补上(否则升级后它们会从设置栏消失)
@@ -2712,6 +2785,16 @@ onMounted(() => {
       setting.value.toolbarButtons = ensureToolbarButtons(res.toolbarButtons, res.toolbarButtonsHidden)
       if (res.customPageSizes === undefined) setting.value.customPageSizes = '12,24,42,72,500,5000,1000000'
       if (res.scrollInertiaLevel === undefined) setting.value.scrollInertiaLevel = 'medium'
+      // 旧档位自动换算成物理参数(老配置升级后手感不变)
+      const legacyInertia = {
+        off: [false, 0.93, 1500], verylow: [true, 0.86, 600], low: [true, 0.9, 900],
+        medium: [true, 0.93, 1500], high: [true, 0.95, 2400], veryhigh: [true, 0.965, 3300],
+      }
+      const lg = legacyInertia[res.scrollInertiaLevel] || legacyInertia.medium
+      if (res.inertiaEnabled === undefined) setting.value.inertiaEnabled = lg[0]
+      if (res.inertiaFriction === undefined) setting.value.inertiaFriction = lg[1]
+      if (res.inertiaMaxVelocity === undefined) setting.value.inertiaMaxVelocity = lg[2]
+      if (res.inertiaFollow === undefined) setting.value.inertiaFollow = 0.3
       if (res.enableImageUpscale === undefined) setting.value.enableImageUpscale = false
       if (res.enableImageOcr === undefined) setting.value.enableImageOcr = false
       // 图片 AI 本地模型 API(旧配置无这些键时补默认值)
@@ -2770,6 +2853,21 @@ const activeBoxIndex = computed(() => Number.isInteger(setting.value?.activeBoxI
 // 只有「已生效」的库(路径 + 库数据存放位置都填了)才能被选进框里
 const activeLibraries = computed(() => libraries.value.filter(l => l.path && String(l.dataPath || '').trim()))
 const isLibActive = (lib) => !!(lib && lib.path && String(lib.dataPath || '').trim())
+// 「EH在线」是否已配置(登录 Cookie + 打开开关)
+const ehOnlineAvailable = computed(() => !!setting.value.ehOnlineEnabled && hasEhCookies(setting.value))
+// 「库切换」框里能勾的:真实库(已生效才可选)+ 前端虚拟库「EH在线」(配置好才可选,未配置置灰)
+const boxSelectableLibraries = computed(() => {
+  const real = libraries.value.map(l => ({
+    id: l.id,
+    label: isLibActive(l) ? l.name : l.name + ' ' + t('m.libraryInactive'),
+    selectable: isLibActive(l)
+  }))
+  return [...real, {
+    id: EH_ONLINE_ID,
+    label: t('m.ehOnline') + (ehOnlineAvailable.value ? '' : ' ' + t('m.ehOnlineNotConfigured')),
+    selectable: ehOnlineAvailable.value
+  }]
+})
 const addSwitchBox = () => {
   setting.value.switchBoxes = [...switchBoxes.value, { id: 'box-' + Math.random().toString(16).slice(2, 12), libraryIds: [] }]
   applyLibraries()
@@ -3804,15 +3902,125 @@ const tagCategoryKeys = computed(() => {
 const tagCategoryLabel = (c) => ((resolvedTranslation.value && resolvedTranslation.value[c] && resolvedTranslation.value[c]._name) || catDisplayName(c))
 
 const dialogVisibleSetting = ref(false)
-// EH 设置(四个账号 Cookie)/ 高级主题(像素风格)
-const ehSettingVisible = ref(false)
+// 高级主题(像素风格)
 // 像素风格设置(音效 / 清晰度 / 块大小 / 颜色数量 / 算法 / 网格)
 const pixelSettingVisible = ref(false)
-const ehSettingSummary = computed(() => {
-  const filled = ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star']
-    .filter(k => String(setting.value[k] == null ? '' : setting.value[k]).trim()).length
-  return t('m.ehSettingFilled', { n: filled })
-})
+
+// ---------- EH 登录 / EH在线漫画库(设置 → 账户)----------
+// 桌面客户端由主进程开登录窗口收 Cookie(参考 JHenTai);其余形态填账号密码或粘贴 Cookie。
+const isDesktopClient = computed(() => !isWebMode.value || isRemoteDesktop.value)
+const ehLoginLoading = ref(false)
+const ehLoggedIn = computed(() => hasEhCookies(setting.value))
+// 登录结果的统一处理(登录窗口与纯 HTTP 登录共用)
+const applyEhLoginResult = (res) => {
+  if (res && res.ok) {
+    Object.assign(setting.value, res.cookies || {})
+    setting.value.ehOnlineUser = res.user || ehUsername.value || setting.value.ehOnlineUser || ''
+    // 登录成功即默认打开「EH在线」库(用户诉求:登录后出现一个叫 EH在线 的漫画库)
+    setting.value.ehOnlineEnabled = true
+    ehPassword.value = ''
+    saveSettingNow()
+    printMessage('success', t('m.ehLoginSuccess'))
+    // 让主界面立刻重算库列表(虚拟库就此出现)
+    emit('loadBookList')
+    return true
+  }
+  const err = (res && res.error) || ''
+  const msg = err === 'captcha' ? t('m.ehLoginNeedCaptcha')
+    : err === 'cloudflare' ? t('m.ehLoginCloudflare')
+      : err === 'badCredentials' ? t('m.ehLoginBadCredentials')
+        : err === 'emptyInput' ? t('m.ehLoginInputRequired')
+          : err === 'timeout' ? t('m.ehLoginNetwork')
+            : err === 'busy' ? t('m.ehLoginBusy')
+              : err === 'canceled' ? t('m.ehLoginCanceled')
+                : t('m.ehLoginFailed', { msg: (res && res.detail) || err })
+  printMessage(err === 'canceled' ? 'info' : 'error', msg)
+  return false
+}
+
+// 「登录」按钮:桌面端开登录窗口并自动填账号密码 —— EH 论坛有 Cloudflare 人机挑战 + Turnstile 验证码,
+// 只有真浏览器窗口能过(实测);网页版没有窗口,只能退回纯 HTTP 登录(通常会被拦,会给出明确提示)。
+const doEhLogin = async () => {
+  if (ehLoginLoading.value || ehPasswordLoginLoading.value) return
+  if (isDesktopClient.value) {
+    ehLoginLoading.value = true
+    try {
+      applyEhLoginResult(await ipcRenderer.invoke('eh-login', { username: ehUsername.value, password: ehPassword.value }))
+    } catch (e) {
+      printMessage('error', t('m.ehLoginFailed', { msg: String((e && e.message) || e) }))
+    } finally {
+      ehLoginLoading.value = false
+    }
+    return
+  }
+  await doEhPasswordLogin()
+}
+
+const doEhLogout = async () => {
+  try { await ipcRenderer.invoke('eh-logout') } catch (e) { /* 网页版没有该通道:忽略 */ }
+  for (const k of ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star', 'ehOnlineUser']) setting.value[k] = ''
+  setting.value.ehOnlineEnabled = false
+  saveSettingNow()
+  emit('loadBookList')
+  printMessage('success', t('m.ehLogoutDone'))
+}
+// 从剪贴板粘贴 Cookie:把浏览器里复制的一整串里四项抽出来(JHenTai pasteCookie 同口径)
+const pasteEhCookie = async () => {
+  let text = ''
+  try { text = await ipcRenderer.invoke('read-text-from-clipboard') } catch (e) { /* 忽略 */ }
+  const parsed = parseCookieString(text || '')
+  const hit = Object.values(parsed).filter(Boolean).length
+  if (!hit) { printMessage('warning', t('m.ehCookieNone')); return }
+  Object.assign(setting.value, parsed)
+  saveSettingNow()
+  printMessage('success', t('m.ehCookiePasted', { n: hit }))
+  ehAutoEnableIfReady()
+}
+const clearEhCookie = () => {
+  for (const k of ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star', 'ehOnlineUser']) setting.value[k] = ''
+  setting.value.ehOnlineEnabled = false
+  saveSettingNow()
+}
+// 四项 Cookie 刚被填齐(手工填 / 从剪贴板粘贴 / 登录窗口):自动打开「EH在线」。
+// 网页版没有登录窗口,「Cookie 填好」就等于登录 —— 不该再让用户自己去设置里找开关。
+// 只在用户动作里调用(不在加载设置时),所以用户显式关掉开关后不会被重新打开。
+const ehAutoEnableIfReady = () => {
+  if (!ehLoggedIn.value || setting.value.ehOnlineEnabled) return
+  setting.value.ehOnlineEnabled = true
+  saveSettingNow()
+  printMessage('success', t('m.ehOnlineAutoEnabled'))
+  emit('loadBookList')
+}
+// EH 设置里四个 Cookie 输入框的 @change(只在这里自动开库,别的输入框不受影响)
+const onEhCookieChange = () => {
+  saveSetting()
+  ehAutoEnableIfReady()
+}
+
+// ---------- 账号密码登录(桌面版与网页版都能用)----------
+const ehUsername = ref('')
+const ehPassword = ref('')
+const ehPasswordLoginLoading = ref(false)
+// 打开设置 / 切到「账户」页时把上次用的 EH 账号带出来(密码永不回填)
+const seedEhUsername = () => {
+  // 永不回填密码;已有输入(用户正在打字)也不覆盖
+  if (!ehUsername.value) ehUsername.value = String(setting.value.ehOnlineUser || setting.value.ipb_member_id || '')
+}
+const doEhPasswordLogin = async () => {
+  if (ehPasswordLoginLoading.value || ehLoginLoading.value) return
+  if (!String(ehUsername.value || '').trim() || !String(ehPassword.value || '')) {
+    printMessage('warning', t('m.ehLoginInputRequired'))
+    return
+  }
+  ehPasswordLoginLoading.value = true
+  try {
+    applyEhLoginResult(await ipcRenderer.invoke('eh-password-login', { username: ehUsername.value, password: ehPassword.value }))
+  } catch (e) {
+    printMessage('error', t('m.ehLoginFailed', { msg: String((e && e.message) || e) }))
+  } finally {
+    ehPasswordLoginLoading.value = false
+  }
+}
 const handlePixelThemeChange = () => {
   applyPixelTheme(setting.value)
   saveSetting()
@@ -3983,6 +4191,10 @@ const changelog = [
   },
 ]
 const activeSettingPanel = ref('general')
+// 打开设置 / 切到「账户」页时,把上次用的 EH 账号带出来(密码永不回填)
+watch([dialogVisibleSetting, activeSettingPanel], ([open, panel]) => {
+  if (open && panel === 'accounts') seedEhUsername()
+})
 
 // 设置页内容区惯性滚动(对话框打开/挂载后各尝试一次)
 let settingInertiaDetach = null
@@ -4012,6 +4224,10 @@ defineExpose({
 </script>
 
 <style lang="stylus">
+
+/* EH 设置:登录区(账号 / 密码 / 登录按钮排一行) */
+.eh-login-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.eh-login-input { width: 170px; }
 
 /* 本地模型行(设置 → 功能 → 本地模型) */
 .local-model-options { margin: 0 0 10px 0; padding: 6px 10px; border-radius: 6px; background: rgba(127, 127, 127, 0.07); }
@@ -4492,4 +4708,12 @@ defineExpose({
       .account-actions
         margin-left: auto
     text-align: center
+
+// 下载设置:路径那一行输入框要占满剩余宽度
+.download-setting-panel
+  .download-path-value
+    flex: 1
+    min-width: 0
+  .setting-hint
+    margin-top: 8px
 </style>

@@ -308,8 +308,12 @@ export const useAppStore = defineStore('appStore', {
           return book.title_jpn || book.title
         case 'chineseTitle':
           return book.title_cn || book.title_jpn || book.title
-        case 'filename':
-          return this.returnFileName(book)
+        case 'filename': {
+          // 用户要求:文件名 → 中文 → 日文 → 英文 → 默认标题
+          // (在线画廊没有本地文件名,所以会一路回退到画廊标题,不再显示 URL)
+          const byName = book.filepath ? this.returnFileName(book) : ''
+          return byName || book.title_cn || book.title_jpn || book.title || ''
+        }
         default:
           return book.title_jpn || book.title || this.returnFileName(book)
       }

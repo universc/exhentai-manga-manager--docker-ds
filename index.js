@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, dialog, shell, screen, Menu, clipboard, nativeImage, Tray, globalShortcut } = require('electron')
+const { app, BrowserWindow, ipcMain, session, dialog, shell, screen, Menu, clipboard, nativeImage, Tray, globalShortcut, protocol } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const { brotliDecompress } = require('zlib')
@@ -20,7 +20,7 @@ const { glob } = require('glob')
 const { prepareMangaModel, prepareMetadataModel } = require('./modules/database')
 const { translateBookTitle, translateTitle, listTitleTranslationModels, queryCharacterOrigins, analyzeTitleCharacters, extractBookInfo, extractImageText, extractImageTextWithUrl } = require('./modules/translate')
 const { prepareTemplate } = require('./modules/prepare_menu.js')
-const { getBookFilelist, geneCover, getImageListByBook, deleteImageFromBook } = require('./fileLoader/index.js')
+const { getBookFilelist, geneCover, getImageListByBook, deleteImageFromBook, listArchiveImages, extractArchiveFiles } = require('./fileLoader/index.js')
 const { parseTxtStructured, parseEpubStructured } = require('./fileLoader/novel.js')
 const {
   STORE_PATH, isPortable,
@@ -47,12 +47,28 @@ const {
 const { findSameFile } = require('./fileLoader/folder.js')
 const { inventoryLibrary, diffInventory, snapshotFromInventory, loadSnapshotFile, saveSnapshotFile, archiveTypeOf } = require('./fileLoader/incremental.js')
 const localModels = require('./modules/localModels.js')
+const ehLogin = require('./modules/ehLogin.js')
+const ehDownload = require('./modules/ehDownload.js')
 const {
   ensureLibraries, libraryDataDir, libraryRuntimePaths, isLibraryActive, shouldMoveLibraryData, migrateLibraryData,
   runtimeLibraries, localLibraryPath, localLibraryDataPath
 } = require('./modules/libraries.js')
 
 const WEB_MODE = process.env.WEB_MODE === '1'
+
+// 在线图片专用协议:EH 的原图主机(*.hath.network)浏览器直连基本不可达,
+// 所以渲染进程只发 emm-eh://img/?u=<原图地址>,由主进程带 Cookie 与代理取回再交给它。
+// 必须在 app ready 之前注册为 privileged,否则 <img> 不让用。
+const EH_IMG_SCHEME = 'emm-eh'
+const EH_IMG_HOST_RE = /^https:\/\/([^/]+\.)?(hath\.network|ehgt\.org|e-hentai\.org|exhentai\.org)(:\d+)?\//i
+if (!WEB_MODE) {
+  try {
+    protocol.registerSchemesAsPrivileged([{
+      scheme: EH_IMG_SCHEME,
+      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, bypassCSP: true }
+    }])
+  } catch (e) { /* 已经注册过(热重载)时忽略 */ }
+}
 
 preparePath()
 let defaultSetting = prepareSetting()
@@ -1198,6 +1214,30 @@ if (!WEB_MODE) {
     app.on('second-instance', () => {
       showMainWindow()
     })
+    app.whenReady().then(() => {
+      // 在线图片代理(桌面版):只放行 EH 的几个域名,避免变成任意 URL 的代理
+      try {
+        protocol.handle(EH_IMG_SCHEME, async (req) => {
+          try {
+            const raw = new URL(req.url).searchParams.get('u') || ''
+            if (!EH_IMG_HOST_RE.test(raw)) return new Response('bad url', { status: 400 })
+            const r = await ehLogin.request(raw, {
+              proxy: setting.proxy,
+              raw: true,
+              referer: 'https://e-hentai.org/',
+              timeout: 30000
+            })
+            return new Response(r.buffer, {
+              status: r.status === 200 ? 200 : 502,
+              headers: { 'Content-Type': r.headers['content-type'] || 'image/jpeg' }
+            })
+          } catch (e) {
+            return new Response(String((e && e.message) || e), { status: 502 })
+          }
+        })
+      } catch (e) { console.error('register eh image protocol failed', e) }
+    })
+
     app.whenReady().then(async () => {
       // Windows 任务栏正确分组与通知归属
       app.setAppUserModelId('electron.e-hentai.tagger')
@@ -2513,6 +2553,542 @@ ipcMain.handle('post-data-ex', async (event, { url, data }) => {
   }
 })
 
+// ---------- EH 登录(设置 → 常用 → EH设置)----------
+// 两条路:
+//   ① 账号密码登录(eh-password-login):纯 HTTP POST 到论坛登录表单,桌面版与网页版都能用
+//      (逻辑在 modules/ehLogin.js,可离线单测);
+//   ② 打开登录窗口(eh-login,仅桌面版):开一个用独立分区(persist:eh-login)的窗口打开论坛登录页,
+//      轮询该分区的 Cookie;拿到 ipb_member_id + ipb_pass_hash 后再访问一次 exhentai.org 取 igneous,
+//      最后用论坛 showuser 页取用户名,连同四项 Cookie 一起回给前端写进设置。
+const EH_LOGIN_PARTITION = 'persist:eh-login'
+const EH_LOGIN_URL = ehLogin.EH_BASES.forum + '/index.php?act=Login&CODE=00'
+const EH_EX_URL = ehLogin.EH_BASES.ex + '/'
+let ehLoginInFlight = false
+
+// 登录窗口分区的 Cookie 全量(短命窗口,分区里只有我们自己的 Cookie)
+const ehCookieMapOf = async (ses) => {
+  const map = {}
+  try {
+    for (const c of await ses.cookies.get({})) map[c.name] = c.value
+  } catch (e) { /* 分区还没建立等:当作没有 */ }
+  return map
+}
+
+// 账号密码登录:桌面版与网页版都用这一条(不需要 Electron,所以放在 WEB_MODE 判断之外)
+ipcMain.handle('eh-password-login', async (event, arg) => {
+  const { username, password } = arg || {}
+  try {
+    const res = await ehLogin.passwordLogin({ username, password, proxy: setting.proxy })
+    if (!res.ok) return res
+    const user = await ehLogin.fetchUserName(res.cookies.ipb_member_id, res.cookies, { proxy: setting.proxy })
+    return { ok: true, cookies: res.cookies, user }
+  } catch (e) {
+    console.error(e)
+    return { ok: false, error: 'network', detail: String((e && e.message) || e) }
+  }
+})
+
+// 详情页「预览」:只读地取这本书的前 N 张图,**不占用阅读器的 viewerSession**。
+//  - folder:直接 glob(便宜)
+//  - 压缩包:先用 7z 只列条目名,再**只解压前 N 张**(绝不为一个预览条解压整包)
+//  - epub / txt:没有图片页 → 明确告诉前端不支持
+ipcMain.handle('book-preview-images', async (event, book) => {
+  const LIMIT = 12
+  try {
+    const { filepath, type } = book || {}
+    if (!filepath || !type) return { ok: false, error: 'no-filepath' }
+    if (type === 'epub' || type === 'novel') return { ok: false, error: 'text-only' }
+    if (type === 'folder') {
+      const list = await getImageListByBook(filepath, type)
+      return { ok: true, total: list.length, files: list.slice(0, LIMIT).map(it => it.absolutePath).filter(Boolean) }
+    }
+    const names = await listArchiveImages(filepath)
+    if (!names.length) return { ok: false, error: 'no-image' }
+    const dir = path.join(VIEWER_PATH, 'preview-' + nanoid(8))
+    fs.mkdirSync(dir, { recursive: true })
+    const pick = names.slice(0, LIMIT)
+    await extractArchiveFiles(filepath, pick, dir)
+    return {
+      ok: true,
+      total: names.length,
+      files: pick.map(n => path.join(dir, n)).filter(f => fs.existsSync(f))
+    }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+// 在线阅读:解析 EH 画廊各页的真实图片地址(交给内置 ComicRead 显示)。桌面版与网页版都注册。
+ipcMain.handle('eh-gallery-pages', async (event, arg) => {
+  const { url, limit } = arg || {}
+  try {
+    return await ehLogin.galleryPageImages({
+      url,
+      proxy: setting.proxy,
+      cookie: ehCookieHeader(),
+      limit: Math.max(1, Math.min(Number(limit) || 40, 200))
+    })
+  } catch (e) {
+    console.error(e)
+    return { ok: false, error: 'network', detail: String((e && e.message) || e), images: [], items: [], total: 0 }
+  }
+})
+
+// 在线阅读用:①先把页链接收齐(快,几次请求就有总数)②再逐页解析图片地址。
+// 拆成两条是为了「点开就进阅读器」—— 界面先按总数摆好占位,哪一页解析好就填哪一页
+// (JHenTai 阅读器就是这么做的:进页面立刻可见,每页各自显示解析/加载状态)。
+ipcMain.handle('eh-gallery-page-links', async (event, arg) => {
+  const { url, limit = 3000 } = arg || {}
+  if (!url) return { ok: false, error: 'noUrl', links: [] }
+  try {
+    const links = await ehLogin.listGalleryPageLinks(url, {
+      proxy: setting.proxy,
+      cookie: ehCookieHeader(),
+      limit: Math.max(1, Math.min(Number(limit) || 3000, 5000)),
+      maxPages: 200
+    })
+    return { ok: links.length > 0, links, total: links.length, error: links.length ? '' : 'noPages' }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), links: [] }
+  }
+})
+
+ipcMain.handle('eh-page-image', async (event, arg) => {
+  const { pageUrl, reloadKey = '' } = arg || {}
+  if (!pageUrl) return { ok: false, error: 'noUrl' }
+  try {
+    const info = await ehLogin.resolvePageImageInfo(pageUrl, { proxy: setting.proxy, cookie: ehCookieHeader(), reloadKey })
+    return { ok: !!info.url, url: info.url, originalUrl: info.originalUrl, reloadKey: info.reloadKey, error: info.url ? '' : 'noImageUrl' }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+// 卡片右下角的「种子」按钮要知道这个画廊有没有种子:只回数量,失败就当没有
+ipcMain.handle('eh-torrent-count', async (event, arg) => {
+  const gt = ehGidToken((arg && arg.url) || '')
+  if (!gt) return { ok: false, count: 0 }
+  try {
+    const r = await ehLogin.galleryTorrents({ ...gt, site: ehSiteName(), proxy: setting.proxy, cookie: ehCookieHeader() })
+    return { ok: true, count: (r.torrents || []).length }
+  } catch (e) {
+    return { ok: false, count: 0, error: String((e && e.message) || e) }
+  }
+})
+
+// ---------- EH 收藏 / 种子 / 下载(第 13 轮)----------
+// 出网口径与 eh-gallery-pages 一致:Cookie + 代理,超时自己控制(见 modules/ehLogin.js 的 request)。
+const ehCookieHeader = () => ehLogin.cookieHeaderOf({
+  igneous: setting.igneous,
+  ipb_pass_hash: setting.ipb_pass_hash,
+  ipb_member_id: setting.ipb_member_id,
+  star: setting.star
+})
+// 有有效 igneous 走 exhentai,否则 e-hentai(与前端 ehOnline.js 的 useExSite 同判法)
+const ehSiteName = () => {
+  const v = String(setting.igneous || '').trim()
+  return (v && v !== 'null' && v !== 'mystery' && v !== 'deleted') ? 'exhentai' : 'e-hentai'
+}
+const ehGidToken = (url) => {
+  const m = /\/g\/(\d+)\/([0-9a-z]{10})/i.exec(String(url || ''))
+  return m ? { gid: m[1], token: m[2] } : null
+}
+const emitToRenderer = (channel, arg) => {
+  if (WEB_MODE) require('./web-electron-shim.js').broadcast(channel, arg)
+  else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, arg)
+}
+
+// 收藏夹分类(EH 账号的 10 个收藏夹,带数量)
+ipcMain.handle('eh-favorite-categories', async () => {
+  try {
+    const categories = await ehLogin.favoriteCategories({ site: ehSiteName(), proxy: setting.proxy, cookie: ehCookieHeader() })
+    return { ok: true, categories }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), categories: [] }
+  }
+})
+
+// 加入 / 取消收藏(账号侧,不是本地收藏)
+ipcMain.handle('eh-set-favorite', async (event, arg) => {
+  const { url, favcat = 0, remove = false, note = '' } = arg || {}
+  const gt = ehGidToken(url)
+  if (!gt) return { ok: false, error: 'badUrl' }
+  try {
+    return await ehLogin.setFavorite({
+      ...gt, favcat, note, remove,
+      site: ehSiteName(), proxy: setting.proxy, cookie: ehCookieHeader()
+    })
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+// 种子列表
+ipcMain.handle('eh-torrents', async (event, arg) => {
+  const gt = ehGidToken((arg && arg.url) || '')
+  if (!gt) return { ok: false, error: 'badUrl', torrents: [] }
+  try {
+    return await ehLogin.galleryTorrents({ ...gt, site: ehSiteName(), proxy: setting.proxy, cookie: ehCookieHeader() })
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), torrents: [] }
+  }
+})
+
+// ---------- 下载:任务记录 + 进度 ----------
+// 记录落 <数据目录>/downloads.json(重启后还在);status: downloading/paused/done/failed
+const downloadStoreFile = () => path.join(STORE_PATH, 'downloads.json')
+const DOWNLOAD_RECORD_LIMIT = 200
+const downloadTasks = new Map()
+const publicDownload = (t) => ({
+  id: t.id, url: t.url, title: t.title, cover: t.cover, original: !!t.original,
+  saveDir: t.saveDir, dir: t.dir || '', total: t.total | 0, done: t.done | 0, failed: t.failed | 0,
+  bytes: t.bytes | 0, status: t.status, error: t.error || '', fallback: t.fallback | 0, gpBlocked: t.gpBlocked | 0,
+  phase: t.phase || '', linkCount: t.linkCount | 0,
+  createdAt: t.createdAt, finishedAt: t.finishedAt || 0
+})
+const downloadList = () => Array.from(downloadTasks.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map(publicDownload)
+const persistDownloads = () => {
+  try {
+    fs.writeFileSync(downloadStoreFile(), JSON.stringify(downloadList().slice(0, DOWNLOAD_RECORD_LIMIT), null, 1))
+  } catch (e) { /* 写不了就只留内存里 */ }
+}
+const restoreDownloads = () => {
+  try {
+    const raw = JSON.parse(fs.readFileSync(downloadStoreFile(), 'utf-8'))
+    if (!Array.isArray(raw)) return
+    for (const t of raw) {
+      if (!t || !t.id) continue
+      // 上次没跑完的:重启后一律当「已暂停」,由用户点继续(继续时会跳过已下好的文件)
+      downloadTasks.set(t.id, { ...t, status: t.status === 'downloading' ? 'paused' : t.status, state: { stopped: false } })
+    }
+    console.log('[download] 已恢复下载记录', downloadTasks.size, '条')
+  } catch (e) { /* 没有记录文件 */ }
+}
+restoreDownloads()
+
+const runDownloadJob = (rec) => {
+  const state = rec.state || (rec.state = { stopped: false })
+  state.stopped = false
+  rec.status = 'downloading'
+  rec.error = ''
+  persistDownloads()
+  emitToRenderer('eh-download-progress', publicDownload(rec))
+  let lastEmit = 0
+  ehDownload.runGalleryDownload({
+    galleryUrl: rec.url,
+    title: rec.title,
+    saveDir: rec.saveDir,
+    original: !!rec.original,
+    proxy: setting.proxy,
+    cookie: ehCookieHeader(),
+    concurrency: Math.max(1, Math.min(Number(setting.downloadConcurrency) || 4, 10)),
+    state,
+    onProgress: (u) => {
+      rec.total = u.total || rec.total
+      rec.done = u.done | 0
+      rec.failed = u.failed | 0
+      rec.bytes = u.bytes | 0
+      rec.fallback = u.fallback | 0
+      rec.gpBlocked = u.gpBlocked | 0
+      if (u.phase) rec.phase = u.phase
+      if (u.linkCount) rec.linkCount = u.linkCount | 0
+      if (u.total) { rec.phase = ''; rec.linkCount = 0 }
+      if (u.lastError) rec.lastError = u.lastError
+      if (u.dir) rec.dir = u.dir
+      const now = Date.now()
+      if (u.finished || now - lastEmit > 400) {
+        lastEmit = now
+        emitToRenderer('eh-download-progress', publicDownload(rec))
+      }
+    }
+  }).then(() => {
+    if ((rec.gpBlocked | 0) > 0) {
+      // 原图被 EH 以「需要 GP」挡下:任务停在「等待中」——额度恢复后点「继续」接着下
+      rec.status = 'waiting'
+      rec.error = 'gp'
+    } else {
+      // 有页失败就标成 failed(可「继续」补:继续时会跳过已下好的文件),不是 done ——
+      // 否则用户看到 ✗ 却没有任何按钮能补齐(JHenTai 的 downloadFailed 也是可重下的状态)
+      rec.status = state.stopped ? 'paused' : ((rec.failed | 0) === 0 ? 'done' : 'failed')
+      if (rec.status === 'failed' && !rec.error) rec.error = (rec.lastError || '部分页面下载失败')
+    }
+  }).catch((e) => {
+    rec.status = state.stopped ? 'paused' : 'failed'
+    rec.error = String((e && e.message) || e)
+  }).finally(() => {
+    rec.finishedAt = Date.now()
+    persistDownloads()
+    emitToRenderer('eh-download-progress', publicDownload(rec))
+    emitToRenderer('eh-download-done', publicDownload(rec))
+  })
+}
+
+ipcMain.handle('eh-download-gallery', async (event, arg) => {
+  const { url, title = '', cover = '', original = false } = arg || {}
+  const saveDir = String(setting.downloadPath || '').trim()
+  if (!url) return { ok: false, error: 'badUrl' }
+  if (!saveDir) return { ok: false, error: 'noPath' }
+  const rec = {
+    id: nanoid(), url, title, cover, original: !!original, saveDir,
+    total: 0, done: 0, failed: 0, bytes: 0, status: 'downloading', error: '',
+    createdAt: Date.now(), finishedAt: 0, state: { stopped: false }
+  }
+  downloadTasks.set(rec.id, rec)
+  runDownloadJob(rec)
+  return { ok: true, task: publicDownload(rec) }
+})
+
+// 单页下载:直接存到下载目录(不建画廊子目录)
+ipcMain.handle('eh-download-page', async (event, arg) => {
+  const { url, originalUrl = '', pageUrl = '', original = false, name = '' } = arg || {}
+  const saveDir = String(setting.downloadPath || '').trim()
+  if (!saveDir) return { ok: false, error: 'noPath' }
+  try {
+    const r = await ehDownload.downloadOnePage({
+      url, originalUrl, pageUrl, original, name, saveDir,
+      proxy: setting.proxy, cookie: ehCookieHeader()
+    })
+    return { ok: true, ...r }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+ipcMain.handle('eh-download-records', async () => ({ ok: true, tasks: downloadList() }))
+
+// 诊断用:完整跑一次下载(到临时目录),把过程与错误原样带出来
+ipcMain.handle('eh-debug-download', async (event, arg) => {
+  const url = String((arg && arg.url) || '')
+  const saveDir = String((arg && arg.dir) || '/tmp/debug-dl')
+  if (!url) return { ok: false, error: 'noUrl' }
+  const linkStats = {}
+  const seen = []
+  try {
+    const r = await ehDownload.runGalleryDownload({
+      galleryUrl: url, title: 'debug', saveDir, original: false,
+      proxy: setting.proxy, cookie: ehCookieHeader(), concurrency: 4, state: {},
+      onProgress: (u) => { seen.push({ total: u.total | 0, done: u.done | 0, dir: u.dir || '', phase: u.phase || '', linkCount: u.linkCount | 0 }) }
+    })
+    return { ok: true, result: { dir: r.dir, total: r.total, done: r.done, failed: r.failed, bytes: r.bytes }, first: seen.slice(0, 3), last: seen.slice(-2) }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), first: seen.slice(0, 3) }
+  }
+})
+
+// 诊断用:在应用进程里跑一次「收页链接」,把过程信息带出来(排查「一条链接都收不到」)
+ipcMain.handle('eh-debug-links', async (event, arg) => {
+  const url = String((arg && arg.url) || '')
+  if (!url) return { ok: false, error: 'noUrl' }
+  const stats = {}
+  try {
+    const t0 = Date.now()
+    const links = await ehLogin.listGalleryPageLinks(url, {
+      proxy: setting.proxy, cookie: ehCookieHeader(), limit: 5000, maxPages: 200, stats
+    })
+    return { ok: true, ms: Date.now() - t0, count: links.length, first: links.slice(0, 2), stats }
+  } catch (e) {
+    return { ok: false, ms: 0, error: String((e && e.message) || e), stats }
+  }
+})
+
+// 下载预览用:这个任务目录里每一页到底下了没有(按 1.webp / 02.jpg 这种序号文件名对应页码)。
+// 返回定长数组,没下到的位置是 null —— 前端用「空白 + 进度圈」补上。
+ipcMain.handle('eh-download-files', async (event, arg) => {
+  const dir = String((arg && arg.dir) || '')
+  let total = Math.max(0, Number((arg && arg.total) || 0))
+  if (!dir) return { ok: true, files: [], total }
+  let names = []
+  try {
+    names = fs.readdirSync(dir)
+  } catch (e) {
+    return { ok: true, files: [], total }
+  }
+  const byIndex = new Map()
+  for (const name of names) {
+    const m = /^(\d+)\.[a-z0-9]+$/i.exec(name)
+    if (!m) continue
+    const index = Number(m[1]) - 1
+    const full = path.join(dir, name)
+    let size = 0
+    try { size = fs.statSync(full).size } catch (e) { size = 0 }
+    if (size > 0) byIndex.set(index, { index, path: full, size, name })
+  }
+  const maxIndex = byIndex.size ? Math.max(...byIndex.keys()) + 1 : 0
+  const count = Math.max(total, maxIndex)
+  const files = Array.from({ length: count }, (_, i) => byIndex.get(i) || null)
+  return { ok: true, files, total: count }
+})
+
+ipcMain.handle('eh-download-action', async (event, arg) => {
+  const { id, action } = arg || {}
+  const t = downloadTasks.get(id)
+  if (!t) return { ok: false, error: 'notFound' }
+  if (action === 'pause') {
+    if (t.state) t.state.stopped = true
+    t.status = 'paused'
+    persistDownloads()
+    emitToRenderer('eh-download-progress', publicDownload(t))
+    return { ok: true }
+  }
+  if (action === 'resume') {
+    runDownloadJob(t)
+    return { ok: true }
+  }
+  if (action === 'delete' || action === 'deleteWithFiles') {
+    if (action === 'deleteWithFiles' && t.dir) {
+      try { fs.rmSync(t.dir, { recursive: true, force: true }) } catch (e) { /* 忽略 */ }
+    }
+    downloadTasks.delete(id)
+    persistDownloads()
+    emitToRenderer('eh-download-removed', { id })
+    return { ok: true }
+  }
+  return { ok: false, error: 'badAction' }
+})
+
+// 清空记录(只删记录,不动已下载的文件)
+ipcMain.handle('eh-download-clear', async () => {
+  downloadTasks.clear()
+  persistDownloads()
+  return { ok: true, tasks: [] }
+})
+
+if (!WEB_MODE) {
+  // arg = { username, password }(可选):给了就自动填表提交,不给就等用户在窗口里自己登录。
+  // 为什么要走窗口而不是直接 POST 账号密码:EH 论坛现在有两层 Cloudflare ——
+  // ①整页的人机挑战(裸 HTTP 请求一律 403 "Just a moment...");②登录表单上的 Turnstile 验证码。
+  // 真浏览器窗口两样都能自动过(实测:窗口里提交后 Cloudflare 自己出 token,登录成功),
+  // 所以桌面端一律用窗口;纯 HTTP 那条(eh-password-login)只在网页版兜底。
+  ipcMain.handle('eh-login', async (event, arg) => {
+    const { username, password } = arg || {}
+    if (ehLoginInFlight) return { ok: false, error: 'busy' }
+    ehLoginInFlight = true
+    let win = null
+    try {
+      const ses = session.fromPartition(EH_LOGIN_PARTITION)
+      // 每次登录都从干净分区开始,避免上一次的登录态让"重新登录"直接跳过
+      try { await ses.clearStorageData() } catch (e) { /* 忽略 */ }
+      const parent = BrowserWindow.getAllWindows()[0]
+      win = new BrowserWindow({
+        width: 920,
+        height: 780,
+        title: '登录 E-Hentai / ExHentai',
+        parent: parent || undefined,
+        autoHideMenuBar: true,
+        webPreferences: {
+          partition: EH_LOGIN_PARTITION,
+          nodeIntegration: false,
+          contextIsolation: true
+        }
+      })
+      let closed = false
+      win.on('closed', () => { closed = true })
+      const winRef = win
+      // 登录后先从窗口页面里读用户名:论坛页会显示「Logged in as: xxx」。
+      // 不能只靠 showuser 接口 —— 论坛挂在 Cloudflare 后面,接口请求会被 403 挑战挡掉(实测)。
+      const readUserNameFromWindow = async () => {
+        try {
+          return await winRef.webContents.executeJavaScript(`(() => {
+            const el = document.querySelector('.home > b > a')
+            const text = document.body ? document.body.innerText : ''
+            const m = /Logged in as[:\\s]*([^\\n(]+)/i.exec(text)
+            return ((el && el.textContent) ? el.textContent.trim() : '') || (m ? m[1].trim() : '')
+          })()`)
+        } catch (e) {
+          return ''
+        }
+      }
+      const result = await new Promise((resolve) => {
+        const deadline = Date.now() + 5 * 60 * 1000
+        let exRequestedAt = 0
+        let windowUserName = ''
+        let done = false
+        const finish = (payload) => { if (done) return; done = true; resolve(payload) }
+        const tick = async () => {
+          if (done) return
+          if (closed) return finish({ ok: false, error: 'canceled' })
+          if (Date.now() > deadline) return finish({ ok: false, error: 'timeout' })
+          const cookies = await ehCookieMapOf(ses)
+          if (cookies.ipb_member_id && cookies.ipb_pass_hash) {
+            if (!exRequestedAt) {
+              // 先趁着还在论坛页把用户名读出来(下面就要离开这一页了)
+              windowUserName = await readUserNameFromWindow()
+              // 已登录:再访问一次 EX,让服务端下发 igneous(取不到也不影响登录成功)
+              exRequestedAt = Date.now()
+              try { winRef.loadURL(EH_EX_URL) } catch (e) { /* 忽略:取 igneous 是加分项 */ }
+            } else if (Date.now() - exRequestedAt > 3000) {
+              const picked = {}
+              for (const name of ehLogin.EH_COOKIE_NAMES) picked[name] = cookies[name] || ''
+              const user = windowUserName || await ehLogin.fetchUserName(picked.ipb_member_id, picked, { proxy: setting.proxy })
+              return finish({ ok: true, cookies: picked, user })
+            }
+          }
+          setTimeout(tick, 1500)
+        }
+        winRef.loadURL(EH_LOGIN_URL).catch(() => { /* 网络失败:交给轮询/超时 */ })
+        // 自动填表(给了账号密码时):等 Cloudflare 整页挑战过去、**并且 Turnstile 出了 token** 之后再提交。
+        // 时序是实测跑通的时序:表单已出现但 Turnstile 还没出 token 就提交,会被回一句
+        // 「The captcha was not entered correctly」。
+        const autoFill = async () => {
+          if (!username || !password) return
+          for (let i = 0; i < 60 && !done && !closed; i++) {
+            await new Promise(r => setTimeout(r, 1500))
+            let state = null
+            try {
+              state = await winRef.webContents.executeJavaScript(`(() => {
+                const u = document.querySelector('#UserName') || document.querySelector('input[name=UserName]')
+                const p = document.querySelector('#PassWord') || document.querySelector('input[name=PassWord]')
+                const t = document.querySelector('[name="cf-turnstile-response"]')
+                return { form: !!(u && p), token: t ? String(t.value || '').length : -1, filled: !!(u && u.value) }
+              })()`)
+            } catch (e) { continue }
+            if (!state || !state.form) continue
+            if (state.filled) return          // 用户自己已经在填了,别插手
+            if (state.token === 0) continue   // 还没出 Turnstile token:再等
+            try {
+              await winRef.webContents.executeJavaScript(`(() => {
+                const u = document.querySelector('#UserName') || document.querySelector('input[name=UserName]')
+                const p = document.querySelector('#PassWord') || document.querySelector('input[name=PassWord]')
+                u.value = ${JSON.stringify(username)}
+                p.value = ${JSON.stringify(password)}
+                u.dispatchEvent(new Event('input', { bubbles: true }))
+                p.dispatchEvent(new Event('input', { bubbles: true }))
+                const f = Array.from(document.forms).find(f => f.querySelector('[name=UserName]'))
+                if (!f) return 'no-form'
+                const btn = f.querySelector('input[type=submit], button[type=submit], #ipb_login_submit')
+                if (btn) { btn.click(); return 'clicked' }
+                f.submit(); return 'submitted'
+              })()`)
+            } catch (e) { /* 忽略:填不进去就交给用户手动登录 */ }
+            return
+          }
+        }
+        autoFill()
+        setTimeout(tick, 1500)
+      })
+      try { if (!win.isDestroyed()) win.destroy() } catch (e) { /* 忽略 */ }
+      win = null
+      return result
+    } catch (e) {
+      try { if (win && !win.isDestroyed()) win.destroy() } catch (err) { /* 忽略 */ }
+      return { ok: false, error: String((e && e.message) || e) }
+    } finally {
+      ehLoginInFlight = false
+    }
+  })
+
+  // 退出登录:清掉登录窗口分区里的 Cookie(设置里的四项由前端清空并保存)
+  ipcMain.handle('eh-logout', async () => {
+    try {
+      const ses = session.fromPartition(EH_LOGIN_PARTITION)
+      await ses.clearStorageData()
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: String((e && e.message) || e) }
+    }
+  })
+}
+
 ipcMain.handle('save-book', async (event, book) => {
   return await saveBookToDatabase(book)
 })
@@ -2574,6 +3150,17 @@ ipcMain.handle('open-url', async (event, url) => {
 ipcMain.handle('show-file', async (event, filepath) => {
   if (WEB_MODE) return
   shell.showItemInFolder(filepath)
+})
+
+// 打开一个目录(下载文件夹等)。网页版跑在服务器上,打开服务器目录对用户没意义 → 返回失败
+ipcMain.handle('open-path', async (event, target) => {
+  if (WEB_MODE) return { ok: false, error: 'webMode' }
+  try {
+    const err = await shell.openPath(String(target || ''))
+    return err ? { ok: false, error: err } : { ok: true }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
 })
 
 ipcMain.handle('use-new-cover', async (event, filepath) => {

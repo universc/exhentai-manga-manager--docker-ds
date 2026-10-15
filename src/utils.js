@@ -75,17 +75,61 @@ const acceleratorInfo = [
   }
 ]
 
-const insertLocalReadRecord = (bookId) => {
+// 阅读记录(历史):像 JHenTai 一样**把画廊快照一起存下来** ——
+// 这样即使这本书已经不在当前库里(换了库、文件被删、甚至是在线画廊只取过一页),
+// 历史里依然能看到它、还能点开读。
+const insertLocalReadRecord = (bookId, book) => {
+  if (!bookId) return
   const maxRecentRead = 100
   let recentRead = JSON.parse(localStorage.getItem('recentRead') || '[]')
   const recordMap = new Map(recentRead.map(record => [record.id, record]))
   recordMap.delete(bookId)
-  recordMap.set(bookId, { id: bookId, read_time: Math.floor(Date.now() / 1000) })
+  const b = book || {}
+  recordMap.set(bookId, {
+    id: bookId,
+    read_time: Math.floor(Date.now() / 1000),
+    snap: {
+      title: b.title || '',
+      title_jpn: b.title_jpn || '',
+      title_cn: b.title_cn || '',
+      coverPath: b.coverPath || '',
+      pageCount: b.pageCount == null ? null : b.pageCount,
+      filecount: b.pageCount == null ? null : b.pageCount,
+      rating: b.rating || 0,
+      category: b.category || '',
+      tags: b.tags || {},
+      url: b.url || '',
+      online: !!b.online,
+      type: b.type || '',
+      filepath: b.filepath || ''
+    }
+  })
   recentRead = Array.from(recordMap.values())
   if (recentRead.length > maxRecentRead) {
     recentRead = recentRead.slice(-maxRecentRead) // Keep last 100
   }
   localStorage.setItem('recentRead', JSON.stringify(recentRead))
+}
+
+// 历史记录(新的在前),带快照与阅读时间
+const fetchRecentReadRecords = () => {
+  try {
+    const list = JSON.parse(localStorage.getItem('recentRead') || '[]')
+    return Array.isArray(list) ? list.slice().reverse() : []
+  } catch (e) {
+    return []
+  }
+}
+
+// 从历史里移除一条 / 清空历史
+const removeReadRecord = (id) => {
+  const list = JSON.parse(localStorage.getItem('recentRead') || '[]')
+  const next = list.filter(r => r && r.id !== id)
+  localStorage.setItem('recentRead', JSON.stringify(next))
+  return next.length
+}
+const clearReadRecords = () => {
+  localStorage.setItem('recentRead', JSON.stringify([]))
 }
 
 const fetchRecentReads = () => {
@@ -445,6 +489,10 @@ const toolbarButtonDefinitions = [
   { id: 'themeSwitch', labelKey: 'm.themeSwitch' },
   { id: 'fullscreen', labelKey: 'm.fullscreenButton' },
   { id: 'sortSelect', labelKey: 'm.toolbarSortSelect' },
+  // 筛选按钮(漏斗):点开即 排序/筛选 框里的筛选条件;可在 高级 → 工具栏按钮 里隐藏
+  { id: 'filter', labelKey: 'm.filterButton' },
+  // 下载记录:右侧滑出下载列表(EH在线 的整本/单页下载都记在这里)
+  { id: 'downloads', labelKey: 'm.downloads' },
   // 设置按钮:可以拖动排序,但不能隐藏(常驻)
   { id: 'setting', labelKey: 'm.setting' },
   { id: 'uiMode', labelKey: 'm.toolbarUiMode' },
@@ -454,7 +502,7 @@ const defaultToolbarButtons = () => toolbarButtonDefinitions.map(b => b.id)
 // 后来新增、老配置里不存在的工具栏元素:升级后默认仍然显示,只有用户显式关掉才隐藏
 // 「显式关掉」记在设置项 toolbarButtonsHidden 里(不是只看 toolbarButtons 缺不缺 ——
 // 老配置本来就缺这几项,分不清「没有」和「被关掉」)
-const TOOLBAR_NEW_ITEMS = ['searchInput', 'searchButton', 'sortSelect', 'uiMode', 'switchLibrary']
+const TOOLBAR_NEW_ITEMS = ['searchInput', 'searchButton', 'sortSelect', 'uiMode', 'switchLibrary', 'filter', 'downloads']
 // 常驻元素:能拖动排序,但永远显示(设置列表里点击不生效)
 const TOOLBAR_ALWAYS_ITEMS = ['setting']
 // 补齐老配置里缺失的新元素;返回值只决定「显示与否」,排列顺序另由 toolbarButtonOrder 决定
@@ -689,6 +737,11 @@ const defaultUiSettings = () => ({
   toolbarButtonsHidden: [],
   customPageSizes: '12,24,42,72,500,5000,1000000',
   scrollInertiaLevel: 'medium',
+  // 惯性滑动的物理参数(替代旧的档位;旧配置会自动换算)
+  inertiaEnabled: true,
+  inertiaFriction: 0.93,
+  inertiaMaxVelocity: 1500,
+  inertiaFollow: 0.3,
   enableImageUpscale: true,
   enableImageOcr: true,
   enableImageColorize: true,
@@ -723,7 +776,8 @@ const defaultUiSettings = () => ({
   // 内置阅读器:浮层设置栏的弹出方式与阅读结束行为
   viewerToolbarHover: true,   // 鼠标移到屏幕顶部(1/22)时弹出设置栏
   viewerToolbarClick: true,   // 点击画面中央 1/4 区域时弹出设置栏
-  viewerEndAction: 'none',    // 阅读完成后:none=不处理 / exit=退出阅读器 / next=打开下一本 / random=打开随机一本
+  viewerEndAction: 'none',    // 阅读完成后:none=不处理 / exit=退出阅读器 / next=打开下一本 / random=打开随机一本 / detail=打开这本书的详情
+  uiFrameRate: 'auto',        // 界面动画帧率上限:auto=跟随显示器 / 60 / 120
   viewerEndTip: true,         // 到最后一页时给一次提示
   // 自动超分放大:图片被放大显示时自动超分(仅用于显示,不落盘)
   autoUpscale: false,
@@ -760,6 +814,9 @@ export {
   acceleratorInfo,
   insertLocalReadRecord,
   fetchRecentReads,
+  fetchRecentReadRecords,
+  removeReadRecord,
+  clearReadRecords,
   contextMenuDefinitions,
   defaultContextMenuOptions,
   isContextMenuItemEnabled,

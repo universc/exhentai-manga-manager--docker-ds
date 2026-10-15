@@ -36,17 +36,27 @@
             :id="image.thumbId"
           >
             <img
+              v-if="image.thumbnailPath"
               :src="`${image.thumbnailPath}?id=${image.id}`"
               class="sidebar-thumbnail"
+              loading="lazy"
               @click="handleClickThumbnail(image.id)"
               @contextmenu="onMangaImageContextMenu($event, image)"
             />
+            <!-- 在线页还没解析出来先占个位,别让缩略图条缺一块 -->
+            <div v-else class="sidebar-thumbnail sidebar-thumbnail-wait">
+              <el-icon class="is-loading"><Loading /></el-icon>
+            </div>
             <div class="sidebar-thumbnail-page" v-if="!setting.hidePageNumber">{{index + 1}} / {{thumbnailList.length}}</div>
           </div>
         </div>
       </div>
       <div class="drawer-viewer-body"
-        :class="{ 'viewer-horizontal-scroll': isHorizontalScroll, 'viewer-paged': isPaging, 'viewer-zoomed': isZoomedIn }"
+        :class="{
+          'viewer-horizontal-scroll': isHorizontalScroll && !showThumbnail,
+          'viewer-paged': isPaging && !showThumbnail,
+          'viewer-zoomed': isZoomedIn && !showThumbnail,
+        }"
         ref="drawerViewerBody"
         @wheel.stop="handleBodyWheel"
         @scroll="handleBodyScroll"
@@ -54,8 +64,14 @@
         @mouseleave="nextMangaButtonsVisible = false"
       >
                   <!-- 文字模式:txt / 没有图片的 epub -->
-          <div class="drawer-novel-content" v-if="!showThumbnail && isNovelMode" ref="novelScrollRef" :class="{ 'novel-paged': novelPaged }" @wheel.stop="onNovelWheel" @keydown="onNovelKeydown" @click="onNovelClick" tabindex="0">
-            <div class="novel-body" :style="novelStyle" :class="{ 'novel-two-col': novelTwoCol, 'novel-vertical': novelVertical }">
+          <div class="drawer-novel-content" v-if="!showThumbnail && isNovelMode" ref="novelScrollRef"
+            :class="{ 'novel-paged': novelPaged, 'novel-scrollv': !novelPaged && novelDirection === 'vertical', 'novel-dir-ltr': !novelPaged && novelDirection === 'ltr', 'novel-dir-rtl': !novelPaged && novelDirection === 'rtl' }"
+            :style="novelBoxStyle"
+            @wheel="onNovelWheel" @keydown="onNovelKeydown" @click="onNovelClick"
+            @pointerdown="onNovelPointerDown" @pointermove="onNovelPointerMove" @pointerup="onNovelPointerUp" @pointercancel="onNovelPointerUp" @pointerleave="onNovelPointerUp"
+            @scroll="scheduleNovelProgress" tabindex="0">
+            <!-- 卷轴(连续滚动):一整块流式内容,单列;方向由 writing-mode / maxWidth 控制 -->
+            <div v-if="!novelPaged" class="novel-body" :style="novelStyle">
               <template v-for="(blk, i) in novelBlocks" :key="i">
                 <div v-if="blk.kind === 'chapter'" :id="'nb-' + i" class="novel-chapter">{{ blk.title }}</div>
                 <h4 v-else-if="blk.kind === 'heading'" :id="'nb-' + i" class="novel-heading">{{ blk.text }}</h4>
@@ -63,10 +79,28 @@
                 <img v-else-if="blk.kind === 'image'" :id="'nb-' + i" class="novel-image" :src="novelImageSrc(blk)" loading="lazy" />
               </template>
             </div>
+            <!-- 分页:每个「页窗口」都是独立的一屏,整块内容按页高纵向平移。
+                 不再使用「横向多列 + scrollLeft」,从结构上不存在残列/切割。 -->
+            <div v-else class="novel-page-pair" :class="{ 'novel-pair-rtl': novelDirection === 'rtl' }">
+              <div v-for="w in (novelTwoCol ? 2 : 1)" :key="w" class="novel-page-window"
+                v-show="(novelPageIndex + w - 1) < novelPageCount">
+                <div class="novel-page-clip">
+                  <div class="novel-body novel-body-paged" :style="novelBodyStyle(w - 1)">
+                    <template v-for="(blk, i) in novelBlocks" :key="i">
+                      <div v-if="blk.kind === 'chapter'" :id="'nb-' + i" class="novel-chapter">{{ blk.title }}</div>
+                      <h4 v-else-if="blk.kind === 'heading'" :id="'nb-' + i" class="novel-heading">{{ blk.text }}</h4>
+                      <p v-else-if="blk.kind === 'text'" :id="'nb-' + i" class="novel-para">{{ blk.text }}</p>
+                      <img v-else-if="blk.kind === 'image'" :id="'nb-' + i" class="novel-image" :src="novelImageSrc(blk)" loading="lazy" />
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 <div class="drawer-image-content"
           v-if="!showThumbnail && !isNovelMode"
           @click="handleViewerAreaClick"
+          @mousedown="onImagePanStart"
         >
           <!-- ① 卷轴 + 左右 / 右左:整排横向排列,横向连续滚动(单双不区分;右左时整排反向) -->
           <div v-if="isScrollHorizontal" class="viewer-horizontal-row" :class="{ 'viewer-horizontal-row-rtl': isRtl }">
@@ -78,17 +112,22 @@
                 v-lazy:[image.id]="{enter: handleImageEnter, leave: handleImageLeave}"
               >
                 <img
-                  v-if="loadedImages[image.id]"
+                  v-if="loadedImages[image.id] || (image.online && image.filepath)"
                   :src="imageSrc(image)"
-                  class="viewer-image" draggable="false"
+                  class="viewer-image" :class="{ 'viewer-image-loading': imagePending(image) }" draggable="false"
+                    @load="onViewerImageLoad(image)" @error="onViewerImageError(image)"
                   :style="{height: frameStyle(image, 'horizontal').height}"
                   @mousedown="onImagePanStart"
                   @dragstart.prevent
                   @contextmenu="onMangaImageContextMenu($event, image)"
                 />
-                <div v-else class="viewer-image-placeholder" :style="{height: frameStyle(image, 'horizontal').height}">
-                  <el-icon class="is-loading"><Loading /></el-icon>
-                </div>
+                <ViewerPagePlaceholder
+                  v-else
+                  :style="{height: frameStyle(image, 'horizontal').height}"
+                  :state="placeholderState(image)"
+                  :index="index"
+                  @retry="retryOnlinePage(image)"
+                />
               </div>
               <div class="viewer-image-page" v-if="!setting.hidePageNumber">{{index + 1}} of {{viewerImageList.length}}</div>
             </div>
@@ -104,17 +143,22 @@
                   v-lazy:[image.id]="{enter: handleImageEnter, leave: handleImageLeave}"
                 >
                   <img
-                    v-if="loadedImages[image.id]"
+                    v-if="loadedImages[image.id] || (image.online && image.filepath)"
                     :src="imageSrc(image)"
-                    class="viewer-image" draggable="false"
+                    class="viewer-image" :class="{ 'viewer-image-loading': imagePending(image) }" draggable="false"
+                    @load="onViewerImageLoad(image)" @error="onViewerImageError(image)"
                     :style="{height: frameStyle(image, 'scrollSingle').height}"
                     @mousedown="onImagePanStart"
                     @dragstart.prevent
                     @contextmenu="onMangaImageContextMenu($event, image)"
                   />
-                  <div v-else class="viewer-image-placeholder" :style="{height: frameStyle(image, 'scrollSingle').height}">
-                    <el-icon class="is-loading"><Loading /></el-icon>
-                  </div>
+                  <ViewerPagePlaceholder
+                    v-else
+                    :style="{height: frameStyle(image, 'scrollSingle').height}"
+                    :state="placeholderState(image)"
+                    :index="index"
+                    @retry="retryOnlinePage(image)"
+                  />
                   <div class="viewer-image-bar" @mousedown="onFrameResizeStart($event, image)"></div>
                 </div>
                 <div class="viewer-image-page" v-if="!setting.hidePageNumber">{{index + 1}} of {{viewerImageList.length}}</div>
@@ -132,17 +176,21 @@
                     v-lazy:[image.id]="{enter: handleImageEnter, leave: handleImageLeave}"
                   >
                     <img
-                      v-if="loadedImages[image.id]"
+                      v-if="loadedImages[image.id] || (image.online && image.filepath)"
                       :src="imageSrc(image)"
-                      class="viewer-image" draggable="false"
+                      class="viewer-image" :class="{ 'viewer-image-loading': imagePending(image) }" draggable="false"
+                    @load="onViewerImageLoad(image)" @error="onViewerImageError(image)"
                       :style="{height: frameStyle(image, 'scrollDouble').height}"
                       @mousedown="onImagePanStart"
                       @dragstart.prevent
                       @contextmenu="onMangaImageContextMenu($event, image)"
                     />
-                    <div v-else class="viewer-image-placeholder" :style="{height: frameStyle(image, 'scrollDouble').height}">
-                      <el-icon class="is-loading"><Loading /></el-icon>
-                    </div>
+                    <ViewerPagePlaceholder
+                      v-else
+                      :style="{height: frameStyle(image, 'scrollDouble').height}"
+                      :state="placeholderState(image)"
+                      @retry="retryOnlinePage(image)"
+                    />
                   </div>
                 </div>
                 <div class="viewer-image-page" v-if="!setting.hidePageNumber">{{ frame.pageNumber.join(', ') }} of {{viewerImageList.length}}</div>
@@ -153,9 +201,17 @@
           <div v-else-if="imageStyleType === 'single'" class="viewer-paging">
             <div class="image-frame" v-if="viewerImageList.length > 0">
               <div class="viewer-image-frame" :style="frameStyle(viewerImageList[currentImageIndex], 'single')">
+                <ViewerPagePlaceholder
+                  v-if="viewerImageList[currentImageIndex] && viewerImageList[currentImageIndex].online && (!viewerImageList[currentImageIndex].filepath || viewerImageList[currentImageIndex].failed)"
+                  class="viewer-page-placeholder-abs"
+                  :state="placeholderState(viewerImageList[currentImageIndex])"
+                  :index="currentImageIndex"
+                  @retry="retryOnlinePage(viewerImageList[currentImageIndex])"
+                />
                 <img
                   :src="imageSrc(viewerImageList[currentImageIndex])"
-                  class="viewer-image" draggable="false"
+                  class="viewer-image" :class="{ 'viewer-image-loading': imagePending(viewerImageList[currentImageIndex]) }" draggable="false"
+                  @load="onViewerImageLoad(viewerImageList[currentImageIndex])" @error="onViewerImageError(viewerImageList[currentImageIndex])"
                   :style="{height: frameStyle(viewerImageList[currentImageIndex], 'single').height}"
                   @mousedown="onImagePanStart"
                   @dragstart.prevent
@@ -179,11 +235,19 @@
           <div v-else-if="imageStyleType === 'double'" class="viewer-paging">
             <div class="image-frame" v-if="viewerImageListDouble.length > 0">
               <div class="viewer-image-frame viewer-image-frame-double" :class="{ 'viewer-image-frame-rtl': isRtl }">
+                <ViewerPagePlaceholder
+                  v-for="image in (viewerImageListDouble[currentImageIndex]?.page || []).filter(im => im.online && (!im.filepath || im.failed))"
+                  :key="'ph-' + image.id"
+                  class="viewer-page-placeholder-abs"
+                  :state="placeholderState(image)"
+                  @retry="retryOnlinePage(image)"
+                />
                 <img
                   v-for="image in viewerImageListDouble[currentImageIndex]?.page"
                   :key="image.id"
                   :src="imageSrc(image)"
-                  class="viewer-image" draggable="false"
+                  class="viewer-image" :class="{ 'viewer-image-loading': imagePending(image) }" draggable="false"
+                    @load="onViewerImageLoad(image)" @error="onViewerImageError(image)"
                   :style="{height: frameStyle(image, 'double').height}"
                   @mousedown="onImagePanStart"
                   @dragstart.prevent
@@ -218,12 +282,17 @@
                 'viewer-thumbnail-item-clicked': clickedThumbId === image.id
               }">
               <img
+                v-if="image.thumbnailPath"
                 :src="`${image.thumbnailPath}?id=${image.id}`"
                 class="viewer-thumbnail"
                 :style="{width: thumbnailWidth}"
+                loading="lazy"
                 @click="handleClickThumbnail(image.id)"
                 @contextmenu="onMangaImageContextMenu($event, image)"
               />
+              <div v-else class="viewer-thumbnail viewer-thumbnail-wait" :style="{width: thumbnailWidth}">
+                <el-icon class="is-loading"><Loading /></el-icon>
+              </div>
               <div class="viewer-thunmnail-page" v-if="!setting.hidePageNumber">{{index + 1}} of {{thumbnailList.length}}</div>
             </div>
           </el-space>
@@ -244,8 +313,26 @@
           <!-- 顺序 / 显隐完全由「设置 → 内置阅读器 → 设置栏按钮」决定 -->
           <template v-for="id in viewerToolbarList" :key="id">
                               <span class="viewer-toolbar-divider" v-if="viewerToolbarDividerBefore(id)"></span>
+            <!-- 文字排版:左边按钮循环切换,右边输入框可直接输入 / 下拉选择 -->
+            <span v-if="id === 'novelFont'" class="viewer-toolbar-group">
+              <el-button class="viewer-toolbar-btn" size="small" :title="viewerToolbarTitle(id)" @click="viewerToolbarClick(id)">{{ viewerToolbarText(id) }}</el-button>
+              <el-select class="viewer-toolbar-select" size="small" filterable allow-create default-first-option
+                :model-value="novelFont" :title="viewerToolbarTitle(id)" @change="applyNovelFont">
+                <el-option v-for="opt in NOVEL_FONT_OPTIONS" :key="opt.id" :label="$t(opt.labelKey)" :value="opt.id"></el-option>
+              </el-select>
+            </span>
+            <span v-else-if="id === 'novelLineHeight'" class="viewer-toolbar-group">
+              <el-button class="viewer-toolbar-btn" size="small" :title="viewerToolbarTitle(id)" @click="viewerToolbarClick(id)">{{ viewerToolbarText(id) }}</el-button>
+              <el-input class="viewer-toolbar-input" size="small" :model-value="String(novelLineHeight)"
+                :title="viewerToolbarTitle(id)" @change="applyNovelLineHeight"></el-input>
+            </span>
+            <span v-else-if="id === 'novelLetterSpacing'" class="viewer-toolbar-group">
+              <el-button class="viewer-toolbar-btn" size="small" :title="viewerToolbarTitle(id)" @click="viewerToolbarClick(id)">{{ viewerToolbarText(id) }}</el-button>
+              <el-input class="viewer-toolbar-input" size="small" :model-value="String(novelLetterSpacing)"
+                :title="viewerToolbarTitle(id)" @change="applyNovelLetterSpacing"></el-input>
+            </span>
             <!-- 放大 / 缩小是一个整体(设置里也是一项) -->
-            <span v-if="id === 'zoom'" class="viewer-toolbar-group">
+            <span v-else-if="id === 'zoom'" class="viewer-toolbar-group">
               <el-button class="viewer-toolbar-btn" size="small" :icon="ZoomOut" :title="$t('m.zoomOut')" @click="zoomViewerImage(-1)"></el-button>
               <span class="viewer-toolbar-value" :title="$t('m.zoomTip')">{{ viewerZoomLabel }}</span>
               <el-button class="viewer-toolbar-btn" size="small" :icon="ZoomIn" :title="$t('m.zoomIn')" @click="zoomViewerImage(1)"></el-button>
@@ -266,6 +353,12 @@
           <el-button size="large" type="success" plain @click="$emit('toNextMangaRandom')">{{$t('m.nextMangaRandom')}}</el-button>
           <el-button size="large" type="success" plain @click="$emit('toNextManga', 1)">{{$t('m.nextManga')}}</el-button>
         </div>
+      </div>
+      <!-- 加载遮罩(可关闭):在线解析画廊页面 / 本地取图片列表;失败或卡住时点「关闭」退出 -->
+      <div class="viewer-loading-overlay" v-if="viewerLoadingVisible">
+        <el-icon class="is-loading" :size="34"><Loading /></el-icon>
+        <div class="viewer-loading-overlay-text">{{ viewerLoadingText }}</div>
+        <el-button class="viewer-loading-overlay-close" type="primary" plain @click="cancelViewerLoading">{{ $t('c.close') }}</el-button>
       </div>
     </div>
   </el-drawer>
@@ -291,13 +384,15 @@
 import { ref, onMounted, computed, nextTick, watch, onUnmounted, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Close, Loading, ZoomIn, ZoomOut, Lock, Unlock, Picture, Grid, Memo } from '@element-plus/icons-vue'
-import { ElLoading, ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { ehImageSrc } from '../ehOnline.js'
+import ViewerPagePlaceholder from './ViewerPagePlaceholder.vue'
 import ContextMenu from '@imengyu/vue3-context-menu'
 import { attachInertiaScroll } from '../inertia-scroll.js'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { isContextMenuItemEnabled, sortContextMenuItems, insertLocalReadRecord } from '../utils.js'
+import { isContextMenuItemEnabled, sortContextMenuItems, insertLocalReadRecord, customFontStyles } from '../utils.js'
 
 const appStore = useAppStore()
 const { keyMap, setting, bookDetail } = storeToRefs(appStore)
@@ -311,11 +406,14 @@ const viewerRole = computed(() => {
 })
 
 const emit = defineEmits([
+  // EH在线:某一页的下载(交给 App 走 eh-download-page)
+  'downloadPage',
   'toNextManga',
   'toNextMangaRandom',
   'updateOptions',
   'updateWindowTitle',
   'rescanBook',
+  'openBookDetail',
 ])
 
 let ComicReader = null
@@ -540,7 +638,9 @@ const cycleReadingDirection = () => {
 // ---------- 设置栏按钮:可在 设置 → 内置阅读器 里勾选 / 排序(留空=全部显示) ----------
 // 卷轴 / 单双 / 方向 / 适应 / 缩放 与 缩略图 / 侧栏 / 图钉 都可配置(设置里勾选 + 拖动排序);
 // 只有「退出」按钮固定常驻右上角,不参与配置。
-const DEFAULT_VIEWER_TOOLBAR = ['scroll', 'singleDouble', 'direction', 'fit', 'zoom', 'thumbnail', 'sidebar', 'pin']
+const DEFAULT_VIEWER_TOOLBAR = ['scroll', 'singleDouble', 'direction', 'fit', 'zoom', 'novelFont', 'novelLineHeight', 'novelLetterSpacing', 'thumbnail', 'sidebar', 'pin']
+// 只在文字阅读器出现的按钮(图片模式直接过滤掉)
+const NOVEL_ONLY_TOOLBAR_ITEMS = ['novelFont', 'novelLineHeight', 'novelLetterSpacing']
 // 旧配置里的 zoomIn / zoomOut 归一成一项 zoom
 const normalizeViewerToolbarId = (id) => (id === 'zoomIn' || id === 'zoomOut' ? 'zoom' : id)
 // 缩略图视图下这三项没有意义
@@ -560,18 +660,31 @@ const viewerToolbarList = computed(() => {
   const hasOrderConfig = Array.isArray(setting.value.viewerToolbarOrder) && setting.value.viewerToolbarOrder.length > 0
   // 从未配置过 → 全部显示;配置过(哪怕一个都不勾选)→ 严格按配置来
   const shown = hasShownConfig ? rawShown.map(normalizeViewerToolbarId) : (hasOrderConfig ? [] : null)
-  return order.filter(id => (shown === null || shown.includes(id)) && !(showThumbnail.value && HIDDEN_IN_THUMBNAIL.includes(id)))
+  const visible = order.filter(id => (shown === null || shown.includes(id))
+    && !(showThumbnail.value && HIDDEN_IN_THUMBNAIL.includes(id)))
+  // 文字模式:thumbnail 与 sidebar 是两个完全重复的「章节目录」按钮 → 去掉 thumbnail(默认顺序里它在前);
+  // 万一配置里只勾了 thumbnail(没有 sidebar),就保留它,保证文字模式仍有目录入口。
+  // 字体 / 行距 / 字间距只在文字阅读器里才有意义,图片模式直接不显示
+  const filtered = isNovelMode.value ? visible : visible.filter(id => !NOVEL_ONLY_TOOLBAR_ITEMS.includes(id))
+  // 文字模式:thumbnail 与 sidebar 是两个完全重复的「章节目录」按钮 → 去掉 thumbnail
+  if (isNovelMode.value && filtered.includes('sidebar')) return filtered.filter(id => id !== 'thumbnail')
+  return filtered
 })
 // 分组竖线:适应 / 缩放 之前各一条
-const viewerToolbarDividerBefore = (id) => id === 'fit' || id === 'zoom'
+const viewerToolbarDividerBefore = (id) => id === 'fit' || id === 'zoom' || id === 'novelFont'
+// 文字模式方向与漫画同一套:上下 / 左右 / 右左
+const novelDirectionLabel = computed(() => t({ vertical: 'm.dirVertical', ltr: 'm.dirLtr', rtl: 'm.dirRtl' }[novelDirection.value] || 'm.dirVertical'))
 // 文字模式:同一排按钮,标题与按钮文字换成语义相符的说法
 const novelToolbarTitle = (id) => {
   if (!isNovelMode.value) return ''
   return {
-    scroll: t('m.novelScrollPagedTip'),
-    singleDouble: t('m.novelColumnTip'),
-    direction: t('m.novelDirectionTip'),
+    scroll: t('m.scrollModeLabel') + ' / ' + t('m.pagingModeLabel'),
+    singleDouble: t('m.novelOnePage') + ' / ' + t('m.novelTwoPage'),
+    direction: t('m.dirVertical') + ' / ' + t('m.dirLtr') + ' / ' + t('m.dirRtl'),
     fit: t('m.novelWidthTip', { n: novelWidthPercent.value }),
+    novelFont: t('m.novelFontTip', { n: novelFontLabel.value }),
+    novelLineHeight: t('m.novelLineHeightTip', { n: novelLineHeight.value }),
+    novelLetterSpacing: t('m.novelLetterSpacingTip', { n: novelLetterSpacing.value }),
     thumbnail: t('m.novelToc'),
     sidebar: showViewerSide.value ? t('m.novelHideToc') : t('m.novelShowToc'),
     pin: viewerToolbarPinned.value ? t('m.unpinToolbar') : t('m.pinToolbar'),
@@ -580,13 +693,18 @@ const novelToolbarTitle = (id) => {
 const novelToolbarText = (id) => {
   if (!isNovelMode.value) return ''
   return {
-    scroll: novelPaged.value ? t('m.novelPaged') : t('m.novelScroll'),
+    scroll: novelPaged.value ? t('m.pagingModeLabel') : t('m.scrollModeLabel'),
     singleDouble: novelTwoCol.value ? t('m.novelTwoPage') : t('m.novelOnePage'),
-    direction: novelVertical.value ? t('m.novelVertical') : t('m.novelHorizontal'),
+    direction: novelDirectionLabel.value,
     fit: t('m.novelWidthShort') + ' ' + novelWidthPercent.value + '%',
-    thumbnail: showViewerSide.value ? t('m.novelHideToc') : t('m.novelShowToc'),
-    sidebar: showViewerSide.value ? t('m.novelHideToc') : t('m.novelShowToc'),
-    pin: viewerToolbarPinned.value ? t('m.unpinToolbar') : t('m.pinToolbar'),
+    novelFont: t('m.novelFont'),
+    // 只显示名字:数值由右边的输入框显示,避免「行距 1.9」又跟一个 1.9
+    novelLineHeight: t('m.novelLineHeight'),
+    novelLetterSpacing: t('m.novelLetterSpacing'),
+    // 目录与图钉只要图标:状态看图标就够,按钮文字会挤占工具栏;说明留在 title 悬浮提示里
+    thumbnail: '',
+    sidebar: '',
+    pin: '',
   }[id] || ''
 }
 const viewerToolbarTitle = (id) => novelToolbarTitle(id) || ({
@@ -611,14 +729,17 @@ const viewerToolbarIcon = (id) => ({
 }[id])
 const viewerToolbarClick = (id) => {
   // 文字模式:沿用同一排按钮,只把语义换成文字相关(设计稿)
-  //   fit → 行距 / singleDouble → 单双栏 / direction → 竖排 / scroll → 连续或分页
+  //   fit → 正文宽度占比 / singleDouble → 单页·双页 / direction → 上下·左右·右左 / scroll → 卷轴·分页
   //   sidebar、thumbnail → 章节目录
   if (isNovelMode.value) {
     const novelActions = {
       scroll: toggleNovelPaged,
       singleDouble: toggleNovelTwoCol,
-      direction: toggleNovelVertical,
-      fit: cycleNovelLineHeight,
+      direction: cycleNovelDirection,
+      fit: cycleNovelWidth,
+      novelFont: cycleNovelFont,
+      novelLineHeight: cycleNovelLineHeight,
+      novelLetterSpacing: cycleNovelLetterSpacing,
       sidebar: () => { showThumbnail.value = false; toggleSidebar() },
       thumbnail: () => { showThumbnail.value = false; toggleSidebar() },
       pin: toggleToolbarPin,
@@ -766,6 +887,11 @@ const handleReachEnd = () => {
     exitViewer()
     return
   }
+  if (action === 'detail') {
+    // 交给 App:关掉阅读器并打开这本书的详情
+    emit('openBookDetail')
+    return
+  }
   maybeTipLastPage()
 }
 
@@ -829,39 +955,240 @@ const novelChapters = ref([])
 const novelKind = ref('')
 const novelCharCount = ref(0)
 const novelFontSize = ref(Number(localStorage.getItem('emm-novel-font-size')) || 19)
-// 「适应」按钮 = 正文宽度占比:100% → 90% → 80% → 70% → 60% → 回到 100%
-// 行距不再单独设按钮(按钮改成了正文宽度占比),排版用一个舒服的固定值
-const novelLineHeight = ref(1.9)
-const NOVEL_WIDTH_STEPS = [100, 90, 80, 70, 60]
+// 字体 / 行距 / 字间距:阅读器工具栏的「字体」「行距」「间距」三个按钮循环切换
+// 字体选项:软件自带的像素字体(带字体文件,不依赖本机) + 常用系统字体族;
+// 阅读器工具栏的下拉支持直接手输任意字体名,所以这里只是「常用项」
+// 阅读器可选字体 = 软件已有的那份字体列表(与「设置 → 自定义主题 → 字体样式」一致),
+// 末尾再补上软件自带的像素字体。
+const DEFAULT_NOVEL_FONT_STACK = "'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', serif"
+const NOVEL_FONT_OPTIONS = [
+  ...customFontStyles.map(f => ({
+    id: f.labelKey,
+    labelKey: f.labelKey,
+    stack: f.value || DEFAULT_NOVEL_FONT_STACK,
+  })),
+  { id: 'novelFontPixel', labelKey: 'm.novelFontPixel', stack: "var(--emm-pixel-font, 'EmmPixel'), 'EmmPixelHant', ui-monospace, monospace" },
+  { id: 'novelFontPixelHant', labelKey: 'm.novelFontPixelHant', stack: "'EmmPixelHant', 'EmmPixel', ui-monospace, monospace" },
+]
+const novelFont = ref(localStorage.getItem('emm-novel-font') || 'serif')
+const novelFontLabel = computed(() => {
+  const f = NOVEL_FONT_OPTIONS.find(x => x.id === novelFont.value)
+  return f ? t(f.labelKey) : String(novelFont.value)
+})
+const novelFontStack = computed(() => {
+  const f = NOVEL_FONT_OPTIONS.find(x => x.id === novelFont.value)
+  if (f) return f.stack
+  // 兼容早期版本存下的短 id
+  const legacy = {
+    serif: 'serif', sans: 'sans-serif', kai: "'Kaiti SC', 'KaiTi', serif",
+    mono: 'ui-monospace, monospace',
+    pixel: "var(--emm-pixel-font, 'EmmPixel'), 'EmmPixelHant', ui-monospace, monospace",
+    pixelHant: "'EmmPixelHant', 'EmmPixel', ui-monospace, monospace",
+  }[novelFont.value]
+  if (legacy) return legacy
+  // 手输的字体名:去掉引号/反斜杠后当字体族用
+  return "'" + String(novelFont.value).replace(/['"\\]/g, '') + "', serif"
+})
+const NOVEL_LINE_HEIGHTS = [1.5, 1.8, 2.1, 2.4]
+const novelLineHeight = ref(Number(localStorage.getItem('emm-novel-line-height')) || 1.9)
+const NOVEL_LETTER_SPACINGS = [0, 0.03, 0.08, 0.15]
+const novelLetterSpacing = ref(Number(localStorage.getItem('emm-novel-letter-spacing')) || 0.02)
+const cycleNovelFont = () => {
+  const i = NOVEL_FONT_OPTIONS.findIndex(f => f.id === novelFont.value)
+  const next = NOVEL_FONT_OPTIONS[(i + 1) % NOVEL_FONT_OPTIONS.length]
+  novelFont.value = next.id
+  localStorage.setItem('emm-novel-font', next.id)
+  showViewerTip(t('m.novelFontTip', { n: t(next.labelKey) }))
+  nextTick(() => { novelMeasure() })
+}
+const cycleNovelLineHeight = () => {
+  const i = NOVEL_LINE_HEIGHTS.indexOf(Number(novelLineHeight.value.toFixed(2)))
+  const next = NOVEL_LINE_HEIGHTS[(i + 1) % NOVEL_LINE_HEIGHTS.length]
+  novelLineHeight.value = next
+  localStorage.setItem('emm-novel-line-height', String(next))
+  showViewerTip(t('m.novelLineHeightTip', { n: next }))
+  nextTick(() => { novelMeasure() })
+}
+const cycleNovelLetterSpacing = () => {
+  const i = NOVEL_LETTER_SPACINGS.indexOf(Number(novelLetterSpacing.value.toFixed(2)))
+  const next = NOVEL_LETTER_SPACINGS[(i + 1) % NOVEL_LETTER_SPACINGS.length]
+  novelLetterSpacing.value = next
+  localStorage.setItem('emm-novel-letter-spacing', String(next))
+  showViewerTip(t('m.novelLetterSpacingTip', { n: next }))
+  nextTick(() => { novelMeasure() })
+}
+// ── 下拉/手输的直接应用(工具栏「字体 / 行距 / 间距」右侧的输入框) ──
+const applyNovelFont = (v) => {
+  const val = String(v == null ? '' : v).trim()
+  if (!val) return
+  novelFont.value = val
+  localStorage.setItem('emm-novel-font', val)
+  nextTick(() => { novelMeasure() })
+}
+const applyNovelLineHeight = (v) => {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return
+  const val = Math.min(3.5, Math.max(1, n))
+  novelLineHeight.value = val
+  localStorage.setItem('emm-novel-line-height', String(val))
+  nextTick(() => { novelMeasure() })
+}
+const applyNovelLetterSpacing = (v) => {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return
+  const val = Math.min(0.5, Math.max(0, n))
+  novelLetterSpacing.value = val
+  localStorage.setItem('emm-novel-letter-spacing', String(val))
+  nextTick(() => { novelMeasure() })
+}
+const NOVEL_WIDTH_STEPS = [100, 90, 80, 70, 60, 50, 40, 30]
 const novelWidthPercent = ref(Number(localStorage.getItem('emm-novel-width-percent')) || 100)
 // 双栏 = 一屏同时显示两页
 const novelTwoCol = ref(localStorage.getItem('emm-novel-two-col') === '1')
-const novelVertical = ref(localStorage.getItem('emm-novel-vertical') === '1')
+// 文字模式方向:与漫画共用同一个设置(setting.readingDirection),不再各存一份。
+//   vertical=上下(横排,纵向阅读) / ltr=左右(竖排,列从左往右) / rtl=右左(竖排,列从右往左)
+// ⚠️ 早先这里是独立的一坨 localStorage(emm-novel-direction):在图片阅读器里把方向改成「上下」,
+//    切到文字模式仍然是旧值(实测是「右左」)—— 用户报的「文字的上下没改过来」就是这个。
+//    改成 computed 之后两个模式随时一致;写入走 setter,一样落盘。
+const novelDirection = computed({
+  get: () => readingDirection.value,
+  set: (v) => { setting.value.readingDirection = v; persistSetting() },
+})
 // 分页 = 像书一样一页一页翻(不是滚动)
 const novelPaged = ref(localStorage.getItem('emm-novel-paged') === '1')
 const novelScrollRef = ref(null)
-const NOVEL_GAP = 48
 const novelViewportW = ref(0)
 const novelPageIndex = ref(0)
 const novelPageCount = ref(1)
-// 一「页」的宽度:单页 = 可视宽;双页 = 可视宽的一半(即一屏两页)
-const novelPageWidth = computed(() => {
-  const avail = Math.max(240, novelViewportW.value - 32)
-  return novelTwoCol.value ? Math.max(160, Math.floor((avail - NOVEL_GAP) / 2)) : avail
+// 分页:每页「首行」在正文里的纵向位置(由 novelMeasure 逐行量出来)。
+// 每页都从某一整行开始 —— 页边界永不切行、也不会把图片切成两半。
+// 分页:整块正文只排一次(单列流式),「一页」= 固定页高,且页高正好是「整数行」。
+// 因为正文每行等高(段间距为 0),页边界必然落在行与行之间 —— 既不会切行,也不会像多列那样卡。
+const novelPageHeight = ref(0)
+const NOVEL_PAGE_PAD_X = 22
+// 分页模式:两侧留白实现「宽度占比」。留白放在滚动容器外面(margin) ——
+// margin 不随滚动移动,所以每一屏都有同样的留白;调窄的是正文宽度,两页间距不变。
+const novelBoxStyle = computed(() => {
+  // 「宽度占比」= 正文(整块)占屏幕的比例,单页/双页同一口径。
+  // 注意别按双页去乘 2:90/80/60/50 这些挡位一乘就超过 100、被夹成 0,点了一点反应都没有。
+  // 双页时每页自然是「整块的一半」,这是并排阅读的必然结果。
+  // 只服务分页:靠容器两侧留白实现宽度占比。
+  // ⚠️ 卷轴(上下 / 左右 / 右左)一律不碰容器宽度 —— 卷轴下「宽度」管的是
+  //    上下方向的尺寸(横排=正文块宽 maxWidth;竖排=每列的上下长度 height)。
+  if (!novelPaged.value) return {}
+  const side = (100 - novelWidthPercent.value) / 2
+  return side > 0 ? { marginLeft: side + '%', marginRight: side + '%' } : {}
 })
-const novelStep = computed(() => (novelTwoCol.value ? 2 : 1) * (novelPageWidth.value + NOVEL_GAP))
 // 正文样式:分页时用精确列宽排版;连续滚动时只限制正文宽度(宽度占比)
 const novelStyle = computed(() => {
   const base = {
     '--novel-font-size': novelFontSize.value + 'px',
     '--novel-line-height': String(novelLineHeight.value),
+    '--novel-font-family': novelFontStack.value,
+    '--novel-letter-spacing': novelLetterSpacing.value + 'em',
   }
+  const pct = novelWidthPercent.value
   if (novelPaged.value) {
-    return { ...base, columnWidth: novelPageWidth.value + 'px', columnGap: NOVEL_GAP + 'px' }
+    // 分页:正文单列流式,「一页」= 一个固定高度的窗口;翻页靠 .novel-body-paged
+    // 的 margin-top 纵向平移(见 novelBodyStyle)。这里只给字号 / 行高。
+    return base
   }
-  return { ...base, maxWidth: Math.round((novelWidthPercent.value / 100) * 900) + 'px' }
+  // 卷轴(连续滚动):一律一列,单双不生效(见 toggleNovelTwoCol)。
+  // 方向 = 书写方向:上下=横排(纵向滚动);左右/右左=竖排(横向滚动,列从左往右/从右往左)。
+  if (novelDirection.value === 'vertical') {
+    // 卷轴正文宽度与分页同一口径:可视宽 × 宽度占比
+    return { ...base, maxWidth: Math.round((pct / 100) * Math.max(240, novelViewportW.value - NOVEL_PAGE_PAD_X * 2)) + 'px' }
+  }
+  // 竖排:这里的「宽度」= 每一列的上下长度 —— 按占比缩列高,列数随之变多,横向阅读。
+  // (配合 CSS 的 box-sizing: border-box,100/90/80 这些高档位不会再被 padding 夹住。)
+  return { ...base, height: pct + '%' }
 })
+// 分页:每个页窗口里都是同一份正文,浏览器把它按「一列一屏高」切好;
+// 窗口 w 显示第 (当前页 + w) 列 —— 横向平移一个列跨距即可。
+// 左右方向用 margin-left 过渡(横向滑动);上下方向瞬时换页 + 纵向滑入(playNovelVertical)。
+const novelBodyStyle = (w) => {
+  const idx = Math.max(0, novelPageIndex.value + w)
+  return {
+    ...novelStyle.value,
+    marginTop: -(idx * (novelPageHeight.value || 0)) + 'px',
+    // 上下方向:整页纵向平滑滑过去;左右方向:瞬时换页 + 横向滑入(见 playNovelSlide)
+    transition: novelDirection.value === 'vertical' ? 'margin-top .22s ease' : 'none',
+  }
+}
+// 分页的页窗口(用于横向跟手 / 滑入动画)
+const novelPageWins = () => {
+  const el = novelScrollRef.value
+  return el ? [...el.querySelectorAll('.novel-page-window')] : []
+}
+// 左右方向翻页:新的一屏从侧向滑入
+const playNovelSlide = (dir, delta) => {
+  const sign = dir === 'rtl' ? -1 : 1
+  const from = (delta > 0 ? sign : -sign) * 8
+  novelPageWins().forEach(w => {
+    if (getComputedStyle(w).display === 'none' || !w.animate) return
+    w.animate(
+      [{ transform: 'translateX(' + from + '%)' }, { transform: 'translateX(0)' }],
+      { duration: 220, easing: 'cubic-bezier(.22,.61,.36,1)' }
+    )
+  })
+}
+// 上下方向翻页:整页纵向滑入
+const playNovelVertical = (delta) => {
+  const from = (delta > 0 ? 6 : -6) + '%'
+  novelPageWins().forEach(w => {
+    if (getComputedStyle(w).display === 'none' || !w.animate) return
+    w.animate(
+      [{ transform: 'translateY(' + from + ')' }, { transform: 'translateY(0)' }],
+      { duration: 200, easing: 'cubic-bezier(.22,.61,.36,1)' }
+    )
+  })
+}
 const novelImageSrc = (blk) => (blk && (blk.url || blk.absolutePath)) || ''
+// 文字模式的阅读进度:和图片模式共用 viewerReadingProgress,只是存「进度比例」——
+// 文字没有 image id,存页索引又会被字号/宽度改乱,比例最稳。
+let novelProgressTimer = null
+const saveNovelProgress = () => {
+  if (!setting.value.keepReadingProgress) return
+  const box = novelScrollBox()
+  const book = bookDetail.value
+  if (!box || !book || !book.id) return
+  let ratio
+  if (novelPaged.value) {
+    // 分页:直接存「当前页 / 末页」的比例
+    ratio = novelMaxPage() > 0 ? novelPageIndex.value / novelMaxPage() : 0
+  } else {
+    // 横排卷轴滚的是纵向、其余都按横向算 —— 轴取错就会把进度存成 0(下次打开回到第一页)
+    const useY = novelDirection.value === 'vertical'
+    const max = Math.max(1, useY ? (box.scrollHeight - box.clientHeight) : (box.scrollWidth - box.clientWidth))
+    const pos = useY ? box.scrollTop : box.scrollLeft
+    ratio = Math.min(1, Math.max(0, pos / max))
+  }
+  viewerReadingProgress.value = viewerReadingProgress.value.filter(p => p.bookId !== book.id)
+  viewerReadingProgress.value.unshift({ bookId: book.id, novelRatio: ratio })
+  localStorage.setItem('viewerReadingProgress', JSON.stringify(viewerReadingProgress.value.slice(0, 1000)))
+}
+const scheduleNovelProgress = () => {
+  if (novelProgressTimer) clearTimeout(novelProgressTimer)
+  novelProgressTimer = setTimeout(saveNovelProgress, 600)
+}
+const restoreNovelProgress = () => {
+  if (!setting.value.keepReadingProgress) return
+  const book = bookDetail.value
+  const el = novelScrollRef.value
+  if (!book || !el) return
+  const prog = viewerReadingProgress.value.find(p => p.bookId === book.id)
+  if (!prog || typeof prog.novelRatio !== 'number') return
+  if (novelPaged.value) {
+    // 分页:进度是「整本比例」,换算成页码后吸附到整页(双页吸附到偶数页)
+    nextTick(() => {
+      novelPageIndex.value = Math.round(prog.novelRatio * novelMaxPage())
+      clampNovelPage()
+    })
+    return
+  }
+  const max = Math.max(0, el.scrollWidth - el.clientWidth)
+  el.scrollLeft = prog.novelRatio * max
+}
 let novelResizeObserver = null
 // 容器尺寸变化(窗口缩放、侧栏开合)就重测页宽
 const startNovelResizeWatch = () => {
@@ -871,34 +1198,103 @@ const startNovelResizeWatch = () => {
   novelResizeObserver = new ResizeObserver(() => { novelMeasure() })
   novelResizeObserver.observe(el)
 }
+// 松手后的平滑推进:自己写缓动(浏览器 scroll-behavior:smooth 的时长不可控,观感偏生硬)
+let novelAnimRaf = null
+const animateNovelScrollLeft = (el, to, dur = 300) => {
+  cancelAnimationFrame(novelAnimRaf)
+  const from = el.scrollLeft
+  if (Math.abs(to - from) < 1) { el.scrollLeft = to; return }
+  const t0 = performance.now()
+  const tick = (t) => {
+    const k = Math.min(1, (t - t0) / dur)
+    const e = 1 - Math.pow(1 - k, 3) // easeOutCubic
+    el.scrollLeft = from + (to - from) * e
+    if (k < 1) novelAnimRaf = requestAnimationFrame(tick)
+  }
+  novelAnimRaf = requestAnimationFrame(tick)
+}
+// ── 分页滚动位置:统一入口(处理「右左」的 scrollLeft 符号 / 整页吸附 / 平滑翻页) ──
+// ── 分页:页码驱动(不再有 scrollLeft / 多列)──
+// 双页时一屏两页:novelPageIndex 永远停在「偶数页」,窗口 w=0/1 分别是左/右页(右左时整体反过来)。
+const novelPageSpan = () => (novelTwoCol.value ? 2 : 1)
+const novelMaxPage = () => Math.max(0, novelPageCount.value - 1)
+const clampNovelPage = () => {
+  let p = Math.max(0, Math.min(novelMaxPage(), Math.round(novelPageIndex.value)))
+  const span = novelPageSpan()
+  p -= p % span // 双页对齐到偶数页
+  novelPageIndex.value = p
+}
+const alignNovelPage = () => {
+  if (!novelPaged.value) return
+  clampNovelPage()
+}
+// 量一列多宽、一共多少列(多少页):正文交给浏览器多列排版,一列正好一屏高;
+// 列边界由浏览器保证落在整行之间,不再需要任何像素级分页 —— 也就不会切行、切图。
 const novelMeasure = () => {
   const el = novelScrollRef.value
   if (!el) return
   novelViewportW.value = el.clientWidth
-  const step = novelStep.value || 1
-  novelPageCount.value = Math.max(1, Math.round(el.scrollWidth / step))
+  if (!novelPaged.value) return
+  nextTick(() => {
+    const clip = el.querySelector('.novel-page-clip')
+    const body = el.querySelector('.novel-body-paged')
+    if (!clip || !body) return
+    const cs = getComputedStyle(clip)
+    const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0)
+    const lineH = parseFloat(getComputedStyle(body).lineHeight) || 20
+    // 页高 = 可视高「向下取整到整数行」:页边界永远落在行与行之间,不会切行。
+    const availH = Math.max(40, clip.clientHeight - padY)
+    const rowCount = Math.max(1, Math.floor(availH / lineH))
+    novelPageHeight.value = rowCount * lineH
+    // 正文是单列流式:scrollHeight 就是全文高度,除以页高即页数
+    novelPageCount.value = Math.max(1, Math.ceil(body.scrollHeight / novelPageHeight.value))
+    if (novelPageIndex.value > novelMaxPage()) novelPageIndex.value = 0
+    clampNovelPage()
+  })
 }
+// ⚠️ 字体、图片都是异步就绪的:第一次测量拿到的往往是「换行还没稳定」的布局,
+// 之后必须再量几次,否则分页边界会和最终行位置错开 —— 表现就是页边界切行。
+let novelRemeasureTimers = []
+const scheduleNovelRemeasure = () => {
+  novelRemeasureTimers.forEach(t => clearTimeout(t))
+  novelRemeasureTimers = [120, 420, 1100].map(ms => setTimeout(novelMeasure, ms))
+  const onImageLoad = () => novelMeasure()
+  try {
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(onImageLoad).catch(() => {})
+  } catch (e) { /* 忽略 */ }
+  nextTick(() => {
+    const el = novelScrollRef.value
+    const body = el && el.querySelector('.novel-body-paged')
+    if (!body) return
+    body.querySelectorAll('img').forEach(img => {
+      if (!img.complete) img.addEventListener('load', onImageLoad, { once: true })
+    })
+  })
+}
+// 翻页:一屏 = 1 页(单页)或 2 页(双页),页码是唯一状态。
+// 左右方向靠 margin-left 过渡横向滑动;上下方向瞬时换页 + 纵向滑入动画。
 const goNovelPage = (delta) => {
-  const el = novelScrollRef.value
-  if (!el || !novelPaged.value) return
-  const step = novelStep.value || 1
-  // 直接按当前位置反推页码:比「预估页数」可靠(预估会因 padding/取整差一页)
-  const cur = Math.round(el.scrollLeft / step)
-  const max = Math.max(0, Math.ceil((el.scrollWidth - el.clientWidth) / step))
-  const next = Math.min(max, Math.max(0, cur + delta))
-  novelPageIndex.value = next
-  el.scrollLeft = next * step
+  if (!novelPaged.value) return
+  const span = novelPageSpan()
+  const next = Math.min(novelMaxPage(), Math.max(0, novelPageIndex.value + (delta > 0 ? span : -span)))
+  const target = next - (next % span)
+  if (target !== novelPageIndex.value) {
+    novelPageIndex.value = target
+    scheduleNovelProgress() // 分页模式没有 scroll 事件,翻页后主动记进度
+    if (novelDirection.value === 'vertical') nextTick(() => playNovelVertical(delta))
+    else nextTick(() => playNovelSlide(novelDirection.value, delta))
+  }
 }
-// 目录跳转:分页模式下必须按「页」跳,否则 scrollIntoView 会破坏分页又变回自由滚动
+// 目录跳转:块在多列里的横向位置 ÷ 列跨距 = 页码
 const novelJumpToPageOf = (blockIndex) => {
   const el = novelScrollRef.value
-  if (!el || !novelPaged.value) return false
-  const target = document.getElementById('nb-' + blockIndex)
+  if (!el || !novelPaged.value || !novelPageHeight.value) return false
+  const body = el.querySelector('.novel-body-paged')
+  const target = body && body.querySelector('#nb-' + blockIndex)
   if (!target) return false
-  const step = novelStep.value || 1
-  const page = Math.max(0, Math.floor((target.offsetLeft - 16) / step))
-  novelPageIndex.value = page
-  el.scrollLeft = page * step
+  const page = Math.max(0, Math.floor(target.offsetTop / novelPageHeight.value))
+  const span = novelPageSpan()
+  novelPageIndex.value = Math.max(0, page - (page % span))
   return true
 }
 // 字号:仍然用原来的放大/缩小按钮
@@ -906,7 +1302,7 @@ const adjustNovelFont = (d) => {
   novelFontSize.value = Math.min(34, Math.max(13, novelFontSize.value + d))
   localStorage.setItem('emm-novel-font-size', String(novelFontSize.value))
   showViewerTip(t('m.novelFontSizeTip', { n: novelFontSize.value }))
-  nextTick(() => { novelMeasure(); novelPageIndex.value = 0; const el = novelScrollRef.value; if (el) el.scrollLeft = 0 })
+  nextTick(() => { novelMeasure() })
 }
 // 「适应」按钮:正文宽度占比,点一下小 10%
 const cycleNovelWidth = () => {
@@ -915,52 +1311,176 @@ const cycleNovelWidth = () => {
   novelWidthPercent.value = next
   localStorage.setItem('emm-novel-width-percent', String(next))
   showViewerTip(t('m.novelWidthTip', { n: next }))
-  nextTick(() => { novelMeasure(); novelPageIndex.value = 0; const el = novelScrollRef.value; if (el) el.scrollLeft = 0 })
+  nextTick(() => { novelMeasure() })
 }
 const toggleNovelTwoCol = () => {
+  // 卷轴(连续滚动)下一律一列,单双不生效 —— 只提示,不改状态
+  if (!novelPaged.value) { showViewerTip(t('m.scrollModeLabel') + ' · ' + t('m.novelOnePage')); return }
   novelTwoCol.value = !novelTwoCol.value
   localStorage.setItem('emm-novel-two-col', novelTwoCol.value ? '1' : '0')
   showViewerTip(novelTwoCol.value ? t('m.novelTwoPage') : t('m.novelOnePage'))
-  nextTick(() => { novelMeasure(); novelPageIndex.value = 0; const el = novelScrollRef.value; if (el) el.scrollLeft = 0 })
+  nextTick(() => { novelMeasure() })
 }
-const toggleNovelVertical = () => {
-  novelVertical.value = !novelVertical.value
-  localStorage.setItem('emm-novel-vertical', novelVertical.value ? '1' : '0')
-  showViewerTip(novelVertical.value ? t('m.novelVertical') : t('m.novelHorizontal'))
+// 方向循环:上下 → 左右 → 右左(与漫画同一套;卷轴下=书写方向,分页下=翻页方向)
+const cycleNovelDirection = () => {
+  const order = ['vertical', 'ltr', 'rtl']
+  // 写 novelDirection 就是写 setting.readingDirection(见它的 setter),图片模式会一起跟着变
+  novelDirection.value = order[(order.indexOf(novelDirection.value) + 1) % order.length]
+  showViewerTip(novelDirectionLabel.value)
+  nextTick(() => { novelMeasure() })
 }
 const toggleNovelPaged = () => {
   novelPaged.value = !novelPaged.value
   localStorage.setItem('emm-novel-paged', novelPaged.value ? '1' : '0')
-  showViewerTip(novelPaged.value ? t('m.novelPaged') : t('m.novelScroll'))
-  nextTick(() => { novelMeasure(); novelPageIndex.value = 0; const el = novelScrollRef.value; if (el) el.scrollLeft = 0 })
+  showViewerTip(novelPaged.value ? t('m.pagingModeLabel') : t('m.scrollModeLabel'))
+  nextTick(() => { novelMeasure() })
 }
 // 分页模式:滚轮 = 翻页(不是滚动),所以永远不会出现「滚到半页、内容错乱」
 const onNovelWheel = (e) => {
-  if (!isNovelMode.value || !novelPaged.value) return
+  if (!isNovelMode.value) return
+  const el = novelScrollRef.value
+  if (!el) return
+  const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
+  if (!raw) return
+  if (novelPaged.value) {
+    // 分页:滚轮 = 翻页;事件自己吃掉,别让外层的惯性滚动同时插手
+    e.preventDefault()
+    e.stopPropagation()
+    if (Math.abs(raw) < 4) return
+    // 往下滚永远是「继续读」= 下一页;左右/右左只是列的方向不同,
+    // 翻页朝哪边由 setNovelScrollOffset 按 RTL 处理,这里不要再反转 ——
+    // 反转过的结果是:右左模式下往下滚变成「上一页」,一直停在第 0 页翻不动。
+    goNovelPage(raw > 0 ? 1 : -1)
+    return
+  }
+  // 横排卷轴:自己不处理,冒泡给外层 —— .drawer-viewer-body 上挂着「惯性移动」,滚起来才顺
+  if (novelDirection.value === 'vertical') return
+  // 竖排:内容沿横向排,纵向滚轮转成横向滚动,并带上同样的缓动
   e.preventDefault()
-  const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
-  if (Math.abs(delta) < 4) return
-  goNovelPage(delta > 0 ? 1 : -1)
+  e.stopPropagation()
+  animateNovelScrollLeft(el, el.scrollLeft + (novelDirection.value === 'rtl' ? -raw : raw))
+}
+// 拖动:分页 = 跟手拖页(左右方向) / 手势翻页(上下方向);卷轴 = 跟手平移
+// 卷轴模式下真正在滚的容器:横排卷轴把滚动交给了外层(那里挂着惯性),竖排仍是正文容器
+const novelScrollBox = () => {
+  const el = novelScrollRef.value
+  if (!el) return null
+  if (novelPaged.value) return el
+  // 方向决定「正文怎么排」,也就决定了滚的是哪个轴、哪个盒子:
+  //   上下(横排)        → 正文纵向长,滚动交给外层 .drawer-viewer-body(惯性挂在那儿)
+  //   左右 / 右左(竖排) → 正文横向长,滚正文容器自己(overflow-x: auto)
+  // ⚠️ 之前这里的轴判断和候选顺序都是反的(vertical 查横向、还优先返回正文容器),
+  //    结果对象拿到的是「滚不动的那个盒子」,表现就是「文字卷轴拖不动」。
+  const vertical = novelDirection.value === 'vertical'
+  const canScroll = (box) => {
+    if (!box) return false
+    return vertical ? box.scrollHeight > box.clientHeight + 1 : box.scrollWidth > box.clientWidth + 1
+  }
+  const candidates = vertical ? [drawerViewerBody.value, el] : [el, drawerViewerBody.value]
+  for (const box of candidates) if (canScroll(box)) return box
+  return candidates[0] || el
+}
+let novelDrag = null
+let novelSuppressClick = false
+const onNovelPointerDown = (e) => {
+  if (!isNovelMode.value || e.button !== 0) return
+  const el = novelScrollRef.value
+  if (!el) return
+  cancelAnimationFrame(novelAnimRaf)
+  const paged = novelPaged.value
+  const box = novelScrollBox() || el
+  novelDrag = {
+    x: e.clientX, y: e.clientY,
+    left: box.scrollLeft, top: box.scrollTop,
+    moved: false, paged, box,
+    // 记下「按下的那一刻在第几页」,松手就从这里翻一页
+    startPage: paged ? novelPageIndex.value : 0,
+  }
+}
+const onNovelPointerMove = (e) => {
+  if (!novelDrag) return
+  const el = novelScrollRef.value
+  if (!el) return
+  const dx = e.clientX - novelDrag.x
+  const dy = e.clientY - novelDrag.y
+  if (!novelDrag.moved) {
+    if (Math.hypot(dx, dy) < 6) return
+    novelDrag.moved = true
+    novelSuppressClick = true
+  }
+  if (novelDrag.paged) {
+    // preventDefault 是必须的:否则浏览器会把横向拖动当成「选择文字 / 前进后退手势」而取消手势
+    e.preventDefault()
+    // 左右方向:页窗口横向跟手(还原以前的左右拖动);上下方向保持松手翻页
+    if (novelDirection.value !== 'vertical') {
+      novelPageWins().forEach(w => { w.style.transition = 'none'; w.style.transform = 'translateX(' + dx + 'px)' })
+    }
+  } else {
+    // 卷轴:按方向只跟手一个轴 —— 两个轴都改会让画面斜着跑,松手后也不稳。
+    // 横排卷轴的滚动在外层容器上(正文自己 overflow:visible),所以要滚 novelDrag 记下的那个盒子。
+    const box = novelDrag.box || el
+    if (novelDirection.value === 'vertical') box.scrollTop = novelDrag.top - dy
+    else box.scrollLeft = novelDrag.left - dx
+  }
+}
+const onNovelPointerUp = (e) => {
+  if (!novelDrag) return
+  const d = novelDrag
+  novelDrag = null
+  if (!d.moved) return
+  const el = novelScrollRef.value
+  if (!el) return
+  setTimeout(() => { novelSuppressClick = false }, 0) // 拖完那一次 click 不当翻页
+  if (!d.paged) return // 卷轴:跟手已经到位,松手停住
+  const dx = e.clientX - d.x
+  const dy = e.clientY - d.y
+  // 手势主轴按实际位移大小决定:横滑、竖滑都能翻页
+  const horizontal = Math.abs(dx) >= Math.abs(dy)
+  const main = horizontal ? dx : dy
+  const wins = novelPageWins()
+  const resetWins = () => wins.forEach(w => { w.style.transition = ''; w.style.transform = '' })
+  if (novelDirection.value !== 'vertical' && horizontal) {
+    // 左右:跟手结束后回弹,或翻一页(翻页动画由 goNovelPage → playNovelSlide 负责)
+    if (Math.abs(main) > 48) {
+      resetWins()
+      goNovelPage(main < 0 ? 1 : -1)
+    } else {
+      wins.forEach(w => { w.style.transition = 'transform .2s ease'; w.style.transform = 'translateX(0)' })
+      setTimeout(resetWins, 240)
+    }
+    return
+  }
+  resetWins()
+  // 统一手势:横滑向左 / 竖滑向上 = 下一页
+  if (Math.abs(main) > 48) goNovelPage(main < 0 ? 1 : -1)
 }
 // 分页模式:像图片那样点画面翻页 —— 左半屏上一页,右半屏下一页
 const onNovelClick = (e) => {
-  if (!isNovelMode.value) return
-  if (!novelPaged.value) return
+  if (!isNovelMode.value || !novelPaged.value) return
+  // 刚拖动过的那一次 click 不当翻页
+  if (novelSuppressClick) { novelSuppressClick = false; return }
   const el = novelScrollRef.value
   if (!el) return
   const rect = el.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  // 记住上一次点的位置,避免误拖;区域判定与图片阅读器一致(中间 1/4 留给工具栏唤出)
-  // 与图片阅读器一致:中间 1/4 区域用来唤出设置栏,不翻页;左半屏上一页,右半屏下一页
-  const w = rect.width
-  if (x > w * 0.375 && x < w * 0.625) { flashViewerToolbar(); return }
-  if (x < rect.width * 0.5) goNovelPage(-1)
-  else goNovelPage(1)
+  const dir = novelDirection.value
+  // 方向决定点哪半边翻页:上下=上半屏上一页/下半屏下一页;
+  // 左右=左半屏上一页/右半屏下一页;右左=反过来(从右往左读)。
+  // 主轴上中间 1/4 区域留给「唤出设置栏」,不翻页(与图片阅读器一致)。
+  const horizontal = dir !== 'vertical'
+  const pos = horizontal ? (e.clientX - rect.left) / rect.width : (e.clientY - rect.top) / rect.height
+  if (pos > 0.375 && pos < 0.625) { flashViewerToolbar(); return }
+  const next = horizontal ? (dir === 'rtl' ? pos < 0.5 : pos > 0.5) : pos > 0.5
+  goNovelPage(next ? 1 : -1)
 }
 const onNovelKeydown = (e) => {
   if (!isNovelMode.value || !novelPaged.value) return
-  if (e.key === 'PageDown' || e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); goNovelPage(1) }
-  else if (e.key === 'PageUp' || e.key === 'ArrowLeft') { e.preventDefault(); goNovelPage(-1) }
+  const lr = novelDirection.value === 'rtl' ? -1 : 1 // 右左时左右键反过来
+  if (e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); goNovelPage(1) }
+  else if (e.key === 'PageUp') { e.preventDefault(); goNovelPage(-1) }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); goNovelPage(1) }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); goNovelPage(-1) }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); goNovelPage(lr) }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); goNovelPage(-lr) }
 }
 // 目录跳转:章节块都带 id(nb-<块序号>)
 const novelJumpTo = (chapter) => {
@@ -982,7 +1502,7 @@ const loadNovelContent = async (book) => {
       showViewerSide.value = false
       // ⚠️ 必须立刻测一次:否则分页模式页宽停留在保底值(240px)、页数停在 1,
       //    表现就是「排版错乱 + 只能翻一页」。
-      nextTick(() => { novelMeasure(); novelPageIndex.value = 0; startNovelResizeWatch() })
+      nextTick(() => { novelMeasure(); novelPageIndex.value = 0; startNovelResizeWatch(); restoreNovelProgress(); scheduleNovelRemeasure() })
     } else {
       novelBlocks.value = []
       isNovelMode.value = false
@@ -1037,6 +1557,20 @@ const viewerImageFilepathList = computed(() => {
 const receiveThumbnailList = ref([])
 
 const thumbnailList = computed(() => {
+  // EH在线:没有本地缩略图流水线(那条路只在本地书上跑),直接用**已经解析出来的页图**当缩略图 ——
+  // 和 EH 网站一样按页浏览。还没解析好的页缩略图留空,模板里显示转圈。
+  if (bookDetail.value && bookDetail.value.online) {
+    return viewerImageList.value.map((it, i) => ({
+      id: it.id,
+      index: i,
+      online: true,
+      thumbnailPath: it.filepath || '',
+      filepath: it.filepath || '',
+      rawUrl: it.rawUrl,
+      originalUrl: it.originalUrl,
+      pageUrl: it.pageUrl
+    }))
+  }
   return _.sortBy(receiveThumbnailList.value, 'index')
 })
 
@@ -1085,7 +1619,7 @@ onMounted(() => {
           showComicReader(viewerImageFilepathList.value)
         })
       }
-      viewerLoading?.close()
+      hideViewerLoading()
     }
   })
 
@@ -1132,10 +1666,184 @@ const requestThumbnails = () => {
   ipcRenderer.invoke('request-thumbnails', book.id).catch(() => {})
 }
 
-let viewerLoading = null
+// 加载遮罩(可关闭):在线解析画廊页面 / 本地取图片列表时显示。
+// ⚠️ 不再用 ElLoading.service —— 它没有按钮,在线解析卡住(或失败)时整个阅读器被锁死出不来。
+const viewerLoadingVisible = ref(false)
+const viewerLoadingText = ref('')
+// 加载作废令牌:用户点「关闭」后 +1,在途的结果回来时按 token 丢弃,不再往下走
+const viewerLoadToken = ref(0)
+const showViewerLoading = (text) => {
+  viewerLoadingText.value = text || t('m.loading')
+  viewerLoadingVisible.value = true
+}
+const hideViewerLoading = () => { viewerLoadingVisible.value = false }
+// 点「关闭」:收起遮罩 → 作废这次加载 → 退出阅读器(回到书架),不再卡在转圈里
+const cancelViewerLoading = () => {
+  viewerLoadToken.value += 1
+  hideViewerLoading()
+  drawerVisibleViewer.value = false
+  nextTick(() => { try { ipcRenderer.invoke('set-viewer-active', false) } catch (e) { /* 忽略 */ } })
+}
+
+
+// ---------- 图片加载进度(照 JHenTai:转圈 + 进度)----------
+// <img> 真正解码完成(@load)才算「已加载」;失败的(@error,例如 EH 的死 H@H 节点)也算「不 pending」,
+// 否则进度圈会一直转着不停。
+const viewerImageReady = ref({})
+const viewerImageFailed = ref({})
+const onViewerImageLoad = (image) => {
+  if (!image || !image.id) return
+  viewerImageReady.value = { ...viewerImageReady.value, [image.id]: true }
+}
+const onViewerImageError = (image) => {
+  if (!image || !image.id) return
+  viewerImageFailed.value = { ...viewerImageFailed.value, [image.id]: true }
+}
+const imagePending = (image) => {
+  if (!image || !image.id) return false
+  return !viewerImageReady.value[image.id] && !viewerImageFailed.value[image.id]
+}
 // 阅读心跳定时器:每 60 秒向主进程报一次「还在阅读」
 let viewerHeartbeat = null
+// 在线阅读:EH 画廊没有本地文件,不走 load-manga-image-list(本地文件流水线,还会占用 viewerSession)。
+// 做法:先把各页的真实图片地址解析出来(主进程带 Cookie 与代理取,见 emm-eh:// 与 /api/ex-image),
+// 再把它们当成「图片列表」交给**内置阅读器**—— 与本地书走同一套界面(翻页/缩放/适应/缩略图)。
+const onlinePageSize = (url) => {
+  // H@H 地址里带尺寸:...-<gid>-<宽>-<高>-wbp/...
+  const m = /-(\d{3,5})-(\d{3,5})-(?:wbp|jpg|jpeg|png|webp)/i.exec(url)
+  return m ? { width: Number(m[1]), height: Number(m[2]) } : { width: 1200, height: 1700 }
+}
+
+// 在线画廊:★立刻进阅读器★,再逐页解析图片地址(JHenTai 的做法)。
+// 以前是「先把 20 页全解析完再进阅读器」—— 实测要 8~9 秒,点一下要等很久才有反应。
+// 现在:①按卡片上已知的页数摆好占位 ②收页链接拿到真实总数 ③并发 4 逐页解析,解析好一页填一页,
+// 没解析好的那一页显示「正在解析第 N 页」的转圈(与 JHenTai 阅读器的解析占位一致)。
+const makeOnlineItem = (index, total) => ({
+  id: 'eh-online-' + index,
+  filepath: '',            // 解析到地址才算「可渲染」
+  width: 1200, height: 1700,
+  total, online: true,
+  rawUrl: '', originalUrl: '', pageUrl: '',
+  resolving: true, failed: false
+})
+
+// 占位状态:解析中 / 图片加载中 / 失败(可点重试)
+const placeholderState = (image) => {
+  if (image && image.failed) return 'failed'
+  if (image && image.online && image.resolving) return 'resolving'
+  return 'loading'
+}
+
+const ONLINE_RESOLVE_CONCURRENCY = 4
+const onlineResolveQueue = []
+let onlineResolveRunning = 0
+
+const resolveOnlineItem = async (image, token) => {
+  if (!image || !image.pageUrl) { if (image) image.failed = true; return }
+  try {
+    const r = await ipcRenderer.invoke('eh-page-image', { pageUrl: image.pageUrl })
+    if (token !== viewerLoadToken.value) return
+    if (r && r.ok && r.url) {
+      image.rawUrl = r.url
+      image.originalUrl = r.originalUrl || ''
+      image.filepath = ehImageSrc(r.url)
+      const size = onlinePageSize(r.url)
+      image.width = size.width
+      image.height = size.height
+      image.resolving = false
+      image.failed = false
+      // 在线条目要自己标「已渲染」:内置阅读器靠 loadedImages 决定渲不渲染 <img>
+      setImageLoaded(image.id, true)
+      return
+    }
+    image.failed = true
+  } catch (e) {
+    image.failed = true
+  } finally {
+    image.resolving = false
+  }
+}
+
+const drainOnlineQueue = (token) => {
+  while (onlineResolveRunning < ONLINE_RESOLVE_CONCURRENCY && onlineResolveQueue.length) {
+    const image = onlineResolveQueue.shift()
+    onlineResolveRunning += 1
+    resolveOnlineItem(image, token).finally(() => {
+      onlineResolveRunning -= 1
+      if (token === viewerLoadToken.value) drainOnlineQueue(token)
+    })
+  }
+}
+
+// 某一页失败后点「重新加载」:重新解析这一页
+const retryOnlinePage = (image) => {
+  if (!image || !image.pageUrl) return
+  image.failed = false
+  image.resolving = true
+  onlineResolveQueue.push(image)
+  drainOnlineQueue(viewerLoadToken.value)
+}
+
+const openOnlineBook = async (book) => {
+  const token = ++viewerLoadToken.value
+  bookDetail.value = book
+  emit('updateWindowTitle', book)
+  isComicReadDisplay.value = false
+  readyDestroyViewer.value = false
+  onlineResolveQueue.length = 0
+  onlineResolveRunning = 0
+  receiveThumbnailList.value = []
+  pendingImages.length = 0
+  pendingThumbnails.length = 0
+  currentImageIndex.value = 0
+
+  // ①先用卡片上已知的页数摆好占位 —— 立刻把阅读器打开,不让用户干等
+  const known = Math.max(0, Number(book.pageCount) || 0)
+  viewerImageList.value = Array.from({ length: known }, (_, i) => makeOnlineItem(i, known))
+  totalPage.value = known
+  currentImageId.value = viewerImageList.value.length ? viewerImageList.value[0].id : ''
+  drawerVisibleViewer.value = true
+  // 页数未知(少数卡片没有)时先用可关闭的遮罩撑着,拿到链接就换成占位
+  if (!known) showViewerLoading(t('m.ehOnlineOpening'))
+
+  try {
+    // ②收页链接(几次请求就够):拿到真实总数后按它重建占位
+    const res = await ipcRenderer.invoke('eh-gallery-page-links', { url: book.url })
+    if (token !== viewerLoadToken.value) return
+    const links = (res && res.links) || []
+    if (!links.length) {
+      // 一页都收不到:把现有占位标成失败(每页可以单独重试),不再傻等
+      viewerImageList.value.forEach(it => { it.resolving = false; it.failed = true })
+      if (!viewerImageList.value.length) ElMessage.warning(t('m.ehOnlineOpenFallback'))
+      hideViewerLoading()
+      return
+    }
+    const items = Array.from({ length: links.length }, (_, i) => makeOnlineItem(i, links.length))
+    items.forEach((it, i) => { it.pageUrl = links[i] })
+    viewerImageList.value = items
+    totalPage.value = links.length
+    currentImageId.value = items[0].id
+    hideViewerLoading()
+    // ③并发逐页解析,谁先好谁先显示
+    onlineResolveQueue.push(...items)
+    drainOnlineQueue(token)
+  } catch (e) {
+    console.error(e)
+    viewerImageList.value.forEach(it => { it.resolving = false; it.failed = true })
+    hideViewerLoading()
+  }
+}
+
 const viewManga = (book, viewerHeight = '100%') => {
+  // 在线画廊:走在线分支(不进本地文件流水线)
+  if (book && book.online) {
+    // 在线画廊也要进「历史」—— JHenTai 的历史本来就是「看过哪些画廊」,而在线画廊占大多数。
+    // 本地那条路的记录在下面(第 1700 行附近),这里提前 return 了,所以必须自己记一次;
+    // 记录放在取图之前:哪怕这次没取到图(节点超时/被限速),「看过」这件事也已经发生了。
+    insertLocalReadRecord(book.id, book)
+    openOnlineBook(book)
+    return
+  }
   readyDestroyViewer.value = false
   // 通知主进程正在阅读:后台扫描暂停,让出 CPU/磁盘
   ipcRenderer.invoke('set-viewer-active', true)
@@ -1161,13 +1869,9 @@ const viewManga = (book, viewerHeight = '100%') => {
   insertEmptyPage.value = setting.value.defaultInsertEmptyPage
   insertEmptyPageIndex.value = 0
   bookDetail.value = book
-  viewerLoading = ElLoading.service({
-    lock: true,
-    text: 'Loading',
-    background: _.includes(setting.value.theme, 'light') ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.7)',
-  })
+  showViewerLoading('Loading')
   emit('updateWindowTitle', book)
-  insertLocalReadRecord(book.id)
+  insertLocalReadRecord(book.id, book)
   ipcRenderer.invoke('load-manga-image-list', _.cloneDeep(book))
   .then((res) => {
     // txt / epub:取「内容块」(章节 / 段落 / 插图原位)。
@@ -1177,7 +1881,7 @@ const viewManga = (book, viewerHeight = '100%') => {
       loadNovelContent(book).then((r) => {
         if (!r || !r.ok) return
         if (res && res.textOnly) {
-          viewerLoading.close()
+          hideViewerLoading()
           drawerVisibleViewer.value = true
           book.readCount += 1
           saveBook(book)
@@ -1185,7 +1889,7 @@ const viewManga = (book, viewerHeight = '100%') => {
       showViewerSide.value = false
         } else if (r.charCount > 800) {
           isNovelMode.value = true
-        nextTick(() => { novelMeasure(); novelPageIndex.value = 0; startNovelResizeWatch() })
+        nextTick(() => { novelMeasure(); novelPageIndex.value = 0; startNovelResizeWatch(); restoreNovelProgress(); scheduleNovelRemeasure() })
         }
       })
     }
@@ -1196,7 +1900,7 @@ const viewManga = (book, viewerHeight = '100%') => {
       // 先亮 3 秒,让用户知道顶部有设置栏(鼠标移到顶部可随时唤出)
       flashViewerToolbar()
       if (setting.value.keepReadingProgress && showThumbnail.value === false) handleJumpToReadingProgress(book)
-      viewerLoading.close()
+      hideViewerLoading()
       // 横向整排:新开一本还没有阅读进度时,直接摆到「第一页」那一端(右左 = 最右)
       const hasProgress = setting.value.keepReadingProgress &&
         viewerReadingProgress.value.some(progress => progress.bookId === book.id)
@@ -1211,7 +1915,7 @@ const viewManga = (book, viewerHeight = '100%') => {
   })
   .catch(err => {
     console.log(err)
-    viewerLoading.close()
+    hideViewerLoading()
     ipcRenderer.invoke('set-viewer-active', false)
 if (viewerHeartbeat) { clearInterval(viewerHeartbeat); viewerHeartbeat = null }
   })
@@ -1460,7 +2164,7 @@ const saveImageStyleFit = () => {
 
 // ---------- 翻页(分页模式) ----------
 const frameCount = () => (imageStyleType.value === 'double' ? viewerImageListDouble.value.length : viewerImageList.value.length)
-const turnPage = (step) => {
+const turnPage = (step, animate = true) => {
   if (!step) return
   const next = currentImageIndex.value + step
   if (next < 0) return
@@ -1468,6 +2172,23 @@ const turnPage = (step) => {
   nextTick(() => {
     const el = drawerViewerBody.value
     if (el) { el.scrollTop = 0; el.scrollLeft = 0 }
+    const content = document.querySelector('.drawer-image-content')
+    // animate=false:调用方自己接管位移(拖动滑出的收尾),这里不要清它的 transform
+    if (!content || !animate) return
+    // 翻页动效:新页从反方向滑入;方向跟「方向」设置走 —— 上下必须是纵向,
+    // 否则上下方向翻页/滚轮又变成左右平移
+    content.style.transform = ''
+    const vertical = readingDirection.value === 'vertical'
+    // 下一页从哪一侧进来:左右=右边、右左=左边、上下=下边
+    const toward = readingDirection.value === 'rtl' ? -1 : 1
+    const from = (step > 0 ? toward : -toward) * 6
+    // 只做位移,不做透明度 —— 淡入淡出在换图时看着就是「闪一下」
+    content.animate(
+      vertical
+        ? [{ transform: 'translateY(' + from + '%)' }, { transform: 'translateY(0)' }]
+        : [{ transform: 'translateX(' + from + '%)' }, { transform: 'translateX(0)' }],
+      { duration: 200, easing: 'cubic-bezier(.22,.61,.36,1)' }
+    )
   })
   scrollCurrentThumbnailIntoView()
 }
@@ -1612,10 +2333,85 @@ const handleClickThumbnail = (id) => {
 // 浏览器默认行为是「拖拽图片」(拖到桌面/文件夹会变成复制文件),这里改成平移滚动。
 let panState = null
 let suppressClickUntil = 0
+// 分页拖动时的「相邻页预览」:在视口外侧临时挂上一张/下一张的图,
+// 拖动时当前页跟手平移,相邻页就从边上滑进来 —— 这样才「看得见下一张」。
+let imagePeekEls = []
+const clearImagePeek = () => {
+  for (const el of imagePeekEls) el.remove()
+  imagePeekEls = []
+}
+const buildImagePeek = () => {
+  clearImagePeek()
+  const content = document.querySelector('.drawer-image-content')
+  if (!content || !isPaging.value || isZoomedIn.value) return
+  const idx = currentImageIndex.value
+  const frames = imageStyleType.value === 'double' ? viewerImageListDouble.value : viewerImageList.value
+  const prevFrame = idx > 0 ? frames[idx - 1] : null
+  const nextFrame = idx < frames.length - 1 ? frames[idx + 1] : null
+  const dir = readingDirection.value
+  const place = (frame, isPrev) => {
+    if (!frame) return
+    const isDoubleFrame = Array.isArray(frame.page)
+    const pages = (isDoubleFrame ? frame.page : [frame]).filter(Boolean)
+    if (!pages.length) return
+    const wrap = document.createElement('div')
+    wrap.className = 'viewer-image-peek'
+    // 预览要按「真实排布」整屏搬过来:单页一张,双页两张并排。
+    // ⚠️ 不能把每张都做成 absolute inset:0 —— 双页的两张会完全重叠,
+    // 看起来就是「双页拖动只预览了一张」。这里用 flex 行 + frameStyle 出图,
+    // 尺寸和当前页那张严格一致,滑进来时才对得上。
+    Object.assign(wrap.style, {
+      position: 'absolute', pointerEvents: 'none',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    })
+    const mode = isDoubleFrame ? 'double' : 'single'
+    const row = document.createElement('div')
+    // 和「分页双页」的 .viewer-image-frame-double 一致:两张同高对齐、整块居中
+    Object.assign(row.style, {
+      display: 'flex',
+      flexDirection: isDoubleFrame && dir === 'rtl' ? 'row-reverse' : 'row',
+      alignItems: 'flex-start',
+    })
+    for (const p of pages) {
+      const size = frameStyle(p, mode)
+      const img = document.createElement('img')
+      img.src = imageSrc(p)
+      Object.assign(img.style, { display: 'block', flex: '0 0 auto', maxWidth: '100%' })
+      if (size.width) img.style.width = size.width
+      if (size.height) img.style.height = size.height
+      row.appendChild(img)
+    }
+    wrap.appendChild(row)
+    // 用「两侧同时定位」把预览撑成和当前页一样大。
+    // 贴哪一侧由「方向」决定:上下 → 上下两侧;左右 / 右左 → 左右两侧(方向只决定左右顺序)
+    if (dir === 'vertical') {
+      wrap.style.left = '0'; wrap.style.right = '0'
+      wrap.style.top = isPrev ? '-100%' : '100%'
+      wrap.style.bottom = isPrev ? '100%' : '-100%'
+    } else {
+      wrap.style.top = '0'; wrap.style.bottom = '0'
+      if (dir === 'rtl') { wrap.style.left = isPrev ? '100%' : '-100%'; wrap.style.right = isPrev ? '-100%' : '100%' }
+      else { wrap.style.left = isPrev ? '-100%' : '100%'; wrap.style.right = isPrev ? '100%' : '-100%' }
+    }
+    content.appendChild(wrap)
+    imagePeekEls.push(wrap)
+  }
+  place(prevFrame, true)
+  place(nextFrame, false)
+}
 const onImagePanStart = (event) => {
   if (event.button !== 0) return
+  if (panState) return // 图片和内容层都会冒泡到这里,别重复进入
   const el = drawerViewerBody.value
   if (!el) return
+  // 上一次拖动/翻页的动画可能被打断(onfinish 就不触发) —— 先把残留的位移和相邻页预览清干净,
+  // 否则新一次拖动从偏移的位置开始,看起来就是「图片中间有空隙」。
+  const content = document.querySelector('.drawer-image-content')
+  if (content) {
+    if (content.getAnimations) content.getAnimations().forEach(a => a.cancel())
+    content.style.transform = ''
+  }
+  clearImagePeek()
   panState = { x: event.clientX, y: event.clientY, left: el.scrollLeft, top: el.scrollTop, moved: false }
   pinHorizontalStart = false // 用户自己拖动过:横向不再自动贴边
   window.addEventListener('mousemove', onImagePanMove)
@@ -1629,15 +2425,81 @@ const onImagePanMove = (event) => {
   const dy = event.clientY - panState.y
   if (!panState.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return
   panState.moved = true
-  el.scrollLeft = panState.left - dx
-  el.scrollTop = panState.top - dy
+  if (isPaging.value && !isZoomedIn.value) {
+    // 分页 + 未放大:跟手平移 + 两侧露出相邻页(松手翻页)。
+    // 只沿主轴平移 —— 任意方向乱拖会让人觉得"能随便拽"。
+    const content = document.querySelector('.drawer-image-content')
+    if (content) {
+      if (!imagePeekEls.length) buildImagePeek()
+      // 跟手平移只走「翻页主轴」:上下 → 纵向(dy),左右 / 右左 → 横向(dx)。
+      // 另一轴锁死,免得斜着拖时画面乱跑。
+      const axis = readingDirection.value === 'vertical' ? 'y' : 'x'
+      const main = axis === 'y' ? dy : dx
+      const prog = Math.min(1, Math.abs(main) / 160)
+      for (const pk of imagePeekEls) pk.style.opacity = String(0.55 + 0.45 * prog)
+      content.style.transform = axis === 'y'
+        ? 'translate(0px, ' + dy + 'px)'
+        : 'translate(' + dx + 'px, 0px)'
+    }
+  } else {
+    // 溢出多少就允许拖多少:没溢出的轴不动(否则画面斜着跑),溢出(放大)了才能拖动查看
+    if (el.scrollWidth > el.clientWidth + 1) el.scrollLeft = panState.left - dx
+    if (el.scrollHeight > el.clientHeight + 1) el.scrollTop = panState.top - dy
+  }
   if (event.cancelable) event.preventDefault()
 }
-const onImagePanEnd = () => {
+const onImagePanEnd = (event) => {
   window.removeEventListener('mousemove', onImagePanMove)
   window.removeEventListener('mouseup', onImagePanEnd)
-  // 拖动过就别再触发「点击翻页」
-  if (panState && panState.moved) suppressClickUntil = Date.now() + 250
+  const content = document.querySelector('.drawer-image-content')
+  if (panState && panState.moved) {
+    // 拖动过就别再触发「点击翻页」
+    suppressClickUntil = Date.now() + 250
+    // 分页 + 没放大:拖动 = 翻页(卷轴 / 放大查看时仍然是平移)
+    if (event && isPaging.value && !isZoomedIn.value && !showThumbnail.value) {
+      const dx = event.clientX - panState.x
+      const dy = event.clientY - panState.y
+      const dir = readingDirection.value
+      // 与跟手一致:走翻页主轴(上下 → 纵向,左右 / 右左 → 横向)
+      const axis = dir === 'vertical' ? 'y' : 'x'
+      const main = axis === 'y' ? dy : dx
+      if (Math.abs(main) > 48) {
+        // 「往哪个方向拖 = 下一页」跟预览位置严格对应:拖动露出的是哪一页,松手就翻到哪一页。
+        //   上下:往上拖(main<0)→ 内容上移,露出下方 = 下一页
+        //   左右:往左拖(main<0)→ 内容左移,露出右侧 = 下一页
+        //   右左:往右拖(main>0)→ 内容右移,露出左侧 = 下一页
+        // ⚠️ 别把 vertical 并到 rtl 那一支:那样往下拖会「看到上一页、翻到下一页」,看起来就是一次跳两页。
+        const forward = dir === 'rtl' ? main > 0 : main < 0
+        const step = forward ? 1 : -1
+        if (!content) { clearImagePeek(); turnPage(step, false); panState = null; return }
+        // 先把整条「轨道」滑完剩下的一屏 —— 相邻页这时正好滑到视口中央,
+        // 再提交换页并复位(同一张图、同一个位置),全程连续。
+        const size = (axis === 'y' ? content.clientHeight : content.clientWidth) || 1
+        const move = axis === 'y' ? 'translateY(' : 'translateX('
+        const offset = main >= 0 ? size : -size
+        const from = move + main + 'px)'
+        const end = move + offset + 'px)'
+        const anim = content.animate([{ transform: from }, { transform: end }], {
+          duration: 200, easing: 'cubic-bezier(.22,.61,.36,1)'
+        })
+        anim.onfinish = () => {
+          content.style.transform = end
+          clearImagePeek()
+          turnPage(step, false)
+          nextTick(() => { content.style.transform = '' })
+        }
+        panState = null
+        return
+      }
+    }
+  }
+  // 没翻页:平滑回到原位
+  clearImagePeek()
+  if (content) {
+    const from = content.style.transform
+    content.style.transform = ''
+    if (from) content.animate([{ transform: from }, { transform: 'translate(0px, 0px)' }], { duration: 200, easing: 'ease-out' })
+  }
   panState = null
 }
 
@@ -1725,13 +2587,53 @@ const attachViewerInertia = () => {
   const el = document.querySelector('.viewer-drawer .drawer-viewer-body')
   if (!el) return
   viewerInertiaDetach = attachInertiaScroll(el, {
-    getLevel: () => setting.value.scrollInertiaLevel || 'medium',
-    shouldIntercept: () => imageStyleType.value === 'scroll'
+    getParams: () => ({
+      enabled: setting.value.inertiaEnabled !== false,
+      friction: setting.value.inertiaFriction,
+      maxVelocity: setting.value.inertiaMaxVelocity,
+      follow: setting.value.inertiaFollow,
+    }),
+    // 轴:文字横排卷轴纵向、文字竖排横向;图片横向整排横向、纵向卷轴纵向
+    getAxis: () => (isNovelMode.value
+      ? (novelDirection.value === 'vertical' ? 'y' : 'x')
+      : (isScrollHorizontal.value ? 'x' : 'y')),
+    // 图片卷轴(含横向整排) + 文字·横排卷轴都走这套惯性
+    shouldIntercept: () => (isNovelMode.value
+      ? (!novelPaged.value && novelDirection.value === 'vertical')
+      : imageStyleType.value === 'scroll')
   })
 }
 
 const onMangaImageContextMenu = (e, image) => {
   e.preventDefault()
+  // EH在线 的页:本地那套(复制图片/设封面/重命名/超分/OCR/删除)对它没意义,
+  // 只给「下载本页 / 下载本页(原图)」(与 JHenTai 在线阅读的下载动作对应)
+  if (image && image.online) {
+    const book = bookDetail.value || {}
+    const pageName = (book.title || 'eh') + ' - ' + (viewerImageList.value.findIndex(x => x.id === image.id) + 1)
+    ContextMenu.showContextMenu({
+      x: e.x,
+      y: e.y,
+      items: [
+        {
+          id: 'downloadPage',
+          label: t('m.downloadPage'),
+          onClick: () => emit('downloadPage', { url: image.rawUrl, originalUrl: image.originalUrl, pageUrl: image.pageUrl, original: false, name: pageName })
+        },
+        {
+          id: 'downloadPageOriginal',
+          label: t('m.downloadPageOriginal'),
+          onClick: () => emit('downloadPage', { url: image.rawUrl, originalUrl: image.originalUrl, pageUrl: image.pageUrl, original: true, name: pageName })
+        },
+        {
+          id: 'copyImageUrl',
+          label: t('m.downloadCopyImageUrl'),
+          onClick: () => ipcRenderer.invoke('copy-text-to-clipboard', image.rawUrl || '')
+        }
+      ]
+    })
+    return
+  }
   const items = [
     {
       id: 'copyImage',
@@ -2059,6 +2961,8 @@ const pageScrollRemaining = (forward) => {
 //   卷轴      = 原生滚动;横向整排自己处理(右左时反向)
 //   分页      = 按「方向」翻页(图片被放大时先滚完一屏再翻)
 const handleBodyWheel = (event) => {
+  // 缩略图界面:滚轮/触控板只用来滚缩略图列表,不翻页、不缩放
+  if (showThumbnail.value) return
   if (event.ctrlKey || event.metaKey) {
     event.preventDefault()
     zoomByWheel(event)
@@ -2066,6 +2970,11 @@ const handleBodyWheel = (event) => {
   }
   if (imageStyleType.value === 'scroll') {
     if (isScrollHorizontal.value) {
+      // 用户自己滚了:先取消「自动贴边」—— 贴边的定时器会把视口拽回第一张,
+      // 和惯性互相拉,表现就是一直在第一张来回弹、滚不到新页
+      pinHorizontalStart = false
+      // 开了惯性就交给 attachInertiaScroll(横向轴)去做,这里别再滚一次
+      if (setting.value.inertiaEnabled !== false) return
       const el = scrollBox()
       if (!el) return
       const raw = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
@@ -2095,6 +3004,7 @@ const handleBodyWheel = (event) => {
 }
 
 const handleBodyScroll = _.debounce(() => {
+  if (isNovelMode.value) { scheduleNovelProgress(); return } // 文字横排卷轴滚在外层
   if (showThumbnail.value) return
   if (imageStyleType.value !== 'scroll') return
   if (showViewerSide.value) {
@@ -2138,6 +3048,26 @@ watch(currentImageIndex, () => {
   if (imageStyleType.value === 'scroll') return
   const frames = imageStyleType.value === 'double' ? viewerImageListDouble.value : viewerImageList.value
   if (frames.length && currentImageIndex.value >= frames.length - 1) maybeTipLastPage()
+})
+// 相邻页预解码:换页时新图已经在内存里解码好,切过去就不会先白一下再出来。
+// ⚠️ 必须放在 currentImageIndex 定义之后 —— 放在前面会因 TDZ 直接让整个阅读器组件挂掉,
+//    表现就是页面提示「阅读器不可用,已打开详细界面」。
+watch(currentImageIndex, () => {
+  const frames = imageStyleType.value === 'double' ? viewerImageListDouble.value : viewerImageList.value
+  const idx = currentImageIndex.value
+  for (const off of [-1, 1]) {
+    const frame = frames[idx + off]
+    if (!frame) continue
+    const pages = frame.page ? frame.page : [frame]
+    for (const p of pages) {
+      if (!p) continue
+      try {
+        const im = new Image()
+        im.src = imageSrc(p)
+        if (im.decode) im.decode().catch(() => {})
+      } catch (e) { /* 忽略 */ }
+    }
+  }
 })
 
 const scrollCurrentThumbnailIntoView = (id = null) => {
@@ -2330,43 +3260,125 @@ defineExpose({
 .novel-two-col .novel-body
   max-width: 1180px
 .novel-body
-  column-count: var(--novel-columns, 1)
+  column-count: 1
   column-gap: 42px
-.novel-vertical
+// 右左(分页):整个滚动容器转 RTL —— 列的排列和 scrollLeft 语义一起反过来,
+// 两页位置才真的互换;正文块本身保持 LTR,免得标点与对齐跟着反。
+// 文字·横排卷轴:自己不做滚动容器,纵向滚动交给外层 .drawer-viewer-body ——
+// 那里挂着「设置 → 高级 → 惯性移动」,滚轮才有惯性、不会一格一格卡。
+// 顺带解决「卷轴下方内容被遮挡」:滚动范围由外层统一算,不会少算底部那截。
+.drawer-novel-content.novel-scrollv
+  overflow: visible
+  height: auto
+.drawer-novel-content.novel-rtl
+  direction: rtl
+.drawer-novel-content.novel-rtl .novel-body > *
+  direction: ltr
+// 卷轴模式的方向 = 书写方向:左右/右左 → 竖排。
+// 类挂在外层滚动容器上:writing-mode 会继承给正文,滚动也归容器(竖排读的是横向)。
+.drawer-novel-content.novel-dir-ltr
+  writing-mode: vertical-lr
+  text-orientation: mixed
+  overflow-x: auto
+  overflow-y: hidden
+.drawer-novel-content.novel-dir-rtl
   writing-mode: vertical-rl
   text-orientation: mixed
-  height: 100%
-  max-height: calc(100vh - 40px)
-  overflow-y: hidden
   overflow-x: auto
+  overflow-y: hidden
+.drawer-novel-content.novel-dir-ltr,
+.drawer-novel-content.novel-dir-rtl
+  display: flex
+  // 「宽度占比」的宽度由 novelBoxStyle 的内联 width 给 —— 别在这里写死 width,
+  // 内联样式才能压住基础样式的 width: 100%(否则 100% + 两侧 margin 会撑出父容器)。
+.drawer-novel-content.novel-dir-ltr .novel-body,
+.drawer-novel-content.novel-dir-rtl .novel-body
+  max-width: none
+  height: 100%
+  // ⚠️ 必须 border-box:novelStyle 会给正文设 height: pct%(「宽度占比」= 每列的上下长度)。
+  // content-box 下垂直 padding(56+140=196)顶在 height 之外,导致 pct 一大就被夹在
+  // 「父高 - 196」上 —— 实测 100% 和 90% 算出完全相同的 879px、80% 只差 19px,
+  // 用户点 100→90→80 看不出任何变化,这就是「卷轴左右宽度无效」的真因。
+  box-sizing: border-box
+  // 竖排容器用 flex + margin:auto:列高调小后正文仍居中,不会全堆到上方
+  margin: auto
 .novel-toc
   padding: 12px 8px
 // 分页(单页)模式:滚轮一屏一翻,滚动条隐藏
-// 分页(单页)模式:把正文排成「横向多列」,一列正好一屏 —— 这才是真正的翻页,
-// 而不是"滚轮一次滚一屏"(那种观感上仍然是滚动)。
+// 分页:不再使用「横向多列」——外层只负责尺寸与交互,裁剪与纵向平移在页窗口里完成。
 .drawer-novel-content.novel-paged
-  // 分页模式不许手动滚:只能一页页翻,避免滚到半页导致内容错乱
+  // 分页模式不给手动滚动:只能一页页翻
   overflow: hidden
+  // 「宽度占比」靠容器两侧 margin 实现(novelBoxStyle),所以不能再写 width:100%
+  width: auto
+  display: flex
+  justify-content: center
   user-select: none
   -webkit-user-select: none
   cursor: pointer
+  // 手势自己处理:不让浏览器把横滑当成选择/前进后退(否则会 pointercancel,横滑失效)
+  touch-action: none
   &::-webkit-scrollbar
     width: 0
     height: 0
-  .novel-body
-    height: 100%
-    max-width: none
-    width: auto
-    column-fill: auto
-    padding: 26px 16px 18px
-    user-select: none
-    -webkit-user-select: none
-  .novel-chapter
-    column-span: none
-    break-before: column
   .novel-image
-    break-inside: avoid
     max-height: 58vh
+  // 「适应」= 正文宽度占比:每个内容块缩到占比宽度并居中
+  .novel-body > *
+    max-width: var(--novel-text-width, 100%)
+    margin-left: auto
+    margin-right: auto
+
+// 一屏 = 1 页(单页)或 2 页(双页):两个页窗口并排
+.novel-page-pair
+  display: flex
+  flex-direction: row
+  gap: 8px
+  width: 100%
+  height: 100%
+// 右左:两页顺序反过来(下一页码的页在左边)
+.novel-page-pair.novel-pair-rtl
+  flex-direction: row-reverse
+.novel-page-window
+  flex: 1 1 0
+  min-width: 0
+  height: 100%
+  // 兜底:页内容绝不允许溢出到窗口之外
+  overflow: hidden
+// 每页的裁剪窗口:固定高度,超出部分裁掉
+.novel-page-clip
+  height: 100%
+  overflow: hidden
+  box-sizing: border-box
+  // 页内留白:上下 26/48、左右 22 全部收到约 1/4
+  padding: 6px 6px 12px
+// 正文:整块流式内容,靠 margin-top 负值整页平移
+.novel-body.novel-body-paged
+  max-width: none
+  width: 100%
+  margin: 0
+  padding: 0
+  position: relative
+  // 段间距归零:整块正文每行等高,页高才能正好是整数行(页边界永不切行)
+.novel-body-paged .novel-para
+  margin: 0
+.novel-body-paged .novel-chapter
+  margin: 0
+  padding: 0
+  box-sizing: border-box
+  // ⚠️ 高度必须是「行高的整数倍」,而且 em 要按正文字号算:
+  // 标题字号是正文的 1.25 倍,直接写 2em 会算出非整行的高度,
+  // 从每个标题开始,后面所有行的位置都会错开 —— 页边界就切到行中间了。
+  height: calc(var(--novel-line-height, 1.9) * var(--novel-font-size, 19px) * 2)
+  line-height: calc(var(--novel-line-height, 1.9) * var(--novel-font-size, 19px) * 2)
+.novel-body-paged .novel-heading
+  margin: 0
+  padding: 0
+  box-sizing: border-box
+  height: calc(var(--novel-line-height, 1.9) * var(--novel-font-size, 19px))
+  line-height: calc(var(--novel-line-height, 1.9) * var(--novel-font-size, 19px))
+.novel-body-paged .novel-image
+  break-inside: avoid
 .novel-toc-item
   padding: 8px 10px
   border-radius: 4px
@@ -2388,11 +3400,11 @@ defineExpose({
 .novel-body
   max-width: 820px
   margin: 0 auto
-  padding: 56px 32px 140px
+  padding: 30px 32px 30px
   font-size: var(--novel-font-size, 19px)
   line-height: var(--novel-line-height, 1.9)
-  font-family: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', serif
-  letter-spacing: .02em
+  font-family: var(--novel-font-family, 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', serif)
+  letter-spacing: var(--novel-letter-spacing, .02em)
 .novel-para
   margin: 0 0 .9em
   text-indent: 2em
@@ -2469,7 +3481,11 @@ defineExpose({
 // 横向整排(卷轴 + 左右/右左):容器只做横向滚动
 .drawer-viewer-body.viewer-horizontal-scroll
   overflow-x: auto
-  overflow-y: hidden
+  // 横向整排只横向滚:纵向一律不出滚动条(页码标签把内容撑高时也一样)。
+  // clip 比 hidden 更彻底 —— 连编程滚动都不给,自然不会冒出右侧滚动条。
+  overflow-y: clip
+  .viewer-horizontal-item
+    max-height: 100%
 
 // 分页(单页 / 双页):没放大时内容正好一屏,不该出现滚动条;放大后才允许滚动
 .drawer-viewer-body.viewer-paged
@@ -2558,6 +3574,18 @@ defineExpose({
   min-width: 40px
   text-align: center
   color: var(--el-text-color-secondary)
+// 文字排版的下拉输入框(字体 / 行距 / 间距):可下拉选,也可直接手输
+.viewer-toolbar-select
+  width: 108px
+  margin-left: 2px
+  .el-select__wrapper
+    padding: 0 6px
+// 行距 / 间距:只要输入框(不要下拉)
+.viewer-toolbar-input
+  width: 62px
+  margin-left: 2px
+  .el-input__wrapper
+    padding: 0 6px
 
 // ComicRead 内的面板:相对 #ComicRead(fixed 全屏)左上角定位
 .comic-read-mode-setting
@@ -2569,6 +3597,51 @@ defineExpose({
 .viewer-mode, .viewer-image-fit, .viewer-thumbnail-select, .viewer-image-width, .viewer-sidebar-select
   width: 100px
   margin: 4px 8px
+
+// 正在加载的图片:压暗一点,和进度圈一起表示「这张还没好」
+.viewer-image-loading
+  opacity: .35
+
+// 加载遮罩(可关闭)
+.viewer-loading-overlay
+  position: absolute
+  inset: 0
+  z-index: 60
+  display: flex
+  flex-direction: column
+  align-items: center
+  justify-content: center
+  gap: 14px
+  background: var(--el-mask-color, rgba(0, 0, 0, .55))
+  color: #fff
+  .viewer-loading-overlay-text
+    font-size: 14px
+    max-width: 70%
+    text-align: center
+    word-break: break-all
+  .viewer-loading-overlay-close
+    margin-top: 4px
+
+// 分页模式下压在图片上的占位
+.viewer-page-placeholder-abs
+  position: absolute
+  inset: 0
+  z-index: 5
+  background-color: var(--el-fill-color-light)
+
+// 缩略图等待占位(在线页还没解析出地址时)
+.sidebar-thumbnail-wait
+  display: flex
+  align-items: center
+  justify-content: center
+  min-height: 60px
+  background-color: var(--el-fill-color-light)
+.viewer-thumbnail-wait
+  display: flex
+  align-items: center
+  justify-content: center
+  height: 120px
+  background-color: var(--el-fill-color-light)
 
 .image-frame
   display: flex
@@ -2621,6 +3694,12 @@ defineExpose({
   .viewer-image-preload
     display: none
 
+// 分页拖动时相邻页的定位基准 / 外观
+.drawer-image-content
+  position: relative
+.viewer-image-peek
+  opacity: .9
+
 // 横向整排:所有页排成一行,横向连续滚动(单页 / 双页在横向时都是整排)
 .viewer-horizontal-row
   display: inline-flex
@@ -2655,8 +3734,12 @@ defineExpose({
   pointer-events: auto
 
 .drawer-thumbnail-content
-  margin: 16px
-  height: 100vh
+  // 缩略图界面交给 .drawer-viewer-body 原生滚动(见模板里的 class 绑定):
+  // 内边距用 padding(不再靠 margin 外扩),高度用 min-height(不再写死 100vh),
+  // 这样「内容超过一屏才滚、没超过就不滚」。
+  padding: 16px
+  min-height: 100%
+  box-sizing: border-box
   text-align: left
   .viewer-thumbnail-item
     display: inline-flex
