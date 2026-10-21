@@ -341,6 +341,32 @@ export const useAppStore = defineStore('appStore', {
     isChineseTranslatedManga (book) {
       return _.includes(book?.tags?.language, 'chinese') ? true : false
     },
+    // 在线画廊的语言缩写(照 JHenTai locale_consts.language2Abbreviation,码按用户习惯:
+    // 中文 CH、英文 EH、日文 JP)。取不到语言时返回 ''(调用方决定兜底显示什么)。
+    // 来源两个:列表行里的 tags.language(compact/extended 版式带标签)或详情合并进来的 book.language。
+    onlineLanguageCode (book) {
+      if (!book) return ''
+      const fromTags = _.find(book.tags?.language || [], t => t !== 'translated')
+      const raw = fromTags || book.language || ''
+      const key = String(raw).trim().toLowerCase().replace(/\s+/g, '')
+      if (!key) return ''
+      const map = {
+        chinese: 'CH', english: 'EH', japanese: 'JP', korean: 'KR', spanish: 'ES',
+        french: 'FR', german: 'DE', russian: 'RU', italian: 'IT', portuguese: 'PT',
+        thai: 'TH', vietnamese: 'VI', polish: 'PL', dutch: 'NL', hungarian: 'HU',
+        turkish: 'TR', indonesian: 'ID', arabic: 'AR', hebrew: 'HE', hindi: 'HI',
+        bengali: 'BN', urdu: 'UR', persian: 'FA', czech: 'CS', greek: 'EL',
+        swedish: 'SV', finnish: 'FI', danish: 'DA', norwegian: 'NO', romanian: 'RO'
+      }
+      if (map[key]) return map[key]
+      // 详情页的语言是展示文本(Chinese / TR+EN 之类):按前缀再认一次
+      for (const [name, code] of Object.entries(map)) {
+        if (key.startsWith(name.slice(0, 4))) return code
+      }
+      // 处理 "TR+EN" / "EN,ZH" 这种复合串:取第一段
+      const first = key.split(/[+,;]/)[0]
+      return (first || '').slice(0, 2).toUpperCase()
+    },
     copyTagClipboard (book) {
       ipcRenderer.invoke('copy-text-to-clipboard', JSON.stringify(_.pick(book, ['tags', 'status', 'category'])))
     },

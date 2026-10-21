@@ -92,21 +92,69 @@ const wrapText = (s, perLine, maxLines) => {
   if (cur && out.length < maxLines) out.push(cur)
   return out
 }
-const renderTextCover = async (title, destPath, width = 500, height = 707) => {
-  const lines = wrapText(String(title || 'TXT'), 11, 7)
-  const lineHeight = 46
-  const startY = height / 2 - ((lines.length - 1) * lineHeight) / 2
+// 文字封面(txt / 无图 epub):把书名排得又大又清楚。
+// ⚠️ 老版本踩过两个坑:
+//   ① 容器里根本没有字体(镜像没带 fontconfig 配置和字体)→ 中文全渲染成方块「看不清」;
+//   ② 字号写死 36px、每行压 11 个字,长书名只剩角落里一小团。
+// 现在:字体栈显式写 Latin+CJK(镜像里随了 DejaVuSans + DroidSansFallback),
+//       字号按书名长度自动挑,尽量铺满整张封面。
+const COVER_FONT_STACK = "'DejaVu Sans','Droid Sans Fallback','Noto Sans CJK SC','Microsoft YaHei','PingFang SC',sans-serif"
+// 按「字符宽度 = 字号」粗估换行(中文 1em、英文也算 1em,略保守,不会溢出)
+const wrapForCover = (text, perLine, maxLines) => {
+  const chars = Array.from(text)
+  const lines = []
+  let i = 0
+  while (i < chars.length && lines.length < maxLines) {
+    lines.push(chars.slice(i, i + perLine).join(''))
+    i += perLine
+  }
+  return { lines, overflow: i < chars.length }
+}
+const renderTextCover = async (title, destPath, width = 600, height = 848) => {
+  // 标题可能带着文件名后缀(书是从 xx.txt 推出来的)→ 显示时去掉,别让封面出现「.txt」
+  const text = String(title || 'TXT')
+    .replace(/\.(txt|epub)$/i, '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim() || 'TXT'
+  const padX = 56
+  const availW = width - padX * 2
+  let fontSize = 56
+  let lines = []
+  let overflow = false
+  // 从大往小试,直到「行数 ≤ 6 且排完」
+  for (; fontSize >= 26; fontSize -= 2) {
+    const perLine = Math.max(4, Math.floor(availW / fontSize))
+    const r = wrapForCover(text, perLine, 6)
+    lines = r.lines
+    overflow = r.overflow
+    if (!overflow && lines.length <= 6) break
+  }
+  if (overflow && lines.length) {
+    const last = lines[lines.length - 1]
+    lines[lines.length - 1] = (last.length > 1 ? last.slice(0, -1) : last) + '…'
+  }
+  const lineHeight = Math.round(fontSize * 1.36)
+  const blockH = lines.length * lineHeight
+  const startY = Math.round(height / 2 - blockH / 2 + fontSize * 0.92)
   const tspans = lines.map((l, i) =>
     `<tspan x="50%" y="${startY + i * lineHeight}">${escapeXml(l)}</tspan>`).join('')
+  const accentW = 64
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
-  <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
-    <stop offset="0%" stop-color="#3a3f47"/><stop offset="100%" stop-color="#22252a"/>
-  </linearGradient></defs>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#33383f"/><stop offset="100%" stop-color="#1d2024"/>
+    </linearGradient>
+    <linearGradient id="a" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7aa2f7"/><stop offset="100%" stop-color="#9d7cd8"/>
+    </linearGradient>
+  </defs>
   <rect width="100%" height="100%" fill="url(#g)"/>
-  <text fill="#e8e8e8" font-size="36" font-family="sans-serif" text-anchor="middle" font-weight="600">${tspans}</text>
-  <text x="50%" y="${height - 40}" fill="#9aa0a6" font-size="22" font-family="sans-serif" text-anchor="middle">TXT</text>
+  <rect x="${(width - accentW) / 2}" y="${Math.max(40, startY - lineHeight - 34)}" width="${accentW}" height="6" rx="3" fill="url(#a)"/>
+  <text fill="#f2f4f8" font-size="${fontSize}" font-family="${COVER_FONT_STACK}" text-anchor="middle" font-weight="700">${tspans}</text>
+  <text x="50%" y="${height - 54}" fill="#8b949e" font-size="20" font-family="${COVER_FONT_STACK}" text-anchor="middle" letter-spacing="3">TXT</text>
 </svg>`
-  await sharp(Buffer.from(svg)).webp({ quality: 82 }).toFile(destPath)
+  await sharp(Buffer.from(svg)).webp({ quality: 86 }).toFile(destPath)
   return destPath
 }
 

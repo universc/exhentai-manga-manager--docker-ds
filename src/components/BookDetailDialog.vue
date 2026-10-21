@@ -59,8 +59,8 @@
           <!-- 种子:与封面右键/卡片右下角的是同一个入口 -->
           <el-button v-if="bookDetail.url" class="detail-func-btn" type="primary" plain @click="emit('openTorrents', bookDetail)">{{$t('m.torrent')}}</el-button>
           <!-- 下载整本(原图可选):与封面右键里的两项一致 -->
-          <el-button v-if="!viewerRole && isOnline" class="detail-func-btn" type="primary" @click="emit('downloadGallery', { book: bookDetail, original: false })">{{$t('m.downloadGallery')}}</el-button>
-          <el-button v-if="!viewerRole && isOnline" class="detail-func-btn" type="primary" plain @click="emit('downloadGallery', { book: bookDetail, original: true })">{{$t('m.downloadGalleryOriginal')}}</el-button>
+          <!-- 下载:合并成一个按钮,点开弹窗里选 位置 / 名称 / 原图 -->
+          <el-button v-if="!viewerRole && isOnline" class="detail-func-btn" type="primary" :icon="Download" @click="emit('downloadGallery', { book: bookDetail, original: false })">{{$t('m.download')}}</el-button>
         </el-row>
         <el-row class="book-detail-function" v-if="!isOnline">
           <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain @click="$emit('openSearchDialog')">{{$t('m.getMetadata')}}</el-button>
@@ -243,7 +243,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { CaretRight20Regular, CaretLeft20Regular } from '@vicons/fluent'
 import { BookmarkTwotone } from '@vicons/material'
-import { Loading, ArrowDown } from '@element-plus/icons-vue'
+import { Loading, ArrowDown, Download } from '@element-plus/icons-vue'
 import { nanoid } from 'nanoid'
 import he from 'he'
 import * as linkify from 'linkifyjs'
@@ -367,7 +367,8 @@ const enrichOnlineBook = async (book) => {
 const loadLocalPreview = async (book) => {
   previewLoading.value = true
   try {
-    const res = await ipcRenderer.invoke('book-preview-images', { filepath: book.filepath, type: book.type })
+    // limit: 0 = 全部页(详细界面也要能翻到最后一页;压缩包最多前 60 页)
+    const res = await ipcRenderer.invoke('book-preview-images', { filepath: book.filepath, type: book.type, limit: 0 })
     if (res && res.ok && res.files && res.files.length) {
       previewItems.value = res.files.map(f => ({ src: toAssetUrl(f) }))
       previewTotal.value = res.total || res.files.length
@@ -399,8 +400,9 @@ watch(() => bookDetail.value?.id, (id) => {
 }, { immediate: true })
 
 // 点预览里的某一页 → 直接读(交给主界面打开阅读器)
-const readFromPreview = () => {
-  if (bookDetail.value) emit('openContentView', bookDetail.value)
+const readFromPreview = (index = 0) => {
+  // 带上页码:点哪一页就从哪一页开始读(以前固定从第一页开)
+  if (bookDetail.value) emit('openContentView', bookDetail.value, Number(index) || 0)
 }
 
 // ---------- 标签:一排一排的网格选择(替代单列下拉,节省空间) ----------
@@ -887,11 +889,13 @@ defineExpose({
   align-items: flex-start
 .book-preview-item
   width: 96px
-  height: 128px
+  // 高度跟着缩略图比例走(3:4):固定 128 时雪碧图比格子高,底下会露一条白底
+  height: auto
+  aspect-ratio: 3 / 4
   overflow: hidden
   border-radius: 4px
-  border: 1px solid var(--el-border-color-lighter)
-  background: var(--el-fill-color-light)
+  border: none
+  background: transparent
   cursor: pointer
   img
     width: 100%

@@ -53,7 +53,8 @@ const libraryDataDir = (storePath, lib, isWeb) => {
 // 老配置只有单个 path 字段 → 视作两端通用(网页端直接沿用桌面值)。
 const localLibraryPath = (lib, isWeb) => {
   if (!lib) return ''
-  const web = isWeb === undefined ? !!process.env.WEB_LIBRARY : !!isWeb
+  // 容器模式判定与 index.js 一致:compose 给 WEB_LIBRARY,镜像自带 WEB_MODE=1 —— 两者都算
+  const web = isWeb === undefined ? !!(process.env.WEB_LIBRARY || process.env.WEB_MODE === '1') : !!isWeb
   const desk = String(lib.path || '').trim()
   if (!web) return desk
   return String(lib.pathWeb || '').trim() || desk
@@ -139,10 +140,12 @@ const ensureLibraries = (setting, options = {}) => {
   if (active) {
     const legacy = String(setting.library || '').trim()
     if (options.preferList) setting.library = localLibraryPath(active, isWeb)
-    else if (legacy && !isWeb) {
-      // setting.library 是**桌面端的遗留单值字段**,只有桌面端才用它回填活动库;
-      // 网页端若照做会把 pathWeb(容器路径)覆盖成 Windows 路径。
+    else if (legacy && !isWeb && !String(active.path || '').trim()) {
+      // setting.library 是**桌面端的遗留单值字段**。它只该在「这个库还没配过路径」时兜底迁移;
+      // 库列表里已经有路径时绝不覆盖 —— 否则一个过期/填错的 legacy 值会在**每次启动**把
+      // 「库文件夹」改回去(现象:书架能列出、点开没图,而设置里看着"自己变回去了")。
       active.path = legacy
+      setting.library = localLibraryPath(active, isWeb)
     } else setting.library = localLibraryPath(active, isWeb)
   }
   state.active = active

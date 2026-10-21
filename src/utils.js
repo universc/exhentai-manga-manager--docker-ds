@@ -493,6 +493,8 @@ const toolbarButtonDefinitions = [
   { id: 'filter', labelKey: 'm.filterButton' },
   // 下载记录:右侧滑出下载列表(EH在线 的整本/单页下载都记在这里)
   { id: 'downloads', labelKey: 'm.downloads' },
+  // 侧边详细信息:与下载记录同款右栏,内容照 JHenTai 的详情页(封面/标题/评分/标签/操作)
+  { id: 'detailPanel', labelKey: 'm.sideDetail' },
   // 设置按钮:可以拖动排序,但不能隐藏(常驻)
   { id: 'setting', labelKey: 'm.setting' },
   { id: 'uiMode', labelKey: 'm.toolbarUiMode' },
@@ -502,7 +504,7 @@ const defaultToolbarButtons = () => toolbarButtonDefinitions.map(b => b.id)
 // 后来新增、老配置里不存在的工具栏元素:升级后默认仍然显示,只有用户显式关掉才隐藏
 // 「显式关掉」记在设置项 toolbarButtonsHidden 里(不是只看 toolbarButtons 缺不缺 ——
 // 老配置本来就缺这几项,分不清「没有」和「被关掉」)
-const TOOLBAR_NEW_ITEMS = ['searchInput', 'searchButton', 'sortSelect', 'uiMode', 'switchLibrary', 'filter', 'downloads']
+const TOOLBAR_NEW_ITEMS = ['searchInput', 'searchButton', 'sortSelect', 'uiMode', 'switchLibrary', 'filter', 'downloads', 'detailPanel']
 // 常驻元素:能拖动排序,但永远显示(设置列表里点击不生效)
 const TOOLBAR_ALWAYS_ITEMS = ['setting']
 // 补齐老配置里缺失的新元素;返回值只决定「显示与否」,排列顺序另由 toolbarButtonOrder 决定
@@ -569,6 +571,35 @@ const catDisplayName = (key) => DEFAULT_CAT_NAMES[key] || key
 const CAT_NAME_TO_KEY = Object.fromEntries(Object.entries(DEFAULT_CAT_NAMES).map(([k, v]) => [v, k]))
 const resolveCatKey = (cat) => (DEFAULT_CAT_NAMES[cat] ? cat : (CAT_NAME_TO_KEY[cat] || cat))
 
+// ---------- 标签类别的显示顺序 ----------
+// 默认顺序沿用 EH 官方命名空间的惯例(语言→作品→角色→社团→作者→性別→其它),
+// 用户可在 设置 → 标签设置 里拖动「类别标签」调整,结果存 setting.tagCatOrder。
+// 没排过的类别一律排在已排序项之后,并保持原有相对顺序(稳定),避免升级后顺序乱跳。
+const DEFAULT_CAT_ORDER = Object.keys(DEFAULT_CAT_NAMES)
+
+// ---------- 内置「其他」类别 ----------
+// 用来接住「类别被删除后遗留的标签」,所以它必须永远存在、且不允许被删除。
+// 只作为兜底与归类目标,不是 EH 的官方命名空间。
+const FALLBACK_CAT = 'other'
+const isBuiltinCat = (cat) => resolveCatKey(cat) === FALLBACK_CAT
+const tagCatRank = (setting, cat) => {
+  const key = resolveCatKey(cat)
+  const order = (setting && Array.isArray(setting.tagCatOrder)) ? setting.tagCatOrder : []
+  let i = order.indexOf(key)
+  if (i < 0) i = order.indexOf(cat)
+  if (i >= 0) return i
+  const d = DEFAULT_CAT_ORDER.indexOf(key)
+  return d >= 0 ? order.length + d : order.length + DEFAULT_CAT_ORDER.length
+}
+// 按用户设定顺序给一组类别名排序(稳定排序:同 rank 保持入参顺序)
+const sortCatsByOrder = (setting, cats) => {
+  const list = Array.isArray(cats) ? cats.slice() : []
+  return list
+    .map((cat, i) => ({ cat, i, rank: tagCatRank(setting, cat) }))
+    .sort((a, b) => (a.rank - b.rank) || (a.i - b.i))
+    .map(x => x.cat)
+}
+
 // ---------- 标签多语言名称:按「目标语言标签」设置显示 ----------
 // 同一标签可保存多个语言的名称,显示时按 setting.tagTargetLang 选,缺失则依次回退
 const getDisplayTagName = (setting, cat, tag) => {
@@ -589,7 +620,6 @@ const getDisplayTagName = (setting, cat, tag) => {
   for (const k of order) { if (rec[k]) return rec[k] }
   return null
 }
-
 // ---------- 标签关联(包含 / 被包含) ----------
 // 结构:setting.tagRelations = { '分类::标签': { contains: ['分类2::标签2', ...] } }
 // 「被包含」由 contains 反向推导,避免双份数据不一致。
@@ -670,6 +700,11 @@ const defaultUiSettings = () => ({
   randomTagsEnabled: false,
   // 目标语言标签:标签名按该语言显示(中/繁/英/日)
   tagTargetLang: '',
+  // 标签类别的显示顺序(设置 → 标签设置 里拖动「类别标签」调整;
+  // 影响设置页的类别分组顺序与「详细信息」里标签分类的上下顺序)
+  tagCatOrder: [],
+  // 类别本身的多语言名称:{ '分类': { 'zh-CN', 'zh-TW', ja, en } }
+  tagCatNameLangs: {},
   viewerType: 'original',
   autoNextManga: false,
   batchTagfailedBook: false,
@@ -841,6 +876,11 @@ export {
   insertMissingToolbarItems,
   DEFAULT_CAT_NAMES,
   resolveCatKey,
+  DEFAULT_CAT_ORDER,
+  FALLBACK_CAT,
+  isBuiltinCat,
+  tagCatRank,
+  sortCatsByOrder,
   catDisplayName,
   getDisplayTagName,
   getTagRelations,

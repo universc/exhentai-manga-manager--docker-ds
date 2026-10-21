@@ -1658,7 +1658,7 @@ const loadTranslationFromEhTagTranslation = async () => {
   })
   .catch((error) => {
     console.log(error)
-    printMessage('warning', t('c.useTranslationCache'))
+    // 抓取失败:安静退回本地翻译缓存(不再弹「使用翻译缓存」提示)
   })
 }
 

@@ -11,28 +11,52 @@
         <div class="toolbar-flex" :style="toolbarWidth ? { width: toolbarWidth + 'px' } : {}">
           <!-- 工具栏元素:显示项与排列顺序都在 设置 → 高级 → 工具栏按钮 里调整(设置按钮始终保留) -->
           <template v-for="id in toolbarOrderIds" :key="id">
-            <!-- 搜索输入框 -->
+            <!-- 搜索输入框:搜索历史放在下拉弹层底部,排成**横排芯片**(见 footer 插槽 + .search-history-panel) -->
             <el-autocomplete
               v-if="id === 'searchInput'"
+              ref="searchInputRef"
               :model-value="searchString"
               :fetch-suggestions="querySearch"
               @keyup.enter="searchBook"
               @change="handleSearchStringChange"
               @input="handleInput"
+              @focus="syncSearchPopperWidth"
               clearable
+              :fit-input-width="false"
               :trigger-on-focus="true"
-              @select="onSearchSuggestSelect"
+              popper-class="emm-search-suggest"
+              :popper-style="searchPopperStyle"
               class="search-input"
             >
               <template #default="{ item }">
-                <span class="autocomplete-label" :class="{ 'is-history': item.isHistory, 'is-clear': item.isClearHistory }">{{ item.label }}</span>
-                <span class="autocomplete-value" v-if="!item.isHistory && !item.isClearHistory">{{ item.value }}</span>
-                <span
-                  v-if="item.isHistory"
-                  class="autocomplete-del"
-                  :title="$t('m.searchHistoryRemove')"
-                  @click.stop="removeSearchHistory(item.value)"
-                >✕</span>
+                <!-- 占位项不给任何文字(只为让弹层弹出来),样式里直接隐藏这一行 -->
+                <span v-if="item.isHistoryPlaceholder" class="autocomplete-placeholder"></span>
+                <template v-else>
+                  <span class="autocomplete-label">{{ item.label }}</span>
+                  <span class="autocomplete-value" v-if="item.value !== item.label">{{ item.value }}</span>
+                </template>
+              </template>
+              <!-- 搜索历史:横排芯片(自动换行),点一下直接搜;点 ✕ 删单条
+                   「清除」是滚动区里的**最后一项**:记录多时要滑到底才看得到,居中占一整行 -->
+              <template #footer>
+                <div v-if="searchHistory.length" class="search-history-panel">
+                  <div class="search-history-chips">
+                    <el-tag
+                      v-for="h in searchHistory"
+                      :key="'sh-' + h"
+                      class="search-history-chip"
+                      :class="{ 'is-selected': String(searchTyping || searchString || '') === h }"
+                      size="small"
+                      closable
+                      disable-transitions
+                      @click="applySearchHistory(h)"
+                      @close="removeSearchHistory(h)"
+                    >{{ h }}</el-tag>
+                    <div class="search-history-foot">
+                      <el-button class="search-history-clear" link size="small" :icon="MdTrash" @click="clearSearchHistory">{{ $t('m.clear') }}</el-button>
+                    </div>
+                  </div>
+                </div>
               </template>
             </el-autocomplete>
             <!-- 搜索按钮 -->
@@ -78,15 +102,25 @@
               :class="{ 'is-filtering': ehFilterActive }"
               @click="ehFilterVisible = true"
             ></el-button>
-            <!-- 下载记录:右侧滑出下载列表(可在 高级 → 工具栏按钮 里隐藏) -->
+            <!-- 下载记录:右侧滑出下载列表(可在 高级 → 工具栏按钮 里隐藏);再点一次收回 -->
             <el-button
               v-else-if="id === 'downloads'"
               type="primary"
               plain
               :icon="MdCloudDownload"
               :title="$t('m.downloads')"
-              :class="{ 'is-filtering': downloadActiveCount > 0 }"
-              @click="openDownloadDrawer"
+              :class="{ 'is-filtering': downloadPanelVisible }"
+              @click="toggleDownloadDrawer"
+            ></el-button>
+            <!-- 侧边详细信息:与下载记录同款右栏(封面/标题/评分/标签/操作,照 JHenTai 详情页) -->
+            <el-button
+              v-else-if="id === 'detailPanel'"
+              type="primary"
+              plain
+              :icon="InfoFilled"
+              :title="$t('m.sideDetail')"
+              :class="{ 'is-filtering': detailPanelVisible }"
+              @click="detailPanelVisible = !detailPanelVisible"
             ></el-button>
             <!-- UI 模式切换:自动 → 手机 → 平板 → 电脑(桌面客户端与网页版都有) -->
             <el-button v-else-if="id === 'uiMode'" :icon="uiModeIcon" plain @click="switchUiMode" :title="$t('m.switchUiMode') + ': ' + $t(uiModeLabelKey)"></el-button>
@@ -180,6 +214,10 @@
           <el-icon v-if="listLoadingMore" class="is-loading" :size="20"><Loading /></el-icon>
           <span v-else class="load-more-end">{{ $t('m.noMoreData') }}</span>
         </div>
+        <!-- 历史按库分流后为空时说一句(EH在线 库只列在线记录,本地库只列本地记录) -->
+        <div class="book-empty-hint" v-if="sortValue === 'recentRead' && !displayBookList.length">
+          {{ onlineActive ? $t('m.historyEmptyOnline') : $t('m.historyEmptyLocal') }}
+        </div>
       </el-col>
       <EditView
         ref="EditViewRef"
@@ -205,73 +243,215 @@
       />
     </el-row>
     </div>
-    <!-- 下载记录:和主界面**同层**(不是浮层);拖动左边缘可以调整这一栏的宽度 -->
-    <div class="download-panel" v-show="downloadPanelVisible" :style="{ width: downloadPanelWidth + 'px' }">
-      <div class="download-panel-resizer" :title="$t('m.downloadPanelResizeHint')" @mousedown="startDownloadPanelResize"></div>
-      <div class="download-panel-header">
-        <template v-if="!previewTask">
-          <span class="download-panel-title">{{ $t('m.downloads') }}</span>
-          <span class="download-panel-actions">
-            <el-button size="small" :disabled="!resumableDownloadCount" @click="resumeAllDownloads">{{ $t('m.downloadResumeAll') }}</el-button>
-            <el-button size="small" @click="openDownloadFolder">{{ $t('m.downloadOpenFolder') }}</el-button>
-            <el-button size="small" type="danger" plain @click="clearDownloadRecords">{{ $t('m.downloadClear') }}</el-button>
-            <el-button size="small" text @click="downloadPanelVisible = false">✕</el-button>
-          </span>
-        </template>
-        <template v-else>
-          <el-button size="small" text @click="closeDownloadPreview">← {{ $t('m.back') }}</el-button>
-          <span class="download-panel-title" :title="previewTask.title">{{ previewTask.title }}</span>
-          <span class="download-panel-progress">{{ previewDoneCount }}/{{ previewTotalCount }}</span>
-        </template>
-      </div>
-      <!-- 任务列表 -->
-      <div class="download-list" v-if="!previewTask">
-        <div v-if="downloadPathMissing" class="download-hint">{{ $t('m.downloadNeedPath') }}</div>
-        <div v-if="!downloadRecords.length" class="download-empty">{{ $t('m.downloadEmpty') }}</div>
-        <div v-for="task in downloadRecords" :key="task.id" class="download-item">
-          <div class="download-cover-wrap" :title="$t('m.downloadPreviewHint')" @click="openDownloadPreview(task)">
-            <img v-if="task.cover" class="download-cover" :src="task.cover" />
-            <div v-else class="download-cover download-cover-empty"></div>
-            <span class="download-cover-zoom">🔍</span>
-          </div>
-          <div class="download-body">
-            <div class="download-title" :title="task.title">{{ task.title }}</div>
-            <div class="download-meta">
-              <span v-if="task.phase === 'links'">{{ $t('m.downloadCollecting', { n: task.linkCount || 0 }) }}</span>
-              <span v-else>{{ task.done }}/{{ task.total }}</span>
-              <span v-if="task.original" class="download-pill">{{ $t('m.downloadOriginalTag') }}</span>
-              <span class="download-status" :class="'is-' + task.status">{{ downloadStatusText(task.status) }}</span>
-              <span v-if="task.failed" class="download-failed">✗{{ task.failed }}</span>
+    <!-- 两个右栏(侧边详细信息 / 下载记录)按打开顺序排:先开的在左,后开的在右 -->
+    <template v-for="name in panelOrder" :key="'rpanel-' + name">
+      <!-- 侧边详细信息:与下载记录同层同款的右栏(内容照 JHenTai 的详情页) -->
+      <SideDetailPanel
+        v-if="name === 'detail'"
+        v-show="detailPanelVisible"
+        :visible="detailPanelVisible"
+        :width="detailPanelWidth"
+        @close="detailPanelVisible = false"
+        @update:width="onDetailPanelWidthChange"
+        @read="onSideDetailRead"
+        @download-gallery="({ book }) => openDownloadDialog(book)"
+        @open-torrents="openTorrentDialog"
+        @favorite="onOnlineFavorite"
+        @search-from-tag="searchFromTag"
+        @refresh-list="loadBookList(false)"
+      />
+      <!-- 下载记录:和主界面**同层**(不是浮层);拖动左边缘可以调整这一栏的宽度。
+           列表照 JHenTai 的下载网格模式:封面网格,没下完的封面上压暗 + 圆环进度 + 中央状态按钮 -->
+      <div v-else-if="name === 'download'" class="download-panel" v-show="downloadPanelVisible" :style="{ width: downloadPanelWidth + 'px' }">
+        <div class="download-panel-resizer" :title="$t('m.downloadPanelResizeHint')" @mousedown="startDownloadPanelResize"></div>
+        <div class="download-panel-header">
+          <template v-if="!previewTask">
+            <span class="download-panel-title">{{ $t('m.downloads') }}</span>
+            <span class="download-panel-actions">
+              <el-button size="small" :disabled="!resumableDownloadCount" @click="resumeAllDownloads">{{ $t('m.downloadResumeAll') }}</el-button>
+              <el-button size="small" @click="openDownloadFolder">{{ $t('m.downloadOpenFolder') }}</el-button>
+              <!-- 移动:把全部已完成的漫画移到本地库文件夹(设置里填了默认路径就直接移,不再弹选择) -->
+              <el-button size="small" :disabled="!movableDownloadCount" @click="moveAllCompletedDownloads">{{ $t('m.downloadMove') }}</el-button>
+            </span>
+            <!-- 收起右栏:始终钉在最右边(不受其它按钮多少/面板宽度影响) -->
+            <el-button class="download-panel-back" size="small" text :icon="ArrowLeft" :title="$t('m.back')" @click="downloadPanelVisible = false"></el-button>
+          </template>
+          <template v-else>
+            <el-button size="small" text @click="closeDownloadPreview">← {{ $t('m.back') }}</el-button>
+            <span class="download-panel-title" :title="previewTask.title">{{ previewTask.title }}</span>
+            <span class="download-panel-progress">
+              {{ $t('m.downloadStatusDone') }} {{ previewDoneCount }}/{{ previewTotalCount }}
+              <template v-if="previewTask.failed"> · ✗{{ previewTask.failed }}</template>
+            </span>
+          </template>
+        </div>
+        <!-- 任务列表:整体是列表模式(一行一条:左封面 + 右信息)。
+             封面照 JHenTai 网格模式:圆环居中,状态按钮嵌在圆环中间;右下角只留失败数徽标。
+             右侧三段:标题 → 中间标签行 → 右下角时间 + 底部细进度条 -->
+        <div class="download-list" v-if="!previewTask">
+          <div v-if="downloadPathMissing" class="download-hint">{{ $t('m.downloadNeedPath') }}</div>
+          <div v-if="!downloadRecords.length" class="download-empty">{{ $t('m.downloadEmpty') }}</div>
+          <div v-for="task in downloadRecords" :key="task.id" class="download-item">
+            <!-- 右侧一条竖轴:X(顶)/ 移动(中)/ 垃圾桶(底),三者 right:4 对齐 -->
+            <el-button
+              class="download-item-close"
+              size="small"
+              text
+              :icon="Close"
+              :title="$t('m.downloadDeleteRecordOnly')"
+              @click.stop="downloadAction(task, 'delete')"
+            ></el-button>
+            <el-button
+              v-if="canMoveDownload(task)"
+              class="download-item-move"
+              size="small"
+              link
+              type="primary"
+              :icon="FolderOpened"
+              :title="$t('m.downloadMove')"
+              @click.stop="moveOneDownload(task)"
+            ></el-button>
+            <el-button
+              class="download-item-trash"
+              size="small"
+              link
+              type="danger"
+              :icon="MdTrash"
+              :title="$t('m.downloadDeleteRecordAndFiles')"
+              @click.stop="deleteDownloadWithFiles(task)"
+            ></el-button>
+            <!-- 封面:左键 = 预览已下好的页。is-pending = 还没下完:封面做模糊 + 压暗 -->
+            <div class="download-card-cover" :class="{ 'is-pending': task.status !== 'done' }" :title="$t('m.downloadPreviewHint')" @click="openDownloadPreview(task)">
+              <!-- 封面图取不到(代理挂了 / EH 换图 / 网络不通)时不要留一个「破图」:
+                   直接退回灰底占位,等网络恢复重新打开面板再试 -->
+              <img
+                v-if="(task.coverPath || task.cover) && !failedCovers[task.id]"
+                :src="downloadCoverSrc(task)"
+                loading="lazy"
+                @error="onDownloadCoverError(task)"
+              />
+              <div v-else class="download-card-cover-empty"></div>
+              <!-- 封面上不再放任何徽标(✗失败数已挪到右侧标签行),圆环独占中央、保证居中 -->
+              <!-- 没下完:压暗 + 圆环进度(JHenTai 尺寸 40px,居中;状态按钮嵌在圆环中间) + 圆环下页码 -->
+              <template v-if="task.status !== 'done'">
+                <div class="download-card-mask"></div>
+                <div class="download-card-overlay">
+                  <div class="download-card-ringwrap">
+                    <el-progress
+                      type="circle"
+                      :percentage="downloadPercent(task)"
+                      :width="40"
+                      :stroke-width="4"
+                      :show-text="false"
+                      :status="task.status === 'failed' ? 'exception' : ''"
+                    />
+                    <!-- 状态按钮:plain span 而不是 el-button(el-button 自带的圆形 chrome 会和圆环叠成两个圈);
+                         照 JHenTai:就是圆环中间一颗大一点的图标,平时全透明 -->
+                    <span
+                      class="download-card-action"
+                      :title="task.status === 'downloading' ? $t('m.pauseTask') : $t('m.resumeTask')"
+                      @click.stop="downloadAction(task, task.status === 'downloading' ? 'pause' : 'resume')"
+                    >
+                      <el-icon :size="20"><component :is="task.status === 'downloading' ? MdPause : MdPlay" /></el-icon>
+                    </span>
+                  </div>
+                  <div class="download-card-count">
+                    <template v-if="task.phase === 'links'">{{ task.linkCount || 0 }}页</template>
+                    <template v-else>{{ task.done }}/{{ task.total }}</template>
+                  </div>
+                </div>
+              </template>
             </div>
-            <el-progress
-              :percentage="downloadPercent(task)"
-              :stroke-width="6"
-              :status="task.status === 'failed' ? 'exception' : (task.status === 'done' ? 'success' : '')"
+            <!-- 右侧:标题(可点,与主界面点标题一样开详情)→ 中间标签行 → 漫画标签 → 右下角时间 + 底部细进度条 -->
+            <div class="download-body">
+              <!-- 标题始终一行(超出省略):整行高度由封面定住,进度条才能和封面底对齐 -->
+              <div class="download-title" :title="task.title" @click="openDownloadTaskDetail(task)">{{ task.title }}</div>
+              <!-- 漫画标签:照 JHenTai 列表 —— 浅底小方块、自动换行(最多两行,超出裁掉) -->
+              <div class="download-tags" v-if="downloadTaskTags(task).length || task.category">
+                <span v-if="task.category" class="download-tag is-cat" :title="task.category" @click.stop="onDownloadTagClick({ text: task.category, ns: 'category' })">{{ task.category }}</span>
+                <span
+                  v-for="(tg, ti) in downloadTaskTags(task)"
+                  :key="ti"
+                  class="download-tag"
+                  :title="tg.full"
+                  @click.stop="onDownloadTagClick(tg)"
+                >{{ tg.text }}</span>
+              </div>
+              <!-- 状态 / 失败数 / 进度:放到标签下面 -->
+              <div class="download-meta">
+                <span v-if="task.original" class="download-pill">{{ $t('m.downloadOriginalTag') }}</span>
+                <span v-if="task.failed > 0" class="download-fail-chip">✗{{ task.failed }}</span>
+                <span class="download-count">
+                  <template v-if="task.phase === 'links'">{{ $t('m.downloadCollecting', { n: task.linkCount || 0 }) }}</template>
+                  <template v-else>{{ task.done }}/{{ task.total }}</template>
+                </span>
+                <span v-if="task.movedTo" class="download-moved" :title="task.movedTo">{{ $t('m.downloadMoved') }}</span>
+                <span v-else class="download-status" :class="'is-' + task.status">{{ downloadStatusText(task.status) }}</span>
+              </div>
+              <div class="download-foot">
+                <span class="download-card-time">{{ downloadTimeText(task) }}</span>
+                <div class="download-bar-row">
+                  <el-progress
+                    class="download-thin-bar"
+                    :percentage="downloadPercent(task)"
+                    :stroke-width="4"
+                    :show-text="false"
+                    :status="task.status === 'done' ? 'success' : ''"
+                  />
+                  <!-- 错误信息只在这里显示:行内不再铺错误文字;悬浮显示,点击钉住再看 -->
+                  <span
+                    v-if="downloadHintText(task)"
+                    class="download-warn-wrap"
+                    @mouseenter.stop="hoverDownloadWarn(task.id)"
+                    @mouseleave.stop="leaveDownloadWarn()"
+                  >
+                    <el-icon class="download-card-warn" @click.stop="toggleDownloadWarn(task.id)"><Warning /></el-icon>
+                    <span v-if="downloadWarn.id === task.id" class="download-warn-pop">{{ downloadHintText(task) }}</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- 预览:点封面进来。整本的每一页都占一格 ——
+             下好的直接出图(左键点图 = 进入阅读),没下好的显示进度/失败;
+             右键 = 继续下载 / 重新下载 -->
+        <div class="download-preview" v-else>
+          <div
+            v-for="(f, i) in downloadPreviewFiles"
+            :key="i"
+            class="download-preview-item"
+            :class="{ 'is-ready': !!f, 'is-failed': !f && previewPageState(i) === 'failed' }"
+            @contextmenu="onPreviewContextMenu($event, i)"
+          >
+            <img
+              v-if="f && !previewImgFailed[i]"
+              :src="previewImgSrc(f, i)"
+              loading="lazy"
+              decoding="async"
+              :title="String(i + 1)"
+              @click="openDownloadPageInReader(previewTask, i)"
+              @error="onPreviewImgError($event, i)"
             />
-            <div v-if="task.status === 'failed' && task.error" class="download-error">{{ downloadErrorText(task.error) }}</div>
-            <div v-if="task.fallback > 0" class="download-hint-inline">{{ $t('m.downloadFallback', { n: task.fallback }) }}</div>
+            <!-- 图下好了但浏览器加载失败(多半是文件刚下完还在写):点一下重拉 -->
+            <div v-else-if="f" class="download-preview-blank is-imgfailed" @click="retryPreviewImg(i)">
+              <el-icon :size="16"><Refresh /></el-icon>
+              <span class="download-preview-page">{{ i + 1 }}</span>
+              <span class="download-preview-state">{{ $t('m.previewImgFailed') }}</span>
+            </div>
+            <div v-else class="download-preview-blank">
+              <el-icon v-if="previewPageState(i) === 'failed'" :size="16"><Close /></el-icon>
+              <el-icon v-else-if="previewPageState(i) === 'waiting'" class="is-loading" :size="16"><Loading /></el-icon>
+              <el-icon v-else-if="previewPageState(i) === 'pending'" :size="16"><Clock /></el-icon>
+              <span class="download-preview-page">{{ i + 1 }}</span>
+              <span class="download-preview-state">{{ previewPageStateText(i) }}</span>
+            </div>
           </div>
-          <div class="download-actions">
-            <el-button v-if="task.status === 'downloading'" size="small" link @click="downloadAction(task, 'pause')">{{ $t('m.pauseTask') }}</el-button>
-            <el-button v-else-if="['paused', 'failed', 'waiting'].includes(task.status)" size="small" link type="primary" @click="downloadAction(task, 'resume')">{{ $t('m.resumeTask') }}</el-button>
-            <el-button size="small" link @click="downloadAction(task, 'delete')">{{ $t('m.downloadDeleteRecordOnly') }}</el-button>
-            <el-button size="small" link type="danger" @click="deleteDownloadWithFiles(task)">{{ $t('m.downloadDeleteRecordAndFiles') }}</el-button>
-          </div>
+          <div v-if="previewTask && !previewTask.dir" class="download-empty">{{ $t('m.downloadPreviewNoDir') }}</div>
+          <div v-else-if="!downloadPreviewFiles.length" class="download-empty">{{ $t('m.downloadPreviewEmpty') }}</div>
         </div>
       </div>
-      <!-- 预览:点封面进来。下好的出图,没下好的用空白 + 进度圈占位(下载中会自动刷新) -->
-      <div class="download-preview" v-else>
-        <div v-for="(f, i) in downloadPreviewFiles" :key="i" class="download-preview-item">
-          <img v-if="f" :src="assetUrl(f.path)" loading="lazy" :title="String(i + 1)" />
-          <div v-else class="download-preview-blank">
-            <el-icon class="is-loading" :size="18"><Loading /></el-icon>
-            <span>{{ i + 1 }}</span>
-          </div>
-        </div>
-        <div v-if="previewTask && !previewTask.dir" class="download-empty">{{ $t('m.downloadPreviewNoDir') }}</div>
-        <div v-else-if="!downloadPreviewFiles.length" class="download-empty">{{ $t('m.downloadPreviewEmpty') }}</div>
-      </div>
-    </div>
+    </template>
     </div>
     <el-drawer v-model="drawerVisibleCollection"
       direction="btt"
@@ -394,9 +574,20 @@
         </div>
       </template>
     </el-dialog>
+    <!-- 下载弹窗:所有「下载」入口(侧边详细 / 详细界面 / 右键)统一走它:位置 / 名称 / 原图 -->
+    <DownloadDialog ref="DownloadDialogRef" @start="startGalleryDownloadFromDialog" />
+    <!-- 移动弹窗:只能在**已有库的文件夹及其子文件夹**里选(设置里填了默认路径就不弹这个) -->
+    <el-dialog v-model="moveDialog.visible" :title="$t('m.downloadMovePickTitle')" width="440px" append-to-body>
+      <LibraryFolderPicker v-model="moveDialog.target" :placeholder="$t('m.downloadMovePick')" />
+      <div class="move-dialog-hint" v-if="moveDialog.target">{{ moveDialog.target }}</div>
+      <template #footer>
+        <el-button size="small" @click="moveDialog.visible = false">{{ $t('m.cancel') }}</el-button>
+        <el-button size="small" type="primary" :disabled="!moveDialog.target" @click="confirmMoveDialog">{{ $t('m.ok') }}</el-button>
+      </template>
+    </el-dialog>
     <BookDetailDialog
       ref="BookDetailDialogRef"
-      @download-gallery="({ book, original }) => startGalleryDownload(book, original)"
+      @download-gallery="({ book }) => openDownloadDialog(book)"
       @open-torrents="openTorrentDialog"
       @open-content-view="openContentView"
       @open-thumbnail-view="openThumbnailView"
@@ -428,9 +619,9 @@
 <script>
 import { defineComponent } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { Setting as SettingIcon, FullScreen, Edit, Loading } from '@element-plus/icons-vue'
+import { Setting as SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened } from '@element-plus/icons-vue'
 import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular } from '@vicons/fluent'
-import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdTrash, MdCloudDownload } from '@vicons/ionicons4'
+import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdTrash, MdCloudDownload, MdPlay, MdPause } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup, Catalog } from '@vicons/carbon'
 
 import { getWidth, fetchRecentReadRecords, removeReadRecord, clearReadRecords, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes } from './utils.js'
@@ -452,7 +643,10 @@ import EditView from './components/EditView.vue'
 import RandomTags from './components/RandomTags.vue'
 import LoginDialog from './components/LoginDialog.vue'
 import EhFilterDialog from './components/EhFilterDialog.vue'
-import { EH_ONLINE_ID, hasEhCookies, ehHost, ehListUrl, parseGalleryList, galleryToBook, EX_HOST, EH_HOST } from './ehOnline.js'
+import SideDetailPanel from './components/SideDetailPanel.vue'
+import DownloadDialog from './components/DownloadDialog.vue'
+import LibraryFolderPicker from './components/LibraryFolderPicker.vue'
+import { EH_ONLINE_ID, hasEhCookies, ehHost, ehListUrl, parseGalleryList, parseGalleryDetail, galleryToBook, ehImageSrc, EX_HOST, EH_HOST } from './ehOnline.js'
 import { loadEhFilter, saveEhFilter, ehFilterActive as ehFilterIsActive, ehFilterMatch, ehFilterParams, normalizeEhFilter } from './ehFilter.js'
 
 import { mapWritableState, mapActions } from 'pinia'
@@ -472,10 +666,13 @@ export default defineComponent({
     RandomTags,
     LoginDialog,
     EhFilterDialog,
+    SideDetailPanel,
+    DownloadDialog,
+    LibraryFolderPicker,
   },
   setup () {
     return {
-      SettingIcon, FullScreen, Edit, Loading,
+      SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened, MdPlay, MdPause,
       Collections24Regular, Search32Filled, ArrowTrendingLines20Filled, Save16Regular,
       MdRefresh, MdCodeDownload, MdExit, MdShuffle, MdFolderOpen, MdCloudDone,
       MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdTrash, MdCloudDownload,
@@ -496,10 +693,14 @@ export default defineComponent({
       onlineHasMore: true,
       onlineQuery: '',
       onlineLoading: false,
-      // 搜索框下方的「搜索历史」(只存本机)
+      // 搜索框弹出的下拉底部的「搜索历史」(只存本机),排成横排芯片
       searchHistory: (() => {
         try { return JSON.parse(localStorage.getItem('emmSearchHistory') || '[]') } catch (e) { return [] }
       })(),
+      // 输入框里此刻正在敲的内容(handleInput 实时维护);querySearch 用它判断「是不是空框」
+      searchTyping: '',
+      // 下拉弹层的宽度:跟搜索框一样宽(聚焦/输入时实测输入框宽度写进来)
+      searchPopperWidth: 0,
       // 卡片种子的数量查询:只查当前渲染出来的卡,并发 2、间隔 500ms,结果缓存在本机
       torrentQueue: [],
       torrentPending: new Set(),
@@ -508,6 +709,28 @@ export default defineComponent({
       downloadPanelVisible: false,
       downloadPanelWidth: Math.min(900, Math.max(240, Number(localStorage.getItem('emmDownloadPanelWidth')) || 380)),
       downloadRecords: [],
+      // 侧边详细信息(与下载记录同款右栏,内容照 JHenTai 详情页;数据是「最近点开的那本」)
+      detailPanelVisible: false,
+      detailPanelWidth: Math.min(900, Math.max(240, Number(localStorage.getItem('emmDetailPanelWidth')) || 340)),
+      // 两个右栏(侧边详细信息 / 下载记录)的打开顺序:先开的排左边,后开的排右边
+      panelOpenSeq: { detail: 0, download: 0 },
+      panelSeq: 0,
+      // 下载记录里感叹号弹出的错误信息:{ id, pinned }
+      downloadWarn: { id: '', pinned: false },
+      // 封面加载失败的任务(网络/代理挂了):{ [taskId]: true },失败就退回灰底占位,不显示破图
+      failedCovers: {},
+      // 在线列表:改每页数量等操作期间先压住「自动补页」,避免自激循环(改完 1 秒后恢复)
+      suppressOnlineAppend: false,
+      // 在线列表:两次自动补页的最小间隔(毫秒),防止滚动事件连发时连着打 EH
+      onlineLastAppendAt: 0,
+      // 补下载标签的防重入(打开面板时可能被连续调用)
+      backfillTagsRunning: false,
+      // 「移动到本地库」弹窗:ids = 要移动的记录,target = 选中的库文件夹(绝对路径)
+      moveDialog: { visible: false, ids: [], target: '' },
+      // 下载预览图片加载重试计数 / 最终失败标记 / 重拉随机数(按页码)
+      previewImgRetry: {},
+      previewImgFailed: {},
+      previewImgNonce: {},
       // 预览:点某个任务的封面 → 在右栏里翻看已经下好的页
       previewTask: null,
       downloadPreviewFiles: [],
@@ -611,6 +834,10 @@ export default defineComponent({
       }
     },
     // 有几个任务可以「继续」(暂停/失败/等待中)
+    // 能「移动」的记录:已下完(或至少不在下载中)且还没移走
+    movableDownloadCount () {
+      return (this.downloadRecords || []).filter(t => this.canMoveDownload(t)).length
+    },
     resumableDownloadCount () {
       return (this.downloadRecords || []).filter(t => ['paused', 'failed', 'waiting'].includes(t.status)).length
     },
@@ -620,13 +847,33 @@ export default defineComponent({
     previewTotalCount () {
       return (this.downloadPreviewFiles || []).length
     },
-    // 还有几个任务在下(JHenTai 的下载页同理):工具栏按钮据此高亮
-    downloadActiveCount () {
-      return (this.downloadRecords || []).filter(t => t.status === 'downloading').length
+    // 预览里「还没下好的格子」该显示成什么:
+    //   done    = 已下好(正常出图,不查这里)
+    //   failed  = 这一页试过且失败了(任务已停/该页已判失败)
+    //   waiting = 任务正在下,这一页迟早会好(转圈)
+    //   pending = 任务暂停/还没开始(时钟)
+    // 首页/末页的顺序由文件序号决定,失败数按「任务失败数」从后往前扣 ——
+    // EH 的失败页没有落盘记录,只能这样给用户一个诚实的近似。
+    previewFailedIndexes () {
+      const t = this.previewTask
+      const n = (this.downloadPreviewFiles || []).length
+      if (!t || !n) return []
+      const failed = Math.min(Number(t.failed) || 0, n)
+      const out = []
+      for (let k = 0; k < failed; k++) out.push(n - 1 - k)
+      return out
     },
     // 没设下载目录时,右栏给一句提示
     downloadPathMissing () {
       return !String(this.setting.downloadPath || '').trim()
+    },
+    // 两个右栏的左右顺序:按打开顺序排(每次打开都重新排到最右),都没开过时默认详细信息在左
+    panelOrder () {
+      const s = this.panelOpenSeq
+      if (!s.detail && !s.download) return ['detail', 'download']
+      if (!s.detail) return ['download', 'detail']
+      if (!s.download) return ['detail', 'download']
+      return s.detail <= s.download ? ['detail', 'download'] : ['download', 'detail']
     },
     // 底部加载状态:在线模式下正在取下一页(触底加载的转圈)
     listLoadingMore () {
@@ -642,6 +889,12 @@ export default defineComponent({
     // 「筛选」(JHenTai 那个筛选对话框)里有条件在生效 → 漏斗按钮高亮
     ehFilterActive () {
       return ehFilterIsActive(this.ehFilter)
+    },
+    // 当前「筛选属于哪个库」:EH在线 单独一份,本地每个库各一份
+    filterLibKey () {
+      if (this.onlineActive) return EH_ONLINE_ID
+      const id = this.setting && this.setting.activeLibraryId
+      return id ? String(id) : ''
     },
     // 对话框里的「关键词」直接镜像搜索栏(关键词真正的家在搜索栏,不另存一份),
     // 否则会看到「框里写着一个词、实际搜的是另一个」这种前后不一致。
@@ -700,7 +953,7 @@ export default defineComponent({
       //    不能被 map[id] 判空挡掉,必须单独放行
       // ⚠️ 模板分支类按钮(不在 toolbarButtonMap 里)必须在这里放行,否则会被 map[id] 判空挡掉 ——
       //    「筛选」按钮当初就是这么没渲染出来的,「下载记录」同理
-      const plainItems = new Set(['searchInput', 'searchButton', 'sortSelect', 'uiMode', 'switchLibrary', 'filter', 'downloads'])
+      const plainItems = new Set(['searchInput', 'searchButton', 'sortSelect', 'uiMode', 'switchLibrary', 'filter', 'downloads', 'detailPanel'])
       return fullOrder.filter(id => {
         // 常驻元素(设置按钮)不参与「显示/隐藏」判断,永远显示
         if (!TOOLBAR_ALWAYS_ITEMS.includes(id) && !enabledButtons.includes(id)) return false
@@ -791,6 +1044,15 @@ export default defineComponent({
       if (this.isDesktopClient) return window.innerWidth < 768
       return window.innerWidth < 1024
     },
+    // 搜索建议弹层的样式(宽度与搜索框等宽)。
+    // 内部滚动条是 2px 的细线,会吃掉一点内容宽,这里补回去,视觉上才与搜索框严丝合缝。
+    searchPopperStyle () {
+      return this.searchPopperWidth ? { width: (this.searchPopperWidth + 2) + 'px' } : {}
+    },
+    // 工具栏按钮增减(设置里改显隐/排序)会挤压搜索框,弹层宽度要跟着重算
+    toolbarOrderSignature () {
+      return this.toolbarOrderIds.join('|')
+    },
     // 平板布局(emm-tablet):仅 NAS 网页版区分手机/平板列数
     isTablet () {
       if (this.uiMode === 'tablet') return true
@@ -871,10 +1133,39 @@ export default defineComponent({
     },
   },
   watch: {
-    // 封面尺寸/间距变化时重新对齐工具栏
+    // 切库(或进/出 EH在线):筛选是**按库独立**的 —— 先把当前筛选存回旧库,再取新库那份
+    filterLibKey (key, oldKey) {
+      const store = (k, v) => { try { localStorage.setItem('emmEhFilter:' + k, JSON.stringify(v)) } catch (e) { /* 忽略 */ } }
+      const read = (k) => {
+        try {
+          const raw = localStorage.getItem('emmEhFilter:' + k)
+          return raw ? normalizeEhFilter(JSON.parse(raw)) : null
+        } catch (e) { return null }
+      }
+      if (oldKey) store(oldKey, this.ehFilter)
+      if (!key) return
+      let next = read(key)
+      if (!next) {
+        // 这个库还没存过筛选:老版本那份全局筛选迁给第一个库,其它库一律从「无筛选」开始
+        const hasAny = (() => { try { return Object.keys(localStorage).some(k => k.startsWith('emmEhFilter:')) } catch (e) { return false } })()
+        next = (!hasAny && ehFilterIsActive(this.ehFilter)) ? this.ehFilter : normalizeEhFilter({})
+        store(key, next)
+      }
+      if (JSON.stringify(next) !== JSON.stringify(this.ehFilter)) {
+        this.ehFilter = next
+        this.$nextTick(() => {
+          if (this.onlineActive) this.loadOnlineList(true)
+          else if (this.bookList && this.bookList.length) this.handleSortChange(this.sortValue, this.displayBookList)
+        })
+      }
+    },
     'setting.coverWidth' () { this.recomputeToolbarWidth() },
     'setting.cardGapV' () { this.recomputeToolbarWidth() },
     'setting.cardGapH' () { this.recomputeToolbarWidth() },
+    toolbarOrderSignature () {
+      // 工具栏元素变了(增删/排序),搜索框宽度会变,弹层要跟着变
+      this.$nextTick(() => this.scheduleSyncSearchPopperWidth())
+    },
     // ⚠️ 这里原来被下面那个重复的 watch 段覆盖掉了(同一个对象里 watch 只能有一份),
     //    所以卡片尺寸变化后工具栏宽度其实一直没重算 —— 现在合并到一处。
     bookList (newList, oldList) {
@@ -883,6 +1174,9 @@ export default defineComponent({
       this.keepScrollOnNextChunk = this.onlineActive && Array.isArray(oldList) && newList.length > oldList.length
       this.handleSortChange(this.sortValue, this.bookList)
     },
+    // 两个右栏:每次打开都记一次顺序(后开的排右边);关闭不记
+    detailPanelVisible (v) { if (v) this.recordPanelOpen('detail') },
+    downloadPanelVisible (v) { if (v) this.recordPanelOpen('download') },
     // 像素风格 / 像素音效 / 混合背景
     'setting.pixelTheme' (val) {
       // 开启像素风格时自动打开「自动主题」(用户仍可手动关掉)
@@ -943,6 +1237,8 @@ export default defineComponent({
     const cardArea = document.querySelector('.book-card-area')
     if (cardArea) this.coverResizeObserver.observe(cardArea)
     window.addEventListener('resize', this.recomputeToolbarWidth)
+    // 搜索框尺寸一变(缩窗口/工具栏增减/侧栏拖宽)就同步下拉弹层宽度
+    this.observeSearchBox()
     // 下载进度 / 完成 / 删除:主进程推过来,右栏就地更新(JHenTai 的下载页也是实时刷)
     ipcRenderer.on('eh-download-progress', (event, task) => this.upsertDownloadRecord(task))
     ipcRenderer.on('eh-download-done', (event, task) => this.upsertDownloadRecord(task))
@@ -1115,6 +1411,9 @@ export default defineComponent({
       this.antiCopyHandler = null
     }
     clearTimeout(this.mixBgTimer)
+    if (this._searchBoxObserver) { this._searchBoxObserver.disconnect(); this._searchBoxObserver = null }
+    if (this._searchPopperRaf) { cancelAnimationFrame(this._searchPopperRaf); this._searchPopperRaf = null }
+    clearTimeout(this._searchPopperTimer)
   },
   methods: {
     ...mapActions(useAppStore, [
@@ -1480,6 +1779,8 @@ export default defineComponent({
         if (!w) return
         const n = Math.max(1, Math.floor((w + 2 * gap) / frameW))
         this.toolbarWidth = n * frameW - 2 * gap
+        // 工具栏宽度变了 → 搜索框宽度跟着变 → 弹层也要跟着变
+        this.scheduleSyncSearchPopperWidth()
       })
     },
     // 阅读器类型切换按钮
@@ -1564,36 +1865,45 @@ export default defineComponent({
           return
         }
         const next1 = ((this.activeBoxIndex + 1) % n + n) % n
+        // 先把「当前框」切过去(按钮/标题立刻变),后端切换与加载随后进行 ——
+        // 以前要等 set-active-box + loadBookList 都回来才有反应,切库像卡住了
+        const prevBoxIndex = this.activeBoxIndex
+        this.setting.activeBoxIndex = next1
         try {
           const res = await ipcRenderer.invoke('set-active-box', { index: next1 })
           if (res && res.ok) {
             this.setting.activeBoxIndex = res.activeBoxIndex
             this.setting.activeLibraryId = res.activeLibraryId
             this.setting.library = res.library
-            if (res.activeChanged) await this.loadBookList()
+            if (res.activeChanged) this.loadBookList()   // 不 await:先把界面切好,列表慢慢填
           } else {
+            this.setting.activeBoxIndex = prevBoxIndex   // 失败回滚
             this.$message.error((res && res.error) || this.$t('m.librarySaveFailed'))
           }
         } catch (e) {
+          this.setting.activeBoxIndex = prevBoxIndex
           this.$message.error(String((e && e.message) || e))
         }
         return
       }
       // ② 没勾进任何框:保持「循环末尾临时多一站 EH在线」的旧行为
       if (this.onlineActive) {
-        // 从 EH在线 回到第一个框(没配过框时不碰后端,直接回到本地书架)
+        // 从 EH在线 回到第一个框:界面立刻回落(先把列表清空显示 loading),后端切换在后台做
         this.onlineStopActive = false
+        this.bookList = []
+        this.chunkDisplayBookList = []
         if (n) {
-          try {
-            const res = await ipcRenderer.invoke('set-active-box', { index: 0 })
+          ipcRenderer.invoke('set-active-box', { index: 0 }).then(res => {
             if (res && res.ok) {
               this.setting.activeBoxIndex = res.activeBoxIndex
               this.setting.activeLibraryId = res.activeLibraryId
               this.setting.library = res.library
             }
-          } catch (e) { /* 忽略:回落后端失败也不该卡住界面 */ }
+            this.loadBookList()
+          }).catch(() => { this.loadBookList() })
+        } else {
+          this.loadBookList()
         }
-        await this.loadBookList()
         return
       }
       if (this.ehOnlineAvailable && (n === 0 || this.activeBoxIndex + 1 >= n)) {
@@ -1607,17 +1917,21 @@ export default defineComponent({
       }
       // 前端算好「下一条框」的序号再传给后端:避免前后端状态不同步时「点了没反应」
       const next = ((this.activeBoxIndex + 1) % n + n) % n
+      const prevIndex = this.activeBoxIndex
+      this.setting.activeBoxIndex = next      // 先切界面
       try {
         const res = await ipcRenderer.invoke('set-active-box', { index: next })
         if (res && res.ok) {
           this.setting.activeBoxIndex = res.activeBoxIndex
           this.setting.activeLibraryId = res.activeLibraryId
           this.setting.library = res.library
-          if (res.activeChanged) await this.loadBookList()
+          if (res.activeChanged) this.loadBookList()    // 后加载
         } else {
+          this.setting.activeBoxIndex = prevIndex
           this.$message.error((res && res.error) || this.$t('m.librarySaveFailed'))
         }
       } catch (e) {
+        this.setting.activeBoxIndex = prevIndex
         this.$message.error(String((e && e.message) || e))
       }
     },
@@ -1766,8 +2080,16 @@ export default defineComponent({
         case 'recentRead': {
           // 历史(JHenTai 的做法):记录里存了画廊快照,所以**不在当前库里也能显示**
           // (换了库、文件被删、在线画廊只取过一页 —— 都能在历史里看到并点开)
-          const records = fetchRecentReadRecords()
           const inLibrary = new Map(this.bookList.map(b => [b.id, b]))
+          // 「本地 / EH在线」按当前库自动分开:EH在线 库下选历史 = 只看在线浏览记录,
+          // 本地库下选历史 = 只看本地记录(用户要求,不手动切范围)
+          const isOnlineRecord = (rec) => {
+            const local = inLibrary.get(rec.id)
+            if (local) return !!local.online
+            return !!(rec.snap && rec.snap.online)
+          }
+          const records = fetchRecentReadRecords()
+            .filter(rec => this.onlineActive ? isOnlineRecord(rec) : !isOnlineRecord(rec))
           this.displayBookList = this.applyEhFilter(_.uniqBy(records.map(rec => {
             const local = inLibrary.get(rec.id)
             if (local) return { ...local, historyTime: rec.read_time }
@@ -1858,6 +2180,8 @@ export default defineComponent({
       localStorage.setItem('sortValue', val)
     },
     querySearch (queryString, callback) {
+      // 用自己记的实时输入值:el-autocomplete 聚焦时喂进来的是「上次搜索的值」,不是正在敲的内容
+      const typed = String(this.searchTyping || queryString || '')
       let result = []
       const options = this.customOptions.concat(this.tagList)
       if (queryString) {
@@ -1892,51 +2216,104 @@ export default defineComponent({
         // 空框:不列全部标签(那是几千条),改成像 JHenTai 那样只列「搜索历史」
         result = []
       }
-      // 搜索框下方:优先弹出「搜索历史」(点一下直接搜)
-      const q = String(queryString || '').trim().toLowerCase()
-      const all = this.searchHistory || []
-      const history = all
-        .filter(s => !q || String(s).toLowerCase().includes(q))
-        .slice(0, 10)
-        .map(s => ({ value: s, label: this.$t('m.searchHistory') + ': ' + s, isHistory: true }))
-      const tail = (history.length && !q) ? [{ value: '', label: this.$t('m.searchHistoryClear'), isClearHistory: true }] : []
-      callback([...history, ...result, ...tail])
+      // 搜索历史不进这个竖向列表(它在弹层底部的横排里,见 .search-history-panel)。
+      // 但 el-autocomplete 的弹层只有「建议列表非空」时才显示,历史面板挂在它的 footer 上,
+      // 所以列表为空时补一条提示项把弹层撑出来。
+      // 有历史时就一定补(否则一聚焦看不到历史);没历史时只在敲了字、又没有标签匹配时补。
+      const q0 = typed.trim()
+      const hasHistory = (this.searchHistory || []).length > 0
+      if (!result.length && hasHistory) {
+        // 只为让弹层弹出来(Element 建议列表为空就不弹),这一行在样式里被隐藏、不显示任何文字
+        result = [{ value: '', label: '', isHistoryPlaceholder: true }]
+      }
+      callback(result)
     },
-    // 记住搜索词(搜索框下方的历史,只存本机)
-    // 点下拉里的「搜索历史」= 直接搜(JHenTai 点历史芯片就是这个动作);点「清空」= 清空历史
+    // 记住搜索词(搜索框下方那一横排历史,只存本机)
+    // 下拉里现在只剩标签建议,选中即写进搜索框
     onSearchSuggestSelect (item) {
-      if (!item) return
-      if (item.isClearHistory) {
-        this.searchHistory = []
-        try { localStorage.removeItem('emmSearchHistory') } catch (e) { /* 忽略 */ }
-        this.printMessage('success', this.$t('m.searchHistoryCleared'))
-        this.searchString = ''
-        this.$refs.searchInputRef?.blur?.()
-        return
-      }
-      if (item.isHistory) {
-        this.searchString = String(item.value || '')
-        this.searchBook()
-      }
+      if (!item || item.isHistoryPlaceholder) return
+      if (item.value) this.searchString = String(item.value)
     },
-    // 删掉一条搜索历史(下拉项右侧的 ✕)
+    // 弹层宽度跟搜索框对齐(Element 默认只保证「不小于」输入框宽度,这里强制等宽)
+    // 注意:$el 本身就是 .search-input,querySelector 查不到自己,要单独判断
+    syncSearchPopperWidth () {
+      const root = this.$refs.searchInputRef
+      const el = Array.isArray(root) ? root[0]?.$el : root?.$el
+      const box = (el && el.matches && el.matches('.search-input'))
+        ? el
+        : (el?.querySelector?.('.search-input') || document.querySelector('.search-input'))
+      const w = box ? Math.round(box.getBoundingClientRect().width) : 0
+      if (w && w !== this.searchPopperWidth) this.searchPopperWidth = w
+    },
+    // 窗口/布局变化时跟着重算弹层宽度。
+    // 说明:弹层开着时把宽度改掉,Element 的定位器不会自己重排,所以要「先量、再下一帧量」各来一次。
+    scheduleSyncSearchPopperWidth () {
+      if (this._searchPopperRaf) cancelAnimationFrame(this._searchPopperRaf)
+      this._searchPopperRaf = requestAnimationFrame(() => {
+        this._searchPopperRaf = null
+        this.syncSearchPopperWidth()
+      })
+      clearTimeout(this._searchPopperTimer)
+      this._searchPopperTimer = setTimeout(() => this.syncSearchPopperWidth(), 120)
+    },
+    // 直接盯住搜索框自身的尺寸变化:窗口缩放、工具栏按钮增减、侧栏拖宽都会触发,
+    // 比监听 window resize 更可靠(有些变化不会派发 resize 事件)。
+    observeSearchBox () {
+      const root = this.$refs.searchInputRef
+      const el = Array.isArray(root) ? root[0]?.$el : root?.$el
+      const box = (el && el.matches && el.matches('.search-input'))
+        ? el
+        : (el?.querySelector?.('.search-input') || document.querySelector('.search-input'))
+      if (!box || this._searchBoxObserver) return
+      this._searchBoxObserver = new ResizeObserver(() => this.scheduleSyncSearchPopperWidth())
+      this._searchBoxObserver.observe(box)
+      this.syncSearchPopperWidth()
+    },
+    // ---------- 搜索历史横排(在下拉弹层底部):点芯片直接搜 ----------
+    // 点历史芯片 = 直接搜(JHenTai 点历史芯片就是这个动作)
+    applySearchHistory (s) {
+      this.searchString = String(s || '')
+      this.searchTyping = this.searchString
+      this.searchBook()
+      this.closeSearchPopper()
+    },
+    // 收起搜索建议弹层。
+    // 不能只靠失焦:芯片就在弹层里,点它焦点仍在弹层内容中,Element 判定「焦点还在浮层内」就不会关。
+    // 搜索框写在 v-for 里,ref 会被收集成数组,这里两种都兼容。
+    closeSearchPopper () {
+      const refs = this.$refs.searchInputRef
+      const comp = Array.isArray(refs) ? refs[0] : refs
+      try { comp?.close?.() } catch (e) { /* 忽略 */ }
+      const input = this.$el?.querySelector?.('.search-input input')
+      if (input) input.blur()
+    },
+    // 删掉一条搜索历史(芯片右侧的 ✕)
     removeSearchHistory (s) {
       this.searchHistory = (this.searchHistory || []).filter(x => x !== s)
       try { localStorage.setItem('emmSearchHistory', JSON.stringify(this.searchHistory)) } catch (e) { /* 忽略 */ }
     },
+    clearSearchHistory () {
+      this.searchHistory = []
+      try { localStorage.removeItem('emmSearchHistory') } catch (e) { /* 忽略 */ }
+      this.printMessage('success', this.$t('m.searchHistoryCleared'))
+    },
     rememberSearch (s) {
       const v = String(s || '').trim()
       if (!v) return
-      this.searchHistory = [v, ...(this.searchHistory || []).filter(x => x !== v)].slice(0, 20)
+      // 最多留 500 条(去重后最新的排最前)
+      this.searchHistory = [v, ...(this.searchHistory || []).filter(x => x !== v)].slice(0, 500)
       try { localStorage.setItem('emmSearchHistory', JSON.stringify(this.searchHistory)) } catch (e) { /* 忽略 */ }
     },
     handleSearchStringChange (val) {
+      this.searchTyping = String(val || '')
       if (!val) {
         this.searchString = ''
         this.handleSortChange(this.sortValue, this.bookList)
       }
     },
     handleInput (val) {
+      this.searchTyping = String(val || '')
+      this.syncSearchPopperWidth()
       try {
         if (/^[\p{L}\d]+:"[- ._()\p{L}\d]+"\$$/u.test(val)
             && this.searchString.trim() !== val.trim()) {
@@ -2195,10 +2572,14 @@ export default defineComponent({
     // ---------- 可配置点击策略(设置 → 高级设置):详细界面 / 内容界面 / 缩略图 ----------
     runClickAction (action, book) {
       if (!book) return
+      // 侧边详细信息开着时,「详细界面」临时变成「侧边详细信息」—— 关掉面板就自动恢复
+      // (不改设置里存的值,只是当前生效行为切换)
+      if (action === 'detail' && this.detailPanelVisible) action = 'sideDetail'
       // EH在线:不是本地书 —— 「缩略图」没有意义,所以 内容/缩略图 都走在线阅读;详细界面照旧
       if (book.online) {
         if (action === 'none') return
         if (action === 'detail') this.$refs.BookDetailDialogRef.openBookDetail(book)
+        else if (action === 'sideDetail') this.openSideDetail(book)
         else this.openContentView(book)
         return
       }
@@ -2212,10 +2593,19 @@ export default defineComponent({
         case 'thumbnail':
           this.openThumbnailView(book)
           break
+        case 'sideDetail':
+          this.openSideDetail(book)
+          break
         default:
           this.$refs.BookDetailDialogRef.openBookDetail(book)
           break
       }
+    },
+    // 打开侧边详细信息(点击策略 / 面板自身的入口都走这)
+    openSideDetail (book) {
+      if (!book) return
+      this.bookDetail = book
+      this.detailPanelVisible = true
     },
     onCoverClick (book) { this.runClickAction(this.setting.clickCoverAction || 'content', book) },
     onTitleClick (book) { this.runClickAction(this.setting.clickTitleAction || 'detail', book) },
@@ -2291,8 +2681,16 @@ export default defineComponent({
       this.chunkList()
       this.$refs.SettingRef.saveSetting()
       this.scrollMainPageTop()
-      // EH在线:每页数量改了,按需再补几页 EH 数据
-      if (this.onlineActive) this.loadOnlineList()
+      // EH在线:每页数量改了,按需再补几页 EH 数据。
+      // ⚠ 改页数量时列表很短(或刚好在底部),「滚到底自动加载」的判定会一直成立 ——
+      //   补一页 → 重排回顶 → 又判定到底 → 再补一页,就成了「一直加载个不停」。
+      //   所以这一小段时间里先关掉自动补页,只做一次有上限的补齐。
+      if (this.onlineActive) {
+        this.suppressOnlineAppend = true
+        Promise.resolve(this.loadOnlineList()).finally(() => {
+          setTimeout(() => { this.suppressOnlineAppend = false }, 1200)
+        })
+      }
     },
     handleCurrentPageChange (currentPage) {
       this.renderedCount = this.renderBatchSize
@@ -2376,7 +2774,7 @@ export default defineComponent({
           x: e.x,
           y: e.y,
           items: [
-            { id: 'downloadGallery', label: this.$t('m.downloadGallery'), onClick: () => this.startGalleryDownload(book, false) },
+            { id: 'downloadGallery', label: this.$t('m.downloadGallery'), onClick: () => this.openDownloadDialog(book) },
             { id: 'downloadGalleryOriginal', label: this.$t('m.downloadGalleryOriginal'), onClick: () => this.startGalleryDownload(book, true) },
             { id: 'torrents', label: this.$t('m.torrent'), onClick: () => this.openTorrentDialog(book) },
             { id: 'copyTag', label: this.$t('m.copyTagClipboard'), onClick: () => this.copyTagClipboard(book) },
@@ -2515,6 +2913,8 @@ export default defineComponent({
     },
     onResize () {
       this.applyUiMode()
+      // 窗口大小变了,搜索框宽度也会变 → 下拉弹层要跟着变
+      this.scheduleSyncSearchPopperWidth()
     },
     switchUiMode () {
       // 循环:自动 → 手机 → 平板 → 电脑 → 自动
@@ -2666,6 +3066,8 @@ export default defineComponent({
     applyEhFilterAndRefresh (filter) {
       this.ehFilter = normalizeEhFilter(filter)
       saveEhFilter(this.ehFilter)
+      // 按库保存:换库回来还是这一套筛选
+      try { if (this.filterLibKey) localStorage.setItem('emmEhFilter:' + this.filterLibKey, JSON.stringify(this.ehFilter)) } catch (e) { /* 忽略 */ }
       // 关键词走软件原本的搜索栏(本地按本地语法解析,EH在线 就是 EH 的 f_search)
       const kw = String(this.ehFilter.keyword || '').trim()
       if (kw && kw !== this.searchString) {
@@ -2683,8 +3085,42 @@ export default defineComponent({
     async refreshDownloadRecords () {
       try {
         const r = await ipcRenderer.invoke('eh-download-records')
-        if (r && r.ok) this.downloadRecords = r.tasks || []
+        if (r && r.ok) {
+          this.downloadRecords = r.tasks || []
+          // 重新拉记录(打开面板/移动作完)时把「封面失败」标记清掉:网络恢复了就该重新出图
+          this.failedCovers = {}
+          // 老记录(下载那会儿还没存标签)现拉一次详情补上,一次最多 3 条,别一下打爆 EH
+          this.backfillDownloadTags()
+        }
       } catch (e) { /* 忽略 */ }
+    },
+    // 给「没有标签」的下载记录补标签:拉一次画廊详情 → 存回主进程的记录里(downloads.json)
+    async backfillDownloadTags () {
+      if (this.backfillTagsRunning) return
+      this.backfillTagsRunning = true
+      try {
+        const todo = (this.downloadRecords || []).filter(t =>
+          t && t.url && (!t.tags || !Object.keys(t.tags || {}).length)
+        ).slice(0, 3)
+        for (const task of todo) {
+          try {
+            const host = String(task.url).replace(/^https?:\/\//i, '').split('/')[0] || EX_HOST
+            const detail = parseGalleryDetail(await this.fetchExHtml(task.url), host)
+            if (detail && detail.ok) {
+              const r = await ipcRenderer.invoke('eh-download-set-tags', {
+                id: task.id,
+                tags: detail.tags || {},
+                category: detail.category || '',
+                titleJpn: detail.titleJpn || '',
+                rating: Number(detail.rating) || 0
+              })
+              if (r && r.ok && r.task) this.upsertDownloadRecord(r.task)
+            }
+          } catch (e) { /* 代理/网络不通就下次再说 */ }
+        }
+      } finally {
+        this.backfillTagsRunning = false
+      }
     },
     // 拖右栏左边缘调宽度(拖完记在本机;书架宽度变了工具栏会自己重算)
     startDownloadPanelResize (e) {
@@ -2719,7 +3155,9 @@ export default defineComponent({
     async openDownloadPreview (task) {
       if (!task) return
       this.previewTask = task
-      this.downloadPreviewFiles = []
+      // 先把「整本有多少页」摆出来(哪怕一张都还没下、目录还没解析出来),
+      // 之后每次刷新只替换内容,格子数量不变 —— 这就是「全部图片都在位」。
+      this.downloadPreviewFiles = Array.from({ length: Math.max(0, Number(task.total) || 0) }, () => null)
       if (task.dir) await this.refreshDownloadPreview()
     },
     closeDownloadPreview () {
@@ -2730,10 +3168,51 @@ export default defineComponent({
       const t = this.previewTask
       if (!t) return
       try {
-        const r = await ipcRenderer.invoke('eh-download-files', { dir: t.dir || '', total: t.total || 0 })
+        const r = await ipcRenderer.invoke('eh-download-files', {
+          dir: t.dir || '', total: t.total || 0, id: t.id
+        })
         // 用户可能已经切走/关掉预览了,回来别把旧的糊上去
-        if (this.previewTask && this.previewTask.id === t.id) this.downloadPreviewFiles = (r && r.files) || []
+        if (!this.previewTask || this.previewTask.id !== t.id) return
+        // 后端会把「任务已知的总页数」一起带回来 —— 以它为准重建定长数组,
+        // 没下好的页就是 null,前端照样给它留一格(不再凭空少一块)。
+        // 「重新下载」刚把计数归零(total=0)的那一下也按当前格子数兜底,
+        // 免得整页格子突然全消失,等页链接收回来再自然变多。
+        const files = (r && Array.isArray(r.files)) ? r.files : []
+        const expect = Math.max(
+          Number(r && r.total) || 0,
+          Number(t.total) || 0,
+          files.length,
+          (this.downloadPreviewFiles || []).length
+        )
+        const out = files.slice(0, Math.max(expect, files.length))
+        while (out.length < expect) out.push(null)
+        this.downloadPreviewFiles = out
+        // 顺带把这条任务的最新状态并回列表(目录是后端解析出来的)
+        if (r && r.task) {
+          this.upsertDownloadRecord(r.task)
+          if (this.previewTask && this.previewTask.id === r.task.id) this.previewTask = r.task
+        }
       } catch (e) { /* 忽略 */ }
+    },
+    // 预览格子的状态:已下好 / 失败 / 下载中 / 未开始
+    previewPageState (index) {
+      if ((this.downloadPreviewFiles || [])[index]) return 'done'
+      if ((this.previewFailedIndexes || []).includes(index)) return 'failed'
+      const status = this.previewTask && this.previewTask.status
+      if (status === 'downloading') return 'waiting'
+      if (status === 'failed' || status === 'done') return 'failed'
+      return 'pending'
+    },
+    // 占位格下面那行字:告诉用户这一页是在等、在下,还是已经判失败了
+    previewPageStateText (index) {
+      const state = this.previewPageState(index)
+      if (state === 'failed') return this.$t('m.downloadStatusFailed')
+      if (state === 'waiting') return this.$t('m.downloadStatusDownloading')
+      if (state === 'pending') {
+        const status = this.previewTask && this.previewTask.status
+        return status === 'paused' ? this.$t('m.downloadStatusPaused') : this.$t('m.downloadStatusWaiting')
+      }
+      return ''
     },
     // 下载中时预览要「自己长出来」:进度事件到了就节流刷一次;
     // 另外「目录刚从空变成有」的那一次也要刷(那时才知道去哪里找文件)
@@ -2746,6 +3225,13 @@ export default defineComponent({
     },
     upsertDownloadRecord (task) {
       if (!task || !task.id) return
+      // 封面文件后到(抓取是后台异步的):清掉失败标记,让 img 重新加载
+      const prev = this.downloadRecords.find(t => t.id === task.id)
+      if (task.coverPath && (!prev || prev.coverPath !== task.coverPath)) {
+        const next = { ...this.failedCovers }
+        delete next[task.id]
+        this.failedCovers = next
+      }
       const list = this.downloadRecords.slice()
       const i = list.findIndex(t => t.id === task.id)
       if (i >= 0) list.splice(i, 1, task)
@@ -2755,26 +3241,319 @@ export default defineComponent({
       this.schedulePreviewRefresh(task)
       if (this.previewTask && this.previewTask.id === task.id) this.previewTask = task
     },
-    openDownloadDrawer () {
-      this.downloadPanelVisible = true
-      this.refreshDownloadRecords()
+    // 工具栏「下载记录」:点开 ⇄ 收起(再点一次收回)
+    toggleDownloadDrawer () {
+      this.downloadPanelVisible = !this.downloadPanelVisible
+      if (this.downloadPanelVisible) this.refreshDownloadRecords()
+    },
+    // 记录右栏打开顺序(先开的在左,后开的在右;每次打开都排到最右)
+    recordPanelOpen (name) {
+      this.panelSeq += 1
+      this.panelOpenSeq = { ...this.panelOpenSeq, [name]: this.panelSeq }
+    },
+    // 下载记录标题点击:与主界面点标题同一个详情界面(用任务里的画廊 url 现成一个在线书对象;
+    // 详情会自动补拉上传者/语言/大小等信息)。addToHistory=false:只是看看,不算「读过」。
+    openDownloadTaskDetail (task) {
+      if (!task) return
+      // 已经下完(并且能定位到目录):当**本地书**打开 —— 不再跑去解析 EH 链接。
+      // 这里给出的 filepath 就是下载目录里的漫画文件夹,详情/阅读/标签都按本地书走。
+      if (task.status === 'done' && task.dir) {
+        this.$refs.BookDetailDialogRef.openBookDetail({
+          id: task.id,
+          online: false,
+          type: 'folder',
+          filepath: task.dir,
+          title: task.title || '',
+          title_jpn: task.titleJpn || '',
+          category: task.category || '',
+          url: task.url || '',
+          coverPath: task.cover ? ehImageSrc(task.cover) : '',
+          pageCount: task.total || null,
+          filecount: task.total || null,
+          rating: Number(task.rating) || 0,
+          tags: (task.tags && typeof task.tags === 'object') ? task.tags : {},
+          status: 'tagged',
+          readCount: 0,
+          mark: false,
+          movedTo: task.movedTo || ''
+        }, false)
+        return
+      }
+      if (!task.url) return
+      this.$refs.BookDetailDialogRef.openBookDetail({
+        id: task.id,
+        online: true,
+        type: 'online',
+        url: task.url,
+        filepath: task.url,
+        title: task.title || '',
+        // cover 可能是原始 EH 地址、也可能是已经代理过的 /api/ex-image?url=...
+        // ehImageSrc 对已经是代理地址的相对 URL 原样返回,两种都安全
+        coverPath: task.cover ? ehImageSrc(task.cover) : '',
+        pageCount: task.total || null,
+        filecount: task.total || null,
+        tags: (task.tags && typeof task.tags === 'object') ? task.tags : {},
+        readCount: 0
+      }, false)
+    },
+    // 封面地址:coverPath 可能是本地绝对路径,也可能已经是 /api/file?path=... 的 URL
+    // (web-ipc 会把响应里的本地路径改写成 URL)。已经是 URL 就原样用,
+    // 再 encodeURIComponent 一次会变成 %252F —— 直接 404,整排封面变灰。
+    downloadCoverSrc (task) {
+      const p = String((task && task.coverPath) || '')
+      if (p) return /^(https?:|data:|blob:|\/api\/)/i.test(p) ? p : this.assetUrl(p)
+      return (task && task.cover) || ''
+    },
+    // 封面加载失败(代理挂了 / EH 换图 / 网络不通):记下来,退回灰底占位,不留破图
+    onDownloadCoverError (task) {
+      if (!task || !task.id) return
+      this.failedCovers = { ...this.failedCovers, [task.id]: true }
+    },
+    // 下载记录里显示的漫画标签(下载时存下来的画廊 tags):
+    // 拍平成 [{ text, full, ns }],text 给 chip 显示、full 是「命名空间:标签」用于悬浮提示、
+    // ns 用于点击时按命名空间搜索(和其它界面点标签一样)。
+    downloadTaskTags (task) {
+      const tags = task && task.tags
+      if (!tags || typeof tags !== 'object') return []
+      const out = []
+      for (const [ns, arr] of Object.entries(tags)) {
+        if (!Array.isArray(arr)) continue
+        for (const t of arr) {
+          const name = String(t || '').trim()
+          if (!name) continue
+          // 原样显示标签(JHenTai 列表里就是纯标签),命名空间放进悬浮提示
+          out.push({ text: name, full: ns + ':' + name, ns })
+        }
+      }
+      return out
+    },
+    // 点任务记录里的标签:和别的界面一样「按这个标签搜索」,顺手收起任务面板看结果
+    onDownloadTagClick (tg) {
+      if (!tg || !tg.text) return
+      this.downloadPanelVisible = false
+      this.searchFromTag(tg.text, tg.ns)
+    },
+    // 能不能「移动」:只有**下载完成**的任务才给移(暂停/失败/下载中的都不动)
+    canMoveDownload (task) {
+      if (!task || task.status !== 'done' || task.movedTo) return false
+      return !!task.dir
+    },
+    // 头部「移动」:全部已完成的任务 → 目标文件夹(设置里填了默认移动路径就直接用,不再弹选择)
+    async moveAllCompletedDownloads () {
+      const ids = (this.downloadRecords || []).filter(t => this.canMoveDownload(t)).map(t => t.id)
+      if (!ids.length) { this.printMessage('warning', this.$t('m.downloadMoveNone')); return }
+      const target = this.resolveMoveTarget('all')
+      if (target) { await this.runMoveDownloads(ids, target); return }
+      // 没有默认路径:弹「本地库文件夹」选择器(只能选已有库的目录及其子目录)
+      this.moveDialog = { visible: true, ids, target: '' }
+    },
+    // 单本「移动」:该记录 → 目标文件夹(单本移动路径优先)
+    async moveOneDownload (task) {
+      if (!this.canMoveDownload(task)) return
+      const target = this.resolveMoveTarget('single')
+      if (target) { await this.runMoveDownloads([task.id], target); return }
+      this.moveDialog = { visible: true, ids: [task.id], target: '' }
+    },
+    confirmMoveDialog () {
+      const { ids, target } = this.moveDialog
+      this.moveDialog.visible = false
+      if (ids.length && target) this.runMoveDownloads(ids, target)
+    },
+    // 默认目标:设置里填的默认移动路径(启用时)/ 单本移动路径
+    resolveMoveTarget (kind) {
+      const s = this.setting || {}
+      if (kind === 'all' && s.moveDefaultPath && (s.moveDefaultPathEnabled !== false)) return String(s.moveDefaultPath).trim()
+      if (kind === 'single' && s.moveSinglePath) return String(s.moveSinglePath).trim()
+      return ''
+    },
+    // 真正执行移动(后端:搬文件 + 在目标库登记书 + 生成封面)
+    async runMoveDownloads (ids, target) {
+      try {
+        const r = await ipcRenderer.invoke('move-downloads', { ids, target })
+        if (!r || !r.ok) { this.printMessage('error', (r && r.error) || this.$t('m.downloadMoveFailed')); return }
+        const okList = (r.results || []).filter(x => x.ok)
+        const badList = (r.results || []).filter(x => !x.ok)
+        for (const x of okList) {
+          const rec = this.downloadRecords.find(t => t.id === x.id)
+          if (rec) { rec.movedTo = x.dest; rec.dir = x.dest }
+        }
+        this.downloadRecords = this.downloadRecords.slice()
+        if (okList.length) {
+          this.printMessage('success', this.$t('m.downloadMoveDone', { n: okList.length }))
+          // 移进本地库了:刷新书架(不用等整库扫描,后端已经登记好了)
+          if (okList.some(x => x.inLibrary)) this.loadBookList(false)
+        }
+        if (badList.length) {
+          this.printMessage('warning', this.$t('m.downloadMovePartial', { n: badList.length, err: badList.map(x => x.error).join(', ') }))
+        }
+        this.refreshDownloadRecords()
+      } catch (e) {
+        this.printMessage('error', this.$t('m.downloadMoveFailed') + ': ' + ((e && e.message) || e))
+      }
+    },
+    // 记录上的时间(开始下载的时间;已完成的显示完成时间)。用户要年月日时分秒
+    downloadTimeText (task) {
+      const ts = Number((task.status === 'done' && task.finishedAt) ? task.finishedAt : task.createdAt) || 0
+      if (!ts) return ''
+      const d = new Date(ts)
+      const p = (n) => String(n).padStart(2, '0')
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+    },
+    // 感叹号上的错误弹出:悬浮显示,点击钉住(再点一次取消)
+    hoverDownloadWarn (id) {
+      if (!this.downloadWarn.pinned) this.downloadWarn = { id, pinned: false }
+    },
+    leaveDownloadWarn () {
+      if (!this.downloadWarn.pinned) this.downloadWarn = { id: '', pinned: false }
+    },
+    toggleDownloadWarn (id) {
+      const cur = this.downloadWarn
+      this.downloadWarn = (cur.id === id && cur.pinned) ? { id: '', pinned: false } : { id, pinned: true }
+    },
+    // ---------- 下载预览图片的加载重试 ----------
+    // 预览图加载失败多半是「文件刚下完还在写」:换 URL 重拉 3 次,再不行给可点的重试占位
+    previewImgSrc (f, i) {
+      const base = this.assetUrl(f && f.path)
+      const n = this.previewImgNonce[i]
+      if (!base || !n) return base
+      return base + (base.includes('?') ? '&' : '?') + 'r=' + n
+    },
+    onPreviewImgError (e, index) {
+      const n = ((this.previewImgRetry || {})[index] || 0) + 1
+      this.previewImgRetry = { ...this.previewImgRetry, [index]: n }
+      if (n > 3) {
+        this.previewImgFailed = { ...this.previewImgFailed, [index]: true }
+        return
+      }
+      const f = (this.downloadPreviewFiles || [])[index]
+      if (!f) return
+      // 越重试间隔越长(400/800/1200ms),给写入留时间
+      setTimeout(() => {
+        this.previewImgNonce = { ...this.previewImgNonce, [index]: Date.now() }
+      }, 400 * n)
+    },
+    retryPreviewImg (index) {
+      this.previewImgRetry = { ...this.previewImgRetry, [index]: 0 }
+      this.previewImgFailed = { ...this.previewImgFailed, [index]: false }
+      this.previewImgNonce = { ...this.previewImgNonce, [index]: Date.now() }
+      this.refreshDownloadPreview()
     },
     // 模板里不能直接用 import 进来的 toAssetUrl(Options API 不会把它挂到 this 上,渲染会报错),
     // 所以包一层 method
     assetUrl (path) {
       return toAssetUrl(path)
     },
+    // ---------- 下载预览页的右键菜单:继续下载 / 重新下载 ----------
+    // (「进入阅读」不放在右键里 —— 左键点图就是进入阅读,从第 N 页开始读)
+    onPreviewContextMenu (e, index) {
+      e.preventDefault()
+      const task = this.previewTask
+      if (!task) return
+      const resumable = ['paused', 'failed', 'waiting'].includes(task.status)
+      const items = []
+      // 「继续下载」只对暂停/失败/等待中的任务有意义
+      if (resumable) {
+        items.push({
+          id: 'resume',
+          label: this.$t('m.previewContinueDownload'),
+          onClick: () => this.downloadAction(task, 'resume')
+        })
+      }
+      // 只保留「重新下载(这一页)」—— 整本重下只放在确认框之外的地方,这里不要
+      items.push({
+        id: 'redownloadPage',
+        label: this.$t('m.previewRedownloadPage'),
+        onClick: () => this.redownloadPreviewPage(task, index)
+      })
+      this.$contextmenu({ x: e.x, y: e.y, items })
+    },
+    // 单页重新下载:只重下这一页(覆盖同名文件),其它页不动
+    async redownloadPreviewPage (task, index) {
+      if (!task || index == null) return
+      this.printMessage('info', this.$t('m.previewRedownloadPageRunning', { n: index + 1 }))
+      try {
+        const r = await ipcRenderer.invoke('eh-download-page-by-index', { id: task.id, index })
+        if (r && r.ok) {
+          this.printMessage('success', this.$t('m.previewRedownloadPageDone', { n: index + 1 }))
+          // 预览图是按文件路径缓存的:换个 nonce 强制重新加载这一格
+          this.previewImgNonce = { ...this.previewImgNonce, [index]: Date.now() }
+          this.previewImgFailed = { ...this.previewImgFailed, [index]: false }
+          this.refreshDownloadPreview()
+        } else {
+          this.printMessage('error', (r && r.error) || this.$t('m.downloadFailed'))
+        }
+      } catch (e) {
+        this.printMessage('error', (e && e.message) || this.$t('m.downloadFailed'))
+      }
+    },
+    // 整本重新下载:先确认(会删掉已经下好的文件从头下),再走 eh-download-action 的 restart
+    async confirmRestartDownload (task) {
+      try {
+        await ElMessageBox.confirm(this.$t('m.downloadRestartConfirm'), this.$t('m.previewRedownload'), { type: 'warning' })
+      } catch (err) { return }
+      const r = await ipcRenderer.invoke('eh-download-action', { id: task.id, action: 'restart' })
+      if (r && r.ok) {
+        this.printMessage('success', this.$t('m.downloadRestarted'))
+        this.refreshDownloadRecords()
+        // 预览还停在这条任务上:进度归零了,就地重刷一次
+        if (this.previewTask && this.previewTask.id === task.id) this.refreshDownloadPreview()
+      } else {
+        this.printMessage('error', (r && r.error) || this.$t('m.downloadFailed'))
+      }
+    },
+    // 把这条任务已经下好的页当一本书翻开,第 pageIndex 页就是当前页。
+    // 这本书是临时构造的、不在任何库里:所以跳过阅读历史与 saveBook(见 viewManga 的 opts)
+    openDownloadPageInReader (task, pageIndex) {
+      const dir = task && task.dir
+      if (!dir) { this.printMessage('warning', this.$t('m.downloadPreviewNoDir')); return }
+      const viewer = this.$refs.InternalViewerRef
+      if (!viewer || typeof viewer.viewManga !== 'function') {
+        this.printMessage('warning', this.$t('m.viewerUnavailable'))
+        return
+      }
+      viewer.showThumbnail = false
+      viewer.viewManga({
+        id: 'dl:' + task.id,
+        title: task.title || '',
+        title_jpn: '',
+        filepath: dir,
+        type: 'folder',
+        coverPath: task.cover || '',
+        pageCount: Number(task.total) || 0,
+        filecount: Number(task.total) || 0,
+        rating: 0,
+        readCount: 0,
+        tags: {},
+        category: '',
+        online: false
+      }, '100%', pageIndex, { skipHistory: true, skipSave: true })
+    },
+    // ---------- 侧边详细信息面板 ----------
+    onDetailPanelWidthChange (w) {
+      this.detailPanelWidth = Math.min(900, Math.max(240, Number(w) || 340))
+      try { localStorage.setItem('emmDetailPanelWidth', String(this.detailPanelWidth)) } catch (e) { /* 忽略 */ }
+    },
+    // 面板里的「阅读」:与点封面同一个点击策略(在线 → 在线阅读,本地 → 内置阅读器)
+    // 侧边详细点预览图:带上页码,直接从那一页开始读
+    onSideDetailRead (book, startIndex = null) {
+      if (!book) return
+      if (startIndex != null) { this.openContentView(book, startIndex); return }
+      this.runClickAction(this.setting.clickCoverAction || 'content', book)
+    },
     downloadPercent (task) {
       const total = Number(task.total) || 0
       if (!total) return task.status === 'done' ? 100 : 0
       return Math.min(100, Math.round(((task.done + task.failed) / total) * 100))
     },
-    // 失败原因说人话(noPages 这种内部代号用户看不懂)
+    // 失败原因说人话(noPages 这种内部代号用户看不懂)。
+    // ⚠️ 下载记录界面以前把原始错误(英文的网络报错)直接铺在界面上,用户看不懂 ——
+    //    现在所有提示统一走中文映射(见 networkErrorText),原始的只留在悬浮 title 里。
     downloadErrorText (err) {
       const e = String(err || '')
+      if (!e) return ''
       // 原图被 EH 挡下(需要 GP):任务停在等待中,等额度恢复点「继续」接着下
-      if (e === 'gp') return this.$t('m.downloadErrGp')
-      // 取页链接一条都没收到:E H 限速 / 网络不通 —— 先说清原因,别让用户以为画廊没了
+      if (e === 'gp') return this.$t('m.downloadErrGpShort')
+      // 取页链接一条都没收到:EH 限速 / 网络不通 —— 先说清原因,别让用户以为画廊没了
       if (e.startsWith('linksFailed')) return this.$t('m.downloadErrLinksFailed') + ' ' + e.replace(/^linksFailed:\s*/, '').slice(0, 100)
       if (e.startsWith('notImage')) return this.$t('m.downloadErrNotImage') + ' ' + e.replace(/^notImage:\s*/, '').slice(0, 120)
       const map = {
@@ -2784,7 +3563,38 @@ export default defineComponent({
         notLoggedIn: 'm.favoriteLoginNeeded'
       }
       const key = map[e]
-      return key ? this.$t(key) : e.slice(0, 140)
+      if (key) return this.$t(key)
+      // Node/网络层的英文报错 → 中文
+      const net = this.networkErrorText(e)
+      if (net) return net
+      // 实在认不出来:给一句中文,原始错误截短跟在后面(至少看得懂「下载出错了」)
+      return this.$t('m.downloadErrGeneric', { detail: e.slice(0, 120) })
+    },
+    // 网络层错误的中文映射(node-fetch / undici 的报错都是英文)
+    networkErrorText (e) {
+      const s = String(e || '')
+      if (!s) return ''
+      if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(s)) return this.$t('m.downloadErrDns')
+      if (/ETIMEDOUT|ESOCKETTIMEDOUT|timed?\s?out|timeout/i.test(s)) return this.$t('m.downloadErrTimeout')
+      if (/ECONNRESET|ECONNREFUSED|EPIPE|socket hang up|aborted/i.test(s)) return this.$t('m.downloadErrReset')
+      if (/429|too many requests|rate.?limit/i.test(s)) return this.$t('m.downloadErrRateLimit')
+      if (/403|forbidden/i.test(s)) return this.$t('m.downloadErrForbidden')
+      if (/\b(5\d{2})\b/.test(s)) {
+        const code = (/\b(5\d{2})\b/.exec(s) || [])[1] || '5xx'
+        return this.$t('m.downloadErrServer', { code })
+      }
+      if (/certificate|SSL|TLS/i.test(s)) return this.$t('m.downloadErrSsl')
+      return ''
+    },
+    // 下载记录每一行的「提示」:显示在状态(下载中/失败/…)右边,全中文
+    downloadHintText (task) {
+      if (!task) return ''
+      // 收页链接阶段:左边那一格已经在显示「正在收集页链接:N 页…」,不重复
+      if (task.phase === 'links' && task.status === 'downloading') return ''
+      if ((task.fallback | 0) > 0) return this.$t('m.downloadFallback', { n: task.fallback | 0 })
+      if (task.status === 'waiting' && task.error === 'gp') return this.$t('m.downloadErrGpShort')
+      if (task.error) return this.downloadErrorText(task.error)
+      return ''
     },
     downloadStatusText (status) {
       return this.$t({
@@ -2833,14 +3643,62 @@ export default defineComponent({
       } catch (e) { this.printMessage('info', this.$t('m.downloadOpenFolderManual') + ': ' + dir) }
     },
     // 整本下载(original = 是否下原图)。没设下载目录时先提示去设置里选。
-    async startGalleryDownload (book, original) {
-      if (!String(this.setting.downloadPath || '').trim()) {
+    // 打开下载弹窗(位置/名称/原图);确定后回到 startGalleryDownload
+    openDownloadDialog (book) {
+      if (!book) return
+      // 设置里勾了「使用默认下载地址和名称」:不弹窗,直接按设置里的目录 + 默认名称下载
+      if (this.setting.downloadUseDefault) {
+        this.startGalleryDownload(book, false, { title: this.defaultDownloadName(book), saveDir: '' })
+        return
+      }
+      this.$refs.DownloadDialogRef.open(book)
+    },
+    // 默认下载名称:按界面语言挑标题(中文→中文名,日文→日文名,其它→原名),没有再依次退
+    defaultDownloadName (book) {
+      const b = book || {}
+      const cn = String(b.title_cn || '').trim()
+      const jp = String(b.title_jpn || '').trim()
+      const raw = String(b.title || '').trim()
+      const lang = String((this.setting && this.setting.language) || '').toLowerCase()
+      if (lang.startsWith('zh')) return cn || jp || raw
+      if (lang.startsWith('ja')) return jp || cn || raw
+      return raw || jp || cn
+    },
+    startGalleryDownloadFromDialog ({ book, original, title, saveDir }) {
+      this.startGalleryDownload(book, original, { title, saveDir })
+    },
+    async startGalleryDownload (book, original, opts = {}) {
+      const wantDir = String(opts.saveDir || '').trim() || String(this.setting.downloadPath || '').trim()
+      if (!wantDir) {
         this.printMessage('warning', this.$t('m.downloadNeedPath'))
         return
       }
       try {
+        // 下载时把**画廊标签一起带上**(下载记录要显示、移到本地库时写进书库)。
+        // 手上没有标签(从阅读器/别的入口进来)就现拉一次详情页解析出来。
+        let tags = (book && book.tags && Object.keys(book.tags).length) ? book.tags : null
+        let category = (book && book.category) || ''
+        let titleJpn = (book && book.title_jpn) || ''
+        let rating = Number(book && book.rating) || 0
+        if (!tags && book && book.url) {
+          try {
+            const host = String(book.url).replace(/^https?:\/\//i, '').split('/')[0] || EX_HOST
+            const detail = parseGalleryDetail(await this.fetchExHtml(book.url), host)
+            if (detail && detail.ok) {
+              if (detail.tags && Object.keys(detail.tags).length) tags = detail.tags
+              if (!category) category = detail.category || ''
+              if (!titleJpn) titleJpn = detail.titleJpn || ''
+              if (!rating) rating = Number(detail.rating) || 0
+            }
+          } catch (e) { /* 标签拿不到也不影响下载 */ }
+        }
         const r = await ipcRenderer.invoke('eh-download-gallery', {
-          url: book.url, title: book.title || book.title_jpn || '', cover: book.coverPath || '', original: !!original
+          url: book.url,
+          // 下载弹窗里改过的名字优先(它同时决定文件夹名);没给就按老规矩
+          title: String((opts && opts.title) || '').trim() || book.title || book.title_jpn || '',
+          cover: book.coverPath || '', original: !!original,
+          saveDir: String((opts && opts.saveDir) || '').trim(),
+          tags: tags || {}, category, titleJpn, rating
         })
         if (!r || !r.ok) { this.printMessage('error', (r && r.error) || this.$t('m.downloadFailed')); return }
         this.upsertDownloadRecord(r.task)
@@ -3116,8 +3974,16 @@ export default defineComponent({
     // 滚到底 / 翻页时再补下一页(在线「无限往下看」)
     async appendOnlinePageIfNeeded (force = false) {
       if (!this.onlineActive || this.onlineLoading || !this.onlineHasMore) return
+      // 改「每页数量」等操作期间先压住自动补页(见 handleSizeChange)
+      if (!force && this.suppressOnlineAppend) return
+      // 两次自动补页至少隔 600ms:滚动事件连发时不要连着打 EH(会看起来「一直加载」)
+      if (!force) {
+        const now = Date.now()
+        if (now - (this.onlineLastAppendAt || 0) < 600) return
+      }
       if (!force && this.renderedCount < this.visibleChunkDisplayBookList.length) return
       this.onlineLoading = true
+      this.onlineLastAppendAt = Date.now()
       try {
         const n = await this.appendEhPage()
         if (n) this.applyOnlineList()
@@ -3136,7 +4002,12 @@ export default defineComponent({
       if (!reset) {
         if (this.onlineItems.length) {
           this.applyOnlineList()
-          try { await this.fillOnlineUpTo((Number(this.currentPage) || 1) * (Number(this.setting.pageSize) || 42)) } catch (e) { /* 补页失败不影响已显示的内容 */ }
+          try {
+            const before = this.onlineItems.length
+            await this.fillOnlineUpTo((Number(this.currentPage) || 1) * (Number(this.setting.pageSize) || 42))
+            // 补到了新页:再 apply 一次,不然新取到的条目在界面上看不到(要等下次滚动)
+            if (this.onlineItems.length > before) this.applyOnlineList()
+          } catch (e) { /* 补页失败不影响已显示的内容 */ }
           return
         }
         if (this.restoreOnlineCache()) {
@@ -3170,7 +4041,8 @@ export default defineComponent({
         this.onlineLoading = false
       }
     },
-    openContentView (book) {
+    // startIndex:从第几页开始翻(0 基);点预览缩略图时传页面序号
+    openContentView (book, startIndex = null) {
       const viewer = this.$refs.InternalViewerRef
       if (!viewer || typeof viewer.viewManga !== 'function') {
         // 阅读器未就绪(或纯网页模式)时兜底:打开详细界面,避免"双击没反应"
@@ -3179,7 +4051,7 @@ export default defineComponent({
         return
       }
       viewer.showThumbnail = false
-      viewer.viewManga(book)
+      viewer.viewManga(book, '100%', startIndex)
     },
     openThumbnailView (book) {
       this.$refs.InternalViewerRef.showThumbnail = true
@@ -3235,6 +4107,11 @@ export default defineComponent({
 body
   margin: auto
   width: calc(100vw - 20px)
+  // 主界面自己滚(见 .book-card-area 的 overflow-y),窗口不再滚 ——
+  // 以前窗口滚,滚动条挂在浏览器最右边,下载记录栏一开就被隔在主界面外面,
+  // 看着像「主界面的滚动条和主界面分割开了」;而且惯性滚动/无限滚动/回到顶部
+  // 这些本来挂在 .book-card-area 上的逻辑也一直没真正生效(容器不可滚,写 scrollTop 无效)。
+  overflow: hidden
 #app
   font-family: Avenir, Helvetica, Arial, sans-serif
   text-align: center
@@ -3297,6 +4174,18 @@ html
   overscroll-behavior: contain
   -webkit-overflow-scrolling: touch
   will-change: scroll-position
+  // 主界面的滚动容器:卡片区自己滚,滚动条贴在这一栏的右缘(紧挨下载记录栏),
+  // 不再漂到浏览器窗口最右边。高度由里层 .book-card-list 的行内样式给定(100vh-96/134)。
+  overflow-y: auto
+  // ⚠ el-row 的 gutter 是「行负 margin + 列正 padding」做的:这一行因此比主界面宽 20px,
+  //    右侧那 10px 正好探到下载记录/侧边详细栏底下 —— 滚动条就画在这 10px 里,
+  //    一开右栏就被盖住(用户反馈「滚动条消失」)。把负 margin 收回来、列的内边距也归零,
+  //    卡片位置与原来完全一致,但滚动条落在主界面自己的框里,永远露在右栏左边。
+  margin-left: 0 !important
+  margin-right: 0 !important
+  > .book-card-list
+    padding-left: 0 !important
+    padding-right: 0 !important
   // 卡片跳过屏外渲染,大幅降低滚动掉帧(尺寸跟随封面设置)
   .book-card-frame
     content-visibility: auto
@@ -3835,18 +4724,112 @@ html.theme-custom
   body
     background-color: transparent
 
-.autocomplete-label.is-history
-  color: var(--el-color-primary)
-.autocomplete-label.is-clear
-  color: var(--el-color-info)
+// ============================================================
+// 搜索历史:在搜索建议弹层的**底部**横排成芯片(不再是竖着一行行往下排)
+// 弹层结构来自 el-autocomplete:header / 竖向建议列表 / footer,历史就放在 footer 里
+// ============================================================
+// ⚠️ 这里不要画分隔线:弹层里已经有搜索建议区和历史区两块背景,
+//    再加 border 会在毫厘之间多出两根横杠(用户反馈「上下两根横行占位置」)
+.search-history-panel
+  display: flex
+  flex-direction: column
+  // 不留上下空白:历史紧贴搜索建议区/弹层底边
+  gap: 0
+  padding: 6px 8px
+  background: var(--el-bg-color-overlay)
   font-size: 12px
-.autocomplete-del
-  margin-left: auto
-  padding: 0 4px
-  color: var(--el-text-color-placeholder)
-  cursor: pointer
-  &:hover
-    color: var(--el-color-danger)
+  line-height: 1
+  // 芯片横排:一行放不下就换行;高度按「4 排芯片」截断,再多就在这块里滚动
+  // (每排 22px 芯片 + 6px 间距 = 28;4 排 = 22*4 + 6*3 = 106)
+  .search-history-chips
+    display: flex
+    flex-wrap: wrap
+    align-items: flex-start
+    align-content: flex-start
+    gap: 6px
+    max-height: 106px
+    overflow-y: auto
+    overflow-x: hidden
+    // 滚动条做成一根极细的线(2px)。
+    // ⚠️ 不要写 scrollbar-width: thin —— Windows 上 Chromium 仍按 10px 渲染并吃掉布局宽度,
+    //    而且它会优先于 ::-webkit-scrollbar 的宽度设置;显式写 auto 才轮到 webkit 伪元素生效。
+    scrollbar-width: auto
+    &::-webkit-scrollbar
+      width: 2px
+      height: 2px
+    &::-webkit-scrollbar-track
+      background: transparent
+    &::-webkit-scrollbar-thumb
+      background: var(--el-border-color-lighter)
+      border-radius: 1px
+    &:hover::-webkit-scrollbar-thumb
+      background: var(--el-border-color)
+  .search-history-chip
+    flex: 0 0 auto
+    // 弹层跟搜索框等宽,搜索框窄时芯片也别超出容器(留出 ✕ 的位置)
+    max-width: 100%
+    cursor: pointer
+    user-select: none
+    // 芯片文字过长就省略,免得一条历史占掉半行
+    .el-tag__content
+      overflow: hidden
+      text-overflow: ellipsis
+      white-space: nowrap
+    &:hover
+      background: var(--el-color-primary-light-9)
+      border-color: var(--el-color-primary-light-5)
+    &.is-selected
+      background: var(--el-color-primary-light-8)
+      border-color: var(--el-color-primary)
+      color: var(--el-color-primary)
+  // 「清除」是滚动区里的最后一项:占满一整行、居中,记录多时要滑到底才出现
+  .search-history-foot
+    flex: 0 0 100%
+    display: flex
+    justify-content: center
+    align-items: center
+    margin-top: 2px
+  .search-history-clear
+    padding: 0 2px
+    height: auto
+    font-size: 12px
+    color: var(--el-text-color-secondary)
+    &:hover
+      color: var(--el-color-danger)
+
+// 搜索建议下拉(竖向列表只剩「标签建议」,历史在同一下拉的底部横排)
+// 只作用于搜索框自己的下拉,不影响设置页等其它 autocomplete
+.emm-search-suggest
+  // 宽度由 popper-style 写死成搜索框宽度;这里再兜一层,防止内部内容把它撑开
+  max-width: 100%
+  box-sizing: border-box
+  overflow-x: hidden
+  li
+    line-height: 24px
+    padding: 0 8px
+  // 占位项不显示任何内容(只为撑开弹层):那一行整行隐藏
+  // (stylus 不认 :has(),用插值原样输出选择器)
+  {unquote('li:has(.autocomplete-placeholder)')}
+    display: none
+    height: 0
+    min-height: 0
+    padding: 0
+    margin: 0
+    overflow: hidden
+  // 弹层底部那块历史:贴着底边,去掉 Element 默认的内边距让芯片区自己撑开
+  .el-autocomplete-suggestion__footer
+    padding: 0
+  .el-autocomplete-suggestion__wrap
+    max-height: 300px !important
+  // 弹层里的建议区/历史区都按弹层宽度布局,不允许撑宽。
+  // ⚠️ Element 会给 suggestion 写内联 min-width(缓存了弹出那一刻的输入框宽度),
+  //    窗口缩小后它还留着旧值,把弹层撑回去 —— 这里必须 !important 覆盖掉。
+  .el-autocomplete-suggestion
+    width: 100% !important
+    min-width: 0 !important
+    max-width: 100% !important
+    box-sizing: border-box
+    overflow-x: hidden
 
 .autocomplete-value
   margin-left: 2em
@@ -3859,6 +4842,13 @@ html.theme-custom
 .book-tag-edit-cascader-popper
   .el-cascader-menu__wrap.el-scrollbar__wrap
     height: 340px
+
+// 历史视图按「本地 / EH在线」筛选后为空时说一句
+.book-empty-hint
+  padding: 40px 0
+  text-align: center
+  font-size: 13px
+  color: var(--el-text-color-secondary)
 
 // 主界面 + 下载记录右栏:flex 并排,右栏可以拖宽
 .app-body
@@ -3882,7 +4872,7 @@ html.theme-custom
   border-left: 1px solid var(--el-border-color)
   background: var(--el-bg-color, #fff)
   overflow: hidden
-  // 拖宽的手柄:贴着左边缘的一条窄条
+  // 拖宽的手柄:贴着左边缘的一条窄条(不要高亮色,安安静静能拖就行)
   .download-panel-resizer
     position: absolute
     left: -3px
@@ -3891,25 +4881,37 @@ html.theme-custom
     width: 6px
     cursor: col-resize
     z-index: 5
-    &:hover
-      background: var(--el-color-primary-light-7)
   .download-panel-header
     display: flex
     align-items: center
-    justify-content: space-between
+    // 「下载记录」四个字和按钮在同一基线上(垂直居中),不换行
+    flex-wrap: nowrap
+    justify-content: flex-start
     gap: 8px
+    min-height: 32px
     padding-bottom: 8px
     font-size: 15px
+    line-height: 1
     .download-panel-title
+      flex: none
+      line-height: 1
       overflow: hidden
       text-overflow: ellipsis
       white-space: nowrap
       font-weight: 600
+    // 按钮多了就往左挤/裁掉,但不影响右边的返回箭头
     .download-panel-actions
       display: flex
       align-items: center
+      justify-content: flex-end
       gap: 2px
+      flex: 1 1 auto
+      min-width: 0
+      overflow: hidden
+    // 返回箭头:永远在最右
+    .download-panel-back
       flex: none
+      margin-left: auto
     .download-panel-progress
       flex: none
       font-size: 12px
@@ -3920,45 +4922,79 @@ html.theme-custom
     flex: 1
     min-height: 0
     overflow-y: auto
-  .download-cover-wrap
-    position: relative
-    flex: none
-    cursor: pointer
-    &:hover .download-cover-zoom
-      opacity: 1
-  .download-cover-zoom
-    position: absolute
-    right: 2px
-    bottom: 2px
-    font-size: 12px
-    opacity: 0
-    transition: opacity .15s
-  // 预览网格:下好的出图,没下好的空白 + 转圈
+  // 预览网格:整本每一页都占一格 —— 下好的出图,没下好的显示进度/失败
   .download-preview
     display: grid
     grid-template-columns: repeat(auto-fill, minmax(88px, 1fr))
     gap: 6px
     align-content: start
   .download-preview-item
+    position: relative
     aspect-ratio: 3 / 4
+    // 兜底:万一本机 Chromium 不认 aspect-ratio(或图片还没解码),
+    // 格子高度也不会塌成 0 —— 高度一塌,所有图就会全叠在同一行(用户反馈的现象)。
+    min-height: 118px
     border-radius: 6px
     overflow: hidden
     background: var(--el-fill-color-light)
+    border: 1px solid transparent
+    box-sizing: border-box
+    // 未下好的格子要能一眼看出「这里还空着」,而不是和背景糊成一片
+    &:not(.is-ready)
+      background: var(--el-fill-color-lighter, var(--el-fill-color-light))
+      border-color: var(--el-border-color-lighter, var(--el-border-color))
+    &.is-failed
+      border-color: var(--el-color-danger-light-5, var(--el-color-danger))
     img
+      position: absolute
+      inset: 0
       width: 100%
       height: 100%
       object-fit: cover
       display: block
+      cursor: pointer
   .download-preview-blank
-    width: 100%
-    height: 100%
+    position: absolute
+    inset: 0
     display: flex
     flex-direction: column
     align-items: center
     justify-content: center
-    gap: 4px
+    gap: 2px
+    padding: 2px
+    box-sizing: border-box
     font-size: 11px
+    line-height: 1.25
     color: var(--el-text-color-placeholder)
+    text-align: center
+    overflow: hidden
+    .download-preview-page
+      display: block
+      font-size: 13px
+      font-weight: 600
+      line-height: 1.25
+      font-variant-numeric: tabular-nums
+      color: var(--el-text-color-secondary)
+    .download-preview-state
+      display: block
+      font-size: 10px
+      line-height: 1.2
+      font-variant-numeric: tabular-nums
+      opacity: .9
+    .is-failed &
+      color: var(--el-color-danger)
+      .download-preview-page
+        color: var(--el-color-danger)
+    // 下好了但加载失败:可点的重试占位
+    &.is-imgfailed
+      cursor: pointer
+      color: var(--el-color-warning)
+      .download-preview-page
+        color: var(--el-color-warning)
+      &:hover
+        border-color: var(--el-color-warning)
+  // 任务列表:整体是列表模式(一行一条:左封面 + 右信息);
+  // 封面照 JHenTai 网格模式显示进度/状态(没下完:模糊+压暗+圆环+页码+中央状态按钮)
   .download-list
     display: flex
     flex-direction: column
@@ -3974,64 +5010,271 @@ html.theme-custom
     text-align: center
     font-size: 13px
     color: var(--el-text-color-secondary)
+  // 一行一条(列表模式);右侧空白带留着放 X(右上角)和垃圾桶(右侧中间)
   .download-item
+    position: relative
     display: flex
+    align-items: flex-start
     gap: 10px
-    padding: 8px
+    // 右侧留出 X / 移动 / 垃圾桶那一条竖轴
+    padding: 8px 34px 8px 8px
     border-radius: 8px
     background: var(--el-fill-color-light)
-  .download-cover
-    width: 46px
-    height: 62px
-    object-fit: cover
-    border-radius: 4px
+  // 右上角 X = 删除记录
+  .download-item-close
+    position: absolute
+    top: 4px
+    right: 4px
+    z-index: 6
+    padding: 4px
+    margin: 0
+    color: var(--el-text-color-secondary)
+    &:hover
+      color: var(--el-color-danger)
+  // 移动(垃圾桶上方):把这一本移到本地库文件夹
+  .download-item-move
+    position: absolute
+    right: 4px
+    top: 32px
+    z-index: 6
+    padding: 4px
+    margin: 0
+  // 红色垃圾桶 = 删除记录和文件:和 X/移动同一个 right;竖直方向贴底,
+  // 和行底那条进度条在同一水平线上
+  .download-item-trash
+    position: absolute
+    right: 4px
+    bottom: 8px
+    z-index: 6
+    padding: 4px
+    margin: 0
+  // 列表里的封面:字号小一圈,圆环/页码/状态按钮都按小封面排
+  .download-card-cover
+    position: relative
     flex: none
-    &.download-cover-empty
+    width: 84px
+    // ⚠ 必须 align-self: flex-start —— 行里内容(标题/标签/时间/进度条)变高时,
+    //    flex 默认 stretch 会把封面竖着拉长,3:4 的比例就废了(封面变成一根长条灰块)
+    align-self: flex-start
+    aspect-ratio: 3 / 4
+    // 兜底:个别 Chromium 不认 aspect-ratio 时高度也不会塌成 0
+    min-height: 100px
+    border-radius: 6px
+    overflow: hidden
+    background: var(--el-fill-color-light)
+    cursor: pointer
+    transition: box-shadow .15s ease
+    &:hover
+      box-shadow: 0 0 0 2px var(--el-color-primary-light-5, var(--el-color-primary))
+    > img
+      position: absolute
+      inset: 0
+      width: 100%
+      height: 100%
+      object-fit: cover
+      display: block
+    // 还没下完:封面照 JHenTai 网格模式做模糊(配下面的压暗遮罩,「没下好」一眼能看出)
+    &.is-pending > img
+      filter: blur(1px) brightness(.95)
+    .download-card-cover-empty
+      position: absolute
+      inset: 0
       background: var(--el-fill-color-dark)
+    // 没下完:压暗遮罩
+    .download-card-mask
+      position: absolute
+      inset: 0
+      z-index: 2
+      // 别压太黑:45% 的时候封面几乎看不出内容,用户会以为「封面没显示」
+      background: rgba(0, 0, 0, .26)
+    // 中央:圆环进度(居中)+ 状态按钮(嵌在圆环中间)+ 圆环下页码
+    .download-card-overlay
+      position: absolute
+      inset: 0
+      z-index: 3
+      display: flex
+      flex-direction: column
+      align-items: center
+      justify-content: center
+      gap: 2px
+      .download-card-ringwrap
+        position: relative
+        width: 40px
+        height: 40px
+        display: flex
+        align-items: center
+        justify-content: center
+        .el-progress
+          width: 40px
+          height: 40px
+          line-height: 0
+          // 轨道淡一点、进度弧用白色:压暗的封面上白圈最干净(和 JHenTai 一致)
+          .el-progress-circle__track
+            stroke: rgba(255, 255, 255, .22)
+          .el-progress-circle__path
+            stroke: #fff
+        // 状态按钮:plain span(不是 el-button,避免它自带的圆形 chrome 和圆环叠成两个圈)。
+        // 用 inset:0 + margin:auto 居中(比 50%/translate 稳,不受字体行高影响)
+        .download-card-action
+          position: absolute
+          inset: 0
+          margin: auto
+          width: 30px
+          height: 30px
+          display: inline-flex
+          align-items: center
+          justify-content: center
+          border-radius: 50%
+          color: #fff
+          cursor: pointer
+          &:hover
+            background: rgba(0, 0, 0, .35)
+      .download-card-count
+        font-size: 10px
+        line-height: 1.2
+        color: #fff
+        text-shadow: 0 1px 2px rgba(0, 0, 0, .85)
+        font-variant-numeric: tabular-nums
+  // 右侧信息:标题 / 中间标签行 / 底部(时间 + 细进度条)
   .download-body
     flex: 1
     min-width: 0
     display: flex
     flex-direction: column
     gap: 4px
+    // 和封面一样高(84*4/3=112):foot 贴底后,进度条正好和封面底边在同一条水平线上
+    height: 112px
+    overflow: hidden
+  // 标题:靠左,最多两行;可点击(与主界面点标题一样开详情)
   .download-title
     font-size: 13px
     line-height: 1.3
+    text-align: left
     overflow: hidden
-    display: -webkit-box
-    -webkit-line-clamp: 2
-    -webkit-box-orient: vertical
+    white-space: nowrap
+    text-overflow: ellipsis
+    cursor: pointer
+    flex: none
+    &:hover
+      color: var(--el-color-primary)
+  // 中间标签行:原图标签 · 状态
   .download-meta
     display: flex
     align-items: center
     gap: 6px
     font-size: 12px
     color: var(--el-text-color-secondary)
-  .download-pill
-    padding: 0 4px
-    border-radius: 3px
-    background: var(--el-color-primary-light-9)
-    color: var(--el-color-primary)
-  .download-error
-    font-size: 12px
-    line-height: 1.4
-    color: var(--el-color-danger)
-    word-break: break-all
-  .download-hint-inline
-    font-size: 12px
-    color: var(--el-color-warning)
-  .download-status.is-done
-    color: var(--el-color-success)
-  .download-status.is-failed
-    color: var(--el-color-danger)
-  .download-failed
-    color: var(--el-color-danger)
-  .download-actions
+    min-width: 0
+    overflow: hidden
+    .download-pill
+      padding: 0 4px
+      border-radius: 3px
+      background: var(--el-color-primary-light-9)
+      color: var(--el-color-primary)
+      flex: none
+    // 失败页数:从封面上挪过来的,红色小徽标
+    .download-fail-chip
+      padding: 0 4px
+      border-radius: 3px
+      background: var(--el-color-danger-light-9)
+      color: var(--el-color-danger)
+      flex: none
+      font-variant-numeric: tabular-nums
+    // 进度:done/total(收链接阶段是「正在收集页链接:N 页…」)
+    .download-count
+      flex: none
+      font-variant-numeric: tabular-nums
+    // 已移走:替代状态文字(绿字)
+    .download-moved
+      flex: none
+      color: var(--el-color-success)
+  // 漫画标签:照 JHenTai 列表 —— 浅底小方块,自动换行,全部显示
+  .download-tags
+    display: flex
+    flex-wrap: wrap
+    gap: 4px
+    min-width: 0
+    margin-top: 1px
+    // 最多显示两行,剩下的裁掉(行高由封面定住)
+    max-height: 40px
+    overflow: hidden
+    .download-tag
+      padding: 0 5px
+      border-radius: 4px
+      font-size: 11px
+      line-height: 18px
+      color: var(--el-text-color-regular)
+      background: var(--el-fill-color-light)
+      white-space: nowrap
+      cursor: pointer
+      transition: background .12s ease, color .12s ease
+      &:hover
+        background: var(--el-color-primary-light-9, var(--el-fill-color))
+        color: var(--el-color-primary)
+      // 分类标签(JHenTai 里那个 Misc)用灰底深色字
+      &.is-cat
+        background: var(--el-fill-color-dark)
+        color: var(--el-text-color-secondary)
+    .download-status
+      flex: none
+      &.is-done
+        color: var(--el-color-success)
+      &.is-failed
+        color: var(--el-color-danger)
+  // 底部:右下角时间(进度条上方)+ 细进度条(失败不变红;done 才用 success 绿)
+  .download-foot
+    margin-top: auto
     display: flex
     flex-direction: column
-    align-items: flex-end
     gap: 2px
-    flex: none
+    .download-card-time
+      align-self: flex-end
+      font-size: 11px
+      line-height: 1.2
+      color: var(--el-text-color-secondary)
+      font-variant-numeric: tabular-nums
+  .download-bar-row
+    display: flex
+    align-items: center
+    gap: 6px
+    .download-thin-bar
+      flex: 1
+      min-width: 0
+    // 感叹号:错误信息只从这里出 —— 悬浮显示,点击钉住;弹层绝对定位在图标上方
+    .download-warn-wrap
+      position: relative
+      flex: none
+      display: inline-flex
+      line-height: 0
+      .download-card-warn
+        color: var(--el-color-warning)
+        cursor: pointer
+        font-size: 15px
+        line-height: 1
+      .download-warn-pop
+        position: absolute
+        bottom: calc(100% + 6px)
+        right: 0
+        width: 240px
+        box-sizing: border-box
+        padding: 8px 10px
+        border-radius: 6px
+        font-size: 12px
+        line-height: 1.5
+        color: var(--el-text-color-primary)
+        background: var(--el-bg-color-overlay, #fff)
+        border: 1px solid var(--el-border-color)
+        box-shadow: var(--el-box-shadow-light, 0 2px 12px rgba(0, 0, 0, .12))
+        white-space: normal
+        word-break: break-all
+        z-index: 30
+
+// 「移动到本地库」弹窗里选中路径的提示
+.move-dialog-hint
+  margin-top: 8px
+  font-size: 12px
+  color: var(--el-text-color-secondary)
+  word-break: break-all
 
 // 种子列表
 .torrent-list

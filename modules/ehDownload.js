@@ -99,14 +99,44 @@ const runGalleryDownload = async ({
     if (linkStats.lastEmpty) throw new Error('linksFailed: ' + linkStats.lastEmpty)
     throw new Error('noPages')
   }
-  // 目录名:EH 画廊 url 里的 gid + 清理过的标题(JHenTai: `{gid} - {title}`)
+  // 目录名:默认**只用清理过的标题**(用户要的:不要 `4264378 - ` 这种前缀)。
+  // 只有「同名目录已经存在」时才加 gid 前缀区分,避免两本同名漫画下进同一个文件夹。
+  // 另外:如果这本以前已经按 `{gid} - {title}` 下过(断点续传),继续用老目录,不要新建一份。
   const gidMatch = /\/g\/(\d+)\//.exec(galleryUrl)
-  const dirName = (gidMatch ? gidMatch[1] + ' - ' : '') + sanitizeName(title)
+  const gid = gidMatch ? gidMatch[1] : ''
+  const plainName = sanitizeName(title)
+  const prefixedName = gid ? gid + ' - ' + plainName : plainName
+  let dirName = plainName
+  try {
+    if (gid && fs.existsSync(path.join(saveDir, prefixedName))) {
+      dirName = prefixedName            // 老目录(以前带 gid 下过)→ 续传
+    } else if (fs.existsSync(path.join(saveDir, plainName))) {
+      // 同名目录已存在:看是不是本画廊自己的(页文件名一致就当是),否则加 gid 区分
+      const own = fs.existsSync(path.join(saveDir, plainName, '001.jpg')) ||
+        fs.existsSync(path.join(saveDir, plainName, '001.webp')) ||
+        fs.existsSync(path.join(saveDir, plainName, '001.png'))
+      dirName = own ? plainName : prefixedName
+    }
+  } catch (e) { /* 读不了目录就当不存在 */ }
   const dir = path.join(saveDir, dirName)
   fs.mkdirSync(dir, { recursive: true })
 
   const total = links.length
-  const update = { total, done: 0, failed: 0, bytes: 0 }
+  // 断点续传的初始计数:**先把目录里已下好的页数出来**,让进度从真实值开始。
+  // 以前是边扫边数:继续下载后 done 先从 0 往上爬,界面进度条先掉到 0 再回来(用户看到的「短暂失灵」)。
+  let existingDone = 0
+  let existingBytes = 0
+  try {
+    if (fs.existsSync(dir)) {
+      for (const f of fs.readdirSync(dir)) {
+        if (!/^0*\d+\./.test(f)) continue
+        const st = fs.statSync(path.join(dir, f))
+        if (st.size > 0) { existingDone += 1; existingBytes += st.size }
+      }
+    }
+  } catch (e) { /* 读不了就按 0 开始,不影响下载 */
+  }
+  const update = { total, done: existingDone, failed: 0, bytes: existingBytes }
   onProgress({ ...update, dir })
 
   const pad = String(total).length
@@ -118,13 +148,15 @@ const runGalleryDownload = async ({
       const index = i + 1
       const name = String(index).padStart(pad, '0')
       try {
-        // 断点续传:这一页的文件已经下好了(非空)就跳过 —— 暂停后再继续不用从头再来
+        // 断点续传:这一页的文件已经下好了(非空)就跳过 —— 暂停后再继续不用从头再来。
+        // ⚠️ 这里**不能再** update.done += 1:启动时已经预扫过一遍全部已下好的页(见 existingDone),
+        //    再加一次就会重复计数,done 很快超过 total。
         const existing = fs.existsSync(dir)
           ? fs.readdirSync(dir).find(f => f.startsWith(name + '.') && /^0*\d+\./.test(f))
           : null
         if (existing) {
           const st = fs.statSync(path.join(dir, existing))
-          if (st.size > 0) { update.done += 1; update.bytes += st.size; onProgress({ ...update, dir }); continue }
+          if (st.size > 0) { onProgress({ ...update, dir }); continue }
         }
         // 取图 + 下载;失败就按 JHenTai 的办法「重取一次图片页」换一个 H@H 节点重试
         // (实测:同一本里奇数页所在的节点 TLS 直接断,重取后就落到能用的节点上)

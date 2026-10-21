@@ -102,11 +102,20 @@ COPY fileLoader ./fileLoader
 #   WEB_PORT      网页服务端口(web-server.js,默认 10000)
 # 注:桌面版的「局域网浏览 API / 托盘 / 最小化」等功能在网页版中已移除
 # (网页版本身就是通过浏览器/局域网访问的)。
+# 容器模式总开关:代码用它判断「用 pathWeb 还是 path」,并做跨端路径互译。
+# 以前只有 compose 里给,单纯用镜像建容器就会缺 → 应用当自己是桌面端,封面/阅读全 404。
 ENV WEB_MODE=1 \
     WEB_DATA_DIR=/data \
     LIBRARY_DIR=/library \
+    WEB_LIBRARY=/library \
     WEB_PORT=10000 \
     NODE_ENV=production
+
+# 文字封面(txt / 无图 epub)要在后端把书名渲染成图片:容器里必须有 fontconfig 配置 + 字体,
+# 否则 librsvg 找不到字体,中文全部变成方块(用户看到的「封面字体看不清」)。
+COPY docker/fonts/fonts.conf /etc/fonts/fonts.conf
+COPY docker/fonts/DejaVuSans.ttf /usr/share/fonts/truetype/emm/DejaVuSans.ttf
+COPY docker/fonts/DroidSansFallbackFull.ttf /usr/share/fonts/truetype/emm/DroidSansFallbackFull.ttf
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

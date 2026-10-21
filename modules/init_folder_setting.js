@@ -5,14 +5,75 @@ const { AsyncLocalStorage } = require('async_hooks')
 const { getRootPath } = require('./utils.js')
 
 
+const WEB_MODE = process.env.WEB_MODE === '1'
+const rootPath = getRootPath()
+// 桌面版默认数据目录 = 当前安装目录下的 data(不再写死 D:\exhentai-manga-manager)。
+// 这样装在 C: / 其它盘时,数据跟着安装位置走;网页版仍用 WEB_DATA_DIR,不受影响。
+const DEFAULT_DATA_PATH = (!WEB_MODE && app.isPackaged)
+  ? path.join(rootPath, 'data')
+  : app.getPath('userData')
+const LEGACY_DEFAULT_DATA_PATH = 'D:\\exhentai-manga-manager'
+const samePath = (a, b) => {
+  if (!a || !b) return false
+  try { return path.resolve(String(a)).toLowerCase() === path.resolve(String(b)).toLowerCase() } catch { return false }
+}
+const isLegacyDefaultDataPath = (p) => {
+  if (!p) return false
+  if (samePath(p, LEGACY_DEFAULT_DATA_PATH)) return true
+  if (!WEB_MODE && samePath(p, rootPath)) return true
+  return false
+}
+const looksLikeDataDir = (dir) => {
+  try {
+    const names = fs.readdirSync(dir)
+    return names.some(n => /^setting(\..+)?\.json$/.test(n))
+      || names.includes('libraries.json')
+      || names.includes('metadata.sqlite')
+      || names.includes('database.sqlite')
+  } catch { return false }
+}
+// 把旧版留在「安装目录根」上的用户数据搬进 <安装目录>/data。
+// 只搬明确的数据文件/目录,绝不碰程序文件;目标已存在就跳过,不覆盖。
+const migrateLegacyRootData = (from, to) => {
+  if (!from || !to || samePath(from, to)) return 0
+  if (!looksLikeDataDir(from) || looksLikeDataDir(to)) return 0
+  try { fs.mkdirSync(to, { recursive: true }) } catch { return 0 }
+  let moved = 0
+  const moveOne = (name) => {
+    const src = path.join(from, name)
+    const dst = path.join(to, name)
+    try {
+      if (!fs.existsSync(src) || fs.existsSync(dst)) return
+      try {
+        fs.renameSync(src, dst)
+      } catch {
+        // 跨卷/被占用:复制过去,原文件保留(不删,避免误删用户数据)
+        fs.cpSync(src, dst, { recursive: true })
+      }
+      moved += 1
+    } catch (e) {
+      console.log('[data-path] 迁移', name, '失败:', String((e && e.message) || e))
+    }
+  }
+  try {
+    for (const n of fs.readdirSync(from)) if (/^setting(\..+)?\.json$/.test(n)) moveOne(n)
+  } catch { /* 读不到就算了 */ }
+  for (const n of [
+    'libraries.json', 'users.json', 'sessions.json', 'collectionList.json', 'downloads.json',
+    'metadata.sqlite', 'metadata.sqlite-journal', 'database.sqlite', 'database.sqlite-journal',
+    'scan-snapshot.json', 'delete-log.jsonl', 'nas-session.json', 'log.txt',
+    'cover', 'viewcache', 'models', 'custom-assets', 'upscaled', 'libraries', '.trash',
+  ]) moveOne(n)
+  return moved
+}
+
 let STORE_PATH = app.getPath('userData')
 if (!fs.existsSync(STORE_PATH)) {
-  fs.mkdirSync(STORE_PATH)
+  fs.mkdirSync(STORE_PATH, { recursive: true })
 }
-const rootPath = getRootPath()
 let isPortable = false
 // 自定义数据目录(设置 → 常用 → 本地模式 → 数据文件位置):
-// 记录在 userData/bootstrap.json,优先级最高(高于便携模式)
+// 记录在 userData/bootstrap.json,优先级最高(高于默认目录)
 const bootstrapFile = path.join(app.getPath('userData'), 'bootstrap.json')
 let bootstrapConfig = {}
 try {
@@ -21,6 +82,13 @@ try {
   bootstrapConfig = {}
 }
 let customDataPath = bootstrapConfig.dataPath || null
+let legacyCustomDataPath = false
+// 旧版把数据目录写死成 D:\exhentai-manga-manager(或直接写成安装目录根)。
+// 这不是用户真正选的自定义目录,忽略它,改走新的 <安装目录>/data。
+if (customDataPath && !WEB_MODE && isLegacyDefaultDataPath(customDataPath)) {
+  legacyCustomDataPath = true
+  customDataPath = null
+}
 // 自定义数据目录不可用时的降级记录:交给 index.js 明确告知用户,并且**不迁移/不落盘**,
 // 避免像以前那样「静默换目录」把默认目录里的旧数据当成真数据(用户会以为数据丢了)
 let dataPathFallback = null
@@ -36,7 +104,37 @@ if (customDataPath) {
     }
     console.log('[data-path] 自定义数据目录不可用:', dataPathFallback.error, '→ 本次临时使用:', STORE_PATH)
   }
+} else if (!WEB_MODE && app.isPackaged) {
+  try {
+    fs.mkdirSync(DEFAULT_DATA_PATH, { recursive: true })
+    fs.accessSync(DEFAULT_DATA_PATH, fs.constants.W_OK)
+    STORE_PATH = DEFAULT_DATA_PATH
+    isPortable = true
+    const moved = migrateLegacyRootData(rootPath, DEFAULT_DATA_PATH)
+    if (moved) console.log('[data-path] 已把旧安装目录里的', moved, '项用户数据迁移到:', DEFAULT_DATA_PATH)
+    if (legacyCustomDataPath) {
+      // 把 bootstrap 里的旧 D:\ 值清掉(保留配置名),下次启动直接走默认目录
+      try {
+        fs.writeFileSync(bootstrapFile, JSON.stringify({
+          dataPath: '',
+          profile: String(bootstrapConfig.profile || ''),
+        }, null, '  '), 'utf-8')
+      } catch { /* 写不了就算了,启动时会再次忽略旧值 */ }
+    }
+  } catch (e) {
+    // 安装目录不可写(例如装进 Program Files):退回 userData,并把旧数据一起迁过去
+    const fallback = app.getPath('userData')
+    dataPathFallback = {
+      configured: DEFAULT_DATA_PATH,
+      actual: fallback,
+      error: String((e && e.message) || e)
+    }
+    console.log('[data-path] 安装目录不可写:', dataPathFallback.error, '→ 本次使用:', fallback)
+    STORE_PATH = fallback
+    migrateLegacyRootData(rootPath, fallback)
+  }
 } else {
+  // 网页版 / 开发模式:保持原有逻辑(网页版优先 WEB_DATA_DIR)
   try {
     const dataPath = path.join(rootPath, 'data')
     fs.accessSync(dataPath)
@@ -182,8 +280,23 @@ const prepareSetting = () => {
     // 否则设置界面里对应输入框是空白的(功能本身会用默认值跑)
     if (setting.scanConcurrency === undefined) setting.scanConcurrency = 4
     if (setting.coverConcurrency === undefined) setting.coverConcurrency = 4
+    let needSaveSetting = false
     if (setting.imageExplorer === '"C:\\Windows\\explorer.exe"') {
       setting.imageExplorer = _mange_reader
+      needSaveSetting = true
+    }
+    try {
+      // 旧版把图片浏览器路径写成了安装目录里的绝对路径;换盘/换安装目录后它会失效。
+      // 只要它指向本项目的 manga_reader.exe 且文件不在了,就改回当前安装目录里的那个。
+      const rawExplorer = String(setting.imageExplorer || '').replace(/^"|"$/g, '')
+      if (rawExplorer
+        && /exhentai-manga-manager[\\/]resources[\\/]extraResources[\\/]manga_reader\.exe$/i.test(rawExplorer)
+        && !fs.existsSync(rawExplorer)) {
+        setting.imageExplorer = _mange_reader
+        needSaveSetting = true
+      }
+    } catch { /* 只是路径修正,失败不影响启动 */ }
+    if (needSaveSetting) {
       fs.writeFileSync(getSettingFilePath(), JSON.stringify((() => { const o = { ...setting }; for (const k of LIBRARY_CONFIG_KEYS) delete o[k]; return o })(), null, '  '), { encoding: 'utf-8' })
     }
   } catch {
@@ -229,6 +342,16 @@ const prepareSetting = () => {
       requireGap: 3000,
       thumbnailColumn: 10,
       showTranslation: false,
+      // 目标语言标签:标签名按该语言显示(中/繁/英/日)
+      tagTargetLang: '',
+      // 标签多语言名称:{ '分类::标签': { default, 'zh-CN', 'zh-TW', ja, en } }
+      tagNameLangs: {},
+      // 标签关联:{ '分类::标签': { contains: ['分类2::标签2', ...] } }
+      tagRelations: {},
+      // 标签类别的显示顺序(设置 → 标签设置里拖动调整;影响设置页分组与详细信息里的标签分类顺序)
+      tagCatOrder: [],
+      // 类别本身的多语言名称:{ '分类': { 'zh-CN', 'zh-TW', ja, en } }
+      tagCatNameLangs: {},
       theme: 'light e-hentai',
       widthLimit: undefined,
       directEnter: 'detail',
@@ -379,6 +502,7 @@ const prepareCollectionList = () => {
 
 module.exports = {
   STORE_PATH,
+  DEFAULT_DATA_PATH,
   isPortable,
   TEMP_PATH,
   COVER_PATH,

@@ -36,6 +36,16 @@
                 <template #prepend><span class="setting-label">{{$t('m.libraryDataPath')}}</span></template>
                 <template #append><el-button @click="selectLibraryDataPath(lib)">{{$t('m.select')}}</el-button></template>
               </el-input>
+              <!-- 重建这个库(只清这个库的书架数据/封面,磁盘上的漫画不动) -->
+              <el-popconfirm
+                placement="top-start"
+                :title="$t('m.rebuildOneWarn', { name: lib.name })"
+                @confirm="rebuildLibraryOf(lib)"
+              >
+                <template #reference>
+                  <el-button class="library-rebuild-btn" plain :icon="MdRefresh" :loading="libraryBusy" :title="$t('m.rebuildLibrary')">{{ $t('m.rebuildShort') }}</el-button>
+                </template>
+              </el-popconfirm>
               <!-- 删除按钮在最右边(只从列表移除,不动磁盘文件) -->
               <el-button class="library-remove-btn" type="danger" plain :icon="Delete" :title="$t('m.libraryRemove')" @click="removeLibraryRow(lib)" />
             </div>
@@ -361,17 +371,37 @@
         <el-row :gutter="8">
           <!-- 当前库中的全部标签:分类在上,标签在下;点击收藏、色点改色、双击重命名 -->
           <el-col :span="24" class="setting-line collect-tag">
-            <div class="context-menu-title">{{$t('m.allTags')}}</div>
-            <div class="tag-cat-list">
-              <el-tag
-                v-for="g in allTagsGroups"
-                :key="g.cat"
-                class="tag-cat-chip"
-                :effect="selectedTagCat === g.cat ? 'dark' : 'plain'"
-                :type="selectedTagCat === g.cat ? 'primary' : 'info'"
-                @click="selectedTagCat = selectedTagCat === g.cat ? null : g.cat"
-              >{{ categoryLabel(g.cat) }} ({{ g.tags.length }})</el-tag>
+            <div class="tag-cat-header">
+              <span class="context-menu-title">{{$t('m.tagCatSet')}}</span>
+              <el-space>
+                <el-button size="small" type="success" plain @click="openAddTagDialog()">{{$t('m.addNewTag')}}</el-button>
+                <el-button size="small" plain @click="openAddCategoryDialog">{{$t('m.tagCatAdd')}}</el-button>
+              </el-space>
             </div>
+            <!-- 类别标签:可拖动排序,顺序存 setting.tagCatOrder,并决定详细信息里标签分类的上下顺序 -->
+            <draggable
+              v-model="orderedTagCats"
+              item-key="cat"
+              animation="200"
+              class="tag-cat-list"
+              @change="onTagCatOrderChange"
+            >
+              <template #item="{ element: g }">
+                <el-tag
+                  class="tag-cat-chip"
+                  :effect="selectedTagCat === g.cat ? 'dark' : 'plain'"
+                  :type="selectedTagCat === g.cat ? 'primary' : 'info'"
+                  :title="$t('m.editTagNames')"
+                  @click="onTagCatClick(g)"
+                  @dblclick="onTagCatDblClick(g)"
+                >
+                  <span class="tag-cat-drag" @click.stop>⠿</span>{{ categoryDefaultName(g.cat) }}
+                  <span class="tag-cat-count">{{ g.tags.length }}</span>
+                </el-tag>
+              </template>
+            </draggable>
+            <div class="setting-hint">{{$t('m.tagCatOrderHint')}}</div>
+            <div class="setting-hint">{{$t('m.allTagsHint')}}</div>
             <div class="all-tags-list">
               <template v-for="g in allTagsGroups" :key="g.cat">
                 <div v-if="!selectedTagCat || selectedTagCat === g.cat" class="tag-group">
@@ -425,7 +455,7 @@
               <template #item="{element}">
                 <el-tag :color="element.color" effect="dark" closable @close="removeTag(element.id)">
                   <span class="tag-color-dot" :style="{background: element.color}" @click.stop="pickTagColor(element)"></span>
-                  {{element.letter}}:{{resolvedTranslation[element.cat]?.[element.tag]?.name || element.tag}}
+                  {{element.letter}}:{{ getDisplayTagName(setting, resolveCatKey(element.cat), element.tag) || resolvedTranslation[resolveCatKey(element.cat)]?.[element.tag]?.name || element.tag }}
                 </el-tag>
               </template>
             </draggable>
@@ -473,24 +503,62 @@
             </el-select>
           </el-col>
 </el-row>
-        <!-- 双击标签:编辑多语言名称(中/日/英),按「目标语言标签」显示 -->
-        <el-dialog v-model="tagEditVisible" :title="$t('m.editTagNames')" width="380px" append-to-body>
+        <!-- 添加类别:建立一个新的空类别,之后可以往里加标签 -->
+        <el-dialog v-model="addCategoryVisible" :title="$t('m.tagCatAdd')" width="360px" append-to-body>
+          <el-input
+            v-model="addCategoryName"
+            :placeholder="$t('m.tagCatAddPlaceholder')"
+            @keyup.enter="createCategory"
+          />
+          <div class="setting-hint" v-if="addCategoryName && !canAddCategory">{{$t('m.tagCatExists')}}</div>
+          <template #footer>
+            <el-button size="small" @click="addCategoryVisible = false">{{ $t('m.cancel') }}</el-button>
+            <el-button size="small" type="primary" :disabled="!canAddCategory" @click="createCategory">{{ $t('m.apply') }}</el-button>
+          </template>
+        </el-dialog>
+        <!-- 添加标签:选类别 + 输入名称 -->
+        <el-dialog v-model="addTagVisible" :title="$t('m.addNewTag')" width="380px" append-to-body>
+          <el-select v-model="addTagCat" :placeholder="$t('m.category')" style="width: 100%; margin-bottom: 10px;">
+            <el-option v-for="g in allTagsGroups" :key="g.cat" :label="categoryLabel(g.cat)" :value="g.cat" />
+          </el-select>
+          <el-input
+            v-model="addTagName"
+            :placeholder="$t('m.tagNamePlaceholder')"
+            @keyup.enter="createGlobalTag"
+          />
+          <div class="setting-hint" v-if="addTagName && !canAddTag">{{$t('m.tagExistsHint')}}</div>
+          <template #footer>
+            <el-button size="small" @click="addTagVisible = false">{{ $t('m.cancel') }}</el-button>
+            <el-button size="small" type="primary" :disabled="!canAddTag" @click="createGlobalTag">{{ $t('m.apply') }}</el-button>
+          </template>
+        </el-dialog>
+        <!-- 双击标签/类别:编辑多语言名称,按「语言」下拉选定的语言显示 -->
+        <el-dialog v-model="tagEditVisible" :title="tagEditIsCategory ? $t('m.tagCatEditNames') : $t('m.editTagNames')" width="380px" append-to-body>
           <div class="tag-name-editor">
-            <p class="tag-edit-raw">{{ tagEditItem ? (tagEditItem.cat + ' : ' + tagEditItem.tag) : '' }}</p>
+            <p class="tag-edit-raw">{{ tagEditTitle }}</p>
+            <!-- 默认名称排在最上面:显示时「选了语言但该语言没填」就回退到这个名称 -->
             <el-input v-model="tagEditLangs['default']" size="small" :placeholder="$t('m.tagNameDefault')" />
             <el-input v-model="tagEditLangs['zh-CN']" size="small" :placeholder="$t('m.tagNameZh')" />
             <el-input v-model="tagEditLangs['zh-TW']" size="small" :placeholder="$t('m.tagNameZhTw')" />
             <el-input v-model="tagEditLangs.ja" size="small" :placeholder="$t('m.tagNameJa')" />
             <el-input v-model="tagEditLangs.en" size="small" :placeholder="$t('m.tagNameEn')" />
           </div>
-          <!-- 关联标签:包含 / 被包含 -->
-          <div class="tag-relation-editor">
+          <!-- 关联标签:包含 / 被包含。类别是最大的分类,不参与包含关系,所以只在编辑标签时显示 -->
+          <div class="tag-relation-editor" v-if="!tagEditIsCategory">
             <div class="tag-relation-title">{{ $t('m.tagRelations') }}</div>
             <div class="tag-relation-add">
               <el-select v-model="tagRelationCat" size="small" :placeholder="$t('m.pickCategory')" style="width: 104px;">
                 <el-option v-for="c in tagRelationCats" :key="c.value" :label="c.label" :value="c.value" />
               </el-select>
-              <el-select v-model="tagRelationPick" size="small" filterable clearable :placeholder="$t('m.pickTag')" style="width: 156px;">
+              <!-- 「选择标签」:点击才弹出下拉;下拉里的标签横排铺开(与详细信息里标签的排版一致) -->
+              <el-select
+                v-model="tagRelationPick"
+                size="small"
+                clearable
+                style="width: 156px;"
+                popper-class="tag-relation-dropdown"
+                :placeholder="$t('m.pickTag')"
+              >
                 <el-option v-for="o in tagRelationOptions" :key="o.value" :label="o.label" :value="o.value" />
               </el-select>
               <el-select v-model="tagRelationKind" size="small" style="width: 104px;">
@@ -507,6 +575,14 @@
             </div>
           </div>
           <template #footer>
+            <!-- 删除放在最下方:类别删类别,标签删标签 -->
+            <el-button
+              size="small"
+              type="danger"
+              plain
+              class="tag-edit-delete"
+              @click="tagEditIsCategory ? deleteTagCategory() : deleteEditingTag()"
+            >{{ tagEditIsCategory ? $t('m.deleteCategory') : $t('m.deleteTag') }}</el-button>
             <el-button size="small" @click="tagEditVisible = false">{{ $t('m.cancel') }}</el-button>
             <el-button size="small" type="primary" @click="saveTagNames">{{ $t('m.saveTagNames') }}</el-button>
           </template>
@@ -625,15 +701,6 @@
           </el-col>
           <el-col :span="24">
             <div class="setting-line function-button-row">
-              <el-popconfirm
-                placement="top-start"
-                :title="$t('m.rebuildWarning')"
-                @confirm="forceGeneBookList"
-              >
-                <template #reference>
-                  <el-button class="function-button" plain>{{$t('m.rebuildLibrary')}}</el-button>
-                </template>
-              </el-popconfirm>
               <el-popconfirm
                 placement="top-start"
                 :title="$t('m.patchWarning')"
@@ -1050,6 +1117,58 @@
                   <el-switch v-model="setting.downloadOriginal" @change="saveSetting" />
                 </div>
               </div>
+              <!-- 勾上后点「下载」不再弹窗,直接用下面的下载目录 + 默认名称 -->
+              <div class="theme-row theme-row-wide">
+                <span class="theme-label">{{$t('m.downloadUseDefault')}}</span>
+                <div class="theme-value">
+                  <el-switch v-model="setting.downloadUseDefault" @change="saveSetting" />
+                </div>
+              </div>
+              <div class="setting-hint">{{$t('m.downloadUseDefaultHint')}}</div>
+              <!-- 失败任务自动重试(主进程里定时跑,关掉网页也会继续) -->
+              <div class="download-subsection-title">{{$t('m.downloadRetryTitle')}}</div>
+              <div class="theme-row theme-row-wide">
+                <span class="theme-label">{{$t('m.downloadRetryEnabled')}}</span>
+                <div class="theme-value">
+                  <el-switch v-model="setting.retryEnabled" @change="saveSetting" />
+                </div>
+              </div>
+              <div class="theme-row theme-row-wide">
+                <span class="theme-label">{{$t('m.downloadRetryInterval')}}</span>
+                <div class="theme-value">
+                  <el-input-number v-model="setting.retryIntervalMin" :min="1" :max="1440" :step="5" size="small" @change="saveSetting" />
+                </div>
+              </div>
+              <div class="theme-row theme-row-wide">
+                <span class="theme-label">{{$t('m.downloadRetryTimes')}}</span>
+                <div class="theme-value">
+                  <el-input-number v-model="setting.retryTimes" :min="0" :max="99" :step="1" size="small" @change="saveSetting" />
+                </div>
+              </div>
+              <div class="setting-hint">{{$t('m.downloadRetryHint')}}</div>
+              <!-- 默认移动路径:下载记录头部的「移动」用它(填了并启用就直接移,不再弹选择)。
+                   只能在「已有库的文件夹及其子文件夹」里选,不允许随便一个目录。 -->
+              <div class="theme-row theme-row-wide">
+                <span class="theme-label">{{$t('m.downloadMoveDefaultPath')}}</span>
+                <div class="theme-value download-path-value">
+                  <LibraryFolderPicker v-model="setting.moveDefaultPath" :placeholder="$t('m.downloadMovePick')" @update:model-value="saveSetting" />
+                </div>
+              </div>
+              <div class="theme-row theme-row-wide">
+                <span class="theme-label">{{$t('m.downloadMoveDefaultPathEnabled')}}</span>
+                <div class="theme-value">
+                  <el-switch v-model="setting.moveDefaultPathEnabled" @change="saveSetting" />
+                </div>
+              </div>
+              <div class="setting-hint">{{$t('m.downloadMoveDefaultPathHint')}}</div>
+              <!-- 单本移动路径:记录上的移动按钮用它(同样只能选库里的目录) -->
+              <div class="theme-row theme-row-wide">
+                <span class="theme-label">{{$t('m.downloadMoveSinglePath')}}</span>
+                <div class="theme-value download-path-value">
+                  <LibraryFolderPicker v-model="setting.moveSinglePath" :placeholder="$t('m.downloadMovePick')" @update:model-value="saveSetting" />
+                </div>
+              </div>
+              <div class="setting-hint">{{$t('m.downloadMoveSinglePathHint')}}</div>
               <div class="setting-hint">{{$t('m.downloadSettingsHint')}}</div>
             </div>
           </el-col>
@@ -1094,6 +1213,7 @@
                   <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
                   <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
                   <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionSideDetail')" value="sideDetail"></el-option>
                   <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
                 </el-select>
               </NameFormItem>
@@ -1107,6 +1227,7 @@
                   <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
                   <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
                   <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionSideDetail')" value="sideDetail"></el-option>
                   <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
                 </el-select>
               </NameFormItem>
@@ -1120,6 +1241,7 @@
                   <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
                   <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
                   <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionSideDetail')" value="sideDetail"></el-option>
                   <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
                 </el-select>
               </NameFormItem>
@@ -1133,6 +1255,7 @@
                   <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
                   <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
                   <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionSideDetail')" value="sideDetail"></el-option>
                   <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
                 </el-select>
               </NameFormItem>
@@ -1146,6 +1269,7 @@
                   <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
                   <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
                   <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionSideDetail')" value="sideDetail"></el-option>
                   <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
                 </el-select>
               </NameFormItem>
@@ -1159,6 +1283,7 @@
                   <el-option :label="$t('m.clickActionDetail')" value="detail"></el-option>
                   <el-option :label="$t('m.clickActionContent')" value="content"></el-option>
                   <el-option :label="$t('m.clickActionThumbnail')" value="thumbnail"></el-option>
+                  <el-option :label="$t('m.clickActionSideDetail')" value="sideDetail"></el-option>
                   <el-option :label="$t('m.clickActionNone')" value="none"></el-option>
                 </el-select>
               </NameFormItem>
@@ -1774,12 +1899,14 @@ import dayuAvatar from '../assets/dayu.png'
 import appIcon from '../assets/icon.png'
 import universcAvatar from '../assets/universc.png'
 import { ref, onMounted, h, computed, watch } from 'vue'
+import LibraryFolderPicker from './LibraryFolderPicker.vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import draggable from 'vuedraggable'
 import { MdRefresh, MdSync, MdShuffle, MdCodeDownload, MdBook, MdColorPalette, MdPhonePortrait, MdFunnel } from '@vicons/ionicons4'
-import { Delete } from '@element-plus/icons-vue'
+import { Delete, InfoFilled } from '@element-plus/icons-vue'
 import { TreeViewAlt, CicsSystemGroup, TagGroup, Maximize } from '@vicons/carbon'
+import { sortCatsByOrder, tagCatRank, getDisplayTagName, FALLBACK_CAT, isBuiltinCat } from '../utils.js'
 import { Search32Filled, ArrowTrendingLines20Filled } from '@vicons/fluent'
 
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
@@ -1796,7 +1923,7 @@ import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 import { EH_ONLINE_ID, hasEhCookies, parseCookieString } from '../ehOnline.js'
 const appStore = useAppStore()
-const { searchTypeList, setting, bookList, resolvedTranslation, localeFile, tagListRaw ,
+const { searchTypeList, setting, bookList, resolvedTranslation, localeFile, tagListRaw, cat2letter,
 } = storeToRefs(appStore)
 const { printMessage } = appStore
 
@@ -1851,6 +1978,7 @@ const toolbarIconMap = {
   viewerSwitch: MdBook,
   themeSwitch: MdColorPalette,
   fullscreen: Maximize,
+  detailPanel: InfoFilled,
 }
 const toolbarButtonsShown = computed({
   get: () => {
@@ -3151,7 +3279,7 @@ const loadTranslationFromEhTagTranslation = async () => {
   })
   .catch((error) => {
     console.log(error)
-    printMessage('warning', t('c.useTranslationCache'))
+    // 抓取失败:安静退回本地翻译缓存(不再弹「使用翻译缓存」提示)
   })
 }
 
@@ -3280,11 +3408,14 @@ const onShowCollectTagChange = (val) => {
   if (val) setting.value.randomTagsEnabled = false
   saveSettingNow()
 }
-// 「语言」下拉:选具体语言即启用标签翻译(供分类名/标签名显示翻译),选「默认」则关闭
+// 「语言」下拉:接管全部标签与类别的显示语言。
+//   · 选了具体语言 → 该语言有名称就显示该名称,没有则回退默认语言(原始名/词库名);
+//   · 词库(EhTagTranslation)本身就是按语言给出的,所以选语言时一并确保词库已加载;
+//   · 选「默认」→ 全部回到原始名(不再按词库翻译),与旧版「关闭翻译」等价。
 const onTagLangChange = (val) => {
   setting.value.showTranslation = !!val
   if (val && typeof loadTranslationFromEhTagTranslation === 'function') loadTranslationFromEhTagTranslation()
-  saveSetting()
+  saveSettingNow()
 }
 
 const saveSetting = _.debounce(() => {
@@ -3568,6 +3699,24 @@ const openLink = (link) => {
   ipcRenderer.invoke('open-url', link)
 }
 
+// 重建某个库:重建只会处理「活动库」,所以先切过去(用户点哪个库就重建哪个)
+const rebuildLibraryOf = async (lib) => {
+  if (!lib || !lib.id) return
+  try {
+    libraryBusy.value = true
+    const sw = await ipcRenderer.invoke('set-active-library', lib.id)
+    if (!sw || !sw.ok) {
+      printMessage('error', (sw && sw.error) || t('m.librarySaveFailed'))
+      return
+    }
+    setting.value.activeLibraryId = sw.activeLibraryId || lib.id
+    await forceGeneBookList()
+  } catch (e) {
+    printMessage('error', String((e && e.message) || e))
+  } finally {
+    libraryBusy.value = false
+  }
+}
 const forceGeneBookList = async () => {
   dialogVisibleSetting.value = false
   localStorage.setItem('viewerReadingProgress', JSON.stringify([]))
@@ -3608,24 +3757,15 @@ const formTagAdd = ref({
   color: '#42A5F5'
 })
 
+// 收藏标签用的下拉:只显示人读的名称(自定义 > 词库 > 原名),不再拼搜索语法
 const tagListForCollect = computed(() => {
-  if (setting.value.showTranslation) {
-    return tagListRaw.value.map(({letter, cat, tag, id}) => {
-      const labelHeader = resolvedTranslation.value[cat]?._name || cat
-      const labelTail = resolvedTranslation.value[cat]?.[tag]?.name || tag
-      return {
-        label: `${labelHeader}:${labelTail} || ${letter}:"${tag}"$`,
-        value: id
-      }
-    })
-  } else {
-    return tagListRaw.value.map(({letter, cat, tag, id}) => {
-      return {
-        label: `${cat}:${tag} || ${letter}:"${tag}"$`,
-        value: id
-      }
-    })
-  }
+  return tagListRaw.value.map(({cat, tag, id}) => {
+    const catKey = resolveCatKey(cat)
+    return {
+      label: `${categoryLabel(catKey)}:${getDisplayTagName(setting.value, catKey, tag) || tag}`,
+      value: id
+    }
+  })
 })
 
 const moderateSoftColors = [
@@ -3658,6 +3798,19 @@ const addTagToCollect = () => {
 
 const removeTag = (id) => {
   setting.value.collectTag = setting.value.collectTag.filter(tag => tag.id !== id)
+  // 只取消「收藏」,不删标签本身 —— 但要把登记表里对应的那条显式摘掉,
+  // 否则后端并发保护会把它当成「前端还没确认的新增」并回来。
+  const raw = String(id || '')
+  const sep = raw.indexOf(':')
+  if (sep > 0) {
+    const cat = raw.slice(0, sep)
+    const name = raw.slice(sep + 1)
+    try { ipcRenderer.invoke('remove-global-tag', { cat, name }) } catch (e) { /* 忽略 */ }
+    if (setting.value.globalTags && Array.isArray(setting.value.globalTags[cat])) {
+      const kept = setting.value.globalTags[cat].filter(v => String(v) !== name)
+      if (kept.length) setting.value.globalTags = { ...setting.value.globalTags, [cat]: kept }
+    }
+  }
   saveSetting()
 }
 
@@ -3679,13 +3832,177 @@ const allTagsGroups = computed(() => {
       map[normCat] = { cat: normCat, tags: [] }
       groups.push(map[normCat])
     }
-    const labelTail = setting.value.showTranslation ? (resolvedTranslation.value[tag.cat]?.[tag.tag]?.name || tag.tag) : tag.tag
+    // 标签显示名:① 自定义(按目标语言) ② 词库(按目标语言) ③ 原始名
+    const labelTail = getDisplayTagName(setting.value, resolveCatKey(tag.cat), tag.tag)
+      || (setting.value.showTranslation ? (resolvedTranslation.value[resolveCatKey(tag.cat)]?.[tag.tag]?.name || tag.tag) : tag.tag)
     map[normCat].tags.push({ id: tag.id, cat: tag.cat, tag: tag.tag, letter: tag.letter, label: labelTail })
   }
+  // 设置里登记的「全局标签」(用「增加标签」建的,不挂在任何书上):也要显示出来
+  const globalTags = setting.value.globalTags || {}
+  for (const [cat, arr] of Object.entries(globalTags)) {
+    const normCat = resolveCatKey(cat)
+    if (!map[normCat]) {
+      map[normCat] = { cat: normCat, tags: [] }
+      groups.push(map[normCat])
+    }
+    const have = new Set(map[normCat].tags.map(t => t.tag))
+    for (const tag of (Array.isArray(arr) ? arr : [])) {
+      if (!tag || have.has(tag)) continue
+      have.add(tag)
+      map[normCat].tags.push({
+        id: normCat + ':' + tag, cat: normCat, tag,
+        letter: cat2letter.value[normCat] || normCat,
+        label: getDisplayTagName(setting.value, normCat, tag)
+          || (setting.value.showTranslation ? (resolvedTranslation.value[normCat]?.[tag]?.name || tag) : tag),
+      })
+    }
+  }
+  // 内置「其他」类别永远存在(不可删除),用来接住被删类别的标签
+  if (!map[FALLBACK_CAT]) {
+    map[FALLBACK_CAT] = { cat: FALLBACK_CAT, tags: [] }
+    groups.push(map[FALLBACK_CAT])
+  }
+  // 空类别:用户点「增加类别」建的类别还没有任何标签,它不是从 tagListRaw 来的,
+  // 必须单独补进来,否则建完什么也看不见(旧逻辑只认「已有标签的分类」)。
+  // 这类类别在列表里显示 0 个标签,点进去可以往里加标签。
+  for (const raw of (Array.isArray(setting.value.tagCatOrder) ? setting.value.tagCatOrder : [])) {
+    const normCat = resolveCatKey(raw)
+    if (map[normCat]) continue
+    map[normCat] = { cat: normCat, tags: [] }
+    groups.push(map[normCat])
+  }
+  // 类别顺序跟着「设置 → 标签设置」里拖动调整的 tagCatOrder 走(未排序的排在后面)
+  groups.sort((a, b) => tagCatRank(setting.value, a.cat) - tagCatRank(setting.value, b.cat))
   return groups
 })
+
+// 类别标签拖动排序:列表只用于拖拽,v-model 改动后写回 setting.tagCatOrder 并落盘。
+// 存的是归一化后的英文类别键(resolveCatKey 已在 allTagsGroups 里统一),避免中英混用出现两条。
+const orderedTagCats = computed({
+  // 返回浅拷贝:vuedraggable 可能原地改写数组,直接交出去会毁掉 allTagsGroups 的计算缓存
+  get: () => allTagsGroups.value.slice(),
+  set: (val) => {
+    if (!Array.isArray(val)) return
+    setting.value.tagCatOrder = val.map(g => g.cat)
+  },
+})
+// 拖动结束:立即落盘(这两个开关类操作不应被 500ms 防抖延迟,否则切页会「拖了没记上」)
+const onTagCatOrderChange = () => {
+  ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+}
+// 单击=筛选该类别;双击=编辑类别名称。
+// 浏览器的 click 总在 dblclick 之前派发,所以把单击的实际动作延后,
+// 双击时先把定时器清掉,避免「弹窗刚开、筛选又被切走」。
+let tagCatClickTimer = null
+const onTagCatClick = (g) => {
+  if (tagCatClickTimer) clearTimeout(tagCatClickTimer)
+  tagCatClickTimer = setTimeout(() => {
+    tagCatClickTimer = null
+    selectedTagCat.value = selectedTagCat.value === g.cat ? null : g.cat
+  }, 220)
+}
+const onTagCatDblClick = (g) => {
+  if (tagCatClickTimer) { clearTimeout(tagCatClickTimer); tagCatClickTimer = null }
+  openTagNameEditor({ cat: g.cat })
+}
+// 类别的「默认名称」:用户在编辑类别时填的 default 优先,否则用内置中文名。
+// 类别标签上显示的就是这个默认名称(不再跟着语言下拉变)。
+const categoryDefaultName = (cat) => {
+  const key = resolveCatKey(cat)
+  const rec = (setting.value.tagCatNameLangs || {})[key] || {}
+  const d = String(rec['default'] || '').trim()
+  return d || catDisplayName(key)
+}
+// 类别显示名:① 用户给类别起的多语言名 ② 在线词库的分类名 ③ 内置中文名 ④ 原键
 const categoryLabel = (cat) => {
-  return setting.value.showTranslation ? (resolvedTranslation.value[cat]?._name || cat) : cat
+  const key = resolveCatKey(cat)
+  // 自定义类别名:目标语言优先,没有则用默认名称
+  const rec = (setting.value.tagCatNameLangs || {})[key] || (setting.value.tagCatNameLangs || {})[cat]
+  if (rec) {
+    const lang = setting.value.tagTargetLang || ''
+    if (lang && rec[lang] && String(rec[lang]).trim()) return String(rec[lang]).trim()
+    const d = rec['default']
+    if (d && String(d).trim()) return String(d).trim()
+  }
+  if (setting.value.showTranslation) return resolvedTranslation.value[key]?._name || catDisplayName(key)
+  return catDisplayName(key)
+}
+
+// ---------- 添加类别 ----------
+// 只创建「空类别」:写进 setting.tagCatOrder 末尾,于是它会立刻出现在类别标签区(0 个标签),
+// 之后往这个类别里加标签,它就会成为真正的标签分类。
+const addCategoryVisible = ref(false)
+const addCategoryName = ref('')
+const openAddCategoryDialog = () => {
+  addCategoryName.value = ''
+  addCategoryVisible.value = true
+}
+const canAddCategory = computed(() => {
+  const raw = String(addCategoryName.value || '').trim()
+  if (!raw) return false
+  const key = resolveCatKey(raw)
+  const exists = (allTagsGroups.value || []).some(g => resolveCatKey(g.cat) === key)
+  return !exists
+})
+const createCategory = async () => {
+  if (!canAddCategory.value) return
+  const key = resolveCatKey(String(addCategoryName.value).trim())
+  if (!Array.isArray(setting.value.tagCatOrder)) setting.value.tagCatOrder = []
+  const order = setting.value.tagCatOrder.slice()
+  if (!order.includes(key)) order.push(key)
+  setting.value.tagCatOrder = order
+  selectedTagCat.value = key
+  await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+  addCategoryVisible.value = false
+  printMessage('success', t('m.tagCatAdded'))
+}
+
+// ---------- 添加标签 ----------
+// 在选定的类别下新建一个标签 / 或给某本书加标签。
+// 这里建的是「全局标签」:写进当前类别,库里所有书都能在下拉里选到它。
+const addTagVisible = ref(false)
+const addTagCat = ref('')
+const addTagName = ref('')
+const openAddTagDialog = (cat) => {
+  addTagCat.value = resolveCatKey(cat || selectedTagCat.value || (allTagsGroups.value[0]?.cat || ''))
+  addTagName.value = ''
+  addTagVisible.value = true
+}
+const canAddTag = computed(() => {
+  const raw = String(addTagName.value || '').trim()
+  const cat = resolveCatKey(addTagCat.value)
+  if (!raw || !cat) return false
+  // 同类别下已存在同名标签则不允许重复建立
+  const exists = (allTagsGroups.value.find(g => resolveCatKey(g.cat) === cat)?.tags || [])
+    .some(t => String(t.tag).toLowerCase() === raw.toLowerCase())
+  return !exists
+})
+const createGlobalTag = async () => {
+  if (!canAddTag.value) return
+  const cat = resolveCatKey(addTagCat.value)
+  const name = String(addTagName.value).trim()
+  // 建标签 = 让它出现在全库标签集合里:写进 tagCatOrder 保证类别可见,
+  // 并由后端 add-global-tag 登记到 setting.globalTags(不挂任何书也能显示)
+  const res = await ipcRenderer.invoke('add-global-tag', { cat, name })
+  if (!res?.ok) {
+    printMessage('error', res?.error || t('c.groupTagError'))
+    return
+  }
+  // 本地立刻登记一份:allTagsGroups 只认 tagListRaw 与 setting.globalTags,
+  // 不写这里就要等下一次「重新加载漫画库」才出现 —— 这正是「添加后不显示」的直接原因。
+  if (!setting.value.globalTags || typeof setting.value.globalTags !== 'object') setting.value.globalTags = {}
+  const gArr = Array.isArray(setting.value.globalTags[cat]) ? setting.value.globalTags[cat].slice() : []
+  if (!gArr.includes(name)) gArr.push(name)
+  setting.value.globalTags = { ...setting.value.globalTags, [cat]: gArr }
+  if (!Array.isArray(setting.value.tagCatOrder)) setting.value.tagCatOrder = []
+  if (!setting.value.tagCatOrder.includes(cat)) setting.value.tagCatOrder.push(cat)
+  // 落盘(后端会把 globalTags 与内存里的并集合并,不会把刚加的冲掉)
+  await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+  // 再拉一次全库标签,保证其它来源(metadata)也同步
+  try { await appStore.loadAllTags() } catch (e) { /* 忽略 */ }
+  addTagVisible.value = false
+  printMessage('success', t('m.tagCatAdded'))
+  emit('loadBookList')
 }
 // 标签名后加括号显示前 3 个所属集合(被哪些集合包含),如 光辉(碧蓝航线,女)
 const tagLabelWithSets = (tag) => {
@@ -3709,13 +4026,31 @@ const tagLabelWithSets = (tag) => {
 // 双击标签 → 编辑多语言名称(中/日/英),按「目标语言标签」显示
 const tagEditVisible = ref(false)
 const tagEditItem = ref(null)
-const tagEditLangs = ref({ 'default': '', 'zh-CN': '', 'zh-TW': '', ja: '', en: '' })
+// 类别本身也有多语言名称:存在 setting.tagCatNameLangs[cat] = { 'zh-CN', 'zh-TW', ja, en }
+const tagEditIsCategory = ref(false)
+const tagEditLangs = ref({ 'zh-CN': '', 'zh-TW': '', ja: '', en: '' })
+// 标题只显示所属类别,不再拼接标签名 —— 标签名已经交给下面的「默认名称」输入框编辑
+const tagEditTitle = computed(() => {
+  const it = tagEditItem.value
+  if (!it) return ''
+  if (tagEditIsCategory.value) return categoryLabel(it.cat) + ' (' + it.cat + ')'
+  return categoryLabel(it.cat)
+})
+// tag 既可以是 { cat, tag }(标签),也可以是 { cat }(类别);类别用 isCategory 标记
 const openTagNameEditor = (tag) => {
   tagRelationPick.value = ''
-  if (!tag || !tag.cat || !tag.tag) return
-  const rec = (setting.value.tagNameLangs || {})[tag.cat + '::' + tag.tag] || {}
-  tagEditLangs.value = { 'default': rec['default'] || '', 'zh-CN': rec['zh-CN'] || '', 'zh-TW': rec['zh-TW'] || '', ja: rec.ja || '', en: rec.en || '' }
-  tagEditItem.value = tag
+  if (!tag || !tag.cat) return
+  const isCat = !tag.tag
+  tagEditIsCategory.value = isCat
+  const rec = isCat
+    ? ((setting.value.tagCatNameLangs || {})[resolveCatKey(tag.cat)] || {})
+    : ((setting.value.tagNameLangs || {})[tag.cat + '::' + tag.tag] || {})
+  // 默认名称 = 标签/类别的原始名,可在弹窗里改;选了具体语言但没填时回退到它
+  tagEditLangs.value = {
+    'default': rec['default'] || (isCat ? catDisplayName(resolveCatKey(tag.cat)) : String(tag.tag || '')),
+    'zh-CN': rec['zh-CN'] || '', 'zh-TW': rec['zh-TW'] || '', ja: rec.ja || '', en: rec.en || '',
+  }
+  tagEditItem.value = isCat ? { cat: resolveCatKey(tag.cat), isCategory: true } : tag
   tagEditVisible.value = true
 }
 // ---------- 关联标签(包含 / 被包含) ----------
@@ -3733,7 +4068,9 @@ const tagRelationOptions = computed(() => {
     for (const t of (g.tags || [])) {
       const k = t.cat + '::' + t.tag
       if (k === selfKey) continue
-      out.push({ value: k, label: t.tag })
+      // 显示名与别处一致:自定义(按语言/默认名) > 词库 > 原始名
+      const label = t.label || getDisplayTagName(setting.value, resolveCatKey(t.cat), t.tag) || t.tag
+      out.push({ value: k, label })
     }
   }
   return out
@@ -3805,8 +4142,6 @@ const removeTagRelation = async (r) => {
 const saveTagNames = async () => {
   const it = tagEditItem.value
   if (!it) return
-  if (!setting.value.tagNameLangs) setting.value.tagNameLangs = {}
-  const key = it.cat + '::' + it.tag
   const lang = {
     'default': (tagEditLangs.value['default'] || '').trim(),
     'zh-CN': (tagEditLangs.value['zh-CN'] || '').trim(),
@@ -3814,13 +4149,157 @@ const saveTagNames = async () => {
     ja: (tagEditLangs.value.ja || '').trim(),
     en: (tagEditLangs.value.en || '').trim(),
   }
-  if (!lang['default'] && !lang['zh-CN'] && !lang['zh-TW'] && !lang.ja && !lang.en) delete setting.value.tagNameLangs[key]
-  else setting.value.tagNameLangs[key] = { ...(setting.value.tagNameLangs[key] || {}), ...lang }
+  const empty = !lang['default'] && !lang['zh-CN'] && !lang['zh-TW'] && !lang.ja && !lang.en
+  if (tagEditIsCategory.value) {
+    // 类别的多语言名称:setting.tagCatNameLangs[cat]
+    if (!setting.value.tagCatNameLangs) setting.value.tagCatNameLangs = {}
+    const ck = resolveCatKey(it.cat)
+    if (empty) delete setting.value.tagCatNameLangs[ck]
+    else setting.value.tagCatNameLangs[ck] = { ...(setting.value.tagCatNameLangs[ck] || {}), ...lang }
+  } else {
+    if (!setting.value.tagNameLangs) setting.value.tagNameLangs = {}
+    const key = it.cat + '::' + it.tag
+    if (empty) delete setting.value.tagNameLangs[key]
+    else setting.value.tagNameLangs[key] = { ...(setting.value.tagNameLangs[key] || {}), ...lang }
+  }
   await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
   tagEditVisible.value = false
   printMessage('success', t('m.saveTagNamesDone'))
   emit('loadBookList')
 }
+// ---------- 删除类别 ----------
+// 类别是「大分类」。删掉它时,该类别下的标签不能凭空消失,统一归入内置的「其他」类别。
+// 需要清理的地方:
+//   ① 全库把 book.tags[被删类别] 的标签搬到 book.tags.other(走 move-tag-category)
+//   ② setting.tagCatOrder(顺序表,也是空类别的唯一来源)
+//   ③ setting.tagCatNameLangs(类别多语言名)
+//   ④ setting.tagRelations 里以该类别标签为主语/宾语的关联边(键名同步换到 other)
+// 内置「其他」类别本身不允许删除。
+const deleteTagCategory = async () => {
+  const it = tagEditItem.value
+  if (!it || !tagEditIsCategory.value) return
+  const key = resolveCatKey(it.cat)
+  // 内置「其他」不可删除
+  if (isBuiltinCat(key)) {
+    printMessage('warning', t('m.cannotDeleteOtherCategory'))
+    return
+  }
+  const count = (allTagsGroups.value.find(g => g.cat === key)?.tags || []).length
+  try {
+    await ElMessageBox.confirm(
+      count
+        ? t('m.deleteCategoryConfirmWithTags', { cat: categoryLabel(key), n: count })
+        : t('m.deleteCategoryConfirm', { cat: categoryLabel(key) }),
+      t('m.deleteCategory'),
+      { type: 'warning', confirmButtonText: t('m.delete'), cancelButtonText: t('m.cancel') }
+    )
+  } catch (e) { return } // 取消
+
+  // ① 该类别下的标签整体迁移到内置「其他」
+  if (count) {
+    const mv = await ipcRenderer.invoke('move-tag-category', { from: key, to: FALLBACK_CAT })
+    if (!mv?.ok) {
+      printMessage('error', mv?.error || t('c.groupTagError'))
+      return
+    }
+  }
+  // ④ 关联边键名同步换到 other
+  const rel0 = setting.value.tagRelations
+  if (rel0) {
+    for (const [k, v] of Object.entries(rel0)) {
+      const [kCat, kTag] = String(k).split('::')
+      if (resolveCatKey(kCat) === key) {
+        delete rel0[k]
+        const nk = FALLBACK_CAT + '::' + kTag
+        rel0[nk] = { ...(rel0[nk] || {}), ...v }
+      }
+      if (v && Array.isArray(v.contains)) {
+        rel0[k] = {
+          ...v,
+          contains: v.contains.map(x => {
+            const [c, tg] = String(x).split('::')
+            return resolveCatKey(c) === key ? FALLBACK_CAT + '::' + tg : x
+          }),
+        }
+      }
+    }
+  }
+  // 确保「其他」类别在顺序表里(它永远可见)
+  if (!Array.isArray(setting.value.tagCatOrder)) setting.value.tagCatOrder = []
+  if (!setting.value.tagCatOrder.includes(FALLBACK_CAT)) setting.value.tagCatOrder.push(FALLBACK_CAT)
+
+  if (Array.isArray(setting.value.tagCatOrder)) {
+    setting.value.tagCatOrder = setting.value.tagCatOrder.filter(c => resolveCatKey(c) !== key)
+  }
+  if (setting.value.tagCatNameLangs) delete setting.value.tagCatNameLangs[key]
+  // 关联边:该类别下的标签作为「包含方」或「被包含方」的条目全部摘掉
+  const rel = setting.value.tagRelations
+  if (rel) {
+    for (const [k, v] of Object.entries(rel)) {
+      const kCat = resolveCatKey(String(k).split('::')[0])
+      if (kCat === key) { delete rel[k]; continue }
+      if (v && Array.isArray(v.contains)) {
+        const kept = v.contains.filter(x => resolveCatKey(String(x).split('::')[0]) !== key)
+        if (kept.length) rel[k] = { ...v, contains: kept }
+        else delete rel[k]
+      }
+    }
+  }
+  if (selectedTagCat.value && resolveCatKey(selectedTagCat.value) === key) selectedTagCat.value = null
+  await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+  tagEditVisible.value = false
+  printMessage('success', t('m.deleteCategoryDone'))
+  emit('loadBookList')
+}
+
+// ---------- 删除标签(从全库移除)----------
+const deleteEditingTag = async () => {
+  const it = tagEditItem.value
+  if (!it || tagEditIsCategory.value) return
+  try {
+    await ElMessageBox.confirm(
+      t('m.deleteTagConfirm', { cat: categoryLabel(it.cat), tag: it.tag }),
+      t('m.deleteTag'),
+      { type: 'warning', confirmButtonText: t('m.delete'), cancelButtonText: t('m.cancel') }
+    )
+  } catch (e) { return } // 取消
+  const res = await ipcRenderer.invoke('delete-tag', { cat: it.cat, name: it.tag })
+  if (res?.ok) {
+    // 清掉这个标签的名称与关联配置
+    if (setting.value.tagNameLangs) delete setting.value.tagNameLangs[it.cat + '::' + it.tag]
+    const rel = setting.value.tagRelations
+    if (rel) {
+      const selfKey = it.cat + '::' + it.tag
+      delete rel[selfKey]
+      for (const [k, v] of Object.entries(rel)) {
+        if (v && Array.isArray(v.contains)) {
+          const kept = v.contains.filter(x => x !== selfKey)
+          if (kept.length) rel[k] = { ...v, contains: kept }
+          else delete rel[k]
+        }
+      }
+    }
+    // 已收藏的也一并移除
+    if (Array.isArray(setting.value.collectTag)) {
+      setting.value.collectTag = setting.value.collectTag.filter(x => x.id !== it.cat + ':' + it.tag)
+    }
+    // 从「全局标签登记表」里显式摘掉:光靠随后的 save-setting 不够 ——
+    // 后端为防「刚加就丢」会补回尚未确认的新增,删除必须走这条显式通道。
+    try { await ipcRenderer.invoke('remove-global-tag', { cat: it.cat, name: it.tag }) } catch (e) { /* 忽略 */ }
+    if (setting.value.globalTags && Array.isArray(setting.value.globalTags[it.cat])) {
+      const kept = setting.value.globalTags[it.cat].filter(v => String(v) !== String(it.tag))
+      if (kept.length) setting.value.globalTags = { ...setting.value.globalTags, [it.cat]: kept }
+      else { const gt = { ...setting.value.globalTags }; delete gt[it.cat]; setting.value.globalTags = gt }
+    }
+    await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+    tagEditVisible.value = false
+    printMessage('success', t('c.renameTagDone', { count: res.count }))
+    emit('loadBookList')
+  } else {
+    printMessage('error', res?.error || t('c.renameTagFailed'))
+  }
+}
+
 // 双击重命名标签(全库更新)
 const renameTag = async (tag) => {
   try {
@@ -4039,6 +4518,147 @@ watch(dialogVisibleSetting, (visible) => {
 })
 // 更新日志(关于页展示;新版本加在数组最前面)
 const changelog = [
+  {
+    version: 'v1.15.0',
+    summary: '容器模式判定修复 · 旧版书架自动迁移 · 缺库路径提示',
+    items: [
+      '【修复】只用镜像建容器(没有 compose 的 WEB_LIBRARY)时应用误判为桌面端 → 没有封面、阅读没图;现在 WEB_MODE=1 也算容器模式,镜像也自带 WEB_LIBRARY',
+      '【新增】启动时自动迁移旧版书架(metadata.sqlite 的 Mangas → 当前每库 database.sqlite),老表改名 Mangas_legacy_v1 保留',
+      '【新增】库路径在容器里不存在时给出明确提示(而不是只刷日志)',
+    ],
+  },
+  {
+    version: 'v1.14.7 修订 2',
+    summary: '筛选按库独立 · 全库扫描 · 单库重建 · 切库秒响应 · 小说方向独立',
+    items: [
+      '【新增】筛选按库独立:每个库(含 EH 在线)各存一份筛选,换库回来还是那一套',
+      '【变更】「手动扫描」改名「全库扫描」',
+      '【变更】「重建漫画库」从设置→高级移到设置→常用:每个库后面一个「重建库」按钮',
+      '【优化】切库先切界面、后台再加载,不再点一下等半天',
+      '【修复】新库扫不到内容:保存时校验库路径(必须是绝对路径、容器里真实存在、是文件夹),扫到 0 本会报出目录实际情况',
+      '【修复】小说阅读方向独立:不再和漫画共用(漫画选左右,小说不会跟着变)',
+      '【变更】下载目录默认只用标题,不再加 4264378 - 这种 gid 前缀(同名目录冲突时才加)',
+    ],
+  },
+  {
+    version: 'v1.14.7 修订',
+    summary: '封面全灰修复 · 阅读器跳页修复 · 移动只动已完成',
+    items: [
+      '【修复】点任意按钮后所有封面变灰:coverPath 已是 /api/file 的 URL 时被二次编码成 %252F → 404',
+      '【修复】点预览「从这一页读」进阅读器后又自动跳走:显式页码优先,不再被「上次阅读进度」拉走;在线画廊图片解析完再对齐一次',
+      '【变更】移动只处理已下载完成的任务(暂停/失败/下载中的不给移)',
+      '【变更】预览右键去掉「整本重新下载」,「重新下载这一页」改名「重新下载」',
+      '【变更】垃圾桶贴到进度条同一水平线',
+      '【新增】任务记录里的标签可点,点了按该标签搜索',
+    ],
+  },
+  {
+    version: 'v1.14.7',
+    summary: '单页重下 · 任务记录 · 自动重试 · 预览跳页',
+    items: [
+      '【修复】预览右键「重新下载这一页」:只重下这一页(以前整本重下);整本重下改名「整本重新下载」',
+      '【新增】设置→高级→下载设置:「使用默认下载地址和名称」,开启后点下载不再弹窗',
+      '【变更】详细界面预览显示全部页(以前 12 张)',
+      '【修复】点预览图进入阅读器从**那一页**开始(详细界面 / 侧边详细)',
+      '【变更】侧边详细:预览去框、预览上方显示评论、评分以封面宽度居中',
+      '【新增】失败任务自动重试(启用/间隔/次数),主进程定时跑,关掉网页也继续',
+      '【变更】「下载记录」改名「任务记录」',
+      '【修复】封面灰块:封面异步到达后清掉失败标记重新加载;未完成任务的压暗 45%→26%',
+    ],
+  },
+  {
+    version: 'v1.14.6',
+    summary: '封面本地化 · 标签照 JHenTai · 移动只选库目录 · 下载弹窗 · 侧栏重排',
+    items: [
+      '【变更】下载记录封面改成本地:建任务时抓封面存到数据目录,面板直接读本地文件,不再走代理(老记录打开面板后台补)',
+      '【修复】状态按钮与圆环严格同心(inset:0 + margin:auto)',
+      '【变更】语言角标全中文:中文界面下所有语言都用中文短名(中/英/日/韩/西/法/德…)',
+      '【变更】下载记录标签照 JHenTai 列表:浅底小方块、自动换行、全部显示,分类单独一个灰标签',
+      '【变更】垃圾桶挪到进度条右边',
+      '【修复】移动只能选「已有库的文件夹及其子文件夹」:新增库目录级联选择器(弹窗 + 设置里的默认移动路径都用它)',
+      '【变更】侧边详细:标题/评分靠左、信息行挪到评分下面(面板窄时隐藏)、按钮改成图标+文字、页预览显示全部页(网格)',
+      '【新增】下载弹窗:位置(默认/每个库/自定义文件夹)、名称(默认灰字、按界面语言取标题、改过变黑)、原图勾选;侧边详细/详细界面/右键下载统一走它',
+    ],
+  },
+  {
+    version: 'v1.14.5',
+    summary: '下载记录:标签/移动/封面兜底 · 在线换页数量死循环修复 · 侧栏预览',
+    items: [
+      '【新增】下载记录**显示漫画标签**(画师/社团/题材…):下载时就把画廊标签一起存下来;老记录打开面板会现拉详情补上(一次最多 3 条)',
+      '【新增】**移动**:把下载好的漫画移进本地库 —— 面板头部「移动」= 全部已完成;每行垃圾桶上方「移动」= 只移这一本(下载中不可移)。移动后**自动在目标库里登记**(标题/标签/分类/评分/页数)并**生成封面到该库的封面目录**,书架直接能看到',
+      '【新增】设置 → 高级 → 下载设置:**默认移动路径**(可启用)与**单本移动路径**,填了就直接移、不弹选择',
+      '【修复】封面加载失败(代理挂了)不再显示破图,退回灰底占位,重开面板会重试',
+      '【变更】状态按钮照 JHenTai:圆环 40px、图标 17px、纯图标无底色',
+      '【变更】语言徽标随界面语言:中文界面显示 中/日/韩/英',
+      '【修复】EH在线改「每页数量」后一直加载:改页期间压住自动补页(1.2s),自动补页加 600ms 冷却',
+      '【变更】下载完成后点标题开**本地**详情(不再解析 EH);顶部「清空记录」按钮删除',
+      '【修复】主界面滚动条一开右栏就消失:收掉 el-row 的负 margin,滚动条落在主界面自己的框里',
+      '【新增】侧边详细信息显示**页预览**(在线=详情缩略图,本地=前几页),点一下打开阅读器',
+      '【修复】状态按钮**嵌进圆环中间**(26px 填满 34px 圆环内孔),**圆环居中**,页码跟在圆环下;封面上的「原图」徽标取消(只留 ✗失败数;原图在右侧标签行)',
+      '【修复】封面上右下角 ✗失败数徽标删除(挪到右侧标签行),圆环独占封面中央保证居中',
+      '【修复】「继续任务」后进度条短暂失灵:根因是收页链接阶段把 done/failed 清零 + 已下好的文件边扫边数;现在启动时预扫已下文件(进度从真实值开始),收链接阶段不动计数器',
+      '【变更】中间标签行补全:原图 · ✗失败数 · 进度(done/total 或收集中)· 状态,普通任务也有内容',
+      '【变更】红色垃圾桶往下放:贴行右侧中间,不跟 X 挤在右上角;下载面板右上角 ✕ 改返回箭头',
+      '【变更】下载记录标题可点击:与主界面点标题同一个详情界面(用画廊 url 现成在线书对象,自动补拉详情,不算读过不进历史)',
+      '【变更】时间显示到秒:YYYY-MM-DD HH:mm:ss,右下角、进度条上方',
+      '【修复】状态按钮不再像两个圈:el-button 换 plain span(它自带的圆形 chrome 和圆环叠在一起),默认全透明、悬浮才有淡底;圆环轨道改半透明白',
+      '【变更】EH在线 卡片角标改显示语言:CH(中文)/ EH(英文)/ JP(日文)/ KR…(照 JHenTai 缩写口径,取不到维持 EH),中文仍红色角标',
+      '【修复】主界面滚动条归位:卡片区改成独立滚动容器(body 不再窗口滚)—— 以前滚动条挂在浏览器最右边,下载记录栏一开就被隔开;惯性滚动/无限滚动/回顶也顺便真正生效',
+      '【变更】状态按钮**嵌进圆环中间**(26px 填满 34px 圆环内孔),**圆环居中**,页码跟在圆环下;封面上的「原图」徽标取消(只留 ✗失败数;原图在右侧标签行)',
+      '【变更】记录**右键菜单取消**,「删除记录和文件」红色**垃圾桶放回右上角**(和 X 上下排)',
+      '【变更】错误提示**只从感叹号出**:行内错误文字全删;⚠ 悬浮显示、点击钉住弹层(换成自绘弹层 —— el-popover 受控模式时灵时不灵,这次不用它)',
+      '【变更】**失败后进度条不变红**(保持蓝色,完成才绿);封面上圆环失败仍泛红 + ✗徽标 + 状态文字提示',
+      '【变更】右侧三段:标题 → 中间标签行(原图·状态)→ 右下角时间 + 行底 4px 细进度条',
+      '【变更】下载记录**整体回到列表模式**(一行一条:左封面 + 右信息),上一轮整体改成网格是理解反了;**封面保留 JHenTai 网格那套**:没下完 = 模糊 + 压暗 + 圆环进度 + 中央状态按钮,右下角徽标(失败页数/原图),已下完 = 干净封面',
+      '【变更】下载记录右侧:标题两行 / 信息行(原图标签·状态·时间·中文提示)/ 4px 细进度条,感叹号跟在进度条后(悬浮显示,点击钉住);行右上角 X = 删除记录,整行右键 = 删除记录和文件 / 重新下载',
+      '【变更】下载记录网格密度(上一轮,已被上面这条取代):列宽 100px、默认面板 3 列、标题单行、没下完封面模糊、已下完封面干净、圆环 40px',
+      '【变更】下载记录改成 JHenTai 网格模式(上上轮,已被取代):封面网格排布;没下完的封面压暗 + 圆环进度 + 页码,封面中央一颗状态按钮(下载中=暂停,暂停/失败/等待中=播放);封面底部 3px 细进度条;右下角徽标(失败页数/原图);右上角 X = 删除记录(删除记录和文件移到封面右键);标题靠左挨着封面,下面一行显示 时间 + 状态',
+      '【变更】历史按当前库自动分流:EH在线 库下选「历史」只看在线浏览记录,本地库下选「历史」只看本地记录(不再用手动切换范围);某一范围没记录时给提示',
+      '【变更】下载预览:左键点图直接进入阅读(从第 N 页读起);右键只保留 继续下载 / 重新下载',
+      '【变更】错误提示改感叹号:任务行不再铺错误文字,封面底部进度条后加 ⚠,悬浮显示、点击钉住',
+      '【修复】预览图片偶尔失败 / 一直加载:加载失败自动换 URL 重拉 3 次(根因多半是文件刚下完还在写),仍失败给可点的「加载失败,点这重试」占位',
+      '【修复】工具栏「下载记录」按钮再点一次可收起(之前只能开不能关)',
+      '【变更】侧边详细信息:工具栏按钮里改名「侧边详细信息」;点击策略(封面/标题/阅/读/页数/双击封面)新增「侧边详细信息」选项;侧边面板开着时「详细界面」策略临时变成侧边详细信息,关掉即恢复;两个右栏按打开顺序排列(先开的在左);拖拽宽不再出现蓝色高亮条',
+      '【变更】删掉标签设置里「使用翻译缓存」弹窗:翻译库拉取失败时安静退回本地缓存',
+      '【新增】EH在线阅读假进度条修复:el-progress 圆环 indeterminate 不生效(永远显示硬编码 50%),换成真转圈 + 「正在解析第 N 页 / 共 M 页」;解析队列按离当前页近的先解析(并发 4→6)',
+      '【修复】分页双页模式只有一张进度条:双页下两个占位以前叠在同一格,现在每页各占一格',
+      '【新增】侧边详细信息面板(仿 JHenTai 详情页):封面/标题/评分/信息行/操作按钮/标签分组,在线画廊自动补拉详情',
+      '【修复】滚轮翻页失效:整本预加载的屏外页把滚动容器撑大,导致滚轮一直被判定为「还没滚完这一屏」;已用布局隔离层修掉',
+      '【修复】双页模式拖动时只出现一张图、松手后才补第二张:预渲染改成按「帧」整组渲染,两页并排同一容器',
+    ],
+  },
+  {
+    version: 'v1.14.4',
+    summary: '修复:分页拖动翻页「图已经出现又要重新出一次」的闪动',
+    items: [
+      '【修复】拖动翻页时图片闪一下重新出现:根因是拖动预览用临时创建的元素,松手后正式图片要重新解码;现已改为整本预加载',
+      '【变更】分页模式像卷轴模式一样**整本持续加载**:所有页渲染在屏外,翻到哪一页都是现成的,不再等待加载',
+      '【变更】删掉「图片加载中先变暗、加载好再变亮」的效果(它本身就是一次可见的闪动)',
+      '【修复】第 2 页不预加载上一页的边界错误',
+    ],
+  },
+  {
+    version: 'v1.14.3',
+    summary: '修复:分页阅读拖动翻页到位会闪一下(像是重新加载了一次)',
+    items: [
+      '【修复】分页单页翻页时图片会白一下:根因是换页复用了同一个 <img> 只改 src,浏览器会先清空再解码;现在每次翻页换新元素',
+      '【修复】拖动翻页到位那一刻的闪动:改为等新图解码完成再复位位移,过渡连续',
+    ],
+  },
+  {
+    version: 'v1.14.0',
+    summary: '搜索历史改成弹层底部横排芯片(与搜索框等宽,最多 500 条)',
+    items: [
+      '【变更】搜索历史不再一条一行塞在竖向列表里,改到同一下拉弹层的**底部横排成芯片**:自动换行,最多约三行',
+      '【变更】弹层**宽度与搜索框完全等宽**;弹层里不再显示「搜索历史」标题和任何提示文字',
+      '【新增】点芯片直接搜、点 ✕ 删这一条;「清除」是历史列表的最后一项、整行居中',
+      '【新增】历史默认最多显示 4 排,记录多时在这块里竖向滚动,滑到底才看到「清除」',
+      '【修复】历史区多余的分隔横线与上下留白已去掉,不再白白占高度',
+      '【优化】历史滚动条改成 2px 细线;弹层宽度实时跟随搜索框(缩放窗口/增减工具栏按钮都会跟着变)',
+      '【变更】搜索历史上限从 20 条提到 **500 条**',
+      '【变更】EH 在线库下同样会记录并显示搜索历史',
+    ],
+  },
   {
     version: 'v1.11.0',
     summary: '回收站与删除记录:删错了能救回来(单张图片也算),每一次删除都有据可查',
@@ -4273,14 +4893,71 @@ defineExpose({
 .library-box-select { flex: 1 1 300px; min-width: 220px; }
 .library-box-current { color: #409eff; font-size: 12px; flex: 0 0 auto; }
 
-// 标签设置:当前库中的全部标签
+// 标签设置:类别标签标题行 + 类别拖动区 + 全部标签列表
+.tag-cat-header
+  display: flex
+  align-items: center
+  justify-content: space-between
+  gap: 8px
+  margin-bottom: 8px
 .tag-cat-list
   display: flex
   flex-wrap: wrap
   gap: 6px
   margin-bottom: 8px
   .tag-cat-chip
-    cursor: pointer
+    // 需求:鼠标放到类别标签上不要变成「一只手」
+    cursor: default
+    user-select: none
+  .tag-cat-drag
+    display: inline-block
+    margin-right: 4px
+    opacity: .55
+    letter-spacing: -2px
+    // 手柄保持移动光标,提示这里可以拖
+    cursor: move
+  // 类别右侧的标签数量(用户要求:类别右边显示该类别拥有标签的个数)
+  .tag-cat-count
+    display: inline-block
+    margin-left: 4px
+    padding: 0 5px
+    border-radius: 8px
+    font-size: 11px
+    line-height: 16px
+    font-weight: 400
+    color: var(--el-text-color-secondary)
+    background: var(--el-fill-color)
+    font-variant-numeric: tabular-nums
+// 标签编辑界面里的「该类别标签」横排选择(与「详细信息」里的标签展示同排版)
+// 关联标签「选择标签」的下拉:选项横排铺开(一排一排),不再是竖着一条
+.tag-relation-dropdown
+  .el-select-dropdown__wrap
+    max-height: 260px
+  .el-select-dropdown__list
+    display: flex
+    flex-wrap: wrap
+    gap: 6px
+    padding: 8px
+  .el-select-dropdown__item
+    display: inline-flex
+    align-items: center
+    width: auto
+    max-width: 100%
+    height: 26px
+    line-height: 24px
+    padding: 0 10px
+    margin: 0
+    border: 1px solid var(--el-border-color)
+    border-radius: 13px
+    font-size: 12px
+    &.is-hovering,
+    &:hover
+      background-color: var(--el-fill-color-light)
+    &.is-selected
+      color: var(--el-color-primary)
+      border-color: var(--el-color-primary)
+      font-weight: 600
+      background-color: var(--el-color-primary-light-9)
 .all-tags-list
   max-height: 260px
   overflow-y: auto
@@ -4308,6 +4985,27 @@ defineExpose({
   margin-right: 5px
   vertical-align: middle
   cursor: pointer
+// 关联标签区域:标题 + 一行(分类下拉 / 方式下拉 / 添加按钮) + 横排标签选择 + 已有关联列表
+.tag-relation-editor
+  margin-top: 10px
+  padding-top: 8px
+  border-top: 1px solid var(--el-border-color-lighter)
+  text-align: left
+  .tag-relation-title
+    font-size: 12px
+    font-weight: 600
+    color: var(--el-text-color-secondary)
+    margin-bottom: 6px
+  .tag-relation-add
+    display: flex
+    flex-wrap: wrap
+    align-items: center
+    gap: 6px
+  .tag-relation-list
+    margin-top: 8px
+    display: flex
+    flex-wrap: wrap
+    gap: 6px
 .setting-switch
   text-align: left
   margin-top: 6px
@@ -4710,10 +5408,24 @@ defineExpose({
     text-align: center
 
 // 下载设置:路径那一行输入框要占满剩余宽度
+// 库列表里那排按钮(重建 / 删除)
+.library-rebuild-btn
+  flex: none
+  white-space: nowrap
+
 .download-setting-panel
   .download-path-value
     flex: 1
     min-width: 0
   .setting-hint
     margin-top: 8px
+  // 面板内的小标题(失败任务自动重试):独占一行,和上面的选项隔开
+  .download-subsection-title
+    width: 100%
+    margin: 12px 0 6px
+    padding-top: 10px
+    border-top: 1px dashed var(--el-border-color-lighter)
+    font-size: 13px
+    font-weight: 600
+    color: var(--el-text-color-primary)
 </style>

@@ -45,7 +45,7 @@
       <el-tag class="book-card-language" size="small" v-if="book.historyTime || !setting.hideReadCount"
         :type="isChineseTranslatedManga(book) ? 'danger' : 'info'"
         @click="onReadCountClick"
-      >{{ book.historyTime ? historyTimeText : (book.online ? 'EH' : book.readCount) }}</el-tag>
+      >{{ book.historyTime ? historyTimeText : (book.online ? languageBadgeText(book) : book.readCount) }}</el-tag>
       <el-tag class="book-card-pagecount" size="small" type="danger" v-if="!setting.hidePageCount && book.pageDiff && book.pageCount != null" @click="$emit('pageCountClick')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
       <el-tag class="book-card-pagecount" size="small" type="info" v-else-if="!setting.hidePageCount && book.pageCount != null" @click="$emit('pageCountClick')">{{ book.pageCount }}P</el-tag>
       <el-icon
@@ -121,7 +121,7 @@
       <div class="fill-top" v-if="fillTopShown || (!setting.hideBookmarkButton && !viewerRole)">
         <el-tag class="fill-badge" size="small" v-if="book.historyTime || !setting.hideReadCount"
           @click="onReadCountClick"
-        >{{ book.historyTime ? historyTimeText : (book.online ? 'EH' : book.readCount) }}</el-tag>
+        >{{ book.historyTime ? historyTimeText : (book.online ? languageBadgeText(book) : book.readCount) }}</el-tag>
         <p class="fill-title" v-if="!setting.hideTitle"
           @click="$emit('titleClick')"
           @contextmenu="onTitleContextMenu($event)"
@@ -199,9 +199,27 @@ const bookTaskChar = computed(() => {
 
 const { setting, resolvedTranslation } = storeToRefs(appStore)
 const { printMessage } = appStore
-const { getDisplayTitle, isChineseTranslatedManga, saveBook, switchMark } = appStore
+const { getDisplayTitle, isChineseTranslatedManga, onlineLanguageCode, saveBook, switchMark } = appStore
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
+
+// 角标上的语言:界面是中文时**全部语言都用中文**(用户要的),其它界面沿用 CH/EH/JP 缩写。
+// 取不到语言时维持原来的 EH(表示来自 E-Hentai),不会变成空的角标。
+const LANG_ZH_CHAR = {
+  CH: '中', EH: '英', JP: '日', KR: '韩', ES: '西', FR: '法', DE: '德', RU: '俄',
+  IT: '意', PT: '葡', TH: '泰', VI: '越', PL: '波', NL: '荷', HU: '匈', TR: '土',
+  ID: '印尼', AR: '阿', HE: '希伯来', HI: '印地', BN: '孟加拉', UR: '乌尔都', FA: '波斯',
+  CS: '捷克', EL: '希腊', SV: '瑞典', FI: '芬兰', DA: '丹麦', NO: '挪威', RO: '罗马尼亚',
+  UK: '乌克兰', CA: '加泰', HR: '克罗地亚', SR: '塞尔维亚', BG: '保加利亚', SK: '斯洛伐克',
+  SL: '斯洛文尼亚', LT: '立陶宛', LV: '拉脱维亚', ET: '爱沙尼亚', IS: '冰岛', MS: '马来',
+  TL: '菲律宾', MY: '缅甸', KM: '高棉', LO: '老挝', NE: '尼泊尔', SI: '僧伽罗', TA: '泰米尔',
+  TE: '泰卢固', ML: '马拉雅拉姆', KN: '卡纳达', MR: '马拉地', GU: '古吉拉特', PA: '旁遮普'
+}
+const languageBadgeText = (book) => {
+  const code = onlineLanguageCode(book) || 'EH'
+  if (String(locale.value || '').toLowerCase().startsWith('zh')) return LANG_ZH_CHAR[code] || code
+  return code
+}
 
 // 填充封面开关(设置 → 显示选项「填充封面」):开 = 封面铺满卡片、文字/按钮透明浮层
 const fillCover = computed(() => !!setting.value.fillCover)

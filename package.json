@@ -1,7 +1,7 @@
 {
   "name": "exhentai-manga-manager",
   "private": true,
-  "version": "1.13.0",
+  "version": "1.15.0",
   "license": "MIT",
   "author": "SchneeHertz (modified fork by universc)",
   "description": "Tag-based management, reading manga downloaded from ExHentai",
@@ -21,6 +21,7 @@
   },
   "build": {
     "appId": "electron.e-hentai.tagger",
+    "npmRebuild": false,
     "directories": {
       "output": "out"
     },
@@ -55,8 +56,9 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "perMachine": false,
+      "perMachine": true,
       "allowElevation": true,
+      "include": "build/installer.nsh",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "exhentai-manga-manager",

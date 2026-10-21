@@ -23,7 +23,7 @@ const { prepareTemplate } = require('./modules/prepare_menu.js')
 const { getBookFilelist, geneCover, getImageListByBook, deleteImageFromBook, listArchiveImages, extractArchiveFiles } = require('./fileLoader/index.js')
 const { parseTxtStructured, parseEpubStructured } = require('./fileLoader/novel.js')
 const {
-  STORE_PATH, isPortable,
+  STORE_PATH, DEFAULT_DATA_PATH, isPortable,
   TEMP_PATH, VIEWER_PATH,
   prepareSetting, prepareCollectionList, preparePath,
   setBootstrapDataPath,
@@ -147,9 +147,17 @@ localModels.setMirror(setting.localModelMirror || '')
 // 用户在容器内设置的合法路径(以 / 开头,如 /library/sub、/data/xxx)一律尊重,
 // 不再无条件强制回 /library,避免「库文件夹/元数据目录设置后又被重置」的问题。
 // 抽成函数:网页版按账户切换设置文件时,要对新读进来的那份重新套用一次。
+// 容器/网页模式的「库根」:
+//   · compose 会给 WEB_LIBRARY=/library;
+//   · 但镜像本身只带 WEB_MODE=1 —— 以前只看 WEB_LIBRARY,导致「只用镜像建容器」时
+//     应用把自己当桌面端(用 lib.path 而不是 pathWeb、跨端路径互译全关),
+//     结果是封面和阅读图片全线 404。这里让 WEB_MODE=1 也等价于容器模式。
+const WEB_LIBRARY_ENV = String(process.env.WEB_LIBRARY || (process.env.WEB_MODE === '1' ? '/library' : '')).trim()
+const IS_WEB_ENV = !!WEB_LIBRARY_ENV
+
 const applyContainerLibraryMapping = (target) => {
-  if (!process.env.WEB_LIBRARY) return target
-  const forcedLibrary = path.resolve(process.env.WEB_LIBRARY)
+  if (!WEB_LIBRARY_ENV) return target
+  const forcedLibrary = path.resolve(WEB_LIBRARY_ENV)
   const lib = String(target.library || '')
   if (/^[A-Za-z]:[\\/]/.test(lib)) {
     // Windows 盘符:记录为外部根,并在容器内强制为挂载路径
@@ -176,10 +184,9 @@ applyContainerLibraryMapping(setting)
 // 数据归属:scan-snapshot.json / database.sqlite / viewcache 属于「库」,放库数据目录;
 // metadata.sqlite / setting.json / collectionList.json / cover 等属于「用户统一配置」,仍在数据存放目录。
 // 当前活动库(多库管理 UI 切换的就是它)。第 3 条 C:没填「库数据存放位置」的库不生效、不参与。
-// 当前环境:网页版/容器 还是 桌面版。
+// 当前环境:网页版/容器 还是 桌面版(IS_WEB_ENV 定义在上面,与 WEB_LIBRARY_ENV 同源)。
 // libraries 里存了两组路径(path/dataPath = 桌面,pathWeb/dataPathWeb = 网页),
 // 业务代码统一通过 runtimeLibs() 拿到「本端」那一组 —— 两端共用同一份 setting.json 也不会互相打架。
-const IS_WEB_ENV = !!process.env.WEB_LIBRARY
 const runtimeLibs = (s = setting) => runtimeLibraries(s, IS_WEB_ENV)
 
 const activeLibraryOf = (s = setting) => {
@@ -419,6 +426,8 @@ process
     process.exit(1)
   })
 
+let settingWriteSeq = 0
+const settingTmpPath = () => getSettingFilePath() + '.' + process.pid + '.' + (++settingWriteSeq) + '.tmp'
 // ---------- 漫画库列表日志(第二十七/二十八轮) ----------
 // ensureLibraries 与每库数据目录在文件上方(setting 就绪后、打开数据库之前)已算好;
 // 这里只负责把结果写进 log.txt,并在本地模式把 setting.json 落盘。
@@ -482,8 +491,6 @@ let sendImageLock = false
 // 原子写入 setting.json(与 save-setting 处理器末尾逻辑一致)
 // setting.json 原子写:临时文件必须唯一 —— persistSetting(同步)与 applySetting(异步)可能并发,
 // 以前都用 setting.json.tmp,先完成的那次会把临时文件 rename 走,后一次就 ENOENT(用户报的 bug)
-let settingWriteSeq = 0
-const settingTmpPath = () => getSettingFilePath() + '.' + process.pid + '.' + (++settingWriteSeq) + '.tmp'
 const persistSetting = () => {
   // 库配置单独落盘,不写进按账户的设置文件(库跟数据目录走,不跟账户走)
   writeLibrariesFile(extractLibraryConfig(setting))
@@ -913,7 +920,7 @@ const startRemoteProxy = (remoteServer) => new Promise((resolve) => {
       return res.json({ ok: true, result: getWindowState() })
     }
     if (channel === 'get-data-path') {
-      return res.json({ ok: true, result: { dataPath: STORE_PATH, defaultDataPath: app.getPath('userData'), isPortable } })
+      return res.json({ ok: true, result: { dataPath: STORE_PATH, defaultDataPath: DEFAULT_DATA_PATH, isPortable } })
     }
     if (channel === 'set-data-path') {
       try {
@@ -1336,16 +1343,49 @@ const loadLegecyBookListFromFile = async () => {
 // 所以两端同名库的 path / pathWeb 一定在同一条记录里。
 // 旧实现只有全局 externalLibraryRoot,多库时非活动库的书翻译不了 ——
 // 这正是「网页版能看封面、阅读器却一直白」的根因(图片路径根本没落到容器里)。
-const { localizeBookPath: localizeBookPathIn, externalizeBookPath: externalizeBookPathIn } = require('./modules/libraryPaths.js')
+const {
+  localizeBookPath: localizeBookPathIn, externalizeBookPath: externalizeBookPathIn,
+  isAbsoluteStoredPath, isUrlLike, relativeToLibrary, resolveFromLibrary, libraryOwnerOfPath, relByRootTail, relForStoredPath
+} = require('./modules/libraryPaths.js')
 // 以「当前库列表 + 当前端」为准的翻译(纯函数见 modules/libraryPaths.js,可单独测试)
 const localizeBookPath = (p) => localizeBookPathIn(p, setting.libraries, IS_WEB_ENV)
 const externalizeBookPath = (p) => externalizeBookPathIn(p, setting.libraries, IS_WEB_ENV)
 
-// 跨平台路径翻译:共享数据库可能由 Windows 桌面版写入(路径形如 Y:\01-漫画\...,
-// 封面在 Y:\01-漫画\S\数据存放\cover\...)。读取时把 Windows 路径翻译为当前环境路径。
-const translateBookPath = (p, kind, coverDir) => {
+// 这本书属于哪个库:多库合并书架下,相对路径必须按「它自己那个库」的库根拼
+const libForBook = (book) => {
+  const libs = runtimeLibs()
+  if (book && book.libraryId) {
+    const hit = libs.find(l => l.id === book.libraryId)
+    if (hit) return hit
+  }
+  return activeLibraryOf(setting) || null
+}
+// 当前「正在写库 / 正在扫描」的那个库:openLibraryForScan() 会把 setting.library 换成它的本端路径
+const currentLibrary = () => {
+  const cur = String(setting.library || '').trim()
+  if (cur) {
+    const hit = runtimeLibs().find(l => String(l.path || '').trim() === cur)
+    if (hit) return hit
+  }
+  return activeLibraryOf(setting) || null
+}
+
+// 跨端路径翻译(读库后、展示/取图前调用)。两种存储形式都读得懂:
+//   ① 相对路径(当前格式,相对该库根)—— 按「这本书所属的库」的本端库根拼回绝对路径;
+//     这样同一份库数据库在桌面(Y:\01-漫画)、容器(/library)、换盘符换共享后都能读;
+//   ② 绝对路径(老格式:Windows 盘符 / UNC / 容器 /library…)—— 按下面的老规则翻译。
+const translateBookPath = (p, kind, lib, coverDir) => {
   if (!p) return p
   if (kind === 'filepath') {
+    if (isUrlLike(p)) return p
+    if (!isAbsoluteStoredPath(p)) {
+      // 相对路径只有知道「属于哪个库」才拼得出来;拿不到库上下文时退一步:
+      // 只有唯一一个库才敢拼(宁可拼不出来,也不要拼到别的库上去)
+      const libs = runtimeLibs()
+      const owner = lib || (libs.length === 1 ? libs[0] : null)
+      const local = owner ? resolveFromLibrary(p, owner, IS_WEB_ENV) : null
+      return local || p
+    }
     // ① 多库:按书所属库翻译(网页端阅读能否取到图,全靠这一步)
     const localized = localizeBookPath(p)
     if (localized !== p) return localized
@@ -1359,7 +1399,7 @@ const translateBookPath = (p, kind, coverDir) => {
   }
   if (kind === 'coverPath' && (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\') || p.startsWith('/'))) {
     // 封面绝对路径(Windows 盘符 / UNC / Linux 如 /data/cover/...) →
-    // 只取文件名,映射到当前 CURRENT_COVER_DIR(封面文件统一存在共享 cover 目录,
+    // 只取文件名,映射到当前封面目录(封面文件统一存在共享 cover 目录,
     // NAS 端写入的 /data/cover/x.webp 在 Windows 桌面也能据此读到)
     const base = p.split(/[\\/]/).pop()
     return base ? path.join(coverDir || CURRENT_COVER_DIR, base) : p
@@ -1367,12 +1407,18 @@ const translateBookPath = (p, kind, coverDir) => {
   return p
 }
 
-// 反向翻译:写入共享数据库时把当前环境路径写成 Windows 侧格式,
-// 保证 Windows 桌面版也能直接读取同一份数据库。
-const toExternalPath = (p, kind, coverDir) => {
+// 反向翻译(写库前调用)。新格式:写「相对所属库根」的相对路径 —— 两端、换盘符、换共享都读得懂;
+// 只有路径不在任何库根下时(理论上不该出现)才退回原来的绝对形式,至少不丢路径。
+const toExternalPath = (p, kind, lib, coverDir) => {
   if (!p) return p
   if (kind === 'filepath') {
-    // ① 多库:按书所属库把本端路径写成桌面(规范)形式,保证另一端也读得到
+    if (isUrlLike(p)) return p
+    const owner = lib || libraryOwnerOfPath(p, runtimeLibs(), IS_WEB_ENV)
+    if (owner) {
+      const rel = relativeToLibrary(p, owner, IS_WEB_ENV)
+      if (rel !== null && rel !== '') return rel
+    }
+    // ① 老规矩:本端路径 → 桌面(规范)形式
     const externalized = externalizeBookPath(p)
     if (externalized !== p) return externalized
     // ② 旧版单库兜底
@@ -1387,6 +1433,81 @@ const toExternalPath = (p, kind, coverDir) => {
     return setting.externalCoverRoot + '\\' + p.slice(covDir.length).replace(/[/\\]+/g, '\\')
   }
   return p
+}
+
+// 库数据库里的行:它属于哪个库(findBookAcrossLibraries 的返回值 / 行自带 libraryId 都认)
+const libForRow = (found) => {
+  const id = String((found && (found.libraryId || (found.row && found.row.libraryId))) || '')
+  const libs = runtimeLibs()
+  return (id ? libs.find(l => l.id === id) : null) || activeLibraryOf(setting) || null
+}
+// 库数据库里的行 → 本端绝对路径(相对路径按它所属库的库根拼;老格式绝对路径照老规则翻译)
+const localizeRowPath = (row, lib) => translateBookPath(row && row.filepath, 'filepath', lib || null)
+
+// ---------- 库数据库里的路径规范化:老格式绝对路径 → 相对库根 ----------// 升级到「相对路径存储」时,把库里已经存在的绝对路径行转成相对形式:
+//   · 前缀正好是本库根(正常情况)→ 去掉前缀;
+//   · 前缀已经失效(换过盘符/共享,例如库里全是 T:\01-漫画\... 而库根是 Y:\01-漫画)→
+//     用「库根末尾几段」当锚点定位,锚点后面的部分就是相对路径;
+//   · 认不出来的行原样保留(照旧按绝对路径读,不会丢数据)。
+// 幂等:库里没有绝对路径行时什么都不写,可以每次启动都跑。
+const normalizeLibraryPaths = async (lib) => {
+  const model = await modelForLibrary(lib.id)
+  const rows = await model.findAll({ attributes: ['id', 'filepath'], raw: true })
+  const todo = []
+  let byPrefix = 0
+  let byAnchor = 0
+  let unknown = 0
+  for (const row of rows) {
+    const p = String(row.filepath || '')
+    if (!p || !isAbsoluteStoredPath(p)) continue
+    const hit = relForStoredPath(p, lib, IS_WEB_ENV)
+    if (!hit) {
+      unknown++
+      continue
+    }
+    if (hit.how === 'prefix') byPrefix++
+    else byAnchor++
+    todo.push({ id: row.id, rel: hit.rel })
+  }
+  if (todo.length) {
+    // 分批提交(每批 500 行):一万多行挤进一个事务,在网络盘上很容易超时/报
+    // SQLITE_IOERR disk I/O error(连接会被 sequelize 判为不可用而强杀);
+    // 分批既有进度、失败也只影响当前这一批
+    const BATCH = 500
+    for (let i = 0; i < todo.length; i += BATCH) {
+      const chunk = todo.slice(i, i + BATCH)
+      await model.sequelize.transaction(async (t) => {
+        for (const it of chunk) {
+          await model.update({ filepath: it.rel }, { where: { id: it.id }, transaction: t })
+        }
+      })
+    }
+  }
+  return { total: rows.length, changed: todo.length, byPrefix, byAnchor, unknown }
+}
+// 每个库只规范化一次(库数据目录变了/新加的库会各自再算一次)
+const normalizedLibraryKeys = new Set()
+const pathNormalizeJobs = new Map()
+const ensureLibraryPathsNormalized = async () => {
+  const libs = runtimeLibs().filter(l => isLibraryActive(l, IS_WEB_ENV))
+  for (const lib of libs) {
+    const key = lib.id + '|' + (libraryRuntimePaths(STORE_PATH, lib).dbFile || '')
+    if (normalizedLibraryKeys.has(key)) continue
+    let job = pathNormalizeJobs.get(key)
+    if (!job) {
+      job = normalizeLibraryPaths(lib).then(r => {
+        normalizedLibraryKeys.add(key)
+        if (r.changed || r.unknown) {
+          console.log(`[paths] 库「${lib.name}」路径规范化:${r.changed} 条绝对路径 → 相对路径(按库根前缀 ${r.byPrefix}、按库名锚点 ${r.byAnchor}),无法识别保留 ${r.unknown} 条`)
+        }
+        return r
+      }).catch(e => {
+        console.error(`[paths] 库「${lib.name}」路径规范化失败:${String((e && e.message) || e)}`)
+      }).finally(() => pathNormalizeJobs.delete(key))
+      pathNormalizeJobs.set(key, job)
+    }
+    await job
+  }
 }
 
 // ---------- 封面懒加载(用户使用时按需生成,以漫画名命名) ----------
@@ -1436,7 +1557,7 @@ const releaseCoverName = (coverName, coverDir) => {
 // 生成封面(指定漫画名)并返回本地 coverPath;失败返回 null
 const generateCoverByName = async (book, coverDir) => {
   const dir = coverDir || bookCoverDir(book)
-  const filepath = translateBookPath(book.filepath, 'filepath')
+  const filepath = translateBookPath(book.filepath, 'filepath', libForBook(book))
   const type = book.type || 'archive'
   const coverName = acquireCoverName(filepath, dir)
   try {
@@ -1454,7 +1575,7 @@ const generateCoverByName = async (book, coverDir) => {
 
 // 把封面路径写回共享数据库(路径按当前环境转外部格式)
 const updateBookCoverPath = async (id, coverPath, coverDir) => {
-  const ext = toExternalPath(coverPath, 'coverPath', coverDir)
+  const ext = toExternalPath(coverPath, 'coverPath', null, coverDir)
   // 合并书架下必须写回这本书自己的库
   const model = await modelForBookId(id)
   await model.update({ coverPath: ext }, { where: { id } })
@@ -1498,7 +1619,7 @@ const ensureBookCover = (book) => {
       const coverDir = bookCoverDir(book)
       try { fs.mkdirSync(coverDir, { recursive: true }) } catch (e) { /* 稍后生成时再试 */ }
       if (book.coverPath) {
-        const local = translateBookPath(book.coverPath, 'coverPath', coverDir)
+        const local = translateBookPath(book.coverPath, 'coverPath', null, coverDir)
         if (isUsableCover(local)) return local
         // basename 兜底:文件可能被另一端生成在同一个封面目录里
         const base = String(book.coverPath).replace(/[\\/]+$/, '').split(/[\\/]/).pop()
@@ -1541,7 +1662,7 @@ ipcMain.handle('ensure-book-cover', async (event, id) => {
     if (!book.hash || book.pageCount === null || book.pageCount === undefined) {
       try {
         const lib = (setting.libraries || []).find(l => l.id === book.libraryId)
-        const fp2 = translateBookPath(book.filepath, 'filepath')
+        const fp2 = translateBookPath(book.filepath, 'filepath', lib)
         const r = await geneCover(fp2, book.type, null, coverDirOf(lib))
         await found.model.update({
           hash: r.hash || null,
@@ -1560,7 +1681,134 @@ ipcMain.handle('ensure-book-cover', async (event, id) => {
 })
 
 let noLibraryNotified = false
+// ---------- 旧版书架迁移:metadata.sqlite 里的 Mangas → 当前「每库一个 database.sqlite」 ----------
+// 背景:老版本把书架行存在 metadata.sqlite 的 Mangas 表里;升级到多库后书架改到每库的 database.sqlite,
+// 老表就变成了孤儿数据 —— 表现是「书架空 / 封面和阅读图片全 404」,而标签评分还在
+// (因为它们在 Metadata 表里,按 hash 存,和书架行解耦)。
+// 迁移按 filepath 前缀把老行分给**各自的库**,只往「空的库数据库」里搬(已有数据的一律不动),
+// 老表整体改名为 Mangas_legacy_v1 保留,不删任何数据。
+let legacyMigrated = false
+const migrateLegacyMangaTable = async () => {
+  if (legacyMigrated) return 0
+  legacyMigrated = true
+  try {
+    // 旧表可能还叫 Mangas(没迁移过),也可能已经被上一次迁移改名成 Mangas_legacy_v1 —— 两种都要认,
+    // 这样「书架库被重建/搬丢」时还能一键补回来(标签评分在 Metadata 里,永远不丢)。
+    const [tbl] = await Metadata.sequelize.query("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('Mangas','Mangas_legacy_v1') ORDER BY CASE name WHEN 'Mangas' THEN 0 ELSE 1 END")
+    if (!tbl || !tbl.length) return 0
+    const legacyTable = tbl[0].name
+    console.log(`[legacy] 发现旧书架表:${legacyTable}`)
+    const [legacyRows] = await Metadata.sequelize.query(`SELECT * FROM ${legacyTable}`)
+    if (!legacyRows || !legacyRows.length) return 0
+
+    // 1) 按 filepath 前缀把老数据分给对应的库(根路径越长越精确)
+    const libs = runtimeLibs()
+      .map(l => ({ id: l.id, name: l.name, root: String(l.path || '').replace(/[\\/]+$/, '') }))
+      .filter(l => l.root)
+      .sort((a, b) => b.root.length - a.root.length)
+    const groups = new Map()
+    for (const r of legacyRows) {
+      const fp = String(r.filepath || '')
+      const owner = libs.find(l => fp === l.root || fp.startsWith(l.root + '/'))
+      const key = owner ? owner.id : '__active__'
+      if (!groups.has(key)) groups.set(key, { rows: [], name: owner ? owner.name : '当前库' })
+      groups.get(key).rows.push(r)
+    }
+
+    let totalInserted = 0
+    const detail = []
+    for (const [key, group] of groups) {
+      let model
+      try {
+        model = key === '__active__' ? Manga : await modelForLibrary(key)
+      } catch (e) {
+        console.error(`[legacy] 打不开库 ${key} 的数据库,跳过:`, String((e && e.message) || e))
+        continue
+      }
+      const [countRows] = await model.sequelize.query('SELECT COUNT(*) AS c FROM Mangas')
+      const existing = Number((countRows && countRows[0] && countRows[0].c) || 0)
+      // 已经有足够多就跳过;少了(上次迁移被打断/部分失败)→ 继续补齐,
+      // INSERT OR IGNORE 只会补缺的那些(按 id 去重),不会重复插入也不会覆盖已有行。
+      if (existing >= group.rows.length) { detail.push(`${group.name}: 已有 ${existing} 本,不迁移`); continue }
+
+      const [shelfCols] = await model.sequelize.query('PRAGMA table_info(Mangas)')
+      const cols = (shelfCols || []).map(r => r.name)
+      const usable = cols.filter(c => Object.prototype.hasOwnProperty.call(group.rows[0], c))
+      if (!usable.length) { detail.push(`${group.name}: 列不兼容,跳过`); continue }
+      const sql = `INSERT OR IGNORE INTO Mangas (${usable.join(',')}) VALUES (${usable.map(() => '?').join(',')})`
+      const BATCH = 300
+      let done = 0
+      for (let i = 0; i < group.rows.length; i += BATCH) {
+        const chunk = group.rows.slice(i, i + BATCH)
+        const t = await model.sequelize.transaction()
+        try {
+          for (const r of chunk) {
+            const vals = usable.map((c) => {
+              const v = r[c]
+              if (v === undefined) return null
+              if (v !== null && typeof v === 'object') return JSON.stringify(v)
+              return v
+            })
+            await model.sequelize.query(sql, { replacements: vals, transaction: t })
+          }
+          await t.commit()
+          done += chunk.length
+        } catch (e) {
+          try { await t.rollback() } catch (_) { /* 忽略 */ }
+          console.error(`[legacy] ${group.name} 第 ${i / BATCH + 1} 批中断:`, String((e && e.message) || e))
+          break
+        }
+      }
+      const [afterRows] = await model.sequelize.query('SELECT COUNT(*) AS c FROM Mangas')
+      const afterCount = Number((afterRows && afterRows[0] && afterRows[0].c) || 0)
+      if (afterCount > 0) {
+        totalInserted += afterCount
+        detail.push(`${group.name}: ${group.rows.length} → ${afterCount} 本`)
+      } else if (done === 0) {
+        detail.push(`${group.name}: 一行都没写进去(列不兼容)`)
+      }
+    }
+    if (totalInserted > 0) {
+      if (legacyTable === 'Mangas') {
+        try { await Metadata.sequelize.query('ALTER TABLE Mangas RENAME TO Mangas_legacy_v1') } catch (e) { /* 改名失败不影响数据 */ }
+      }
+      const msg = `[legacy] 旧版书架已迁移:${detail.join(';')}(老表改名为 Mangas_legacy_v1 保留)`
+      console.log(msg)
+      sendMessageToWebContents(`已迁移旧版书架数据:${detail.join(';')}`)
+    } else if (detail.length) {
+      console.log(`[legacy] 未迁移:${detail.join(';')}`)
+    }
+    return totalInserted
+  } catch (e) {
+    console.error('[legacy] 旧书架迁移失败:', String((e && e.message) || e))
+    return 0
+  }
+}
+
+// 库路径不存在(最常见:容器挂载点和设置里写的路径不一致)→ 明确告诉用户,别默默扫出 0 本
+const warnedMissingLibrary = new Set()
+const warnMissingLibraryPaths = () => {
+  try {
+    for (const lib of runtimeLibs()) {
+      const p = String(lib.path || '')
+      if (!p) continue
+      if (fs.existsSync(p)) { warnedMissingLibrary.delete(p); continue }
+      if (warnedMissingLibrary.has(p)) continue
+      warnedMissingLibrary.add(p)
+      const msg = `库「${lib.name}」的路径在容器里不存在:${p} —— 检查 docker 挂载点是否和设置里一致`
+      console.error('[library] ' + msg)
+      sendMessageToWebContents(msg)
+      break
+    }
+  } catch (e) { /* 忽略 */ }
+}
+
 const loadBookListFromDatabase = async () => {
+  // 先把旧版书架搬过来(只在书架为空时做一次),再走原来的合并逻辑
+  try { await migrateLegacyMangaTable() } catch (e) { /* 迁移失败不影响书架 */ }
+  try { warnMissingLibraryPaths() } catch (e) { /* 忽略 */ }
+  // 库数据库里的老格式绝对路径先转成相对路径(每个库只做一次;之后新写入的都是相对路径)
+  await ensureLibraryPathsNormalized()
   // 多库:当前「切换框」里所有已生效的库各读各的库数据库,合并成一个书架(同一本书不去重)
   const libs = boxLibraries()
   let bookList = []
@@ -1579,8 +1827,8 @@ const loadBookListFromDatabase = async () => {
         const b = row.toJSON()
         b.libraryId = lib.id
         b.libraryName = lib.name
-        b.filepath = translateBookPath(b.filepath, 'filepath')
-        b.coverPath = translateBookPath(b.coverPath, 'coverPath', coverDirOf(lib))
+        b.filepath = translateBookPath(b.filepath, 'filepath', lib)
+        b.coverPath = translateBookPath(b.coverPath, 'coverPath', null, coverDirOf(lib))
         rememberBookLibrary(b)
         bookList.push(b)
       }
@@ -1625,17 +1873,27 @@ const loadBookListFromDatabase = async () => {
       if (book.hash) pendingUpserts.push(book)
     }
   }
-  // 所有缺失元数据一次性事务写入,避免逐条 fsync
+  // 所有缺失元数据分批写入。
+  // ⚠️ 两处必须这么写:
+  //   ① 分批:元数据库是空的时候(首次建库 / 刚换「元数据存放目录」)会有「书的数量」那么多行要补,
+  //      一万多行挤进一个事务,提交时会在 Windows 上直接报 SQLITE_IOERR disk I/O error;
+  //   ② 整块容错:元数据只是「书架用的缓存」,写不进去最多是标签/评分晚一点补上,
+  //      但绝不能因此让 load-book-list 抛错 —— 那会让整个书架变成 500 打不开
+  //      (sequelize 在 commit 失败后还会杀掉连接,后续读写一起废掉)。
   if (pendingUpserts.length) {
-    const t = await Metadata.sequelize.transaction()
-    try {
-      for (const book of pendingUpserts) {
-        await Metadata.upsert(book, { transaction: t })
+    const META_BATCH = 500
+    for (let i = 0; i < pendingUpserts.length; i += META_BATCH) {
+      const t = await Metadata.sequelize.transaction()
+      try {
+        for (const book of pendingUpserts.slice(i, i + META_BATCH)) {
+          await Metadata.upsert(book, { transaction: t })
+        }
+        await t.commit()
+      } catch (e) {
+        try { await t.rollback() } catch (_) { /* 连接可能已被杀,忽略 */ }
+        console.error(`[meta] 元数据补写失败(第 ${i / META_BATCH + 1} 批,不影响书架显示):${String((e && e.message) || e)}`)
+        break
       }
-      await t.commit()
-    } catch (e) {
-      await t.rollback()
-      throw e
     }
   }
   setProgressBar(-1)
@@ -1663,7 +1921,7 @@ const saveBookToDatabase = async (book) => {
   // 写共享数据库时路径转换为 Windows 格式,保证桌面版可读
   const extBook = {
     ...book,
-    filepath: toExternalPath(book.filepath, 'filepath'),
+    filepath: toExternalPath(book.filepath, 'filepath', libForBook(book)),
     coverPath: toExternalPath(book.coverPath, 'coverPath')
   }
   // 合并书架下每本书自带 libraryId:必须写回它自己所属的库,不然会写脏别的库
@@ -1819,7 +2077,7 @@ const runMetaBackfill = async () => {
       await waitViewerIdle()
       if (isScanning) { metaBackfill.stop = true; break }
       try {
-        const filepath = translateBookPath(row.filepath, 'filepath')
+        const filepath = translateBookPath(row.filepath, 'filepath', lib)
         const coverDir = coverDirOf(lib)
         // 用户要求:后台补全时把封面一并生成(以前只探测信息)。
         // 走 ensureBookCover:自带每本一次的任务锁 + 全局 4 路并发限制。
@@ -1911,17 +2169,38 @@ const AUTO_EXCLUDE_PATTERNS = [
 ]
 // 正则元字符转义:数据目录路径里可能有 \\ ( ) 等字符
 const escapeRegExp = (str) => String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// 目录路径 → 排除正则:只匹配这个目录本身和它下面的东西,
+// 不误伤名字只是前缀相同的兄弟目录(例如「数据存放」vs「数据存放2」)
+const dirExcludePattern = (dir) => escapeRegExp(String(dir || '').replace(/[\\/]+$/, '')) + '(?:[\\\\/]|$)'
+// p 是否是 root 本身或 root 下面的路径(都用绝对路径比较)
+const isSameOrUnder = (p, root) => {
+  if (!p || !root) return false
+  try {
+    const P = path.resolve(p).toLowerCase()
+    const R = path.resolve(root).toLowerCase()
+    return P === R || P.startsWith(R.endsWith(path.sep) ? R : R + path.sep)
+  } catch (e) { return false }
+}
 // 编译排除规则正则:用户规则 + 自动规则(任一命中即排除)
 const compileExclude = () => {
   const user = _.isEmpty(setting.excludeFile) ? '' : String(setting.excludeFile)
   // 数据目录本身必须排除:漫画库常常把数据目录放在自己内部(例如 /library/S/数据存放),
   // 里面的 cover / viewer / tmp / models / 数据库 全都不该出现在书架里。
-  const store = STORE_PATH ? escapeRegExp(STORE_PATH) : ''
-  const all = (user ? [user] : []).concat(store ? [store] : []).concat(AUTO_EXCLUDE_PATTERNS)
+  // 书路径的相对基准永远是「库文件夹」,所以「数据存放目录」和每个库自己的
+  // 「库数据存放位置」都要整体排除 —— 否则从数据目录里扫出来的书会带着一条
+  // 相对库文件夹、却指向数据目录的路径进书架。
+  const libRoots = runtimeLibs().map(l => localLibraryPath(l, IS_WEB_ENV)).filter(Boolean)
+  const dataDirs = [STORE_PATH, ...runtimeLibs().map(l => libraryDataDir(STORE_PATH, l, IS_WEB_ENV))]
+    // 数据目录是库文件夹本身/上层时不能排除(否则整个库都扫不到)
+    .filter(d => d && !libRoots.some(r => isSameOrUnder(r, d)))
+  const base = dataDirs.map(dirExcludePattern).concat(AUTO_EXCLUDE_PATTERNS)
+  const all = (user ? [user] : []).concat(base)
+  const buildRe = (arr) => new RegExp('(' + arr.join(')|(') + ')')
   try {
-    return new RegExp('(' + all.join(')|(') + ')')
+    return buildRe(all)
   } catch (e) {
-    try { return new RegExp('(' + AUTO_EXCLUDE_PATTERNS.join(')|(') + ')') } catch (e2) { return null }
+    // 用户规则写坏了:仍然保留数据目录与自动规则 —— 它们不能因为一条坏正则就失效
+    try { return buildRe(base) } catch (e2) { return null }
   }
 }
 
@@ -1955,7 +2234,7 @@ const processScanItem = async (ctx, filepath, type, fp) => {
         foundPrevBook.coverPath = newCoverPath
         await Manga.update(
           {
-            filepath: toExternalPath(filepath, 'filepath'),
+            filepath: toExternalPath(filepath, 'filepath', ctx.lib),
             coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath') : null
           },
           { where: { id: existingManga.id } }
@@ -1998,9 +2277,12 @@ const processScanItem = async (ctx, filepath, type, fp) => {
 }
 
 const runScan = async () => {
+  // 库里老格式的绝对路径先规范化成相对路径,否则下面按「本端绝对路径」索引会对不上
+  await ensureLibraryPathsNormalized()
+  const scanLib = currentLibrary()
   const bookList = await Manga.findAll({ raw: true })
   bookList.forEach(b => {
-    b.filepath = translateBookPath(b.filepath, 'filepath')
+    b.filepath = translateBookPath(b.filepath, 'filepath', scanLib)
     b.coverPath = translateBookPath(b.coverPath, 'coverPath')
     b.exist = false
   })
@@ -2018,7 +2300,18 @@ const runScan = async () => {
   const inv = await inventoryLibrary(setting.library, { excludeRe })
   let list = inv.books
   const listLength = list.length
-  sendMessageToWebContents(`从漫画库找到 ${listLength} 本漫画`)
+  if (listLength === 0) {
+    // 0 本 = 路径不对 / 没挂载 / 里面确实没有可识别的书,直接把看到的目录内容告诉用户
+    const root = String(setting.library || '')
+    let sample = ''
+    try {
+      const names = fs.readdirSync(root).slice(0, 8)
+      sample = names.length ? `(里面前几个:${names.join('、')})` : '(目录是空的)'
+    } catch (e) { sample = '(这个目录读不了:可能没挂载或没有权限)' }
+    sendMessageToWebContents(`漫画库「${root}」里没找到任何漫画/小说 ${sample} —— 支持:含图片的文件夹、zip/cbz/rar/7z、epub、txt`)
+  } else {
+    sendMessageToWebContents(`从漫画库找到 ${listLength} 本漫画`)
+  }
 
   const CONCURRENCY = scanConcurrency()
   const BATCH_SIZE = 200
@@ -2035,7 +2328,7 @@ const runScan = async () => {
       // 用户在阅读时暂停任务,让出 CPU/磁盘
       await waitViewerIdle()
       try {
-        await processScanItem({ bookMap, bookIdMap, batchNewBooks, skipRelocateLookup }, filepath, type, inv.dirs[filepath] || inv.arch[filepath])
+        await processScanItem({ bookMap, bookIdMap, batchNewBooks, skipRelocateLookup, lib: scanLib }, filepath, type, inv.dirs[filepath] || inv.arch[filepath])
       } catch (e) {
         sendMessageToWebContents(`加载 ${filepath} 失败:${e}(${i + 1}/${listLength})`)
       }
@@ -2044,7 +2337,7 @@ const runScan = async () => {
     if (batchNewBooks.length) {
       await Manga.bulkCreate(batchNewBooks.map(b => ({
         ...b,
-        filepath: toExternalPath(b.filepath, 'filepath'),
+        filepath: toExternalPath(b.filepath, 'filepath', scanLib),
         coverPath: toExternalPath(b.coverPath, 'coverPath')
       })))
       for (const newBook of batchNewBooks) {
@@ -2184,9 +2477,11 @@ const runIncrementalScan = async () => {
   const excludeRe = compileExclude()
   const diff = await diffInventory(setting.library, oldSnap, { excludeRe })
   // 读取数据库并建立索引(与全量扫描相同的路径翻译;内存 Map 成本远低于枚举成本)
+  await ensureLibraryPathsNormalized()
+  const scanLib = currentLibrary()
   const bookList = await Manga.findAll({ raw: true })
   bookList.forEach(b => {
-    b.filepath = translateBookPath(b.filepath, 'filepath')
+    b.filepath = translateBookPath(b.filepath, 'filepath', scanLib)
     b.coverPath = translateBookPath(b.coverPath, 'coverPath')
     b.exist = false
   })
@@ -2232,7 +2527,7 @@ const runIncrementalScan = async () => {
       const i = start + chunkIndex
       await waitViewerIdle()
       try {
-        await processScanItem({ bookMap, bookIdMap, batchNewBooks }, filepath, type)
+        await processScanItem({ bookMap, bookIdMap, batchNewBooks, lib: scanLib }, filepath, type)
       } catch (e) {
         sendMessageToWebContents(`加载 ${filepath} 失败:${e}(${i + 1}/${candidates.length})`)
       }
@@ -2241,7 +2536,7 @@ const runIncrementalScan = async () => {
     if (batchNewBooks.length) {
       await Manga.bulkCreate(batchNewBooks.map(b => ({
         ...b,
-        filepath: toExternalPath(b.filepath, 'filepath'),
+        filepath: toExternalPath(b.filepath, 'filepath', scanLib),
         coverPath: toExternalPath(b.coverPath, 'coverPath')
       })))
       for (const newBook of batchNewBooks) {
@@ -2384,10 +2679,10 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
         sendMessageToWebContents(`加载 ${filepath} 失败:${e}(${i + 1}/${listLength})`)
       }
     })
-    // 批量入库:一个事务写入一批(路径写入 Windows 格式)
+    // 批量入库:一个事务写入一批(路径写入相对库根的相对路径)
     if (batchNewBooks.length) await Manga.bulkCreate(batchNewBooks.map(b => ({
       ...b,
-      filepath: toExternalPath(b.filepath, 'filepath'),
+      filepath: toExternalPath(b.filepath, 'filepath', currentLibrary()),
       coverPath: toExternalPath(b.coverPath, 'coverPath')
     })))
     if (end < listLength) await clearFolder(TEMP_PATH)
@@ -2593,20 +2888,24 @@ ipcMain.handle('eh-password-login', async (event, arg) => {
 //  - 压缩包:先用 7z 只列条目名,再**只解压前 N 张**(绝不为一个预览条解压整包)
 //  - epub / txt:没有图片页 → 明确告诉前端不支持
 ipcMain.handle('book-preview-images', async (event, book) => {
-  const LIMIT = 12
+  // limit: 0 = 全部(侧边详细要显示每一页);默认 12(详细界面的小预览)
+  const LIMIT = Number(book && book.limit) >= 0 ? Number(book.limit) : 12
   try {
     const { filepath, type } = book || {}
     if (!filepath || !type) return { ok: false, error: 'no-filepath' }
     if (type === 'epub' || type === 'novel') return { ok: false, error: 'text-only' }
     if (type === 'folder') {
       const list = await getImageListByBook(filepath, type)
-      return { ok: true, total: list.length, files: list.slice(0, LIMIT).map(it => it.absolutePath).filter(Boolean) }
+      const files = (LIMIT === 0 ? list : list.slice(0, LIMIT)).map(it => it.absolutePath).filter(Boolean)
+      return { ok: true, total: list.length, files }
     }
     const names = await listArchiveImages(filepath)
     if (!names.length) return { ok: false, error: 'no-image' }
     const dir = path.join(VIEWER_PATH, 'preview-' + nanoid(8))
     fs.mkdirSync(dir, { recursive: true })
-    const pick = names.slice(0, LIMIT)
+    // 压缩包解全部太慢:limit=0 时取前 60 页
+    const cap = LIMIT === 0 ? 60 : LIMIT
+    const pick = names.slice(0, cap)
     await extractArchiveFiles(filepath, pick, dir)
     return {
       ok: true,
@@ -2739,14 +3038,96 @@ ipcMain.handle('eh-torrents', async (event, arg) => {
 const downloadStoreFile = () => path.join(STORE_PATH, 'downloads.json')
 const DOWNLOAD_RECORD_LIMIT = 200
 const downloadTasks = new Map()
+// 下载记录的封面:建任务时抓一次存成本地文件(<数据目录>/download-covers/<id>.<ext>),
+// 之后界面直接读本地图 —— 不再走代理,代理挂了也不会变破图。
+const DOWNLOAD_COVER_DIR = path.join(STORE_PATH, 'download-covers')
+// 记录里存的 cover 可能是原始 EH 地址,也可能是网页版的 /api/ex-image?url=... 代理地址
+const rawCoverUrl = (c) => {
+  const s = String(c || '')
+  if (!s) return ''
+  if (s.startsWith('/api/ex-image')) {
+    const m = /[?&]url=([^&]+)/.exec(s)
+    if (m) { try { return decodeURIComponent(m[1]) } catch (e) { return '' } }
+    return ''
+  }
+  return /^https?:\/\//i.test(s) ? s : ''
+}
+const coverExtOf = (contentType, url) => {
+  const ct = String(contentType || '').toLowerCase()
+  if (ct.includes('webp')) return 'webp'
+  if (ct.includes('png')) return 'png'
+  if (ct.includes('gif')) return 'gif'
+  if (ct.includes('avif')) return 'avif'
+  const m = /\.([a-z0-9]{2,5})(?:\?|$)/i.exec(String(url || ''))
+  return m ? m[1].toLowerCase() : 'jpg'
+}
+// 「已完成但没封面」的兜底:直接拿下载目录里的第一页当封面(纯本地,不联网)。
+// 用户要求:封面不该依赖代理 —— 漫画都下到本地了,第一页本来就是现成的图。
+const firstImageInDir = (dir) => {
+  const IMG_RE = /\.(jpe?g|png|webp|gif|bmp|avif|jxl|tiff?)$/i
+  try {
+    if (!dir) return ''
+    const files = fs.readdirSync(dir).filter(f => IMG_RE.test(f)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+    return files.length ? path.join(dir, files[0]) : ''
+  } catch (e) { return '' }
+}
+
+const cacheDownloadCover = async (rec) => {
+  try {
+    if (!rec || !rec.id) return ''
+    const url = rawCoverUrl(rec.cover)
+    if (!url) return ''
+    fs.mkdirSync(DOWNLOAD_COVER_DIR, { recursive: true })
+    const r = await ehLogin.request(url, {
+      proxy: setting.proxy, cookie: ehCookieHeader(), raw: true,
+      referer: 'https://e-hentai.org/', timeout: 30000
+    })
+    if (!r || r.status !== 200 || !r.buffer || !r.buffer.length) return ''
+    const file = path.join(DOWNLOAD_COVER_DIR, rec.id + '.' + coverExtOf(r.headers && r.headers['content-type'], url))
+    fs.writeFileSync(file, r.buffer)
+    rec.coverPath = file
+    persistDownloads()
+    emitToRenderer('eh-download-progress', publicDownload(rec))
+    return file
+  } catch (e) { return '' }
+}
+
 const publicDownload = (t) => ({
   id: t.id, url: t.url, title: t.title, cover: t.cover, original: !!t.original,
+  // 画廊标签 / 分类 / 日文标题 / 评分:下载记录显示标签、移动到本地库写元数据都用它
+  tags: (t.tags && typeof t.tags === 'object') ? t.tags : {},
+  category: t.category || '', titleJpn: t.titleJpn || '', rating: Number(t.rating) || 0,
+  // 封面本地文件(绝对路径;前端用 toAssetUrl 转成可访问 URL);空 = 还没抓到,前端退回远端 cover
+  coverPath: t.coverPath || '',
   saveDir: t.saveDir, dir: t.dir || '', total: t.total | 0, done: t.done | 0, failed: t.failed | 0,
   bytes: t.bytes | 0, status: t.status, error: t.error || '', fallback: t.fallback | 0, gpBlocked: t.gpBlocked | 0,
   phase: t.phase || '', linkCount: t.linkCount | 0,
+  // 移动到本地库之后的目标路径(空 = 还在下载目录)
+  movedTo: t.movedTo || '',
+  // 自动重试:已经试过几次 / 下次什么时候试
+  retryCount: t.retryCount | 0,
+  nextRetryAt: t.nextRetryAt || 0,
   createdAt: t.createdAt, finishedAt: t.finishedAt || 0
 })
 const downloadList = () => Array.from(downloadTasks.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map(publicDownload)
+// 老记录(还没有本地封面)后台补一次:进程内每本只试一次,失败就算了
+const coverBackfillTried = new Set()
+const backfillDownloadCovers = () => {
+  let changed = false
+  for (const t of downloadTasks.values()) {
+    if (t.coverPath && fs.existsSync(t.coverPath)) continue
+    // ① 先看下载目录里的第一页(本地现成的,秒出,不依赖网络)
+    if (t.dir) {
+      const local = firstImageInDir(t.dir)
+      if (local) { t.coverPath = local; changed = true; continue }
+    }
+    // ② 目录里没有图(还在下 / 没下完)再去抓 EH 封面
+    if (coverBackfillTried.has(t.id)) continue
+    coverBackfillTried.add(t.id)
+    cacheDownloadCover(t).catch(() => {})
+  }
+  if (changed) persistDownloads()
+}
 const persistDownloads = () => {
   try {
     fs.writeFileSync(downloadStoreFile(), JSON.stringify(downloadList().slice(0, DOWNLOAD_RECORD_LIMIT), null, 1))
@@ -2758,8 +3139,17 @@ const restoreDownloads = () => {
     if (!Array.isArray(raw)) return
     for (const t of raw) {
       if (!t || !t.id) continue
+      // 旧记录里的 saveDir / dir 可能是相对路径(取决于当时的设置):统一补成绝对路径,
+      // 否则重启后「继续下载」会写到一个不存在的地方、预览也读不到文件。
+      const fix = (p) => { const s = String(p || ''); return s ? path.resolve(s) : '' }
       // 上次没跑完的:重启后一律当「已暂停」,由用户点继续(继续时会跳过已下好的文件)
-      downloadTasks.set(t.id, { ...t, status: t.status === 'downloading' ? 'paused' : t.status, state: { stopped: false } })
+      downloadTasks.set(t.id, {
+        ...t,
+        saveDir: fix(t.saveDir),
+        dir: fix(t.dir),
+        status: t.status === 'downloading' ? 'paused' : t.status,
+        state: { stopped: false }
+      })
     }
     console.log('[download] 已恢复下载记录', downloadTasks.size, '条')
   } catch (e) { /* 没有记录文件 */ }
@@ -2774,7 +3164,7 @@ const runDownloadJob = (rec) => {
   persistDownloads()
   emitToRenderer('eh-download-progress', publicDownload(rec))
   let lastEmit = 0
-  ehDownload.runGalleryDownload({
+  const job = ehDownload.runGalleryDownload({
     galleryUrl: rec.url,
     title: rec.title,
     saveDir: rec.saveDir,
@@ -2784,6 +3174,21 @@ const runDownloadJob = (rec) => {
     concurrency: Math.max(1, Math.min(Number(setting.downloadConcurrency) || 4, 10)),
     state,
     onProgress: (u) => {
+      // 收页链接阶段(phase=links):只更新链接数,**不动 done/failed**。
+      // 以前这里无条件 rec.done = u.done|0,而 links 阶段的 update 里 done 恒为 0 ——
+      // 点「继续任务」后进度条先掉到 0、再把已下好的页数一遍爬回来,就是用户说的「短暂失灵」。
+      if (u.phase === 'links') {
+        rec.total = u.total || rec.total
+        rec.phase = 'links'
+        rec.linkCount = u.linkCount | 0
+        if (u.dir) rec.dir = u.dir
+        const now0 = Date.now()
+        if (now0 - lastEmit > 400) {
+          lastEmit = now0
+          emitToRenderer('eh-download-progress', publicDownload(rec))
+        }
+        return
+      }
       rec.total = u.total || rec.total
       rec.done = u.done | 0
       rec.failed = u.failed | 0
@@ -2809,8 +3214,20 @@ const runDownloadJob = (rec) => {
     } else {
       // 有页失败就标成 failed(可「继续」补:继续时会跳过已下好的文件),不是 done ——
       // 否则用户看到 ✗ 却没有任何按钮能补齐(JHenTai 的 downloadFailed 也是可重下的状态)
-      rec.status = state.stopped ? 'paused' : ((rec.failed | 0) === 0 ? 'done' : 'failed')
+        rec.status = state.stopped ? 'paused' : ((rec.failed | 0) === 0 ? 'done' : 'failed')
       if (rec.status === 'failed' && !rec.error) rec.error = (rec.lastError || '部分页面下载失败')
+      // 失败(或等 GP 的 waiting)按设置排一次自动重试;完成/暂停清掉
+      if (rec.status === 'failed' || rec.status === 'waiting') {
+        const mins = Math.max(1, Number(setting.retryIntervalMin) || 10)
+        rec.nextRetryAt = Date.now() + mins * 60000
+      } else {
+        rec.nextRetryAt = 0
+      }
+      // 封面兜底:EH 封面抓不到(或早就没了)时,用下载目录里的第一页(本地文件,永远在)
+      if (!rec.coverPath && rec.dir) {
+        const local = firstImageInDir(rec.dir)
+        if (local) rec.coverPath = local
+      }
     }
   }).catch((e) => {
     rec.status = state.stopped ? 'paused' : 'failed'
@@ -2821,27 +3238,40 @@ const runDownloadJob = (rec) => {
     emitToRenderer('eh-download-progress', publicDownload(rec))
     emitToRenderer('eh-download-done', publicDownload(rec))
   })
+  // 留住这次跑的 promise:「重新下载」要等旧 worker 退出后再清文件重下
+  // (worker 循环只在页边界检查 state.stopped,不能这边刚删文件它还在写)
+  rec.jobPromise = job
+  return job
 }
 
 ipcMain.handle('eh-download-gallery', async (event, arg) => {
-  const { url, title = '', cover = '', original = false } = arg || {}
-  const saveDir = String(setting.downloadPath || '').trim()
+  const { url, title = '', cover = '', original = false, tags = null, category = '', titleJpn = '', rating = 0 } = arg || {}
+  // 统一成绝对路径:记录里的 dir 会一直用到「重启后继续下载」和「预览找文件」,
+  // 存相对路径的话换个工作目录就全找不到(预览空白、续传失效)。
+  // 下载窗口里可以指定位置(saveDir):不传就用设置里的下载目录
+  const wantDir = String((arg && arg.saveDir) || '').trim() || String(setting.downloadPath || '').trim()
+  const saveDir = wantDir ? path.resolve(wantDir) : ''
   if (!url) return { ok: false, error: 'badUrl' }
   if (!saveDir) return { ok: false, error: 'noPath' }
   const rec = {
     id: nanoid(), url, title, cover, original: !!original, saveDir,
+    // 画廊标签随下载一起记下来(下载记录里显示 / 移动到本地库时写进书库,不用再连 EH 去取)
+    tags: (tags && typeof tags === 'object') ? tags : {},
+    category: String(category || ''), titleJpn: String(titleJpn || ''), rating: Number(rating) || 0,
     total: 0, done: 0, failed: 0, bytes: 0, status: 'downloading', error: '',
     createdAt: Date.now(), finishedAt: 0, state: { stopped: false }
   }
   downloadTasks.set(rec.id, rec)
   runDownloadJob(rec)
+  // 封面存本地(后台做,不阻塞任务开始):成功后面板直接读本地图
+  cacheDownloadCover(rec).catch(() => {})
   return { ok: true, task: publicDownload(rec) }
 })
 
 // 单页下载:直接存到下载目录(不建画廊子目录)
 ipcMain.handle('eh-download-page', async (event, arg) => {
   const { url, originalUrl = '', pageUrl = '', original = false, name = '' } = arg || {}
-  const saveDir = String(setting.downloadPath || '').trim()
+  const saveDir = setting.downloadPath ? path.resolve(String(setting.downloadPath).trim()) : ''
   if (!saveDir) return { ok: false, error: 'noPath' }
   try {
     const r = await ehDownload.downloadOnePage({
@@ -2854,7 +3284,11 @@ ipcMain.handle('eh-download-page', async (event, arg) => {
   }
 })
 
-ipcMain.handle('eh-download-records', async () => ({ ok: true, tasks: downloadList() }))
+ipcMain.handle('eh-download-records', async () => {
+  // 顺手把老记录的封面补成本地文件(后台,不阻塞返回)
+  backfillDownloadCovers()
+  return { ok: true, tasks: downloadList() }
+})
 
 // 诊断用:完整跑一次下载(到临时目录),把过程与错误原样带出来
 ipcMain.handle('eh-debug-download', async (event, arg) => {
@@ -2894,14 +3328,26 @@ ipcMain.handle('eh-debug-links', async (event, arg) => {
 // 下载预览用:这个任务目录里每一页到底下了没有(按 1.webp / 02.jpg 这种序号文件名对应页码)。
 // 返回定长数组,没下到的位置是 null —— 前端用「空白 + 进度圈」补上。
 ipcMain.handle('eh-download-files', async (event, arg) => {
-  const dir = String((arg && arg.dir) || '')
-  let total = Math.max(0, Number((arg && arg.total) || 0))
-  if (!dir) return { ok: true, files: [], total }
+  // 目录可能是相对路径(下载设置里填的是相对路径时),一律先转绝对路径:
+  // 否则 fs.readdirSync 会按进程 cwd 去找,读不到就返回空,前端表现为「预览什么都没有」;
+  // 而且拼出来的图片路径也得是绝对的,file:// 才能加载。
+  const rawDir = String((arg && arg.dir) || '')
+  const dir = rawDir ? path.resolve(rawDir) : ''
+  const total = Math.max(0, Number((arg && arg.total) || 0))
+  // 任务状态:用来区分「这一页还没轮到」和「这一页试过但失败了」,
+  // 预览里前者显示等待,后者显示失败(用户要的「没好的就显示进度」)。
+  const taskId = String((arg && arg.id) || '')
+  const task = taskId ? downloadTasks.get(taskId) : null
+  // 全程按「任务已知的总页数」出定长数组:目录里只有前 7 张时也要有 8、9 两格占位,
+  // 这样预览永远是「整本的样子」,不会因为还没下到而缺一块(用户反馈的问题)。
+  const count = total
+  const skeleton = Array.from({ length: count }, () => null)
+  if (!dir) return { ok: true, files: skeleton, total: count, task: task ? publicDownload(task) : null }
   let names = []
   try {
     names = fs.readdirSync(dir)
   } catch (e) {
-    return { ok: true, files: [], total }
+    return { ok: true, files: skeleton, total: count, task: task ? publicDownload(task) : null }
   }
   const byIndex = new Map()
   for (const name of names) {
@@ -2913,10 +3359,12 @@ ipcMain.handle('eh-download-files', async (event, arg) => {
     try { size = fs.statSync(full).size } catch (e) { size = 0 }
     if (size > 0) byIndex.set(index, { index, path: full, size, name })
   }
+  // 目录里出现了超出记录总数的文件(记录里的 total 偏小):按实际文件数补长,
+  // 否则多下的页会被截掉、用户以为没下全。
   const maxIndex = byIndex.size ? Math.max(...byIndex.keys()) + 1 : 0
-  const count = Math.max(total, maxIndex)
-  const files = Array.from({ length: count }, (_, i) => byIndex.get(i) || null)
-  return { ok: true, files, total: count }
+  const finalCount = Math.max(count, maxIndex)
+  const files = Array.from({ length: finalCount }, (_, i) => byIndex.get(i) || null)
+  return { ok: true, files, total: finalCount, task: task ? publicDownload(task) : null }
 })
 
 ipcMain.handle('eh-download-action', async (event, arg) => {
@@ -2931,11 +3379,46 @@ ipcMain.handle('eh-download-action', async (event, arg) => {
     return { ok: true }
   }
   if (action === 'resume') {
+    // 手动继续 = 重新开始计数(自动重试的次数归零)
+    t.retryCount = 0
+    t.nextRetryAt = 0
     runDownloadJob(t)
     return { ok: true }
   }
+  if (action === 'restart') {
+    // 重新下载(下载记录预览页右键):停掉正在跑的 worker → 等它退出 → 清掉已下好的文件
+    // → 计数归零 → 重新入队。断点续传会跳过已存在的文件,所以「重下」必须显式删文件。
+    if (t.state) t.state.stopped = true
+    const doRestart = () => {
+      try {
+        if (t.dir) fs.rmSync(t.dir, { recursive: true, force: true })
+      } catch (e) { /* 目录本来就不存在:忽略 */ }
+      t.done = 0
+      t.failed = 0
+      t.bytes = 0
+      t.total = 0
+      t.error = ''
+      t.lastError = ''
+      t.phase = ''
+      t.linkCount = 0
+      t.finishedAt = 0
+      persistDownloads()
+      runDownloadJob(t)
+    }
+    const prev = t.jobPromise
+    if (prev && typeof prev.then === 'function') {
+      // 任务正在跑:等这次 worker 收尾(它看到 stopped 会在页边界退出)再重下
+      prev.then(doRestart, doRestart)
+    } else {
+      // 暂停/失败/等待中的任务没有在跑的 worker,直接重下
+      setTimeout(doRestart, 0)
+    }
+    return { ok: true }
+  }
   if (action === 'delete' || action === 'deleteWithFiles') {
-    if (action === 'deleteWithFiles' && t.dir) {
+    // ⚠ 已移到本地库的记录:t.dir 指向的是**库里的漫画**了,这里只删记录、绝不删文件
+    //   (要删书请去书架那边删,那边才会同时清理数据库/封面)
+    if (action === 'deleteWithFiles' && t.dir && !t.movedTo) {
       try { fs.rmSync(t.dir, { recursive: true, force: true }) } catch (e) { /* 忽略 */ }
     }
     downloadTasks.delete(id)
@@ -2951,6 +3434,186 @@ ipcMain.handle('eh-download-clear', async () => {
   downloadTasks.clear()
   persistDownloads()
   return { ok: true, tasks: [] }
+})
+
+// 数一个目录里的图片数(移动到本地库时要写 pageCount)
+const countFolderImages = (dir) => {
+  const IMG_RE = /\.(jpe?g|png|webp|gif|bmp|avif|jxl|tiff?)$/i
+  try {
+    return fs.readdirSync(dir).filter(f => IMG_RE.test(f)).length
+  } catch (e) { return 0 }
+}
+
+// 补写某条下载记录的画廊标签(老记录没有标签:前端现拉一次详情,拉到了存回来)
+ipcMain.handle('eh-download-set-tags', async (event, arg) => {
+  const { id, tags, category = '', titleJpn = '', rating = 0 } = arg || {}
+  const t = downloadTasks.get(id)
+  if (!t) return { ok: false, error: 'notFound' }
+  if (tags && typeof tags === 'object' && Object.keys(tags).length) t.tags = tags
+  if (category) t.category = String(category)
+  if (titleJpn) t.titleJpn = String(titleJpn)
+  if (Number(rating)) t.rating = Number(rating)
+  persistDownloads()
+  emitToRenderer('eh-download-progress', publicDownload(t))
+  return { ok: true, task: publicDownload(t) }
+})
+
+// 失败任务定时重试:主进程里每 30 秒扫一遍(NAS 常驻,关掉网页照样重试)。
+// 设置:retryEnabled 开关 / retryIntervalMin 间隔分钟 / retryTimes 最多重试几次。
+const autoRetryTick = () => {
+  try {
+    const cfg = setting || {}
+    if (!cfg.retryEnabled) return
+    const max = Math.max(0, Number(cfg.retryTimes) || 0)
+    if (!max) return
+    const mins = Math.max(1, Number(cfg.retryIntervalMin) || 10)
+    const now = Date.now()
+    for (const rec of downloadTasks.values()) {
+      if (rec.status !== 'failed' && rec.status !== 'waiting') continue
+      if ((rec.retryCount | 0) >= max) continue
+      if (!rec.nextRetryAt) { rec.nextRetryAt = now + mins * 60000; continue }
+      if (now < rec.nextRetryAt) continue
+      rec.retryCount = (rec.retryCount | 0) + 1
+      rec.nextRetryAt = 0
+      sendMessageToWebContents(`自动重试(${rec.retryCount}/${max}):${rec.title || rec.url}`)
+      runDownloadJob(rec)
+    }
+  } catch (e) { /* 定时器里别抛 */ }
+}
+setInterval(autoRetryTick, 30000)
+
+// 单页重新下载:只重下这一页(不动其它页)。index 是 0 基页码。
+ipcMain.handle('eh-download-page-by-index', async (event, arg) => {
+  const { id, index } = arg || {}
+  const rec = downloadTasks.get(id)
+  if (!rec) return { ok: false, error: 'notFound' }
+  if (!rec.dir) return { ok: false, error: 'noDir' }
+  const idx = Math.max(0, Number(index) | 0)
+  try {
+    const links = await ehLogin.listGalleryPageLinks(rec.url, {
+      proxy: setting.proxy, cookie: ehCookieHeader(), limit: 5000, maxPages: 200
+    })
+    const pageUrl = links[idx]
+    if (!pageUrl) return { ok: false, error: 'noPage' }
+    const info = await ehDownload.resolveImagePage(pageUrl, { proxy: setting.proxy, cookie: ehCookieHeader() })
+    // 原图任务下原图;拿不到原图链接才用普通图(与整本下载的口径一致)
+    const target = rec.original ? (info.originalUrl || info.url) : info.url
+    if (!target) return { ok: false, error: 'noImageUrl' }
+    const pad = String(links.length).length
+    const name = String(idx + 1).padStart(pad, '0')
+    const file = path.join(rec.dir, name + '.' + ehDownload.extOf(target))
+    const bytes = await ehDownload.downloadFile(target, file, {
+      proxy: setting.proxy, cookie: ehCookieHeader(), referer: pageUrl
+    })
+    return { ok: true, path: file, bytes: bytes | 0 }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+// 把下载好的漫画移动到本地库文件夹(或任意文件夹)。
+// 除了搬文件,还要「迁移数据」:在目标所属的库里登记这本书(标题/标签/页数),
+// 并用库自己的封面目录生成封面 —— 这样移过去就在书架里直接能看到,不用再全库扫描。
+// 只列子目录(给「本地库文件夹选择器」按需加载用)
+ipcMain.handle('list-subfolders', async (event, dir) => {
+  try {
+    const p = path.resolve(String(dir || ''))
+    const entries = fs.readdirSync(p, { withFileTypes: true })
+    return {
+      ok: true,
+      dirs: entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => e.name).sort((a, b) => a.localeCompare(b))
+    }
+  } catch (e) { return { ok: false, dirs: [], error: String((e && e.message) || e) } }
+})
+
+ipcMain.handle('move-downloads', async (event, arg) => {
+  const ids = Array.isArray(arg && arg.ids) ? arg.ids : []
+  const targetRoot = path.resolve(String((arg && arg.target) || '').trim())
+  if (!ids.length) return { ok: false, error: 'noIds' }
+  if (!(arg && arg.target)) return { ok: false, error: 'noTarget' }
+  try { fs.mkdirSync(targetRoot, { recursive: true }) } catch (e) { /* 已存在或建不了,后面逐个报错 */ }
+  const results = []
+  for (const id of ids) {
+    const rec = downloadTasks.get(id)
+    if (!rec) { results.push({ id, ok: false, error: 'notFound' }); continue }
+    // 正在下的不给动(会写坏文件)
+    if (rec.status === 'downloading') { results.push({ id, ok: false, error: 'downloading' }); continue }
+    const src = rec.dir ? path.resolve(rec.dir) : ''
+    if (!src || !fs.existsSync(src)) { results.push({ id, ok: false, error: 'noDir' }); continue }
+    try {
+      // 目标同名就加 (2)(3)…
+      const baseName = path.basename(src)
+      let dest = path.join(targetRoot, baseName)
+      for (let i = 2; fs.existsSync(dest); i++) dest = path.join(targetRoot, baseName + ' (' + i + ')')
+      try {
+        await fs.promises.rename(src, dest)
+      } catch (e) {
+        // 跨盘(下载目录和库不在同一个卷)走复制+删除
+        if (e.code === 'EXDEV' || e.code === 'EPERM') {
+          await fs.promises.cp(src, dest, { recursive: true })
+          await fs.promises.rm(src, { recursive: true, force: true })
+        } else throw e
+      }
+      // 迁移数据:目标在某个本地库内 → 在库里登记(标签/分类/日文标题/评分一并写进去)+ 生成封面
+      let bookId = null
+      let coverPath = null
+      const lib = libraryForPath(dest)
+      if (lib) {
+        try {
+          const model = await modelForLibrary(lib.id)
+          bookId = nanoid()
+          const tags = (rec.tags && typeof rec.tags === 'object' && Object.keys(rec.tags).length) ? rec.tags : {}
+          const pageCount = rec.total || countFolderImages(dest) || null
+          await model.create({
+            id: bookId,
+            title: rec.title || path.basename(dest),
+            title_jpn: rec.titleJpn || '',
+            coverPath: null,
+            hash: null,
+            filepath: toExternalPath(dest, 'filepath', lib),
+            type: 'folder',
+            pageCount,
+            filecount: pageCount,
+            bundleSize: null,
+            mtime: new Date().toJSON(),
+            coverHash: null,
+            status: tags && Object.keys(tags).length ? 'tagged' : 'non-tag',
+            exist: true,
+            date: Date.now(),
+            category: rec.category || '',
+            url: rec.url || '',
+            rating: Number(rec.rating) || 0,
+            tags
+          })
+          // 记住这本书属于哪个库:后续「按 id 找模型」才不会落到活动库头上
+          bookLibraryById.set(bookId, lib.id)
+          try {
+            const coverDir = coverDirOf(lib)
+            fs.mkdirSync(coverDir, { recursive: true })
+            const cover = await generateCoverByName({ id: bookId, filepath: dest, type: 'folder', libraryId: lib.id }, coverDir)
+            if (cover) {
+              // ⚠ 直接写回**目标库的 model**:updateBookCoverPath 走的是 modelForBookId,
+              //   它靠内存里的 bookLibraryById 找库,新书还没登记过就可能写错库
+              const extCover = toExternalPath(cover, 'coverPath', null, coverDir)
+              await model.update({ coverPath: extCover }, { where: { id: bookId } })
+              coverPath = extCover
+            }
+          } catch (e2) { /* 封面生成失败不影响移动 */ }
+        } catch (e3) {
+          sendMessageToWebContents('移动到库内登记失败:' + ((e3 && e3.message) || e3))
+        }
+      }
+      // 记录:标记已移走,dir 指到新位置(预览还能用)
+      rec.movedTo = dest
+      rec.dir = dest
+      persistDownloads()
+      emitToRenderer('eh-download-progress', publicDownload(rec))
+      results.push({ id, ok: true, dest, bookId, coverPath, inLibrary: !!lib })
+    } catch (e) {
+      results.push({ id, ok: false, error: String((e && e.message) || e) })
+    }
+  }
+  return { ok: true, results }
 })
 
 if (!WEB_MODE) {
@@ -3301,8 +3964,10 @@ ipcMain.handle('delete-local-book', async (event, filepath) => {
     return result
   }
   let info = {}
+  // 库里存的是「相对库根的相对路径」,按本端路径查库要先换算成库里那种形式
+  const dbPath = toExternalPath(filepath, 'filepath', ownerLibrary)
   try {
-    const row = (await findBookAcrossLibraries({ filepath })).row
+    const row = (await findBookAcrossLibraries({ filepath: dbPath })).row
     if (row) info = { id: row.id, title: row.title, title_jpn: row.title_jpn, tags: row.tags, libraryId: ownerLibrary.id, libraryName: ownerLibrary.name }
     else info = { libraryId: ownerLibrary.id, libraryName: ownerLibrary.name }
   } catch (e) { /* 拿不到不影响删除 */ }
@@ -3321,7 +3986,7 @@ ipcMain.handle('delete-local-book', async (event, filepath) => {
     sendMessageToWebContents('删除 ' + filepath + ' 失败:' + result.error)
     return result
   }
-  try { await (await findBookAcrossLibraries({ filepath })).model.destroy({ where: { filepath } }) } catch (e) { /* 忽略 */ }
+  try { await (await findBookAcrossLibraries({ filepath: dbPath })).model.destroy({ where: { filepath: dbPath } }) } catch (e) { /* 忽略 */ }
   result.ok = true
   sendMessageToWebContents('已移入回收站:' + (info.title || path.basename(filepath)) + '(可在 设置 → 常用 → 回收站 里恢复)')
   return result
@@ -3609,7 +4274,7 @@ ipcMain.handle('request-thumbnails', async (event, bookId) => {
 //   { kind:'chapter', title } / { kind:'text', text } / { kind:'image', absolutePath }
 ipcMain.handle('load-novel-content', async (event, book) => {
   try {
-    const filepath = translateBookPath(book && book.filepath, 'filepath')
+    const filepath = translateBookPath(book && book.filepath, 'filepath', libForBook(book))
     if (!filepath) return { ok: false, error: '没有文件路径' }
     if (book.type === 'novel') {
       const { blocks, chapters } = await parseTxtStructured(filepath)
@@ -3774,8 +4439,10 @@ ipcMain.handle('delete-image', async (event, filename, filepath, type) => {
     return result
   }
   let info = {}
+  const ownerLibrary = libraryForPath(bookPath)
+  const dbPath = toExternalPath(bookPath, 'filepath', ownerLibrary)
   try {
-    const row = (await findBookAcrossLibraries({ filepath: bookPath })).row
+    const row = (await findBookAcrossLibraries({ filepath: dbPath })).row
     if (row) info = { bookId: row.id, title: row.title, title_jpn: row.title_jpn }
   } catch (e) { /* 拿不到元数据不影响删除 */ }
   const meta = { kind: 'image', bookPath, bookType: type, image: rel, ...info }
@@ -4014,11 +4681,73 @@ ipcMain.handle('load-setting', async (event, arg) => {
   return { ...setting }
 })
 
+// 「全局标签」的并发保护。
+//
+// 背景:add-global-tag 由后端单独写 setting.globalTags 并落盘,紧接着前端会整份回传 setting
+// 做保存 —— 回传里往往还没有刚加的那个标签,直接覆盖就等于「加完立刻消失」。
+// 但**不能**无脑取并集:那样用户主动删除的标签会被内存里的旧值再并回来,删不掉。
+//
+// 所以用「未确认新增」小本子:add-global-tag 写盘时登记一笔,保存时把这些笔补回内存值;
+// 前端把新标签带回(说明它已经看到了)就销账。删除走显式 removeGlobalTag,不受影响。
+const pendingGlobalTags = new Map() // 'cat\u0000name' -> true
+const pendingKey = (cat, name) => String(cat) + '\u0000' + String(name)
+
+const notePendingGlobalTag = (cat, name) => {
+  if (!cat || name == null) return
+  pendingGlobalTags.set(pendingKey(cat, name), true)
+}
+const clearPendingGlobalTag = (cat, name) => {
+  pendingGlobalTags.delete(pendingKey(cat, name))
+}
+// 把还没被前端确认的新增标签补进 incoming,避免被整份回传冲掉
+const applyPendingGlobalTags = (incoming) => {
+  if (!incoming || typeof incoming !== 'object') incoming = {}
+  if (!pendingGlobalTags.size) return incoming
+  const out = {}
+  for (const [cat, arr] of Object.entries(incoming)) {
+    out[cat] = Array.isArray(arr) ? arr.slice() : []
+  }
+  const seen = new Set()
+  for (const [cat, arr] of Object.entries(out)) {
+    for (const name of arr) seen.add(pendingKey(cat, name))
+  }
+  for (const key of [...pendingGlobalTags.keys()]) {
+    if (seen.has(key)) { pendingGlobalTags.delete(key); continue } // 前端已经带回来了,销账
+    const [cat, name] = key.split('\u0000')
+    if (!cat || name == null) { pendingGlobalTags.delete(key); continue }
+    if (!out[cat]) out[cat] = []
+    if (!out[cat].includes(name)) out[cat].push(name)
+  }
+  return out
+}
+// 显式删除一个全局标签(不碰书里的标签,只从登记表里去掉)
+const removeGlobalTag = (cat, name) => {
+  if (!setting.globalTags || typeof setting.globalTags !== 'object') return false
+  const arr = Array.isArray(setting.globalTags[cat]) ? setting.globalTags[cat] : null
+  if (!arr) return false
+  const kept = arr.filter(v => String(v) !== String(name))
+  if (kept.length === arr.length) return false
+  if (kept.length) setting.globalTags[cat] = kept
+  else delete setting.globalTags[cat]
+  clearPendingGlobalTag(cat, name)
+  return true
+}
+const persistSettingNow = () => {
+  const p = getSettingFilePath()
+  const tmp = p + '.tmp'
+  fs.writeFileSync(tmp, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
+  fs.renameSync(tmp, p)
+}
+
 // 应用设置变更并写入本地 setting.json(本地模式 IPC 与远程模式本地代理共用)
 const applySetting = async (receiveSetting) => {
   // 防丢配置(关键):前端启动时可能只回传了部分键(例如 App.vue 只回传 contextMenuOptions),
   // 绝不能把它当成完整配置整份替换 —— 先与内存中的现有设置合并,前端没传的键一律保留原值。
   receiveSetting = { ...setting, ...(receiveSetting || {}) }
+  // 「全局标签」并发保护:把 add-global-tag 刚写入、前端还没带回来的新增标签补上,
+  // 否则前端整份回传会把它覆盖掉(表现正是「加完立刻消失」)。
+  // 只补「未确认的新增」,不做无脑并集 —— 否则用户主动删除的标签会被旧值并回来。
+  receiveSetting.globalTags = applyPendingGlobalTags(receiveSetting.globalTags)
   if (receiveSetting.proxy) {
     await session.defaultSession.setProxy({
       mode: 'fixed_servers',
@@ -4062,8 +4791,8 @@ const applySetting = async (receiveSetting) => {
   // 容器模式:只对 Windows 盘符路径做跨平台映射;容器内合法路径尊重用户设置。
   // 此时 receiveSetting 已是「现有设置 + 本次提交」的完整对象,落盘内容默认就是它。
   let fileSetting = { ...receiveSetting }
-  if (process.env.WEB_LIBRARY) {
-    const forcedLibrary = path.resolve(process.env.WEB_LIBRARY)
+  if (WEB_LIBRARY_ENV) {
+    const forcedLibrary = path.resolve(WEB_LIBRARY_ENV)
     const lib = String(receiveSetting.library || '')
     const meta = String(receiveSetting.metadataPath || '')
     if (/^[A-Za-z]:[\\/]/.test(lib)) {
@@ -4139,9 +4868,35 @@ const librariesSnapshot = () => ({
 ipcMain.handle('get-libraries', async () => librariesSnapshot())
 
 // 设置页提交整份库列表 + 活动库:先规范化,再落盘;活动库变了才重建运行时(切库)
+// 校验库路径:必须是绝对路径、在容器里真实存在、而且是个目录。
+// 用户反馈「新库扫不到内容(小说/xiaoshuo)」,绝大多数是路径不对:
+//   · 填了相对路径(容器里会解析到 /app 下面)
+//   · 目录没挂进容器(docker-compose 里没有对应 volume)
+// 以前这两种情况都能保存,扫描只是「一本都没找到」,很难查 —— 现在保存时就报错。
+const validateLibraryPaths = (libs) => {
+  for (const lib of (libs || [])) {
+    const p = String((lib && lib.path) || '').trim()
+    if (!p) continue
+    if (!path.isAbsolute(p)) {
+      return `库「${lib.name || p}」的路径必须是绝对路径(以 / 开头),现在填的是「${p}」。
+如果这个文件夹在漫画库里,请填 /library/${p.replace(/^[./\\]+/, '')}`
+    }
+    let st = null
+    try { st = fs.statSync(p) } catch (e) { st = null }
+    if (!st) {
+      return `库「${lib.name || p}」的路径在容器里不存在:${p}
+可能是没挂载进容器 —— 请确认 docker-compose 的 volumes 里有这个文件夹,或把漫画放到已挂载的库目录下面。`
+    }
+    if (!st.isDirectory()) return `库「${lib.name || p}」的路径不是文件夹:${p}`
+  }
+  return ''
+}
+
 ipcMain.handle('apply-libraries', async (event, arg) => {
   try {
     const payload = arg || {}
+    const pathErr = validateLibraryPaths(Array.isArray(payload.libraries) ? payload.libraries : [])
+    if (pathErr) return { ok: false, error: pathErr }
     const draft = {
       ...setting,
       libraries: Array.isArray(payload.libraries) ? payload.libraries : [],
@@ -4553,7 +5308,7 @@ ipcMain.handle('get-data-path', async () => {
   if (WEB_MODE) return null
   return {
     dataPath: STORE_PATH,
-    defaultDataPath: app.getPath('userData'),
+    defaultDataPath: DEFAULT_DATA_PATH,
     isPortable
   }
 })
@@ -5425,6 +6180,145 @@ ipcMain.handle('delete-tag', async (event, { cat, name } = {}) => {
   }
 })
 
+// 整体迁移一个类别下的全部标签到另一个类别(删类别时把标签归入内置「其他」)
+// 与 rename-tag / delete-tag 同一口径:遍历全局 metadata.sqlite,整批一个事务。
+// 同时写回各库 Mangas 表,避免「Mangas 还是旧类别、Metadata 已是其他」的两份数据打架。
+ipcMain.handle('move-tag-category', async (event, { from, to } = {}) => {
+  try {
+    if (!from || !to) return { ok: false, error: '参数错误' }
+    if (from === to) return { ok: true, count: 0 }
+    const rows = await Metadata.findAll()
+    let count = 0
+    await Metadata.sequelize.transaction(async (tx) => {
+      for (const row of rows) {
+        const tags = row.tags
+        const arr = tags && tags[from]
+        if (!Array.isArray(arr) || !arr.length) continue
+        const nextTags = { ...tags }
+        delete nextTags[from]
+        const target = Array.isArray(nextTags[to]) ? nextTags[to].slice() : []
+        for (const tag of arr) if (!target.includes(tag)) target.push(tag)
+        nextTags[to] = target
+        await Metadata.update({ tags: nextTags }, { where: { hash: row.hash }, transaction: tx })
+        count++
+      }
+    })
+    // 各库 Mangas 里的同一份标签也搬过去
+    for (const lib of boxLibraries()) {
+      try {
+        const model = await modelForLibrary(lib.id)
+        const books = await model.findAll({ attributes: ['id', 'tags'] })
+        for (const book of books) {
+          const tags = book.tags
+          const arr = tags && tags[from]
+          if (!Array.isArray(arr) || !arr.length) continue
+          const nextTags = { ...tags }
+          delete nextTags[from]
+          const target = Array.isArray(nextTags[to]) ? nextTags[to].slice() : []
+          for (const tag of arr) if (!target.includes(tag)) target.push(tag)
+          nextTags[to] = target
+          await model.update({ tags: nextTags }, { where: { id: book.id } })
+        }
+      } catch (e) {
+        console.error('[tags] 迁移类别时写库失败(不影响元数据):', String((e && e.message) || e))
+      }
+    }
+    return { ok: true, count }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) }
+  }
+})
+
+// 新增「全局标签」:不挂在任何一本书上,只登记到设置里,让标签列表能显示它。
+// 表现与从书里来的标签完全一致(可在标签设置里看到、可被搜索到、可被分配到书)。
+ipcMain.handle('add-global-tag', async (event, { cat, name } = {}) => {
+  try {
+    if (!cat || !name) return { ok: false, error: '参数错误' }
+    if (!setting.globalTags || typeof setting.globalTags !== 'object') setting.globalTags = {}
+    const arr = Array.isArray(setting.globalTags[cat]) ? setting.globalTags[cat].slice() : []
+    if (!arr.includes(name)) arr.push(name)
+    setting.globalTags[cat] = arr
+    // 登记「前端还没确认这个新增」,防止它随后整份保存时把它冲掉
+    notePendingGlobalTag(cat, name)
+    persistSettingNow()
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) }
+  }
+})
+
+// 从「全局标签登记表」里摘掉一个标签(只动 setting.globalTags,不碰书上的标签)。
+// 前端「取消收藏/删除标签」用它,避免走 save-setting 整份回传时被并发保护并回来。
+ipcMain.handle('remove-global-tag', async (event, { cat, name } = {}) => {
+  try {
+    if (!cat || name == null) return { ok: false, error: '参数错误' }
+    const changed = removeGlobalTag(cat, name)
+    if (changed) persistSettingNow()
+    return { ok: true, removed: changed }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) }
+  }
+})
+
+// 同步一个类别下的标签集合:添加不存在的、删除被去掉的。
+// 「添加」= 登记为全局标签(不挂任何书),「删除」= 从全库移除(等同 delete-tag 的批量版)。
+ipcMain.handle('sync-category-tags', async (event, { cat, add = [], remove = [] } = {}) => {
+  try {
+    if (!cat) return { ok: false, error: '参数错误' }
+    // ① 新增:登记到全局标签
+    if (Array.isArray(add) && add.length) {
+      if (!setting.globalTags || typeof setting.globalTags !== 'object') setting.globalTags = {}
+      const arr = Array.isArray(setting.globalTags[cat]) ? setting.globalTags[cat].slice() : []
+      for (const name of add) {
+        if (!name) continue
+        if (!arr.includes(name)) arr.push(name)
+        notePendingGlobalTag(cat, name)
+      }
+      setting.globalTags[cat] = arr
+      persistSettingNow()
+    }
+    // ② 删除:从全库移除这些标签
+    let removed = 0
+    if (Array.isArray(remove) && remove.length) {
+      const rows = await Metadata.findAll()
+      await Metadata.sequelize.transaction(async (tx) => {
+        for (const row of rows) {
+          const tags = row.tags
+          const arr = tags && tags[cat]
+          if (!Array.isArray(arr)) continue
+          const kept = arr.filter(v => !remove.includes(v))
+          if (kept.length === arr.length) continue
+          const nextTags = { ...tags }
+          if (kept.length) nextTags[cat] = kept
+          else delete nextTags[cat]
+          await Metadata.update({ tags: nextTags }, { where: { hash: row.hash }, transaction: tx })
+          removed++
+        }
+      })
+      for (const lib of boxLibraries()) {
+        try {
+          const model = await modelForLibrary(lib.id)
+          const books = await model.findAll({ attributes: ['id', 'tags'] })
+          for (const book of books) {
+            const tags = book.tags
+            const arr = tags && tags[cat]
+            if (!Array.isArray(arr)) continue
+            const kept = arr.filter(v => !remove.includes(v))
+            if (kept.length === arr.length) continue
+            const nextTags = { ...tags }
+            if (kept.length) nextTags[cat] = kept
+            else delete nextTags[cat]
+            await model.update({ tags: nextTags }, { where: { id: book.id } })
+          }
+        } catch (e) { /* 单库失败不影响其它 */ }
+      }
+    }
+    return { ok: true, removed }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) }
+  }
+})
+
 ipcMain.on('get-path-sep', async (event, arg) => {
   event.returnValue = path.sep
 })
@@ -5516,9 +6410,18 @@ const formatTags = (tags = {}) => {
     .join(',')
 }
 
+// 库里存的 filepath 是相对路径,两端分隔符不同(桌面 \、容器 /):
+// 这些行可能来自「另一端写的库」,所以取文件名不能用 path.basename(容器里 \ 不算分隔符)
+const crossBaseName = (p) => String(p || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+const crossExtName = (p) => {
+  const b = crossBaseName(p)
+  const i = b.lastIndexOf('.')
+  return i > 0 ? b.slice(i) : ''
+}
+
 const getLANArchiveTitle = (manga) => {
   if (manga.title_jpn && manga.title) return `${manga.title_jpn} || ${manga.title}`
-  return manga.title_jpn || manga.title || path.basename(manga.filepath || '')
+  return manga.title_jpn || manga.title || crossBaseName(manga.filepath)
 }
 
 const getLANArchiveTags = (manga) => {
@@ -5531,8 +6434,8 @@ const getLANArchiveTags = (manga) => {
 
 const mangaToLANraragiArchive = (manga) => ({
   arcid: manga.hash,
-  extension: path.extname(manga.filepath || ''),
-  filename: path.basename(manga.filepath || ''),
+  extension: crossExtName(manga.filepath),
+  filename: crossBaseName(manga.filepath),
   isnew: true,
   lastreadtime: 0,
   pagecount: Number(manga.pageCount || manga.filecount) || 0,
@@ -5665,12 +6568,15 @@ LANBrowsing.delete('/api/archives/:hash/isnew', async (req, res) => {
 // 处理封面图片请求
 LANBrowsing.get('/api/archives/:hash/thumbnail', async (req, res) => {
   const hash = req.params.hash
-  const manga = (await findBookAcrossLibraries({ hash })).row
+  const found = await findBookAcrossLibraries({ hash })
+  const manga = found.row
   if (!manga || !manga.coverPath) {
     return res.status(404).send('Cover not found')
   }
-  const coverFilePath = path.join(staticFilePath, path.basename(manga.coverPath))
-  await fs.promises.copyFile(manga.coverPath, coverFilePath)
+  // 封面按 basename 落到「这本书所属库」的封面目录(库里存的 coverPath 可能是另一端的格式)
+  const coverSrc = translateBookPath(manga.coverPath, 'coverPath', null, coverDirOf(libForRow(found)))
+  const coverFilePath = path.join(staticFilePath, path.basename(coverSrc))
+  await fs.promises.copyFile(coverSrc, coverFilePath)
   if (fs.existsSync(coverFilePath)) {
     res.sendFile(coverFilePath)
   } else {
@@ -5689,7 +6595,8 @@ LANBrowsing.get('/api/archives/:hash/files', async (req, res) => {
     const mangaHash = req.params.hash
 
     // 从数据库找到对应的漫画
-    const manga = (await findBookAcrossLibraries({ hash: mangaHash })).row
+    const found = await findBookAcrossLibraries({ hash: mangaHash })
+    const manga = found.row
 
     if (!manga) {
       return res.status(404).send('Manga not found')
@@ -5697,7 +6604,7 @@ LANBrowsing.get('/api/archives/:hash/files', async (req, res) => {
 
     await clearFolder(VIEWER_PATH)
     await clearFolder(staticFilePath)
-    const imageList = await getImageListByBook(manga.filepath, manga.type)
+    const imageList = await getImageListByBook(localizeRowPath(manga, libForRow(found)), manga.type)
 
     existBook = {
       hash: manga.hash,
@@ -5723,10 +6630,12 @@ LANBrowsing.get('/api/archives/:hash/page', async (req, res) => {
     return res.status(400).send('Invalid page number')
   }
 
-  const manga = (await findBookAcrossLibraries({ hash })).row
+  const found = await findBookAcrossLibraries({ hash })
+  const manga = found.row
   if (!manga || !manga.filepath) {
     return res.status(404).send('File not found')
   }
+  const bookPath = localizeRowPath(manga, libForRow(found))
 
   // 获取章节图片列表
   try {
@@ -5736,7 +6645,7 @@ LANBrowsing.get('/api/archives/:hash/page', async (req, res) => {
     } else {
       await clearFolder(VIEWER_PATH)
       await clearFolder(staticFilePath)
-      imageList = await getImageListByBook(manga.filepath, manga.type)
+      imageList = await getImageListByBook(bookPath, manga.type)
       imageList = imageList.map(p => p.absolutePath)
       existBook.hash = manga.hash
       existBook.imageList = imageList
