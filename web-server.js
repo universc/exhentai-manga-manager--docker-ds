@@ -25,6 +25,8 @@ const INDEX_HTML = path.join(DIST_DIR, 'index.html')
 //   withAccount       —— 把一次请求包进「该账户」的上下文(多账户并发互不干扰)
 //   settingForAccount —— 取出某账户的设置对象(/api/file 的目录白名单用)
 let getSetting = () => ({})
+// 额外的放行目录(下载目录/移动目标):由 index.js 注入
+let extraAllowedRoots = () => []
 let withAccount = async (username, fn) => fn(username)
 let settingForAccount = async () => getSetting()
 // 会话 → 配置名:白名单 IP 的伪会话没有真实账户,沿用默认配置(setting.json)
@@ -275,7 +277,13 @@ const allowedRoots = (setting) => {
   const libraryPaths = Array.isArray(s.libraries)
     ? s.libraries.flatMap(l => [l.path, l.pathWeb, l.dataPath, l.dataPathWeb])
     : []
-  const roots = [STORE_PATH, s.library, s.metadataPath, ...libraryPaths].filter(Boolean)
+  const roots = [
+    STORE_PATH, s.library, s.metadataPath,
+    // 下载目录 / 移动目标目录:下载预览要读这些文件,不放开的话网页版会一律 403(预览全是「加载失败」)
+    s.downloadPath, s.moveDefaultPath, s.moveSinglePath,
+    ...libraryPaths,
+    ...(extraAllowedRoots() || []),
+  ].filter(Boolean)
   return roots.map(p => path.resolve(p))
 }
 
@@ -315,23 +323,102 @@ app.get('/api/file', requireLogin, async (req, res) => {
 // 在线读图与页预览一律由服务端带 Cookie + 代理取回再转发。
 // 只放行 EH 的几个域名 —— 否则这就是一个「服务端任意 URL 代理」。
 const EX_IMAGE_HOST_RE = /^https:\/\/([^/]+\.)?(hath\.network|ehgt\.org|e-hentai\.org|exhentai\.org)(:\d+)?\//i
+// ---------- EH 图片:内存缓存 + 有界并发 + 失败重试 ----------
+// 用户反馈「在线图片一直失败 / 很慢,自己开网站却又快又少失败」。三个原因:
+//   ① 每张图都现取、没有缓存 —— 翻回上一页、来回滚就又打一次 EH;
+//   ② 阅读器一次会请求几十张,并发几十个连接直奔 hath 节点,很容易被限速/握手失败,
+//      表现就是「大面积加载失败」;
+//   ③ 失败一次就认输,没有重试。
+// 这里补齐:LRU 内存缓存(TTL)、同时最多 N 个取图、失败快速重试一次、超时下调。
+const IMG_CACHE_MAX_BYTES = 600 * 1024 * 1024
+const IMG_CACHE_TTL = 30 * 60 * 1000
+const IMG_MAX_CONCURRENCY = 6
+const imgCache = new Map()
+let imgCacheBytes = 0
+const imgCacheGet = (url) => {
+  const hit = imgCache.get(url)
+  if (!hit) return null
+  if (Date.now() - hit.at > IMG_CACHE_TTL) {
+    imgCacheBytes -= hit.buffer.length
+    imgCache.delete(url)
+    return null
+  }
+  imgCache.delete(url)
+  imgCache.set(url, hit)
+  return hit
+}
+const imgCachePut = (url, buffer, type) => {
+  if (!buffer || !buffer.length) return
+  if (buffer.length > IMG_CACHE_MAX_BYTES / 4) return
+  const prev = imgCache.get(url)
+  if (prev) { imgCacheBytes -= prev.buffer.length; imgCache.delete(url) }
+  imgCache.set(url, { buffer, type, at: Date.now() })
+  imgCacheBytes += buffer.length
+  while (imgCacheBytes > IMG_CACHE_MAX_BYTES && imgCache.size) {
+    const oldest = imgCache.keys().next().value
+    const v = imgCache.get(oldest)
+    imgCache.delete(oldest)
+    if (v) imgCacheBytes -= v.buffer.length
+  }
+}
+let imgRunning = 0
+const imgWaiters = []
+const acquireImgSlot = () => new Promise((resolve) => {
+  if (imgRunning < IMG_MAX_CONCURRENCY) { imgRunning += 1; resolve() }
+  else imgWaiters.push(resolve)
+})
+const releaseImgSlot = () => {
+  const next = imgWaiters.shift()
+  if (next) next()
+  else imgRunning = Math.max(0, imgRunning - 1)
+}
+
 app.get('/api/ex-image', requireLogin, async (req, res) => {
   const url = String(req.query.url || '')
   if (!EX_IMAGE_HOST_RE.test(url)) return res.status(400).send('bad url')
-  try {
-    const s = await settingForAccount(profileNameOf(sessionOf(req)))
-    const r = await ehLogin.request(url, {
-      proxy: s.proxy,
-      raw: true,
-      referer: 'https://e-hentai.org/',
-      timeout: 30000
-    })
-    if (r.status !== 200) return res.status(r.status || 502).send('upstream ' + r.status)
-    res.set('Content-Type', r.headers['content-type'] || 'image/jpeg')
+  const hit = imgCacheGet(url)
+  if (hit) {
+    res.set('Content-Type', hit.type)
     res.set('Cache-Control', 'private, max-age=3600')
+    res.set('X-Img-Cache', 'hit')
+    return res.send(hit.buffer)
+  }
+  let release = null
+  try {
+    await acquireImgSlot()
+    release = releaseImgSlot
+    const s = await settingForAccount(profileNameOf(sessionOf(req)))
+    let r = null
+    let lastErr = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        r = await ehLogin.request(url, {
+          proxy: s.proxy,
+          raw: true,
+          referer: 'https://e-hentai.org/',
+          timeout: 20000
+        })
+        if (r && r.status === 200 && r.buffer && r.buffer.length) break
+        lastErr = new Error('upstream ' + (r && r.status))
+      } catch (e) {
+        lastErr = e
+        r = null
+      }
+      if (attempt === 0) await new Promise(r2 => setTimeout(r2, 250))
+    }
+    if (!r || r.status !== 200 || !r.buffer || !r.buffer.length) {
+      return res.status((r && r.status) || 502).send(String((lastErr && lastErr.message) || 'upstream error'))
+    }
+    const type = r.headers['content-type'] || 'image/jpeg'
+    imgCachePut(url, r.buffer, type)
+    res.set('Content-Type', type)
+    res.set('Cache-Control', 'private, max-age=3600')
+    res.set('X-Img-Cache', 'miss')
     res.send(r.buffer)
   } catch (e) {
     res.status(502).send(String((e && e.message) || e))
+  } finally {
+    if (release) release()
   }
 })
 
@@ -429,6 +516,7 @@ function start (options) {
   if (options?.getSetting) getSetting = options.getSetting
   if (options?.withAccount) withAccount = options.withAccount
   if (options?.settingForAccount) settingForAccount = options.settingForAccount
+  if (options?.extraAllowedRoots) extraAllowedRoots = options.extraAllowedRoots
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('')
     console.log('============================================')

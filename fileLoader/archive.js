@@ -99,7 +99,8 @@ const listArchiveImages = async (filepath) => {
 // 只解压指定的几个条目到 targetDir(压缩包内部目录结构会被保留)
 const extractArchiveFiles = async (filepath, names, targetDir) => {
   if (!names || !names.length) return
-  await spawnPromise(_7z, ['x', '-o' + targetDir, '-p123456', '--', filepath, ...names], 2 * 60 * 1000)
+  // -y:重复解压同一批文件(重新打开预览)时直接覆盖,否则 7z 会等「是否覆盖」的确认而失败
+  await spawnPromise(_7z, ['x', '-y', '-o' + targetDir, '-p123456', '--', filepath, ...names], 2 * 60 * 1000)
 }
 
 const deleteImageFromArchive = async (filename, filepath) => {

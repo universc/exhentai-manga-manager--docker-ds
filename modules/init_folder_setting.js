@@ -336,7 +336,13 @@ const prepareSetting = () => {
       // downloadConcurrency = 同时下载几张图(1-10)
       // downloadOriginal    = 整本下载默认是否下「原图」(每个入口仍可单独选)
       downloadPath: '',
-      downloadConcurrency: 4,
+      // 并发默认 6:与 JHenTai 的 downloadTaskConcurrency 默认值一致(原来是 4,偏保守)
+      downloadConcurrency: 6,
+      // 请求频率限制(照 JHenTai 的 executor Rate(maximum, period)):
+      // 每 downloadPeriodSec 秒最多 downloadMaxPerPeriod 个请求;0 = 不限。
+      // JHenTai 默认 2 个 / 1 秒 —— 这是避免被 EH 限速最直接的一档。
+      downloadMaxPerPeriod: 2,
+      downloadPeriodSec: 1,
       downloadOriginal: false,
       showComment: true,
       requireGap: 3000,

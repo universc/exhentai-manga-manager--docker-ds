@@ -27,11 +27,12 @@ import { useI18n } from 'vue-i18n'
 import { MdRefresh } from '@vicons/ionicons4'
 import { TagGroup, UserMultiple } from '@vicons/carbon'
 import TagList from './TagList.vue'
+import { tagDisplayPrefix, tagDisplayName } from '../utils.js'
 
 import { useAppStore } from '../pinia.js'
 import { storeToRefs } from 'pinia'
 const appStore = useAppStore()
-const { tagList, setting } = storeToRefs(appStore)
+const { tagList, setting, resolvedTranslation } = storeToRefs(appStore)
 
 const { t } = useI18n()
 
@@ -45,10 +46,13 @@ const tagListTitle = ref('')
 // 勾「收藏标签」→ 显示自己收藏的标签;勾「随机标签」→ 显示随机标签
 const buildTags = () => {
   if (setting.value.showCollectTag) {
-    return (setting.value.collectTag || []).map(t => ({
-      value: `${t.letter || t.cat}:"${t.tag}"$`,
-      label: `${t.letter || t.cat}:${t.tag}`
+    const list = (setting.value.collectTag || []).map(t => ({
+      value: `"${t.tag}"$`,
+      // 严格「类别:标签」:被集合包含就用第一个包含它的标签名,否则类别名(不用 c:/f: 字母)
+      label: `${tagDisplayPrefix(setting.value, resolvedTranslation.value, t.cat, t.tag)}:${tagDisplayName(setting.value, resolvedTranslation.value, t.cat, t.tag)}`
     }))
+    // 收藏模式 = 在收藏的标签里随机抽一批(以前是全部平铺,「刷新」等于没效果)
+    return _.sampleSize(list, Math.min(24, list.length))
   }
   return _.sampleSize(tagList.value, 24)
 }

@@ -36,8 +36,43 @@ const cookieHeaderOf = (cookies) => Object.entries(cookies || {})
   .map(([k, v]) => `${k}=${v}`)
   .join('; ')
 
-// 发一个请求,回 { status, headers, setCookies, body, buffer }(raw: true 时 body 为空,只给 buffer)
-const request = (url, options = {}) => new Promise((resolve, reject) => {
+// 代理 agent 缓存:同一个代理地址复用同一个 agent(keep-alive),避免每张图都重建 TLS。
+const agentCache = new Map()
+const agentFor = (proxy) => {
+  const key = String(proxy || '')
+  if (!key) return undefined
+  let a = agentCache.get(key)
+  if (!a) {
+    a = new HttpsProxyAgent(key, { keepAlive: true, maxSockets: 8, maxFreeSockets: 4 })
+    agentCache.set(key, a)
+  }
+  return a
+}
+
+// 值得重试的错误:EH 的图片/图片页在高并发下常见 TLS reset、连接被断、超时。
+// 这类「网络层抖动」重试一次基本就能过;4xx(403/404)重试没有意义,不重试。
+const isRetriableError = (e) => {
+  const s = String((e && (e.code || e.message)) || '')
+  return /ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|ESOCKETTIMEDOUT|socket hang up|aborted|timeout|EAI_AGAIN|ENOTFOUND|Client network socket disconnected/i.test(s)
+}
+
+// 发一个请求,回 { status, headers, setCookies, body, buffer }(raw: true 时 body 为空,只给 buffer)。
+// retries:网络层错误自动重试次数(默认 2 次,配合短退避)。
+const request = (url, options = {}) => new Promise((resolveOuter, rejectOuter) => {
+  const maxRetries = Number.isFinite(options.retries) ? Number(options.retries) : 2
+  let attempt = 0
+  const runOnce = () => {
+    sendOnce().then(resolveOuter, (e) => {
+      // 网络层抖动 → 短退避重试(0.3s、0.9s);4xx 之类的业务错误直接抛出
+      if (attempt < maxRetries && isRetriableError(e)) {
+        attempt += 1
+        setTimeout(runOnce, 300 * attempt)
+        return
+      }
+      rejectOuter(e)
+    })
+  }
+  const sendOnce = () => new Promise((resolve, reject) => {
   let u
   try {
     u = new URL(url)
@@ -58,11 +93,30 @@ const request = (url, options = {}) => new Promise((resolve, reject) => {
     headers['Content-Length'] = Buffer.byteLength(body)
   }
   const reqOptions = { method: options.method || 'GET', headers, timeout: options.timeout || DEFAULT_TIMEOUT }
-  // 代理:https-proxy-agent 对 http/https 目标都可用
-  if (options.proxy) reqOptions.agent = new HttpsProxyAgent(options.proxy)
+  // 代理:https-proxy-agent 对 http/https 目标都可用。
+  // ⚠ 这里**复用** agent(按代理地址缓存):以前每次请求都 new 一个 HttpsProxyAgent,
+  //   等于每一张图都重新跟代理建立 TCP+TLS;EH 的图片页/图片主机在这种高频新建连接下
+  //   很容易被 reset(实测报 ECONNRESET: Client network socket disconnected before secure
+  //   TLS connection was established)。复用后 keep-alive 生效,连接数大幅下降。
+  if (options.proxy) reqOptions.agent = agentFor(options.proxy)
   const req = lib.request(u, reqOptions, (res) => {
     const chunks = []
-    res.on('data', (c) => chunks.push(c))
+    // 下载进度(照 JHenTai 的 ImageChunkEvent):按「已收字节 / content-length」回报。
+    // 没有 content-length 时报 -1,前端显示转圈而不是假百分比。
+    const totalBytes = Number(res.headers['content-length']) || 0
+    let received = 0
+    // ⚠ 这里**不能**再加 !options.raw 的判断:图片请求恰恰是 raw: true,
+    //   加了等于进度回调永远不触发(占位永远只有转圈,没有百分比)。
+    if (typeof options.onProgress === 'function') {
+      try { options.onProgress({ received: 0, total: totalBytes, ratio: totalBytes ? 0 : -1 }) } catch (e) { /* 忽略 */ }
+    }
+    res.on('data', (c) => {
+      chunks.push(c)
+      received += c.length
+      if (typeof options.onProgress === 'function') {
+        try { options.onProgress({ received, total: totalBytes, ratio: totalBytes ? Math.min(1, received / totalBytes) : -1 }) } catch (e) { /* 忽略 */ }
+      }
+    })
     res.on('end', () => {
       const buffer = Buffer.concat(chunks)
       resolve({
@@ -79,6 +133,8 @@ const request = (url, options = {}) => new Promise((resolve, reject) => {
   req.on('error', (e) => reject(e))
   if (body) req.write(body)
   req.end()
+  })
+  runOnce()
 })
 
 // 从 Set-Cookie 数组里挑出关心的几项(同名后者覆盖前者;空值与 igneous=mystery 视为没有)
@@ -210,28 +266,49 @@ const listGalleryPageLinks = async (galleryUrl, { proxy, cookie, limit = 40, max
   }
   // ⚠️ 以前是一页一页串行翻缩略图页:1000+ 页的画廊要 30 次请求、实测 115 秒才开工。
   // 现在一次并发 4 页;某一批一张新链接都没加就说明到头了。
-  let p = 0
-  while (p < maxPages && links.length < limit) {
-    const idx = []
-    for (let i = 0; i < batch && p + i < maxPages; i++) idx.push(p + i)
-    const results = await Promise.all(idx.map(fetchPage))
-    let added = 0
-    for (const found of results) added += addAll(found)
-    if (typeof onPage === 'function') onPage(links.length)
-    if (!added) break
-    p += idx.length
+  const sweep = async () => {
+    let p = 0
+    let failedBefore = (stats && stats.failed) || 0
+    while (p < maxPages && links.length < limit) {
+      const idx = []
+      for (let i = 0; i < batch && p + i < maxPages; i++) idx.push(p + i)
+      const results = await Promise.all(idx.map(fetchPage))
+      let added = 0
+      for (const found of results) added += addAll(found)
+      if (typeof onPage === 'function') onPage(links.length)
+      if (!added) break
+      p += idx.length
+    }
+    return failedBefore
+  }
+  await sweep()
+  // 这一轮有请求失败(超时/限速):整批再扫一次,把丢掉的页补回来。
+  // 以前失败就静默少收十几条,续传时 total 比实际页数小,封面显示成 235/218 这种。
+  if (stats && (stats.failed || 0) > 0 && links.length < limit) {
+    const before = links.length
+    await sweep()
+    if (links.length > before && typeof onPage === 'function') onPage(links.length)
   }
   return links
 }
 
 // 一页图片页 → { url: 正常图, originalUrl: 原图(没有则空), page: 这一页的地址 }
 // 原图口径与 modules/ehDownload.js、JHenTai 的 _downloadUrlFor 一致:页面上「Download original」那句的链接
-const resolvePageImageInfo = async (pageUrl, { proxy, cookie } = {}) => {
-  const res = await request(pageUrl, { proxy, cookie, timeout: 20000, referer: pageUrl })
+const resolvePageImageInfo = async (pageUrl, opts = {}) => {
+  const { proxy, cookie } = opts
+  // nl=<key>:EH 每次打开图片页都会下发一个新的 nl 值(页面里 return nl('...'))。
+  // 带上它再请求一次 = 让 EH 重新挑一个 H@H 节点(JHenTai 的 _reParseImageUrlAndDownload 同理)。
+  // 这正是用户看到的 ?nl=42598-498016:节点挂了/被限速时,换一个节点重试往往就好了。
+  const reloadKey = String(opts.reloadKey || '')
+  const u = reloadKey
+    ? pageUrl + (pageUrl.includes('?') ? '&' : '?') + 'nl=' + encodeURIComponent(reloadKey)
+    : pageUrl
+  const res = await request(u, { proxy, cookie, timeout: 20000, referer: pageUrl })
   const body = res.body || ''
   const m = /<img[^>]*id="img"[^>]*src="([^"]+)"/i.exec(body) || /<img[^>]*src="([^"]+)"[^>]*id="img"/i.exec(body)
   const om = /href="(https?:\/\/[^"]+)"[^>]*>[^<]*Download\s+original/i.exec(body)
-  return { url: m ? m[1] : '', originalUrl: om ? om[1] : '', page: pageUrl }
+  const nlm = /return nl\('([^']+)'\)/i.exec(body)
+  return { url: m ? m[1] : '', originalUrl: om ? om[1] : '', page: pageUrl, reloadKey: nlm ? nlm[1] : '' }
 }
 
 const resolvePageImage = async (pageUrl, opts = {}) => {

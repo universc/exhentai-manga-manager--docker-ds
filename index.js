@@ -61,6 +61,52 @@ const WEB_MODE = process.env.WEB_MODE === '1'
 // 必须在 app ready 之前注册为 privileged,否则 <img> 不让用。
 const EH_IMG_SCHEME = 'emm-eh'
 const EH_IMG_HOST_RE = /^https:\/\/([^/]+\.)?(hath\.network|ehgt\.org|e-hentai\.org|exhentai\.org)(:\d+)?\//i
+
+// ---------- 在线图片:内存缓存 + 有界并发(桌面版 emm-eh 协议用) ----------
+// 与网页版 /api/ex-image 同一套策略:翻回上一页不再重新下载,并发过多不会被 EH 限速打死。
+const EH_IMG_CACHE_MAX_BYTES = 600 * 1024 * 1024
+const EH_IMG_CACHE_TTL = 30 * 60 * 1000
+const EH_IMG_MAX_CONCURRENCY = 6
+const ehImgCache = new Map()
+let ehImgCacheBytes = 0
+const ehImgCacheGet = (url) => {
+  const hit = ehImgCache.get(url)
+  if (!hit) return null
+  if (Date.now() - hit.at > EH_IMG_CACHE_TTL) {
+    ehImgCacheBytes -= hit.buffer.length
+    ehImgCache.delete(url)
+    return null
+  }
+  ehImgCache.delete(url)
+  ehImgCache.set(url, hit)
+  return hit
+}
+const ehImgCachePut = (url, buffer, type) => {
+  if (!buffer || !buffer.length) return
+  if (buffer.length > EH_IMG_CACHE_MAX_BYTES / 4) return
+  const prev = ehImgCache.get(url)
+  if (prev) { ehImgCacheBytes -= prev.buffer.length; ehImgCache.delete(url) }
+  ehImgCache.set(url, { buffer, type, at: Date.now() })
+  ehImgCacheBytes += buffer.length
+  while (ehImgCacheBytes > EH_IMG_CACHE_MAX_BYTES && ehImgCache.size) {
+    const oldest = ehImgCache.keys().next().value
+    const v = ehImgCache.get(oldest)
+    ehImgCache.delete(oldest)
+    if (v) ehImgCacheBytes -= v.buffer.length
+  }
+}
+let ehImgRunning = 0
+const ehImgWaiters = []
+const ehImgAcquire = () => new Promise((resolve) => {
+  if (ehImgRunning < EH_IMG_MAX_CONCURRENCY) { ehImgRunning += 1; resolve() }
+  else ehImgWaiters.push(resolve)
+})
+const ehImgRelease = () => {
+  const next = ehImgWaiters.shift()
+  if (next) next()
+  else ehImgRunning = Math.max(0, ehImgRunning - 1)
+}
+
 if (!WEB_MODE) {
   try {
     protocol.registerSchemesAsPrivileged([{
@@ -423,7 +469,16 @@ process
   })
   .on('uncaughtException', err => {
     console.log(err, 'Uncaught Exception thrown')
-    process.exit(1)
+    // ⚠ 这里以前是 process.exit(1) —— 任何一个没接住的小错误都会把整个客户端关掉
+    //    (用户点「测试代理」闪退就是这么来的:IPC 回调里一处 ReferenceError)。
+    //    现在:记日志 + 通知界面,进程继续跑。只有「连弹错误 20 次」才判定为不可恢复并退出,
+    //    避免真的进入死循环时一直空转。
+    globalThis.__emmUncaughtCount = (globalThis.__emmUncaughtCount || 0) + 1
+    try { sendMessageToWebContents('后台出错(已记录日志,程序继续运行):' + String((err && err.message) || err).slice(0, 120)) } catch (e) { /* 界面可能还没好 */ }
+    if (globalThis.__emmUncaughtCount > 20) {
+      console.log('连续未捕获异常过多,退出')
+      process.exit(1)
+    }
   })
 
 let settingWriteSeq = 0
@@ -1226,18 +1281,61 @@ if (!WEB_MODE) {
       try {
         protocol.handle(EH_IMG_SCHEME, async (req) => {
           try {
-            const raw = new URL(req.url).searchParams.get('u') || ''
+            const reqUrl = new URL(req.url)
+            const raw = reqUrl.searchParams.get('u') || ''
+            // t = 前端这一页的 id:用来把下载进度回推给对应的占位环(照 JHenTai 的 loadingProgress)
+            const progressTag = reqUrl.searchParams.get('t') || ''
             if (!EH_IMG_HOST_RE.test(raw)) return new Response('bad url', { status: 400 })
-            const r = await ehLogin.request(raw, {
-              proxy: setting.proxy,
-              raw: true,
-              referer: 'https://e-hentai.org/',
-              timeout: 30000
-            })
-            return new Response(r.buffer, {
-              status: r.status === 200 ? 200 : 502,
-              headers: { 'Content-Type': r.headers['content-type'] || 'image/jpeg' }
-            })
+            // 与网页版 /api/ex-image 同一套:缓存 → 并发闸门 → 失败重试一次
+            const cached = ehImgCacheGet(raw)
+            if (cached) {
+              return new Response(cached.buffer, {
+                status: 200,
+                headers: { 'Content-Type': cached.type, 'X-Img-Cache': 'hit' }
+              })
+            }
+            await ehImgAcquire()
+            try {
+              let r = null
+              let lastErr = null
+              // nl 换节点:EH 的原图主机是随机分配的 H@H 节点,某些节点会直接断 TLS。
+              // 带上 ?nl= 重新请求图片页,会换一个节点重试(JHenTai 的 _reParseImageUrlAndDownload)。
+              // 这里对「图片本身」也做:失败时把 u 换成带 nl 的形式再试一轮。
+              for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                  const target = raw + (attempt > 0
+                    ? (raw.includes('?') ? '&' : '?') + 'nl=' + encodeURIComponent(String(Date.now()).slice(-6))
+                    : '')
+                  r = await ehLogin.request(target, {
+                    proxy: setting.proxy,
+                    raw: true,
+                    referer: 'https://e-hentai.org/',
+                    timeout: 20000,
+                    // 把「已收字节 / 总字节」推给前端,占位环显示真实百分比
+                    onProgress: progressTag ? (p) => {
+                      try { emitToRenderer('eh-image-progress', { t: progressTag, ratio: p.ratio }) } catch (e) { /* 忽略 */ }
+                    } : undefined
+                  })
+                  if (r && r.status === 200 && r.buffer && r.buffer.length) break
+                  lastErr = new Error('upstream ' + (r && r.status))
+                } catch (e) {
+                  lastErr = e
+                  r = null
+                }
+                if (attempt < 2) await new Promise(r2 => setTimeout(r2, 250 * (attempt + 1)))
+              }
+              if (!r || r.status !== 200 || !r.buffer || !r.buffer.length) {
+                return new Response(String((lastErr && lastErr.message) || 'upstream error'), { status: 502 })
+              }
+              const type = r.headers['content-type'] || 'image/jpeg'
+              ehImgCachePut(raw, r.buffer, type)
+              return new Response(r.buffer, {
+                status: 200,
+                headers: { 'Content-Type': type, 'X-Img-Cache': 'miss' }
+              })
+            } finally {
+              ehImgRelease()
+            }
           } catch (e) {
             return new Response(String((e && e.message) || e), { status: 502 })
           }
@@ -2297,18 +2395,28 @@ const runScan = async () => {
   // 统一单次遍历:等价于原「文件夹并发BFS + rar/7z glob + zip glob」三次遍历,
   // 同时产出目录/压缩包指纹,供增量扫描快照使用
   const excludeRe = compileExclude()
-  const inv = await inventoryLibrary(setting.library, { excludeRe })
+  // ⚠ 用本次扫描的库对象,不要读全局 setting.library ——
+  //   多库依次扫描时,全局值可能已被别的库改掉,导致「扫的是 A 库、快照写的是 B 库、
+  //   清理封面却清的是当前 CURRENT_COVER_DIR」,书单和封面目录对不上 → 整目录被当孤儿删掉。
+  const scanRoot = String(scanLib.path || setting.library || '')
+  const inv = await inventoryLibrary(scanRoot, { excludeRe })
   let list = inv.books
   const listLength = list.length
   if (listLength === 0) {
     // 0 本 = 路径不对 / 没挂载 / 里面确实没有可识别的书,直接把看到的目录内容告诉用户
-    const root = String(setting.library || '')
+    const root = scanRoot
     let sample = ''
     try {
       const names = fs.readdirSync(root).slice(0, 8)
       sample = names.length ? `(里面前几个:${names.join('、')})` : '(目录是空的)'
     } catch (e) { sample = '(这个目录读不了:可能没挂载或没有权限)' }
     sendMessageToWebContents(`漫画库「${root}」里没找到任何漫画/小说 ${sample} —— 支持:含图片的文件夹、zip/cbz/rar/7z、epub、txt`)
+    // 一本书都没扫到 = 这次扫描没有任何可信结果:直接收工。
+    // 以前会继续往下走,bookList 为 0 时连「存活率 <30%」那道保护都绕过,
+    // 接着清理孤儿封面时"现有封面集合"是空的 → 把当前库的封面目录清空。
+    setProgressBar(-1)
+    sendMessageToWebContents('Scan complete')
+    return
   } else {
     sendMessageToWebContents(`从漫画库找到 ${listLength} 本漫画`)
   }
@@ -2362,31 +2470,18 @@ const runScan = async () => {
     sendMessageToWebContents('Scan complete')
     return
   }
-  try {
-    // 清理孤儿封面。封面文件都存放在共享 CURRENT_COVER_DIR 目录,而数据库里的
-    // coverPath 可能是 Windows 盘符 / UNC / Linux(/data/...) 任意一种格式,
-    // 统一按 basename 对比,避免误删另一平台格式路径引用的封面。
-    const coverList = await fs.promises.readdir(CURRENT_COVER_DIR)
-    const existCoverSet = new Set(existData
-      .map(b => b.coverPath ? path.basename(String(b.coverPath).replace(/[\\/]+$/, '')) : null)
-      .filter(Boolean))
-    const removeCoverList = coverList
-      .map(p => path.join(CURRENT_COVER_DIR, p))
-      .filter(p => !existCoverSet.has(path.basename(p)))
-    for (const coverPath of removeCoverList) {
-      await fs.promises.rm(coverPath)
-    }
-  } catch (err) {
-    console.log(err)
-  }
-  // 批量清理数据库中已不存在的漫画(连同元数据),避免逐条删除
+  // ⚠ 顺序很重要:必须先删数据库记录,再删封面文件。
+  //   以前先删封面、后删记录,而删记录用的是一条 `IN (上万 id)`,SQLite 变量数超限会抛错,
+  //   错误被 catch 吞掉 → 书还在、封面已经没了(用户遇到的"封面全没、书全在")。
   if (removeData.length) {
     try {
       const removeIds = removeData.map(b => b.id)
       const removeHashes = removeData.map(b => b.hash).filter(Boolean)
-      await Manga.destroy({ where: { id: { [Op.in]: removeIds } } })
-      if (removeHashes.length) {
-        await Metadata.destroy({ where: { hash: { [Op.in]: removeHashes } } })
+      for (let i = 0; i < removeIds.length; i += 400) {
+        await Manga.destroy({ where: { id: { [Op.in]: removeIds.slice(i, i + 400) } } })
+      }
+      for (let i = 0; i < removeHashes.length; i += 400) {
+        await Metadata.destroy({ where: { hash: { [Op.in]: removeHashes.slice(i, i + 400) } } })
       }
       sendMessageToWebContents(`清理了 ${removeData.length} 本不存在的漫画`)
     } catch (e) {
@@ -2394,9 +2489,37 @@ const runScan = async () => {
       sendMessageToWebContents(`清理不存在的漫画失败:${e}`)
     }
   }
+  try {
+    // 清理孤儿封面。封面文件都存放在 CURRENT_COVER_DIR,而数据库里的 coverPath 可能是
+    // Windows 盘符 / UNC / Linux(/data/...) 任意一种格式 —— 统一取「文件名」再比较。
+    // ⚠ 必须自己按 / 和 \\ 切:Linux 的 path.basename() 不认反斜杠,
+    //   以前直接用 path.basename('D:\\cover\\x.webp') 会得到整串,匹配不上 →
+    //   把整目录的封面全当孤儿删掉(用户反馈的「全库扫描后封面全丢」就是这个)。
+    const baseNameOf = (p0) => String(p0 || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').split('/').pop()
+    const coverList = await fs.promises.readdir(CURRENT_COVER_DIR)
+    const existCoverSet = new Set(existData.map(b => baseNameOf(b.coverPath)).filter(Boolean))
+    // 安全阀:一条都没匹配上,或要删掉一大半 —— 一律不删,只提示。
+    // 宁可留几个孤儿文件,也不能再把用户封面清空。
+    if (!existCoverSet.size) {
+      sendMessageToWebContents('封面清理已跳过:数据库里没有可匹配的封面路径(不会删除任何封面)')
+    } else {
+      const removeCoverList = coverList
+        .map(p0 => path.join(CURRENT_COVER_DIR, p0))
+        .filter(p0 => !existCoverSet.has(path.basename(p0)))
+      if (coverList.length > 20 && removeCoverList.length > coverList.length * 0.5) {
+        sendMessageToWebContents(`封面清理已跳过:本次要删 ${removeCoverList.length}/${coverList.length} 个封面,比例异常`)
+      } else {
+        for (const coverPath of removeCoverList) {
+          await fs.promises.rm(coverPath)
+        }
+      }
+    }
+  } catch (err) {
+    console.log(err)
+  }
   // 全量扫描成功收尾:保存目录指纹快照,供增量扫描使用
   try {
-    await saveSnapshotFile(SNAPSHOT_FILE, snapshotFromInventory(setting.library, setting.excludeFile || '', inv))
+    await saveSnapshotFile(SNAPSHOT_FILE, snapshotFromInventory(scanRoot, setting.excludeFile || '', inv))
   } catch (e) {
     console.log('save scan snapshot failed', e)
   }
@@ -2560,23 +2683,29 @@ const runIncrementalScan = async () => {
     if (row) removedRows.push(row)
   }
   if (removedRows.length) {
+    let deleted = false
     try {
-      for (const row of removedRows) {
-        if (row.coverPath) {
-          const coverFile = path.join(CURRENT_COVER_DIR, path.basename(String(row.coverPath)))
-          await fs.promises.rm(coverFile, { force: true }).catch(() => {})
-        }
-      }
+      // 先删记录(分批),确认成功后再删封面文件 —— 反过来就会出现"记录还在、封面没了"
       const removeIds = removedRows.map(b => b.id)
       const removeHashes = removedRows.map(b => b.hash).filter(Boolean)
-      await Manga.destroy({ where: { id: { [Op.in]: removeIds } } })
-      if (removeHashes.length) {
-        await Metadata.destroy({ where: { hash: { [Op.in]: removeHashes } } })
+      for (let i = 0; i < removeIds.length; i += 400) {
+        await Manga.destroy({ where: { id: { [Op.in]: removeIds.slice(i, i + 400) } } })
       }
+      for (let i = 0; i < removeHashes.length; i += 400) {
+        await Metadata.destroy({ where: { hash: { [Op.in]: removeHashes.slice(i, i + 400) } } })
+      }
+      deleted = true
       sendMessageToWebContents(`清理了 ${removedRows.length} 本不存在的漫画`)
     } catch (e) {
       console.error(e)
       sendMessageToWebContents(`清理不存在的漫画失败:${e}`)
+    }
+    if (deleted) {
+      for (const row of removedRows) {
+        if (!row.coverPath) continue
+        const coverFile = path.join(CURRENT_COVER_DIR, path.basename(String(row.coverPath)))
+        await fs.promises.rm(coverFile, { force: true }).catch(() => {})
+      }
     }
   }
   // 无变化时不重写快照(避免每轮都全量写 1MB+ 的 scan-snapshot.json)
@@ -2698,7 +2827,9 @@ ipcMain.handle('patch-local-metadata', async (event, arg) => {
   const bookList = await loadBookListFromDatabase()
   const bookListLength = bookList.length
   await clearFolder(TEMP_PATH)
-  await clearFolder(CURRENT_COVER_DIR)
+  // ⚠ 这里以前是 `clearFolder(CURRENT_COVER_DIR)`:先清空整个封面目录再逐本重建。
+  //   一万多本重建很慢,中途退出/出错 = 全部封面消失(用户遇到的正是这个)。
+  //   修补元数据不应该销毁已有封面:现在只重建缺失的,已有的一律保留。
 
   const CONCURRENCY = scanConcurrency()
   const BATCH_SIZE = 200
@@ -2713,6 +2844,9 @@ ipcMain.handle('patch-local-metadata', async (event, arg) => {
       // 用户在阅读时暂停任务,让出 CPU/磁盘
       await waitViewerIdle()
       try {
+        // 已经有可用封面 → 跳过(只补缺失的,不再重复生成)
+        const had = book.coverPath ? translateBookPath(book.coverPath, 'coverPath', null, bookCoverDir(book)) : ''
+        if (had && isUsableCover(had)) return
         let { filepath, type } = book
         if (!type) type = 'archive'
         // 封面以漫画名命名(占位防并发)
@@ -2786,6 +2920,61 @@ ipcMain.handle('get-ehviewer-data', async (event, dir) => {
   return getEhviewerDataManually(dir)
 })
 
+// ---------- EH 出网公共 helper ----------
+// ⚠️ 必须定义在所有使用者之前:这些是 const,提升到前面也没用(暂时性死区),
+//    在主进程顶层/回调里"先引用后定义"会抛 ReferenceError。
+//    「设置 → 测试代理」一点就闪退就是这个原因:test-proxy 用了下面的 ehCookieHeader,
+//    而它当时定义在文件更后面 → IPC 回调里抛错 → 主进程崩掉。
+// 出网口径与 eh-gallery-pages 一致:Cookie + 代理,超时自己控制(见 modules/ehLogin.js 的 request)。
+const ehCookieHeader = () => ehLogin.cookieHeaderOf({
+  igneous: setting.igneous,
+  ipb_pass_hash: setting.ipb_pass_hash,
+  ipb_member_id: setting.ipb_member_id,
+  star: setting.star
+})
+// 有有效 igneous 走 exhentai,否则 e-hentai(与前端 ehOnline.js 的 useExSite 同判法)
+const ehSiteName = () => {
+  const v = String(setting.igneous || '').trim()
+  return (v && v !== 'null' && v !== 'mystery' && v !== 'deleted') ? 'exhentai' : 'e-hentai'
+}
+const ehGidToken = (url) => {
+  const m = /\/g\/(\d+)\/([0-9a-z]{10})/i.exec(String(url || ''))
+  return m ? { gid: m[1], token: m[2] } : null
+}
+const emitToRenderer = (channel, arg) => {
+  if (WEB_MODE) require('./web-electron-shim.js').broadcast(channel, arg)
+  else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, arg)
+}
+
+// 测试「设置 → 代理」是否真的能用:必须在**主进程**里带 setting.proxy 发请求。
+// 以前这项测试是渲染进程直接 fetch EH —— 浏览器的 fetch 根本不走 setting.proxy,
+// 于是「代理明明已经连上,测试却永远报连接错误」。
+ipcMain.handle('test-proxy', async (event, arg) => {
+  const proxy = String((arg && arg.proxy) || setting.proxy || '').trim()
+  const testUrl = String((arg && arg.url) || 'https://e-hentai.org/')
+  const started = Date.now()
+  const cookie = ehCookieHeader()
+  const opts = { timeout: 15000, cookie }
+  if (proxy) opts.proxy = proxy
+  try {
+    const res = await ehLogin.request(testUrl, opts)
+    const ms = Date.now() - started
+    const body = res.body || ''
+    // 200/302/403 都说明「代理通了」:能拿到 EH 的响应(哪怕是登录墙/ Cloudflare)就不是代理问题
+    const reachable = res.status > 0
+    return {
+      ok: reachable,
+      status: res.status || 0,
+      ms,
+      bytes: body.length,
+      title: (/<title>([^<]*)<\/title>/i.exec(body) || [])[1] ? String((/<title>([^<]*)<\/title>/i.exec(body) || [])[1]).trim().slice(0, 60) : '',
+      proxy: proxy || '(未设置,直连)'
+    }
+  } catch (e) {
+    return { ok: false, status: 0, ms: Date.now() - started, error: String((e && e.message) || e), proxy: proxy || '(未设置,直连)' }
+  }
+})
+
 ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
   if (setting.proxy) {
     return await fetch(url, {
@@ -2800,7 +2989,9 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
       return result
     })
     .catch(e => {
-      sendMessageToWebContents(`获取 Ex 页面失败:${e}`)
+      // 不弹提示:在线列表/预览拉不到时由调用方按「有没有已显示内容」决定要不要打扰用户,
+      // 这里每条失败都弹一次,就是「EH在线老是弹错误提示」的直接原因
+      console.error('get-ex-webpage failed', e)
     })
   } else {
     return await fetch(url, {
@@ -2831,7 +3022,7 @@ ipcMain.handle('post-data-ex', async (event, { url, data }) => {
     })
     .then(res => res.text())
     .catch(e => {
-      sendMessageToWebContents(`获取 Ex 数据失败:${e}`)
+      console.error('post-data-ex failed', e)
     })
   } else {
     return await fetch(url, {
@@ -2887,32 +3078,120 @@ ipcMain.handle('eh-password-login', async (event, arg) => {
 //  - folder:直接 glob(便宜)
 //  - 压缩包:先用 7z 只列条目名,再**只解压前 N 张**(绝不为一个预览条解压整包)
 //  - epub / txt:没有图片页 → 明确告诉前端不支持
+// 压缩包名字列表缓存:同一本书连续翻页时不用每次重新 `7z l`
+// (页数不再截断:前端的「加载更多」可以一直翻到最后一页,只是每次只解一小批)
+const previewArchiveCache = new Map()
+
 ipcMain.handle('book-preview-images', async (event, book) => {
-  // limit: 0 = 全部(侧边详细要显示每一页);默认 12(详细界面的小预览)
+  // 两种用法:
+  //   · 分批(详细界面/侧栏):传 start + count,每次只解压/取这一批,前端取到就显示 ——
+  //     以前 limit:0 会把压缩包前 60 页一次解完才返回,表现就是「卡半天然后突然全部冒出来」;
+  //   · 老用法(limit):不传 count 时保持原行为。
   const LIMIT = Number(book && book.limit) >= 0 ? Number(book.limit) : 12
+  const batchMode = !!(book && book.count !== undefined && book.count !== null)
+  const start = Math.max(0, Number(book && book.start) || 0)
+  const count = batchMode
+    ? Math.max(1, Math.min(Number(book.count) || 12, 24))
+    : (LIMIT === 0 ? 60 : LIMIT)
   try {
     const { filepath, type } = book || {}
     if (!filepath || !type) return { ok: false, error: 'no-filepath' }
     if (type === 'epub' || type === 'novel') return { ok: false, error: 'text-only' }
     if (type === 'folder') {
       const list = await getImageListByBook(filepath, type)
-      const files = (LIMIT === 0 ? list : list.slice(0, LIMIT)).map(it => it.absolutePath).filter(Boolean)
-      return { ok: true, total: list.length, files }
+      const files = list.slice(start, start + count).map(it => it.absolutePath).filter(Boolean)
+      return { ok: true, total: list.length, rawTotal: list.length, start, files }
     }
-    const names = await listArchiveImages(filepath)
-    if (!names.length) return { ok: false, error: 'no-image' }
-    const dir = path.join(VIEWER_PATH, 'preview-' + nanoid(8))
-    fs.mkdirSync(dir, { recursive: true })
-    // 压缩包解全部太慢:limit=0 时取前 60 页
-    const cap = LIMIT === 0 ? 60 : LIMIT
-    const pick = names.slice(0, cap)
-    await extractArchiveFiles(filepath, pick, dir)
+    // 压缩包:名字列表按「路径 + 修改时间」缓存,每次只解压要的这一批
+    let mtime = 0
+    try { mtime = fs.statSync(filepath).mtimeMs } catch (e) { /* 读不到就按 0 */ }
+    const key = filepath + '|' + mtime
+    let entry = previewArchiveCache.get(key)
+    if (!entry) {
+      const names = await listArchiveImages(filepath)
+      if (!names.length) return { ok: false, error: 'no-image' }
+      entry = { names, rawTotal: names.length, dir: path.join(VIEWER_PATH, 'preview-' + nanoid(8)) }
+      fs.mkdirSync(entry.dir, { recursive: true })
+      previewArchiveCache.set(key, entry)
+      // 只留最近 6 本,避免常驻内存
+      if (previewArchiveCache.size > 6) previewArchiveCache.delete(previewArchiveCache.keys().next().value)
+    }
+    const pick = entry.names.slice(start, start + count)
+    if (!pick.length) return { ok: true, total: entry.names.length, rawTotal: entry.rawTotal, start, files: [] }
+    // 已经解压过的页不再重解(重新打开预览时省一大截时间)
+    const missing = pick.filter(n => !fs.existsSync(path.join(entry.dir, n)))
+    if (missing.length) await extractArchiveFiles(filepath, missing, entry.dir)
     return {
       ok: true,
-      total: names.length,
-      files: pick.map(n => path.join(dir, n)).filter(f => fs.existsSync(f))
+      total: entry.names.length,
+      rawTotal: entry.rawTotal,
+      start,
+      files: pick.map(n => path.join(entry.dir, n)).filter(f => fs.existsSync(f))
     }
   } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+// ---------- 标签翻译词库(EhTagTranslation) ----------
+// JHenTai 的「标签翻译」用的就是这份词库;以前这里是渲染进程直接 fetch GitHub,
+// 在 NAS / 国内网络下经常拿不到(拿不到就永远显示原始英文标签)。现在改由主进程下载:
+//   · 跟着「设置 → 代理」走;· 缓存到数据目录,只 7 天更新一次;· 失败时回退旧缓存。
+const TAG_TRANSLATION_URL = 'https://github.com/EhTagTranslation/Database/releases/latest/download/db.text.json'
+const TAG_TRANSLATION_TTL = 7 * 24 * 3600 * 1000
+let tagTranslationMemory = null
+
+const requestFollowRedirect = async (url, opts, depth = 0) => {
+  const res = await ehLogin.request(url, opts)
+  const loc = res && res.headers && res.headers.location
+  if (res && [301, 302, 303, 307, 308].includes(res.status) && loc && depth < 5) {
+    return requestFollowRedirect(new URL(loc, url).toString(), opts, depth + 1)
+  }
+  return res
+}
+
+const normalizeTagTranslationDb = (raw) => {
+  const list = Array.isArray(raw) ? raw : ((raw && raw.data) || [])
+  const out = {}
+  for (const ns of list) {
+    if (!ns || !ns.namespace) continue
+    const rec = {}
+    if (ns.frontMatters && ns.frontMatters.name) rec._name = ns.frontMatters.name
+    const items = ns.data || {}
+    for (const key of Object.keys(items)) {
+      const v = items[key] || {}
+      rec[key] = { name: v.name || '', intro: v.intro || '' }
+    }
+    out[ns.namespace] = rec
+  }
+  return out
+}
+
+ipcMain.handle('load-tag-translation', async (event, opts) => {
+  const force = !!(opts && opts.force)
+  const cacheFile = path.join(STORE_PATH, 'tag-translation.json')
+  let cached = tagTranslationMemory
+  if (!cached) {
+    try {
+      const j = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'))
+      if (j && j.data) cached = j
+    } catch (e) { /* 没有缓存 */ }
+  }
+  if (cached && !force && (Date.now() - (cached.updatedAt || 0) < TAG_TRANSLATION_TTL)) {
+    return { ok: true, cached: true, updatedAt: cached.updatedAt || 0, data: cached.data }
+  }
+  try {
+    const res = await requestFollowRedirect(TAG_TRANSLATION_URL, { proxy: setting.proxy, raw: true, timeout: 180000 })
+    if (!res || res.status !== 200 || !res.buffer || !res.buffer.length) throw new Error('http ' + (res && res.status))
+    const data = normalizeTagTranslationDb(JSON.parse(res.buffer.toString('utf-8')))
+    if (!Object.keys(data).length) throw new Error('empty')
+    const payload = { updatedAt: Date.now(), data }
+    tagTranslationMemory = payload
+    try { fs.writeFileSync(cacheFile, JSON.stringify(payload)) } catch (e) { /* 只放内存也行 */ }
+    console.log('[tag-translation] 词库已更新:' + Object.keys(data).length + ' 个类别')
+    return { ok: true, cached: false, updatedAt: payload.updatedAt, data }
+  } catch (e) {
+    if (cached) return { ok: true, cached: true, updatedAt: cached.updatedAt || 0, data: cached.data, error: String((e && e.message) || e) }
     return { ok: false, error: String((e && e.message) || e) }
   }
 })
@@ -2963,6 +3242,87 @@ ipcMain.handle('eh-page-image', async (event, arg) => {
   }
 })
 
+// ---------- H@H 归档下载(照 JHenTai 的 EHDownloadHHDialog)----------
+// EH 的 archiver.php 会列出 6 种分辨率(各带体积与花费),用户选一个再 POST hathdl_xres。
+// 这里分两步:①解析出列表交给界面 ②用户选中后发起下载(服务端会打包,完成后在 H@H 页面下载)。
+const parseHhInfo = (html) => {
+  // 表格:每个 td 里 p1=分辨率描述+onclick('xres'), p3=体积, p5=花费
+  const res = []
+  const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/gi
+  let m
+  while ((m = tdRe.exec(html))) {
+    const td = m[1]
+    if (!/onclick|archive/i.test(td)) continue
+    const desc = (/<p[^>]*>([\s\S]*?)<\/p>/i.exec(td) || [])[1] || ''
+    const click = /\(['"]([a-z0-9_]+)['"]\)/i.exec(td)
+    const cleanDesc = desc.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+    if (!cleanDesc) continue
+    const ps = [...td.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)].map(x => x[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim())
+    res.push({
+      resolutionDesc: cleanDesc,
+      resolution: click ? click[1] : '',
+      size: ps[2] || '',
+      cost: ps[4] || ''
+    })
+  }
+  // 去掉没有 resolution 的(纯表头)
+  const archives = res.filter(a => a.resolution)
+  // GP / Credits(照 JHenTai:#db > p:nth-child(4))
+  const dbm = /([\d,]+)\s*GP/.exec(html)
+  const crm = /([\d,]+)\s*Credits/.exec(html)
+  return {
+    archives,
+    gpCount: dbm ? Number(dbm[1].replace(/,/g, '')) : null,
+    creditCount: crm ? Number(crm[1].replace(/,/g, '')) : null
+  }
+}
+
+ipcMain.handle('eh-hh-info', async (event, arg) => {
+  const url = String((arg && arg.url) || '')
+  if (!url) return { ok: false, error: 'noUrl' }
+  try {
+    // ⚠ archiver.php 未登录/会话过期会 302 到登录页:必须跟随重定向,
+    //   否则拿到的是空 body(以前这里直接 request,结果解析出 0 个归档)。
+    const r = await requestFollowRedirect(url, {
+      proxy: setting.proxy, cookie: ehCookieHeader(), timeout: 30000, referer: url
+    })
+    // 未登录/会话过期:EH 会跳到登录页,页面里是 UserName/PassWord 表单
+    const html = r.body || ''
+    if (/name=["']PassWord["']/i.test(html) || /bounce_login\.php/i.test(String(r.headers && r.headers.location || ''))) {
+      return { ok: false, error: 'needLogin', archives: [], gpCount: null, creditCount: null }
+    }
+    const info = parseHhInfo(html)
+    if (!info.archives.length) {
+      // 页面里有归档表但没解析出来 / 或该画廊不支持
+      const hasTable = /hathdl_xres|Archive Download|\(['"]res\./i.test(html)
+      return { ok: false, error: hasTable ? 'parse' : 'noArchives', ...info }
+    }
+    return { ok: true, ...info }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+ipcMain.handle('eh-hh-download', async (event, arg) => {
+  const url = String((arg && arg.url) || '')
+  const resolution = String((arg && arg.resolution) || '')
+  if (!url || !resolution) return { ok: false, error: 'badArgs' }
+  try {
+    // 照 JHenTai:POST hathdl_xres 到 archiver 页 → 返回一句结果文案
+    const body = 'hathdl_xres=' + encodeURIComponent(resolution)
+    const r = await ehLogin.request(url, {
+      method: 'POST', form: { hathdl_xres: resolution }, proxy: setting.proxy,
+      cookie: ehCookieHeader(), referer: url, timeout: 60000
+    })
+    const text = ((/<p[^>]*>([\s\S]*?)<\/p>/i.exec(r.body || '') || [])[1] || '')
+      .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    void body
+    return { ok: r.status >= 200 && r.status < 400, status: r.status, message: text.slice(0, 300) }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
 // 卡片右下角的「种子」按钮要知道这个画廊有没有种子:只回数量,失败就当没有
 ipcMain.handle('eh-torrent-count', async (event, arg) => {
   const gt = ehGidToken((arg && arg.url) || '')
@@ -2974,28 +3334,6 @@ ipcMain.handle('eh-torrent-count', async (event, arg) => {
     return { ok: false, count: 0, error: String((e && e.message) || e) }
   }
 })
-
-// ---------- EH 收藏 / 种子 / 下载(第 13 轮)----------
-// 出网口径与 eh-gallery-pages 一致:Cookie + 代理,超时自己控制(见 modules/ehLogin.js 的 request)。
-const ehCookieHeader = () => ehLogin.cookieHeaderOf({
-  igneous: setting.igneous,
-  ipb_pass_hash: setting.ipb_pass_hash,
-  ipb_member_id: setting.ipb_member_id,
-  star: setting.star
-})
-// 有有效 igneous 走 exhentai,否则 e-hentai(与前端 ehOnline.js 的 useExSite 同判法)
-const ehSiteName = () => {
-  const v = String(setting.igneous || '').trim()
-  return (v && v !== 'null' && v !== 'mystery' && v !== 'deleted') ? 'exhentai' : 'e-hentai'
-}
-const ehGidToken = (url) => {
-  const m = /\/g\/(\d+)\/([0-9a-z]{10})/i.exec(String(url || ''))
-  return m ? { gid: m[1], token: m[2] } : null
-}
-const emitToRenderer = (channel, arg) => {
-  if (WEB_MODE) require('./web-electron-shim.js').broadcast(channel, arg)
-  else if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, arg)
-}
 
 // 收藏夹分类(EH 账号的 10 个收藏夹,带数量)
 ipcMain.handle('eh-favorite-categories', async () => {
@@ -3148,6 +3486,13 @@ const restoreDownloads = () => {
         saveDir: fix(t.saveDir),
         dir: fix(t.dir),
         status: t.status === 'downloading' ? 'paused' : t.status,
+        // 上次退出时如果停在「收页链接」阶段,phase 会被存成 links:重启后卡片会一直显示「0页」。
+        // 恢复时统一清掉,让卡片显示真实的 done/total。
+        phase: '',
+        linkCount: 0,
+        // total 兜底:links 收集不全的老记录会出现 done+failed > total(235/218,实际 236 页)。
+        // 任务已经停了不会再走 onProgress,所以在恢复时按 done+failed 修正一次。
+        total: Math.max(Number(t.total) || 0, (Number(t.done) || 0) + (Number(t.failed) || 0), Number(t.pageCount) || 0),
         state: { stopped: false }
       })
     }
@@ -3168,10 +3513,27 @@ const runDownloadJob = (rec) => {
     galleryUrl: rec.url,
     title: rec.title,
     saveDir: rec.saveDir,
+    // 续传必须沿用**第一次**解析出来的目录:以前每次重新推断,
+    // 推断不一致(老目录名 / 带 gid 前缀)就会新建一个空目录从头下,
+    // 用户看到的就是「点继续,已经下好的全部重下」
+    dir: rec.dir || '',
+    // EH 标注的页数:links 收集不全时(反爬/限速会少收十几条)用它兜底,
+    // 不然封面会显示 235/218 这种 done 比 total 还大的计数
+    pageCount: Number(rec.pageCount) || 0,
+    // 速度限制(页数/时间):0 = 不限
+    pageRate: Number(setting.downloadPageRate) || 0,
+    pageRateSec: Number(setting.downloadPageRateSec) || 0,
     original: !!rec.original,
     proxy: setting.proxy,
     cookie: ehCookieHeader(),
-    concurrency: Math.max(1, Math.min(Number(setting.downloadConcurrency) || 4, 10)),
+    // 并发:默认 6(与 JHenTai downloadTaskConcurrency 的默认值一致;原来是 4,偏保守)
+    concurrency: Math.max(1, Math.min(Number(setting.downloadConcurrency) || 6, 12)),
+    // 速度限制(KB/s → 字节/秒);0 / 空 = 不限制
+    speedLimit: Math.max(0, Number(setting.downloadSpeedLimit) || 0) * 1024,
+    // 请求频率限制(照 JHenTai 的 Rate(maximum, period)):每 periodSec 秒最多 maxPerPeriod 个请求。
+    // 这是「别被 EH 限速」最有效的一档;0 = 不限。
+    maxPerPeriod: Math.max(0, Number(setting.downloadMaxPerPeriod) || 2),
+    periodSec: Math.max(0.1, Number(setting.downloadPeriodSec) || 1),
     state,
     onProgress: (u) => {
       // 收页链接阶段(phase=links):只更新链接数,**不动 done/failed**。
@@ -3189,7 +3551,14 @@ const runDownloadJob = (rec) => {
         }
         return
       }
-      rec.total = u.total || rec.total
+      // total 取各路最大:links 数 / 上一次的值 / 已下+失败 / EH 标注页数。
+      // links 收集可能少收(EH 限速时静默丢页),只用它会让 done 超过 total(235/218 这种)
+      rec.total = Math.max(
+        Number(u.total) || 0, Number(rec.total) || 0,
+        (Number(u.done) || 0) + (Number(u.failed) || 0),
+        (Number(rec.done) || 0) + (Number(rec.failed) || 0),
+        Number(rec.pageCount) || 0
+      )
       rec.done = u.done | 0
       rec.failed = u.failed | 0
       rec.bytes = u.bytes | 0
@@ -3233,10 +3602,22 @@ const runDownloadJob = (rec) => {
     rec.status = state.stopped ? 'paused' : 'failed'
     rec.error = String((e && e.message) || e)
   }).finally(() => {
+    // ★关键:这条记录可能已经在下载过程中被用户删掉了(删除时把它从 downloadTasks 里摘掉)。
+    //   以前这里无条件 persist + emit —— worker 在几秒后收尾,又把「已删除的记录」推回前端,
+    //   前端 upsertDownloadRecord 一看 id 不在就 unshift 回去,于是「删掉的记录自己又回来了」。
+    //   已经被删(或已被换成新的同名任务)就什么都不做。
+    if (downloadTasks.get(rec.id) !== rec) return
+    // 收尾时一定要退出 links 阶段:否则「继续」如果失败,phase 还停在 links、linkCount 还是 0,
+    // 任务卡封面就会一直显示「0页」,把真实的 done/total 藏起来(用户反馈的「继续后变成 0 页」)
+    if (rec.status === 'downloading') rec.status = 'failed'
+    rec.phase = ''
+    rec.linkCount = 0
     rec.finishedAt = Date.now()
     persistDownloads()
     emitToRenderer('eh-download-progress', publicDownload(rec))
     emitToRenderer('eh-download-done', publicDownload(rec))
+    // 「完成」之后按设置处理:自动移动 / 移动后移除记录
+    onDownloadFinished(rec)
   })
   // 留住这次跑的 promise:「重新下载」要等旧 worker 退出后再清文件重下
   // (worker 循环只在页边界检查 state.stopped,不能这边刚删文件它还在写)
@@ -3255,6 +3636,8 @@ ipcMain.handle('eh-download-gallery', async (event, arg) => {
   if (!saveDir) return { ok: false, error: 'noPath' }
   const rec = {
     id: nanoid(), url, title, cover, original: !!original, saveDir,
+    // EH 标注的页数(卡片/详情里带的):links 收集不全时用它兜底总数
+    pageCount: Number(arg && arg.pageCount) || 0,
     // 画廊标签随下载一起记下来(下载记录里显示 / 移动到本地库时写进书库,不用再连 EH 去取)
     tags: (tags && typeof tags === 'object') ? tags : {},
     category: String(category || ''), titleJpn: String(titleJpn || ''), rating: Number(rating) || 0,
@@ -3287,6 +3670,12 @@ ipcMain.handle('eh-download-page', async (event, arg) => {
 ipcMain.handle('eh-download-records', async () => {
   // 顺手把老记录的封面补成本地文件(后台,不阻塞返回)
   backfillDownloadCovers()
+  // total 兜底:links 收集不全的记录会是 done+failed > total(如 235/218,实际 236 页),
+  // 这里每次读记录都按 done+failed 修正一次,封面上的计数不会再出现「已下数比总数还大」
+  for (const t of downloadTasks.values()) {
+    const fixed = Math.max(Number(t.total) || 0, (Number(t.done) || 0) + (Number(t.failed) || 0), Number(t.pageCount) || 0)
+    if (fixed !== t.total) { t.total = fixed }
+  }
   return { ok: true, tasks: downloadList() }
 })
 
@@ -3379,6 +3768,10 @@ ipcMain.handle('eh-download-action', async (event, arg) => {
     return { ok: true }
   }
   if (action === 'resume') {
+    // ★已经「移动」过的记录不能再续传:移动把 rec.dir 指到了本地库里的书目录,
+    //   继续下载会往库里继续写文件、多余页还按序号塞进去 —— 用户看到的就是
+    //   「移动完的漫画又在重新下载」。真要补页请用「重新下载」(会清干净再下到下载目录)。
+    if (t.movedTo) return { ok: false, error: 'alreadyMoved' }
     // 手动继续 = 重新开始计数(自动重试的次数归零)
     t.retryCount = 0
     t.nextRetryAt = 0
@@ -3389,6 +3782,18 @@ ipcMain.handle('eh-download-action', async (event, arg) => {
     // 重新下载(下载记录预览页右键):停掉正在跑的 worker → 等它退出 → 清掉已下好的文件
     // → 计数归零 → 重新入队。断点续传会跳过已存在的文件,所以「重下」必须显式删文件。
     if (t.state) t.state.stopped = true
+    // 已经移到库里的记录:重新下载要回到**下载目录**、按原来的目录名重建,
+    // 绝不能把库里的那本书当成下载目录(会写坏用户已入库的漫画)。
+    if (t.movedTo) {
+      t.movedTo = ''
+      t.dir = ''
+      if (t.saveDir) {
+        const gidMatch = /\/g\/(\d+)\//.exec(String(t.url || ''))
+        const plain = ehDownload.sanitizeName(t.title || '')
+        const gid = gidMatch ? gidMatch[1] : ''
+        t.dir = path.join(path.resolve(String(t.saveDir)), plain ? (gid ? gid + ' - ' + plain : plain) : '')
+      }
+    }
     const doRestart = () => {
       try {
         if (t.dir) fs.rmSync(t.dir, { recursive: true, force: true })
@@ -3416,14 +3821,33 @@ ipcMain.handle('eh-download-action', async (event, arg) => {
     return { ok: true }
   }
   if (action === 'delete' || action === 'deleteWithFiles') {
+    // ★先让正在跑的 worker 停下,再删记录 —— 这是「删不掉 / 删了又回来」的另一半原因:
+    //   以前只删 Map 里的记录,worker 还在往下写文件、还在推进度,几秒后记录就被推回来了。
+    if (t.state) t.state.stopped = true
     // ⚠ 已移到本地库的记录:t.dir 指向的是**库里的漫画**了,这里只删记录、绝不删文件
     //   (要删书请去书架那边删,那边才会同时清理数据库/封面)
-    if (action === 'deleteWithFiles' && t.dir && !t.movedTo) {
-      try { fs.rmSync(t.dir, { recursive: true, force: true }) } catch (e) { /* 忽略 */ }
-    }
+    const dirToRemove = (action === 'deleteWithFiles' && t.dir && !t.movedTo) ? path.resolve(t.dir) : ''
+    // 先把记录摘掉(立刻生效,前端马上看不到),
+    // 文件放到 worker 完全退出之后再删 —— 否则 worker 正在写的文件会让 rmSync 报 EBUSY/EPERM,
+    // 残留的半截文件下次又会被当成「已下载」跳过。
     downloadTasks.delete(id)
     persistDownloads()
     emitToRenderer('eh-download-removed', { id })
+    const cleanup = () => {
+      if (!dirToRemove) return
+      // 只删「下载目录」里的东西:绝不能因为路径被改过而删到库里的书(双保险)
+      const stillInDownloadPath = (() => {
+        const base = String(t.saveDir || '').trim()
+        if (!base) return false
+        const b = path.resolve(base)
+        return dirToRemove === b || dirToRemove.startsWith(b + path.sep)
+      })()
+      if (!stillInDownloadPath) return
+      try { fs.rmSync(dirToRemove, { recursive: true, force: true }) } catch (e) { /* 忽略 */ }
+    }
+    const prev = t.jobPromise
+    if (prev && typeof prev.then === 'function') prev.then(cleanup, cleanup)
+    else setTimeout(cleanup, 0)
     return { ok: true }
   }
   return { ok: false, error: 'badAction' }
@@ -3431,6 +3855,10 @@ ipcMain.handle('eh-download-action', async (event, arg) => {
 
 // 清空记录(只删记录,不动已下载的文件)
 ipcMain.handle('eh-download-clear', async () => {
+  // 先停掉所有在跑的 worker:否则它们收尾时又把记录推回前端(「清空后记录又冒出来」)
+  for (const t of downloadTasks.values()) {
+    if (t && t.state) t.state.stopped = true
+  }
   downloadTasks.clear()
   persistDownloads()
   return { ok: true, tasks: [] }
@@ -3526,11 +3954,10 @@ ipcMain.handle('list-subfolders', async (event, dir) => {
   } catch (e) { return { ok: false, dirs: [], error: String((e && e.message) || e) } }
 })
 
-ipcMain.handle('move-downloads', async (event, arg) => {
-  const ids = Array.isArray(arg && arg.ids) ? arg.ids : []
-  const targetRoot = path.resolve(String((arg && arg.target) || '').trim())
-  if (!ids.length) return { ok: false, error: 'noIds' }
-  if (!(arg && arg.target)) return { ok: false, error: 'noTarget' }
+// 真正执行移动(供 IPC 与「下载完成后自动移动」复用)
+const runMoveDownloads = async (ids, targetRoot, opts = {}) => {
+  const removeAfterMove = opts.removeAfterMove !== false && !!setting.downloadRemoveAfterMove
+  targetRoot = path.resolve(String(targetRoot || '').trim())
   try { fs.mkdirSync(targetRoot, { recursive: true }) } catch (e) { /* 已存在或建不了,后面逐个报错 */ }
   const results = []
   for (const id of ids) {
@@ -3606,15 +4033,53 @@ ipcMain.handle('move-downloads', async (event, arg) => {
       // 记录:标记已移走,dir 指到新位置(预览还能用)
       rec.movedTo = dest
       rec.dir = dest
-      persistDownloads()
-      emitToRenderer('eh-download-progress', publicDownload(rec))
-      results.push({ id, ok: true, dest, bookId, coverPath, inLibrary: !!lib })
+      // 「移动完成后移除记录」(设置项):移进本地库了,下载记录就没必要再留着
+      if (removeAfterMove) {
+        downloadTasks.delete(id)
+        persistDownloads()
+        emitToRenderer('eh-download-removed', { id })
+      } else {
+        persistDownloads()
+        emitToRenderer('eh-download-progress', publicDownload(rec))
+      }
+      results.push({ id, ok: true, dest, bookId, coverPath, inLibrary: !!lib, removed: removeAfterMove })
     } catch (e) {
       results.push({ id, ok: false, error: String((e && e.message) || e) })
     }
   }
   return { ok: true, results }
+}
+
+ipcMain.handle('move-downloads', async (event, arg) => {
+  const ids = Array.isArray(arg && arg.ids) ? arg.ids : []
+  if (!ids.length) return { ok: false, error: 'noIds' }
+  if (!(arg && arg.target)) return { ok: false, error: 'noTarget' }
+  return runMoveDownloads(ids, arg.target, { removeAfterMove: arg.removeAfterMove })
 })
+
+// 下载收尾后的自动动作(设置 → 下载设置):
+//   downloadAutoMoveEnabled + downloadAutoMovePath   → 下完自动移到这个文件夹
+//   downloadRemoveAfterMove                          → 移动成功后顺手把记录也删掉
+// 只在「真正下完」时动;失败/暂停的任务不动,免得把一个缺页的目录移进书库。
+const onDownloadFinished = (rec) => {
+  try {
+    if (!rec || rec.status !== 'done') return
+    if (!rec.dir || rec.movedTo) return
+    if (!setting.downloadAutoMoveEnabled) return
+    const target = String(setting.downloadAutoMovePath || '').trim()
+    if (!target) return
+    // 异步执行,不阻塞下载任务收尾
+    setTimeout(() => {
+      runMoveDownloads([rec.id], target, { removeAfterMove: false })
+        .then(r => {
+          const one = (r.results || [])[0]
+          if (one && one.ok) sendMessageToWebContents('已自动移动到:' + one.dest)
+          else if (one && !one.ok) sendMessageToWebContents('自动移动失败:' + one.error)
+        })
+        .catch(e => sendMessageToWebContents('自动移动失败:' + ((e && e.message) || e)))
+    }, 500)
+  } catch (e) { /* 定时器里别抛 */ }
+}
 
 if (!WEB_MODE) {
   // arg = { username, password }(可选):给了就自动填表提交,不给就等用户在窗口里自己登录。
@@ -4749,10 +5214,12 @@ const applySetting = async (receiveSetting) => {
   // 只补「未确认的新增」,不做无脑并集 —— 否则用户主动删除的标签会被旧值并回来。
   receiveSetting.globalTags = applyPendingGlobalTags(receiveSetting.globalTags)
   if (receiveSetting.proxy) {
-    await session.defaultSession.setProxy({
+    // ⚠ 不能 await:代理不可达时 Electron 的 setProxy 会挂住,后面整条保存链全卡住
+    //   (表现为「切库没反应 / 设置保存转圈」)。改成后台设置 + 吞掉异常。
+    session.defaultSession.setProxy({
       mode: 'fixed_servers',
       proxyRules: receiveSetting.proxy
-    })
+    }).catch((e) => console.error('setProxy failed', e))
   }
   // 本地模型下载同步使用代理 / 镜像前缀
   localModels.setProxy(receiveSetting.proxy || process.env.HTTPS_PROXY || process.env.https_proxy || '')
@@ -4986,7 +5453,9 @@ ipcMain.handle('set-active-box', async (event, arg) => {
     // 兼容:还有几处(移动文件/文件夹树/局域网根目录)仍读 setting.library,同步成框里第一个库
     const firstLib = boxLibraries()[0]
     if (firstLib) setting.library = firstLib.path
-    await applySetting({})
+    // ⚠ applySetting 失败不能连带把切库回滚:设置保存问题(代理/主题之类)应该各自报错,
+    //   库切换本身已经成功,回滚会让用户「点好几次都切不过去」
+    try { await applySetting({}) } catch (e) { console.error('applySetting after switch failed', e) }
     return { ok: true, activeChanged: true, ...librariesSnapshot() }
   } catch (e) {
     console.error(e)
@@ -5017,6 +5486,103 @@ ipcMain.handle('get-all-tags', async () => {
     return { ok: true, tags: out }
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e), tags: [] }
+  }
+})
+
+// 标题分析:把标题按括号/分隔符切开,和库里已有的 团队/作者/原作/角色 标签做精确对比,
+// 命中就写入对应标签。纯本地规则,不调用 AI(设置 → 标签设置里的「标题分析」)。
+ipcMain.handle('analyze-titles-by-tags', async (event, opts = {}) => {
+  try {
+    const dryRun = !!opts.dryRun
+    const cats = Array.isArray(opts.cats) && opts.cats.length
+      ? opts.cats
+      : ['group', 'artist', 'parody', 'character']
+    const ALIASES = {
+      group: ['group', '团队', '社團', '社团'],
+      artist: ['artist', '作者', '艺术家', '藝術家'],
+      parody: ['parody', '原作', '作品'],
+      character: ['character', '角色'],
+    }
+    const normCat = (c) => {
+      const raw = String(c || '').trim()
+      for (const [k, list] of Object.entries(ALIASES)) if (list.includes(raw)) return k
+      return raw
+    }
+    const nameIndex = new Map()
+    const addName = (name, cat, tag) => {
+      const n = String(name || '').trim()
+      if (!n) return
+      const key = n.toLowerCase()
+      if (!nameIndex.has(key)) nameIndex.set(key, { cat, tag })
+    }
+    const rows = await Metadata.findAll()
+    const seen = new Set()
+    for (const row of rows) {
+      const tags = row.tags
+      if (!tags || typeof tags !== 'object') continue
+      for (const [rawCat, arr] of Object.entries(tags)) {
+        if (!Array.isArray(arr)) continue
+        const cat = normCat(rawCat)
+        if (!cats.includes(cat)) continue
+        for (const tag of arr) {
+          if (!tag) continue
+          const k = cat + '##' + tag
+          if (seen.has(k)) continue
+          seen.add(k)
+          addName(tag, cat, tag)
+          const rec = (setting.tagNameLangs || {})[rawCat + '::' + tag] || (setting.tagNameLangs || {})[cat + '::' + tag]
+          if (rec) for (const v of Object.values(rec)) for (const n of String(v || '').split('/')) addName(n, cat, tag)
+        }
+      }
+    }
+    const books = await loadBookListFromDatabase()
+    const targets = books.filter(b => !b.isCollection && (b.title_jpn || b.title))
+    const total = targets.length
+    if (!total) return { ok: true, total: 0, changed: 0, added: 0 }
+    sendMessageToWebContents('标题分析:开始处理 ' + total + ' 本')
+    let changed = 0
+    let added = 0
+    let done = 0
+    const SPLIT_RE = /[\[\]()（）【】{}<>《》\/|｜、,，;；:：\s]+/
+    const cleanSeg = (s0) => String(s0 || '').replace(/^[\s\-–—_·]+|[\s\-–—_·]+$/g, '')
+    await Metadata.sequelize.transaction(async (tx) => {
+      for (const book of targets) {
+        const title = String(book.title_jpn || book.title || '')
+        const segs = title.split(SPLIT_RE).map(cleanSeg).filter(s0 => s0 && s0.length >= 2 && s0.length <= 40)
+        if (!segs.length) { done++; continue }
+        const hits = new Map()
+        for (const seg of segs) {
+          const hit = nameIndex.get(seg.toLowerCase())
+          if (!hit) continue
+          if (!hits.has(hit.cat)) hits.set(hit.cat, new Set())
+          hits.get(hit.cat).add(hit.tag)
+        }
+        if (!hits.size) { done++; continue }
+        const tags = book.tags && typeof book.tags === 'object' ? { ...book.tags } : {}
+        let localAdded = 0
+        for (const [cat, set] of hits) {
+          const existKey = Object.keys(tags).find(k => normCat(k) === cat) || cat
+          const arr = Array.isArray(tags[existKey]) ? tags[existKey].slice() : []
+          for (const tag of set) {
+            if (arr.includes(tag)) continue
+            arr.push(tag)
+            localAdded++
+          }
+          tags[existKey] = arr
+        }
+        if (localAdded) {
+          if (!dryRun) await Metadata.update({ tags }, { where: { hash: book.id || book.hash }, transaction: tx })
+          changed++
+          added += localAdded
+        }
+        done++
+        if (done % 300 === 0) sendMessageToWebContents('标题分析:已处理 ' + done + '/' + total + ',新增 ' + added + ' 个标签')
+      }
+    })
+    sendMessageToWebContents('标题分析完成:处理 ' + total + ' 本,更新 ' + changed + ' 本,新增 ' + added + ' 个标签')
+    return { ok: true, total, changed, added, dryRun }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) }
   }
 })
 
@@ -6141,9 +6707,73 @@ ipcMain.handle('rename-tag', async (event, { cat, oldName, newName } = {}) => {
     await Metadata.sequelize.transaction(async (tx) => {
       for (const row of rows) {
         const tags = row.tags
-        const arr = tags && tags[cat]
-        if (!Array.isArray(arr) || !arr.includes(oldName)) continue
-        await Metadata.update({ tags: { ...tags, [cat]: arr.map(v => (v === oldName ? newName : v)) } }, { where: { hash: row.hash }, transaction: tx })
+        if (!tags || typeof tags !== 'object') continue
+        const keys = Object.keys(tags).filter(k => sameCat(k, cat) && Array.isArray(tags[k]) && tags[k].includes(oldName))
+        if (!keys.length) continue
+        const nextTags = { ...tags }
+        for (const k of keys) {
+          const mapped = [...new Set(nextTags[k].map(v => (v === oldName ? newName : v)))]
+          nextTags[k] = mapped
+        }
+        await Metadata.update({ tags: nextTags }, { where: { hash: row.hash }, transaction: tx })
+        count++
+      }
+    })
+    return { ok: true, count }
+  } catch (e) {
+    return { ok: false, error: String(e.message || e) }
+  }
+})
+
+// 单个标签换类别(可同时改名):标签设置 → 编辑标签 里改类别用。
+// 与 rename-tag 同口径:遍历全局 metadata.sqlite,整批一个事务。
+// 类别键在库里可能是中英混用(character / 角色):统一用「同组别名」匹配
+const TAG_CAT_GROUPS = [
+  ['character', '角色'],
+  ['parody', '作品', '原作'],
+  ['group', '社团', '社團', '团队'],
+  ['artist', '作者', '艺术家', '藝術家'],
+  ['female', '女性'],
+  ['male', '男性'],
+  ['mixed', '混合'],
+  ['language', '语言', '語言'],
+  ['other', '其他'],
+  ['cosplayer', 'Cosplay'],
+]
+const tagCatGroup = (cat) => TAG_CAT_GROUPS.find(g => g.includes(String(cat || ''))) || [String(cat || '')]
+const sameCat = (a, b) => {
+  if (a === b) return true
+  const ga = tagCatGroup(a)
+  return ga.includes(b) || tagCatGroup(b).some(x => ga.includes(x))
+}
+
+// 单个标签换类别(可同时改名):标签设置 → 编辑标签 里改类别用。
+// 与 rename-tag 同口径:遍历全局 metadata.sqlite,整批一个事务。
+ipcMain.handle('move-tag', async (event, { fromCat, name, toCat, newName, dryRun } = {}) => {
+  try {
+    if (!fromCat || !name || !toCat) return { ok: false, error: '参数错误' }
+    const finalName = String(newName || name)
+    const rows = await Metadata.findAll()
+    let count = 0
+    await Metadata.sequelize.transaction(async (tx) => {
+      for (const row of rows) {
+        const tags = row.tags
+        if (!tags || typeof tags !== 'object') continue
+        // 找到这本书里属于「旧类别」的所有键(可能既有 character 又有 角色)
+        const fromKeys = Object.keys(tags).filter(k => sameCat(k, fromCat) && Array.isArray(tags[k]) && tags[k].includes(name))
+        if (!fromKeys.length) continue
+        const nextTags = { ...tags }
+        for (const k of fromKeys) {
+          const left = nextTags[k].filter(v => v !== name)
+          if (left.length) nextTags[k] = left
+          else delete nextTags[k]
+        }
+        // 目标类别:沿用书里已有的同组键,没有就用传入的 toCat
+        const targetKey = Object.keys(nextTags).find(k => sameCat(k, toCat) && Array.isArray(nextTags[k])) || toCat
+        const target = Array.isArray(nextTags[targetKey]) ? nextTags[targetKey].slice() : []
+        if (!target.includes(finalName)) target.push(finalName)
+        nextTags[targetKey] = target
+        if (!dryRun) await Metadata.update({ tags: nextTags }, { where: { hash: row.hash }, transaction: tx })
         count++
       }
     })
@@ -6730,6 +7360,15 @@ if (WEB_MODE) {
     // 每个账户读自己那份 setting.<账户名>.json(同名账户在 Win 与 NAS 共用);
     // withAccount 把每个请求包进对应账户的上下文 → 多账户并发时互不干扰
     withAccount,
-    settingForAccount: (username) => ensureProfileSetting(username)
+    settingForAccount: (username) => ensureProfileSetting(username),
+    // 下载任务可能落在不同目录(改过下载设置的老任务),逐个放行它们的目录
+    extraAllowedRoots: () => {
+      const out = []
+      for (const t of downloadTasks.values()) {
+        if (t && t.saveDir) out.push(t.saveDir)
+        if (t && t.dir) out.push(t.dir)
+      }
+      return out
+    }
   })
 }

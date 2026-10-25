@@ -32,7 +32,7 @@ export const EH_FILTER_STORE_KEY = 'emmEhFilter'
 
 // 默认:分类全开、不限语言/页数、最低评分 1(即「没有任何筛选」)
 export const defaultEhFilter = () => {
-  const f = { keyword: '', language: '', pageAtLeast: null, pageAtMost: null, minimumRating: 1, expunged: false, torrents: false }
+  const f = { keyword: '', language: '', pageAtLeast: null, pageAtMost: null, minimumRating: 1, expunged: false, torrents: false, blacklist: '' }
   for (const c of EH_FILTER_CATEGORIES) f[c.key] = true
   return f
 }
@@ -51,6 +51,8 @@ const normalize = (raw) => {
   out.minimumRating = Number.isFinite(r) ? Math.min(5, Math.max(1, r)) : 1
   out.expunged = !!raw.expunged
   out.torrents = !!raw.torrents
+  // 黑名单标签:逗号(中英文)分隔,也可以直接空格分隔;匹配时不区分大小写
+  out.blacklist = String(raw.blacklist || '').trim()
   return out
 }
 
@@ -80,8 +82,12 @@ export const ehFilterActive = (f) => {
   if (x.language) return true
   if (x.pageAtLeast != null || x.pageAtMost != null) return true
   if (x.minimumRating > 1) return true
+  if (x.blacklist) return true
   return false
 }
+
+// 黑名单拆分结果按「筛选对象」缓存(WeakMap:筛选条件一换就是新对象,旧的自然回收)
+const blacklistCache = new WeakMap()
 
 // 本地列表的就地过滤(分类按 EH 的同名分类;没有分类的书按 Misc 算,与 EH 把杂项叫 Misc 一致)。
 // ⚠️ 逐本书调用,传入的 f 必须是 normalizeEhFilter() 过的(不再在这里重复 normalize)。
@@ -101,6 +107,28 @@ export const ehFilterMatch = (f, book) => {
   if (x.pageAtLeast != null && Number(book.pageCount || 0) < x.pageAtLeast) return false
   if (x.pageAtMost != null && Number(book.pageCount || 0) > x.pageAtMost) return false
   if (x.minimumRating > 1 && Number(book.rating || 0) < x.minimumRating) return false
+  // 黑名单标签:命中任意一条就整本排除(标签名大小写不敏感;多词标签按「每个词都出现」匹配)
+  if (x.blacklist) {
+    // 拆分结果缓存:列表里几千本书逐本调用,不要每次都 split
+    let terms = blacklistCache.get(x)
+    if (!terms) {
+      terms = x.blacklist.split(/[,，、]+/).map(t => t.trim().toLowerCase()).filter(Boolean)
+      if (!terms.length) terms = [String(x.blacklist).toLowerCase()]
+      blacklistCache.set(x, terms)
+    }
+    const texts = []
+    const tags = book.tags || {}
+    for (const k of Object.keys(tags)) {
+      const arr = tags[k]
+      if (Array.isArray(arr)) for (const t of arr) texts.push(String(t).toLowerCase())
+    }
+    if (book.category) texts.push(String(book.category).toLowerCase())
+    const hit = terms.some(term => {
+      const words = term.split(/\s+/).filter(Boolean)
+      return texts.some(t => words.every(w => t.includes(w)))
+    })
+    if (hit) return false
+  }
   return true
 }
 
@@ -119,5 +147,10 @@ export const ehFilterParams = (f) => {
   if (x.pageAtLeast != null) out.pageAtLeast = x.pageAtLeast
   if (x.pageAtMost != null && (x.pageAtLeast == null || x.pageAtMost >= x.pageAtLeast)) out.pageAtMost = x.pageAtMost
   if (x.minimumRating > 1) out.minimumRating = x.minimumRating
+  // 黑名单交给 EH 自己排(搜索语法 -tag);本地的就地过滤仍然保留(离线列表也生效)
+  if (x.blacklist) {
+    const terms = x.blacklist.split(/[,，、]+/).map(t => t.trim()).filter(Boolean)
+    if (terms.length) out.blacklist = terms
+  }
   return out
 }
