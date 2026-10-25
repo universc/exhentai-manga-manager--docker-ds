@@ -97,7 +97,7 @@
               v-else-if="id === 'filter'"
               type="primary"
               plain
-              :icon="MdFunnel"
+              :icon="MdOptions"
               :title="$t('m.filterButton')"
               :class="{ 'is-filtering': ehFilterActive }"
               @click="ehFilterVisible = true"
@@ -170,6 +170,14 @@
     />
     <el-row :gutter="20" class="book-card-area">
       <el-col :span="24" v-if="!editTagView && !editCollectionView" class="book-card-list" :style="{height: (setting.randomTagsEnabled || setting.showCollectTag) ? 'calc(100vh - 134px)' : 'calc(100vh - 96px)'}">
+        <!-- EH在线 重新加载/搜索/排序:立刻摆上骨架卡,而不是留着旧列表装作没事(用户说的「卡半天」) -->
+        <div class="online-skeleton" v-if="onlineReloading && !visibleRenderedBookList.length">
+          <div class="online-skeleton-card" v-for="n in (Number(setting.pageSize) > 24 ? 24 : Number(setting.pageSize) || 12)" :key="'sk' + n">
+            <div class="online-skeleton-cover"></div>
+            <div class="online-skeleton-line"></div>
+            <div class="online-skeleton-line short"></div>
+          </div>
+        </div>
         <div
           v-for="(book, index) in visibleRenderedBookList"
           :key="book.id"
@@ -209,10 +217,10 @@
         </div>
         <!-- 逐排加载哨兵:滚动到这里时继续加载下一排 -->
         <div ref="renderSentinel" class="render-sentinel"></div>
-        <!-- 触底加载的底部状态(照 JHenTai 的 load-more footer):加载中转圈,到底了写「没有更多了」 -->
+        <!-- 触底加载的底部状态:加载中转圈;EH在线全部加载完写「没有更多了」 -->
         <div class="load-more-footer" v-if="visibleChunkDisplayBookList.length && (listLoadingMore || (onlineActive && !onlineHasMore))">
           <el-icon v-if="listLoadingMore" class="is-loading" :size="20"><Loading /></el-icon>
-          <span v-else class="load-more-end">{{ $t('m.noMoreData') }}</span>
+          <span v-else-if="onlineActive && !onlineHasMore" class="load-more-end">{{ $t('m.noMoreData') }}</span>
         </div>
         <!-- 历史按库分流后为空时说一句(EH在线 库只列在线记录,本地库只列本地记录) -->
         <div class="book-empty-hint" v-if="sortValue === 'recentRead' && !displayBookList.length">
@@ -259,6 +267,13 @@
         @favorite="onOnlineFavorite"
         @search-from-tag="searchFromTag"
         @refresh-list="loadBookList(false)"
+        @open-book-detail="(b) => $refs.BookDetailDialogRef.openBookDetail(b)"
+        @get-metadata="(b) => $refs.SearchDialogRef.getBookInfo(b)"
+        @toggle-hidden="onSideDetailToggleHidden"
+        @rescan="onSideDetailRescan"
+        @delete-book="onSideDetailDelete"
+        @open-gallery-url="onSideDetailOpenGalleryUrl"
+        @open-hh-download="openHhDownloadDialog"
       />
       <!-- 下载记录:和主界面**同层**(不是浮层);拖动左边缘可以调整这一栏的宽度。
            列表照 JHenTai 的下载网格模式:封面网格,没下完的封面上压暗 + 圆环进度 + 中央状态按钮 -->
@@ -356,8 +371,7 @@
                     </span>
                   </div>
                   <div class="download-card-count">
-                    <template v-if="task.phase === 'links'">{{ task.linkCount || 0 }}页</template>
-                    <template v-else>{{ task.done }}/{{ task.total }}</template>
+                    {{ task.done }}/{{ task.total }}
                   </div>
                 </div>
               </template>
@@ -368,12 +382,13 @@
               <div class="download-title" :title="task.title" @click="openDownloadTaskDetail(task)">{{ task.title }}</div>
               <!-- 漫画标签:照 JHenTai 列表 —— 浅底小方块、自动换行(最多两行,超出裁掉) -->
               <div class="download-tags" v-if="downloadTaskTags(task).length || task.category">
-                <span v-if="task.category" class="download-tag is-cat" :title="task.category" @click.stop="onDownloadTagClick({ text: task.category, ns: 'category' })">{{ task.category }}</span>
+                <span v-if="task.category" class="download-tag is-cat" :title="galleryCategoryName(task.category, $t)" @click.stop="onDownloadTagClick({ text: task.category, ns: 'category' })">{{ galleryCategoryName(task.category, $t) }}</span>
                 <span
                   v-for="(tg, ti) in downloadTaskTags(task)"
                   :key="ti"
                   class="download-tag"
                   :title="tg.full"
+                  :style="tg.color ? { color: tg.color } : null"
                   @click.stop="onDownloadTagClick(tg)"
                 >{{ tg.text }}</span>
               </div>
@@ -385,6 +400,8 @@
                   <template v-if="task.phase === 'links'">{{ $t('m.downloadCollecting', { n: task.linkCount || 0 }) }}</template>
                   <template v-else>{{ task.done }}/{{ task.total }}</template>
                 </span>
+                <!-- 已下载尺寸(用户要求:任务记录里显示对应下载的尺寸) -->
+                <span v-if="task.bytes > 0" class="download-size" :title="task.bytes + ' bytes'">{{ downloadSizeText(task.bytes) }}</span>
                 <span v-if="task.movedTo" class="download-moved" :title="task.movedTo">{{ $t('m.downloadMoved') }}</span>
                 <span v-else class="download-status" :class="'is-' + task.status">{{ downloadStatusText(task.status) }}</span>
               </div>
@@ -500,7 +517,7 @@
       <div v-else-if="!torrentList.length" class="torrent-empty">{{ $t('m.torrentNone') }}</div>
       <div v-else class="torrent-list">
         <div v-for="(tr, i) in torrentList" :key="i" class="torrent-item" :class="{ 'is-outdated': tr.outdated }">
-          <div class="torrent-name" :title="tr.name">{{ tr.name }}</div>
+          <div class="torrent-name" :title="tr.name" @click="openTorrentInBrowser(tr)">{{ tr.name }}</div>
           <div class="torrent-meta">
             <span>{{ $t('m.torrentSize') }}: {{ tr.size || '—' }}</span>
             <span>{{ $t('m.torrentSeeds') }}: {{ tr.seeds }}</span>
@@ -551,7 +568,7 @@
     <el-dialog v-model="quickTagDialogVisible" :title="$t('m.quickTagEdit')" width="380px">
       <div v-if="quickTag" class="quick-tag-body">
         <p class="quick-tag-line">
-          <el-tag size="small" effect="dark" :color="quickTag.color">{{ quickTag.letter }}:{{ quickTag.tag }}</el-tag>
+          <el-tag size="small" effect="dark" :color="quickTag.color">{{ quickTagLabel }}</el-tag>
           <span class="quick-tag-raw">{{ quickTag.cat }}</span>
         </p>
         <p class="quick-tag-line quick-tag-langs">
@@ -598,6 +615,12 @@
       @search-from-tag="searchFromTag"
       @jump-mange-detail="jumpMangeDetail"
       @add-to-history="addBookToHistory"
+      @open-hh-download="openHhDownloadDialog"
+    />
+    <!-- H@H 归档下载(EH 服务端打包):照 JHenTai 的 EHDownloadHHDialog -->
+    <HhDownloadDialog
+      v-model="hhDialogVisible"
+      :archive-page-url="hhDialogUrl"
     />
     <InternalViewer
       ref="InternalViewerRef"
@@ -621,10 +644,10 @@ import { defineComponent } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { Setting as SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened } from '@element-plus/icons-vue'
 import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular } from '@vicons/fluent'
-import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdTrash, MdCloudDownload, MdPlay, MdPause } from '@vicons/ionicons4'
+import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdOptions, MdTrash, MdCloudDownload, MdPlay, MdPause } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup, Catalog } from '@vicons/carbon'
 
-import { getWidth, fetchRecentReadRecords, removeReadRecord, clearReadRecords, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes } from './utils.js'
+import { getWidth, fetchRecentReadRecords, removeReadRecord, clearReadRecords, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes, tagDisplayName, tagColorOf, galleryCategoryName as galleryCategoryNameOf, tagDisplayPrefix as tagDisplayPrefixOf } from './utils.js'
 import { extractCoverColors, pixelateToDataUrl } from './cover-color.js'
 // 内置的默认像素底图(构建后会变成带 hash 的资源 URL)
 import pixelDefaultBg from './assets/pixel-default-bg.png'
@@ -635,6 +658,7 @@ import Setting from './components/Setting.vue'
 import TagGraph from './components/TagGraph.vue'
 import InternalViewer from './components/InternalViewer.vue'
 import SearchDialog from './components/SearchDialog.vue'
+import HhDownloadDialog from './components/HhDownloadDialog.vue'
 import BookDetailDialog from './components/BookDetailDialog.vue'
 import FolderTree from './components/FolderTree.vue'
 import BookCard from './components/BookCard.vue'
@@ -666,6 +690,7 @@ export default defineComponent({
     RandomTags,
     LoginDialog,
     EhFilterDialog,
+    HhDownloadDialog,
     SideDetailPanel,
     DownloadDialog,
     LibraryFolderPicker,
@@ -675,7 +700,7 @@ export default defineComponent({
       SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened, MdPlay, MdPause,
       Collections24Regular, Search32Filled, ArrowTrendingLines20Filled, Save16Regular,
       MdRefresh, MdCodeDownload, MdExit, MdShuffle, MdFolderOpen, MdCloudDone,
-      MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdTrash, MdCloudDownload,
+      MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdOptions, MdTrash, MdCloudDownload,
       TreeViewAlt, CicsSystemGroup, TagGroup
     }
   },
@@ -717,10 +742,16 @@ export default defineComponent({
       panelSeq: 0,
       // 下载记录里感叹号弹出的错误信息:{ id, pinned }
       downloadWarn: { id: '', pinned: false },
+      // H@H 归档下载弹窗(照 JHenTai 的 H@H 按钮)
+      hhDialogVisible: false,
+      hhDialogUrl: '',
       // 封面加载失败的任务(网络/代理挂了):{ [taskId]: true },失败就退回灰底占位,不显示破图
       failedCovers: {},
       // 在线列表:改每页数量等操作期间先压住「自动补页」,避免自激循环(改完 1 秒后恢复)
       suppressOnlineAppend: false,
+      // 在线列表:正在「清空后重新加载」(排序/搜索/重新加载)。
+      // 界面据此显示骨架屏,而不是继续摆着旧内容、看起来像卡死。
+      onlineReloading: false,
       // 在线列表:两次自动补页的最小间隔(毫秒),防止滚动事件连发时连着打 EH
       onlineLastAppendAt: 0,
       // 补下载标签的防重入(打开面板时可能被连续调用)
@@ -791,6 +822,14 @@ export default defineComponent({
     }
   },
   computed: {
+    // 快速编辑弹窗标题里的标签:严格「类别:标签」(被集合包含时用集合名),不用 c:/f: 这种字母
+    quickTagLabel () {
+      const t = this.quickTag
+      if (!t) return ''
+      const cat = t.cat
+      const prefix = tagDisplayPrefixOf(this.setting, this.resolvedTranslation, cat, t.tag)
+      return prefix + ':' + tagDisplayName(this.setting, this.resolvedTranslation, cat, t.tag)
+    },
     ...mapWritableState(useAppStore, [
       'bookTasks',
       'bookTaskPaused',
@@ -813,6 +852,7 @@ export default defineComponent({
       'displayBookCount',
       'tagList',
       'tag2cat',
+      'resolvedTranslation',
       'customOptions',
       'visibleChunkDisplayBookList',
     ]),
@@ -839,7 +879,8 @@ export default defineComponent({
       return (this.downloadRecords || []).filter(t => this.canMoveDownload(t)).length
     },
     resumableDownloadCount () {
-      return (this.downloadRecords || []).filter(t => ['paused', 'failed', 'waiting'].includes(t.status)).length
+      // 已移到库里的记录不给「继续」:它的 dir 指向库里那本书,续传会往书里写多余页
+      return (this.downloadRecords || []).filter(t => !t.movedTo && ['paused', 'failed', 'waiting'].includes(t.status)).length
     },
     previewDoneCount () {
       return (this.downloadPreviewFiles || []).filter(Boolean).length
@@ -1230,6 +1271,9 @@ export default defineComponent({
     // UI 模式初始化(自动/手机/平板/电脑)与 body 标记
     this.uiMode = localStorage.getItem('emmUiMode') || 'auto'
     this.applyUiMode()
+    // 标签翻译:语言选了中文就启动时把词库准备好(主进程有磁盘缓存;以前只在设置页里加载,
+    // 所以打开应用后卡片上的标签一直是英文)
+    this.loadTagTranslation()
     window.addEventListener('resize', this.onResize)
     // 工具栏与卡片行对齐:随窗口/封面尺寸实时重算
     this.recomputeToolbarWidth()
@@ -1334,7 +1378,8 @@ export default defineComponent({
       if (!area) return
       if (area.scrollTop + area.clientHeight >= area.scrollHeight - 600) {
         this.renderedCount += this.renderBatchSize
-        // EH在线:渲染到底了就再取一页 EH,能一直往下看(抄 JHenTai 的逐页加载)
+        // EH在线:滚到当前内容的真正底部才补下一页(触发判断在 appendOnlinePageIfNeeded 里,
+        // 要求距底 ≤100px;补页后列表变长,必须再滚到底才会补下一批 —— 不会连发)
         this.appendOnlinePageIfNeeded()
       }
       // 滚动时节流:新滚进来的封面做像素化 + 按当前可见封面重算混合背景
@@ -1411,11 +1456,25 @@ export default defineComponent({
       this.antiCopyHandler = null
     }
     clearTimeout(this.mixBgTimer)
+    clearTimeout(this._onlineReloadGuard)
     if (this._searchBoxObserver) { this._searchBoxObserver.disconnect(); this._searchBoxObserver = null }
     if (this._searchPopperRaf) { cancelAnimationFrame(this._searchPopperRaf); this._searchPopperRaf = null }
     clearTimeout(this._searchPopperTimer)
   },
   methods: {
+    // 取标签翻译词库(主进程下载 + 缓存)。失败就保持原始标签,不打扰用户。
+    async loadTagTranslation () {
+      try {
+        const st = this.setting || {}
+        if (!st.tagTargetLang && !st.showTranslation) return
+        const res = await ipcRenderer.invoke('load-tag-translation', {})
+        if (res && res.ok && res.data) {
+          useAppStore().resolvedTranslation = res.data
+          // 词库到位后,把库里所有标签的中文名写进「标签名称」(只补空的)
+          this.backfillLibraryTagNames()
+        }
+      } catch (e) { /* 忽略 */ }
+    },
     ...mapActions(useAppStore, [
       'loadAllTags',
       'runBookTask',
@@ -1952,6 +2011,9 @@ export default defineComponent({
         const bookList = this.prepareBookList(res)
         await this.loadCollectionList(bookList)
         this.bookList = bookList
+        // 词库比书先到(启动时 loadTagTranslation 是并行的):列表就绪后再补一次标签名称,
+        // 否则第一次启动时 bookList 还是空的,一条名字都写不进去
+        if (this.resolvedTranslation && Object.keys(this.resolvedTranslation).length) this.backfillLibraryTagNames()
         await this.$refs.FolderTreeRef.geneFolderTree()
         this.$refs.FolderTreeRef.resetSelect()
         this.$refs.EditViewRef.selectBookList = []
@@ -2067,15 +2129,15 @@ export default defineComponent({
         case 'mark':
           // EH在线 的「仅收藏」已经在取数据时换成了账号收藏页,这里不能再按本地 mark 过滤(会全空)
           this.displayBookList = this.onlineActive ? allBooks : _.filter(allBooks, 'mark')
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'collection':
           this.displayBookList = _.filter(allBooks, 'isCollection')
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'hidden':
           this.displayBookList = _.filter(allBooks, 'hiddenBook')
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'recentRead': {
           // 历史(JHenTai 的做法):记录里存了画廊快照,所以**不在当前库里也能显示**
@@ -2099,80 +2161,80 @@ export default defineComponent({
           }).filter(Boolean), 'id'))
           // ⚠️ 这里必须自己 chunkList():上面几个 case 各自都调了,这一个是花括号块,
           //    漏掉就整块显示不出来(历史列表看着「点了没反应」就是这里漏的)
-          this.chunkList()
+          this.chunkList(true)
           break
         }
         case 'shuffle':
           this.displayBookList = _.shuffle(bookList)
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'addAscend':
           this.displayBookList = bookList.toSorted(this.sortList('date')).toReversed()
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'addDescend':
           this.displayBookList = bookList.toSorted(this.sortList('date'))
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'mtimeAscend':
           this.displayBookList = bookList.toSorted(this.sortList('mtime')).toReversed()
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'mtimeDescend':
           this.displayBookList = bookList.toSorted(this.sortList('mtime'))
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'postAscend':
           this.displayBookList = bookList.toSorted(this.sortList('posted')).toReversed()
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'postDescend':
           this.displayBookList = bookList.toSorted(this.sortList('posted'))
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'scoreAscend':
           this.displayBookList = bookList.toSorted(this.sortList('rating')).toReversed()
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'scoreDescend':
           this.displayBookList = bookList.toSorted(this.sortList('rating'))
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'readCountAscend':
           this.displayBookList = bookList.toSorted(this.sortList('readCount')).toReversed()
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'readCountDescend':
           this.displayBookList = bookList.toSorted(this.sortList('readCount'))
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'artistAscend':
           this.displayBookList = bookList.toSorted(this.sortList('tags.artist')).toReversed()
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'artistDescend':
           this.displayBookList = bookList.toSorted(this.sortList('tags.artist'))
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'titleAscend':
           this.displayBookList = bookList.toSorted((a, b) => this.getDisplayTitle(b).localeCompare(this.getDisplayTitle(a), undefined, {numeric: true, sensitivity: 'base'})).toReversed()
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'titleDescend':
           this.displayBookList = bookList.toSorted((a, b) => this.getDisplayTitle(b).localeCompare(this.getDisplayTitle(a), undefined, {numeric: true, sensitivity: 'base'}))
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'pageAscend':
           this.displayBookList = bookList.toSorted(this.sortList('pageCount')).toReversed()
-          this.chunkList()
+          this.chunkList(true)
           break
         case 'pageDescend':
           this.displayBookList = bookList.toSorted(this.sortList('pageCount'))
-          this.chunkList()
+          this.chunkList(true)
           break
         default:
           this.displayBookList = allBooks
-          this.chunkList()
+          this.chunkList(true)
           break
       }
       // 同步排序状态(pinia),否则排序下拉/方向箭头读取不到当前值
@@ -2352,6 +2414,8 @@ export default defineComponent({
       if (this.onlineActive) {
         this.onlineQuery = this.searchString
         this.currentPage = 1
+        // 先清空再取:旧结果留在屏幕上等新结果,看起来就是「点了没反应/卡死」
+        this.clearOnlineListForReload()
         this.loadOnlineList(true)
         if (addToHistory) this.actionHistory.push({type: 'search', value: this.searchString})
         return
@@ -2561,12 +2625,8 @@ export default defineComponent({
         this.searchBook()
         return
       }
-      if (cat) {
-        const letter = this.cat2letter[cat] ? this.cat2letter[cat] : cat
-        this.searchString = `${letter}:"${tag}"$`
-      } else {
-        this.searchString = `"${tag}"$`
-      }
+      // 搜索语法里也不再用 f:/m:/a: 这种字母前缀(用户要求):直接按标签名精确匹配
+      this.searchString = `"${tag}"$`
       this.searchBook()
     },
     // ---------- 可配置点击策略(设置 → 高级设置):详细界面 / 内容界面 / 缩略图 ----------
@@ -2651,7 +2711,11 @@ export default defineComponent({
     },
     loadBookCardContent (id) {},
     unloadBookCardContent (id) {},
-    chunkList () {
+    // 重排「当前页」的卡片。
+    // keepPage=true 时沿用现在的页码与滚动位置(排序/筛选/数据变长都属于这一类:
+    // 用户正停在第 3 页,不该被弹回第 1 页顶部 —— 那是本轮要修的 bug);
+    // keepPage=false 才回第 1 页(切库、换搜索词这种「换了整个列表」的操作)。
+    chunkList (keepPage = false) {
       // EH在线 追加下一页:保住当前页与已渲染数量,不回顶(见上面 watcher 里的置位)
       const keepScroll = this.keepScrollOnNextChunk
       this.keepScrollOnNextChunk = false
@@ -2662,6 +2726,23 @@ export default defineComponent({
         this.$nextTick(() => {
           const area = document.querySelector('.book-card-area')
           if (area && area.scrollHeight <= area.clientHeight + 200) this.renderedCount += this.renderBatchSize
+        })
+        return
+      }
+      if (keepPage) {
+        // 页码按新的总数重新夹一次(筛选后变短时,原来的第 9 页可能已经不存在)
+        const pageLimit = Math.max(1, Math.ceil((this.displayBookCount || 0) / (Number(this.setting.pageSize) || 42)))
+        const page = Math.min(Math.max(1, Number(this.currentPage) || 1), pageLimit)
+        if (page !== this.currentPage) this.currentPage_ = page
+        const area = document.querySelector('.book-card-area')
+        const keepTop = area ? area.scrollTop : 0
+        this.renderedCount = this.renderBatchSize
+        this.chunkDisplayBookList = this.customChunk(this.displayBookList, this.setting.pageSize, page - 1)
+        // 排序/筛选变了但页码没变:滚动位置也留着,别跳一下
+        this.$nextTick(() => {
+          const el = document.querySelector('.book-card-area')
+          if (el && keepTop) el.scrollTop = Math.min(keepTop, Math.max(0, el.scrollHeight - el.clientHeight))
+          if (el && el.scrollHeight <= el.clientHeight + 200) this.renderedCount += this.renderBatchSize
         })
         return
       }
@@ -3074,6 +3155,8 @@ export default defineComponent({
         this.searchString = kw
         this.searchBook(false)   // searchBook 结尾会走 handleSortChange → 就地过滤
       } else if (this.onlineActive) {
+        // 先在当前列表上就地过滤(点确定立刻见效),再去 EH 重新取一遍
+        this.handleSortChange(this.sortValue, this.bookList)
         this.loadOnlineList(true)
       } else {
         this.handleSortChange(this.sortValue, this.displayBookList)
@@ -3087,6 +3170,8 @@ export default defineComponent({
         const r = await ipcRenderer.invoke('eh-download-records')
         if (r && r.ok) {
           this.downloadRecords = r.tasks || []
+          // 记录里已有标签的,顺手把词库里的中文名写进「标签名称」(只写缺的那些)
+          for (const t of this.downloadRecords) if (t && t.tags) this.writeTagTranslations(t.tags)
           // 重新拉记录(打开面板/移动作完)时把「封面失败」标记清掉:网络恢复了就该重新出图
           this.failedCovers = {}
           // 老记录(下载那会儿还没存标签)现拉一次详情补上,一次最多 3 条,别一下打爆 EH
@@ -3114,7 +3199,10 @@ export default defineComponent({
                 titleJpn: detail.titleJpn || '',
                 rating: Number(detail.rating) || 0
               })
-              if (r && r.ok && r.task) this.upsertDownloadRecord(r.task)
+              if (r && r.ok && r.task) {
+                this.writeTagTranslations(r.task.tags)
+                this.upsertDownloadRecord(r.task)
+              }
             }
           } catch (e) { /* 代理/网络不通就下次再说 */ }
         }
@@ -3223,8 +3311,48 @@ export default defineComponent({
       clearTimeout(this.previewRefreshTimer)
       this.previewRefreshTimer = setTimeout(() => this.refreshDownloadPreview(), 1200)
     },
+    // 类别本地化:Options API 的模板拿不到 import,必须过一层 method
+    galleryCategoryName (cat) {
+      return galleryCategoryNameOf(cat, this.$t)
+    },
+    // 把库里全部书的标签名称补齐(词库加载完后调用;只落盘一次)
+    backfillLibraryTagNames () {
+      let changed = false
+      for (const b of (this.bookList || [])) {
+        if (b && b.tags && this.writeTagTranslations(b.tags, false)) changed = true
+      }
+      if (changed) ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(this.setting)))
+      return changed
+    },
+    // 下载任务的标签到手后,把词库里的名字自动写进「标签名称」里(键:分类::标签)。
+    // 这样标签语言下拉切到哪个语言,任务记录/卡片/详情就都显示那个语言(词库只有中文,其它语言回退原名)。
+    writeTagTranslations (tags, save = true) {
+      const tr = this.resolvedTranslation || {}
+      if (!tags || typeof tags !== 'object') return
+      if (!this.setting.tagNameLangs) this.setting.tagNameLangs = {}
+      let changed = false
+      for (const [ns, arr] of Object.entries(tags)) {
+        if (!Array.isArray(arr)) continue
+        const rec = tr[ns] || {}
+        for (const t of arr) {
+          const name = String(t || '').trim()
+          if (!name) continue
+          const hit = rec[name]
+          const zh = hit && hit.name
+          if (!zh) continue
+          const key = ns + '::' + name
+          const cur = this.setting.tagNameLangs[key] || {}
+          if (cur['zh-CN']) continue
+          this.setting.tagNameLangs[key] = { ...cur, 'zh-CN': zh }
+          changed = true
+        }
+      }
+      if (changed && save) ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(this.setting)))
+      return changed
+    },
     upsertDownloadRecord (task) {
       if (!task || !task.id) return
+      if (task.tags) this.writeTagTranslations(task.tags)
       // 封面文件后到(抓取是后台异步的):清掉失败标记,让 img 重新加载
       const prev = this.downloadRecords.find(t => t.id === task.id)
       if (task.coverPath && (!prev || prev.coverPath !== task.coverPath)) {
@@ -3321,8 +3449,9 @@ export default defineComponent({
         for (const t of arr) {
           const name = String(t || '').trim()
           if (!name) continue
-          // 原样显示标签(JHenTai 列表里就是纯标签),命名空间放进悬浮提示
-          out.push({ text: name, full: ns + ':' + name, ns })
+          // 按「标签设置」里选的语言显示(和卡片/详细信息同一套规则),命名空间放进悬浮提示
+          const shown = tagDisplayName(this.setting, this.resolvedTranslation, ns, name) || name
+          out.push({ text: shown, raw: name, full: ns + ':' + name, ns, color: tagColorOf(this.setting, ns, name) })
         }
       }
       return out
@@ -3331,7 +3460,8 @@ export default defineComponent({
     onDownloadTagClick (tg) {
       if (!tg || !tg.text) return
       this.downloadPanelVisible = false
-      this.searchFromTag(tg.text, tg.ns)
+      // 搜索用原始标签名(翻译后的显示名是给眼睛看的,EH/本地搜索都认原名)
+      this.searchFromTag(tg.raw || tg.text, tg.ns)
     },
     // 能不能「移动」:只有**下载完成**的任务才给移(暂停/失败/下载中的都不动)
     canMoveDownload (task) {
@@ -3374,6 +3504,11 @@ export default defineComponent({
         const okList = (r.results || []).filter(x => x.ok)
         const badList = (r.results || []).filter(x => !x.ok)
         for (const x of okList) {
+          if (x.removed) {
+            // 「移动完成后移除记录」:后端已经把记录摘掉了,这里同步去掉(否则要等下一次刷新)
+            this.downloadRecords = this.downloadRecords.filter(t => t.id !== x.id)
+            continue
+          }
           const rec = this.downloadRecords.find(t => t.id === x.id)
           if (rec) { rec.movedTo = x.dest; rec.dir = x.dest }
         }
@@ -3392,6 +3527,15 @@ export default defineComponent({
       }
     },
     // 记录上的时间(开始下载的时间;已完成的显示完成时间)。用户要年月日时分秒
+    // 已下载尺寸说人话(B / KB / MB / GB)
+    downloadSizeText (bytes) {
+      const n = Number(bytes) || 0
+      if (!n) return ''
+      if (n < 1024) return n + ' B'
+      if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB'
+      if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB'
+      return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+    },
     downloadTimeText (task) {
       const ts = Number((task.status === 'done' && task.finishedAt) ? task.finishedAt : task.createdAt) || 0
       if (!ts) return ''
@@ -3449,7 +3593,8 @@ export default defineComponent({
       e.preventDefault()
       const task = this.previewTask
       if (!task) return
-      const resumable = ['paused', 'failed', 'waiting'].includes(task.status)
+      // 已移到库里的记录不给「继续下载」(见 resumableDownloadCount 的注释)
+      const resumable = !task.movedTo && ['paused', 'failed', 'waiting'].includes(task.status)
       const items = []
       // 「继续下载」只对暂停/失败/等待中的任务有意义
       if (resumable) {
@@ -3535,10 +3680,66 @@ export default defineComponent({
     },
     // 面板里的「阅读」:与点封面同一个点击策略(在线 → 在线阅读,本地 → 内置阅读器)
     // 侧边详细点预览图:带上页码,直接从那一页开始读
+    // H@H 归档下载:打开弹窗(EH 服务端按分辨率打包);详情与侧边详情两个入口共用
+    openHhDownloadDialog (book) {
+      const url = String((book && book.archivePageUrl) || '').trim()
+      if (!url) { this.printMessage('warning', this.$t('m.hhNoArchive')); return }
+      this.hhDialogUrl = url
+      this.hhDialogVisible = true
+    },
+    // 评论里的 EH 画廊链接:用软件内部流程打开(先拉详情,再决定进详情/阅读器)
+    async onSideDetailOpenGalleryUrl (url) {
+      const u = String(url || '')
+      if (!u) return
+      try {
+        const book = await this.openOnlineBookByUrl(u)
+        if (book) this.$refs.BookDetailDialogRef.openBookDetail(book)
+      } catch (e) {
+        // 拉不到详情就退回系统浏览器
+        try { await ipcRenderer.invoke('open-url', u) } catch (err) { /* 忽略 */ }
+      }
+    },
+    // 按 URL 现拉一本在线书的详情(评论里的链接跳转用)
+    async openOnlineBookByUrl (url) {
+      const host = (String(url).match(/^https?:\/\/([^/]+)/i) || [])[1] || EX_HOST
+      const detail = await this.fetchExHtml(url)
+      const parsed = parseGalleryDetail(detail, host)
+      if (!parsed || !parsed.ok) return null
+      const book = galleryToBook({
+        id: 'eh:' + url, url,
+        title: parsed.title, title_jpn: parsed.titleJpn,
+        category: parsed.category, cover: parsed.cover,
+        pageCount: parsed.pageCount, rating: parsed.rating,
+        uploader: parsed.uploader, posted: parsed.posted,
+        language: parsed.language, size: parsed.size, tags: parsed.tags
+      })
+      if (!book) return null
+      book.archivePageUrl = parsed.archivePageUrl || ''
+      book.thumbnails = parsed.thumbnails || []
+      this.bookDetail = book
+      return book
+    },
     onSideDetailRead (book, startIndex = null) {
       if (!book) return
       if (startIndex != null) { this.openContentView(book, startIndex); return }
       this.runClickAction(this.setting.clickCoverAction || 'content', book)
+    },
+    // 侧边详情的「本地库」操作:与详细界面完全同一套（直接复用大弹窗里的实现，
+    // 避免两处各写一遍、行为慢慢跑偏）
+    onSideDetailToggleHidden (book) {
+      const ref = this.$refs.BookDetailDialogRef
+      if (ref && typeof ref.triggerHiddenBook === 'function') return ref.triggerHiddenBook(book)
+      // 兜底:大弹窗没挂载时自己改并保存
+      book.hiddenBook = !book.hiddenBook
+      this.saveBook(book)
+    },
+    onSideDetailRescan (book) {
+      const ref = this.$refs.BookDetailDialogRef
+      if (ref && typeof ref.rescanBook === 'function') return ref.rescanBook(book)
+    },
+    onSideDetailDelete (book) {
+      const ref = this.$refs.BookDetailDialogRef
+      if (ref && typeof ref.deleteLocalBook === 'function') return ref.deleteLocalBook(book)
     },
     downloadPercent (task) {
       const total = Number(task.total) || 0
@@ -3616,7 +3817,11 @@ export default defineComponent({
       const r = await ipcRenderer.invoke('eh-download-action', { id: task.id, action })
       if (!r || !r.ok) {
         if (r && r.error === 'notFound') this.refreshDownloadRecords()
-        else this.printMessage('error', (r && r.error) || this.$t('m.downloadFailed'))
+        // 已移到库里的记录不能续传:说清楚,并刷新列表(它的按钮状态也该变了)
+        else if (r && r.error === 'alreadyMoved') {
+          this.printMessage('warning', this.$t('m.downloadAlreadyMoved'))
+          this.refreshDownloadRecords()
+        } else this.printMessage('error', (r && r.error) || this.$t('m.downloadFailed'))
         return
       }
       if (action === 'delete' || action === 'deleteWithFiles') {
@@ -3698,12 +3903,14 @@ export default defineComponent({
           title: String((opts && opts.title) || '').trim() || book.title || book.title_jpn || '',
           cover: book.coverPath || '', original: !!original,
           saveDir: String((opts && opts.saveDir) || '').trim(),
-          tags: tags || {}, category, titleJpn, rating
+          tags: tags || {}, category, titleJpn, rating,
+          // EH 标注的页数:links 收集不全时后端用它兜底 total(否则封面会显示 235/218)
+          pageCount: Number(book && book.pageCount) || Number(book && book.filecount) || 0
         })
         if (!r || !r.ok) { this.printMessage('error', (r && r.error) || this.$t('m.downloadFailed')); return }
         this.upsertDownloadRecord(r.task)
         this.printMessage('success', this.$t('m.downloadStarted'))
-        this.downloadPanelVisible = true
+        // 用户要求:添加下载后**不要**自动弹出任务记录面板,任务在记录里看得到
       } catch (e) {
         this.printMessage('error', this.$t('m.downloadFailed') + ': ' + ((e && e.message) || e))
       }
@@ -3801,6 +4008,13 @@ export default defineComponent({
     openTorrent (tr) {
       if (tr && tr.url) ipcRenderer.invoke('open-url', tr.url)
     },
+    // 种子标题点击:**用浏览器直接打开**种子链接(不走 open-url 的应用内处理,
+    // 也不复用「打开」按钮 —— 用户要的就是浏览器打开这个链接本身)
+    openTorrentInBrowser (tr) {
+      if (!tr || !tr.url) return
+      if (window.__WEB_MODE__) window.open(tr.url, '_blank', 'noopener')
+      else ipcRenderer.invoke('open-url', tr.url)
+    },
     async copyTorrentMagnet (tr) {
       if (!tr || !tr.magnet) return
       // 网页版(局域网 http)不是安全上下文,复制要靠 textarea 兜底;失败时明确告诉用户
@@ -3883,8 +4097,39 @@ export default defineComponent({
       this.handleSortChange(this.sortValue, this.bookList)
     },
     // EH在线:工具栏的「重新加载」(在线模式下扫描按钮就是它)
+    // ★用户反馈「点了要卡半天才刷新,像卡死」:以前 loadOnlineList(true) 会先打 EH 请求,
+    //   期间旧列表原样不动、也没有任何「正在加载」的反馈。
+    //   现在:立刻清空 + 显示骨架/加载态,再去取第一页,拿到一批就填一批。
     reloadOnline () {
+      this.clearOnlineListForReload()
       this.loadOnlineList(true)
+    },
+    // 清空在线列表并进入「正在加载」态(排序/搜索/重新加载都走这里)
+    clearOnlineListForReload () {
+      this.onlineItems = []
+      this.onlineCursors = [null]
+      this.onlinePagesFetched = 0
+      this.onlineHasMore = true
+      this.bookList = []
+      this.displayBookList = []
+      this.chunkDisplayBookList = []
+      this.currentPage = 1
+      this.renderedCount = this.renderBatchSize
+      this.onlineReloading = true
+      // onlineLoading 由 loadOnlineList 自己置位 —— 这里不要抢着设成 true,
+      // 否则 loadOnlineList 一进来就判定「已经在加载」,整次重拉被跳过,骨架永远不消失。
+      try { sessionStorage.removeItem('emmOnlineCache') } catch (e) { /* 忽略 */ }
+      // 兜底:网络卡住(EH 不可达 / 代理没通)时,最多 15 秒也要收拾掉骨架,
+      // 不能让界面永远停在骨架屏上(那和「卡死」没区别)。
+      clearTimeout(this._onlineReloadGuard)
+      this._onlineReloadGuard = setTimeout(() => {
+        if (this.onlineReloading) {
+          this.onlineReloading = false
+          this.onlineLoading = false
+          if (!this.onlineItems.length) this.printMessage('error', this.$t('m.ehOnlineTimeout'))
+        }
+      }, 8000)
+      this.$nextTick(() => this.scrollMainPageTop())
     },
     // 带 Cookie + 超时地取一个 EH 页面(桌面与网页版都走 get-ex-webpage 通道)
     async fetchExHtml (url) {
@@ -3953,14 +4198,27 @@ export default defineComponent({
       }
       if (!parsed.galleries.length) {
         this.onlineHasMore = false
-        this.printMessage('warning', (parsed.error === 'ipBanned') ? this.$t('m.ehOnlineIpBanned') : this.$t('m.ehOnlineEmpty'))
+        // 只有「第一页就空」才提示(那是真的没内容 / 被 Ban);
+        // 往下滚动补页时到头是正常现象,再弹就是「老是弹出错误提示」
+        if (!this.onlinePagesFetched) {
+          this.printMessage('warning', (parsed.error === 'ipBanned') ? this.$t('m.ehOnlineIpBanned') : this.$t('m.ehOnlineEmpty'))
+        }
         return 0
       }
-      this.onlineItems = this.onlineItems.concat(parsed.galleries)
+      // ⚠ 去重后再追加:EH 的游标偶尔会失效(尤其带筛选时),同一页会被反复返回,
+      //   表现就是「拉到底无限加载」——列表越来越长但全是重复的卡片。
+      //   新页里一半以上是已存在的画廊 = 到底了,不再追加。
+      const existIds = new Set((this.onlineItems || []).map(g => g.id))
+      const fresh = parsed.galleries.filter(g => !existIds.has(g.id))
+      if (!fresh.length || fresh.length < Math.ceil(parsed.galleries.length / 2)) {
+        this.onlineHasMore = false
+        return 0
+      }
+      this.onlineItems = this.onlineItems.concat(fresh)
       if (parsed.nextGid) this.onlineCursors = [...this.onlineCursors, parsed.nextGid]
       this.onlinePagesFetched += 1
       this.onlineHasMore = !!parsed.nextGid
-      return parsed.galleries.length
+      return fresh.length
     },
     // 补到至少 need 条(单次最多补 8 页,避免一口气连打二十几个请求)
     async fillOnlineUpTo (need) {
@@ -3974,6 +4232,15 @@ export default defineComponent({
     // 滚到底 / 翻页时再补下一页(在线「无限往下看」)
     async appendOnlinePageIfNeeded (force = false) {
       if (!this.onlineActive || this.onlineLoading || !this.onlineHasMore) return
+      // ★必须翻到**分页器的最后一页**才拉下一批 EH 数据:
+      //   EH在线是按「每页数量」分页的(底部 1/2/3… 页码)。以前不管翻到第几页,
+      //   只要往下滚就去拉数据 —— 第 1 页就无限加载,看起来"没有边界"。
+      //   现在只有当前页 == 分页器最后一页、并且滚到该页底部,才补下一页数据。
+      if (!force) {
+        const pageSize = Math.max(1, Number(this.setting.pageSize) || 42)
+        const totalPages = Math.max(1, Math.ceil((this.onlineItems || []).length / pageSize))
+        if ((Number(this.currentPage) || 1) < totalPages) return
+      }
       // 改「每页数量」等操作期间先压住自动补页(见 handleSizeChange)
       if (!force && this.suppressOnlineAppend) return
       // 两次自动补页至少隔 600ms:滚动事件连发时不要连着打 EH(会看起来「一直加载」)
@@ -3982,6 +4249,17 @@ export default defineComponent({
         if (now - (this.onlineLastAppendAt || 0) < 600) return
       }
       if (!force && this.renderedCount < this.visibleChunkDisplayBookList.length) return
+      // ★必须是**真正的滚动到底**:以前滚动监听在距底 600px 时就一路触发,
+      //   renderedCount 涨完之后每次滚动事件都会补一页 —— 看起来就是「拉到底无限加载」。
+      //   现在补一页后列表变长,除非用户**再次滚到底部 150px 内**,否则不再补。
+      if (!force) {
+        const area = document.querySelector('.book-card-area')
+        if (area) {
+          // 距底 ≤100px 才算「浏览到底部」:补一页后列表变长,不继续滚就不会再触发
+          const toBottom = area.scrollHeight - area.scrollTop - area.clientHeight
+          if (toBottom > 100) return
+        }
+      }
       this.onlineLoading = true
       this.onlineLastAppendAt = Date.now()
       try {
@@ -3997,7 +4275,14 @@ export default defineComponent({
     //  · EH 列表每页固定 20 条,所以按需拼几页(一次最多补 8 页,避免「每页 500 条」时连打二十几个请求)
     //  · 翻页时再补一批,保证往后翻总有新内容
     async loadOnlineList (reset = false) {
-      if (this.onlineLoading) return
+      // ⚠ 这里以前是「已经在加载就直接 return」—— 但「重新加载」会先把 onlineReloading 打开,
+      //   如果这时刚好有一次自动补页在跑,这个 return 就把 reload 整个吞掉,
+      //   骨架屏从此再也不消失(实测:清空后卡在骨架 6 秒以上还不恢复)。
+      //   现在:重拉请求一律排队等正在跑的那次结束,而不是被丢掉。
+      if (this.onlineLoading) {
+        if (!reset) return
+        for (let i = 0; i < 100 && this.onlineLoading; i++) await new Promise(r => setTimeout(r, 100))
+      }
       // ★没要求重拉:手上这份就够用(切库/切界面回来不该重来);手上没有再看会话缓存
       if (!reset) {
         if (this.onlineItems.length) {
@@ -4008,10 +4293,12 @@ export default defineComponent({
             // 补到了新页:再 apply 一次,不然新取到的条目在界面上看不到(要等下次滚动)
             if (this.onlineItems.length > before) this.applyOnlineList()
           } catch (e) { /* 补页失败不影响已显示的内容 */ }
+          this.onlineReloading = false
           return
         }
         if (this.restoreOnlineCache()) {
           this.applyOnlineList()
+          this.onlineReloading = false
           return
         }
       }
@@ -4030,15 +4317,21 @@ export default defineComponent({
         // 滚到底 / 翻到后面时再追加下一页,所以能一直往下看,没有「只能加载 N 条」的上限。
         if (!this.onlineItems.length) {
           await this.appendEhPage(source)
-        } else {
-          await this.fillOnlineUpTo((Number(this.currentPage) || 1) * (Number(this.setting.pageSize) || 42))
         }
+        // 初始也要把「当前页」填满(每页数量):只拉 EH 一页(20 条)时不足一屏,
+        // 用户滚到底就触发补页 —— 看起来又是「无限制加载」。
+        await this.fillOnlineUpTo((Number(this.currentPage) || 1) * (Number(this.setting.pageSize) || 42))
         this.applyOnlineList()
       } catch (e) {
         console.error(e)
-        this.printMessage('error', (e && e.message === 'timeout') ? this.$t('m.ehOnlineTimeout') : this.$t('m.ehOnlineFailed'))
+        // 已经拉到过内容:保持现状,别把用户正在看的列表用一条错误提示盖掉
+        if (!this.onlineItems.length) {
+          this.printMessage('error', (e && e.message === 'timeout') ? this.$t('m.ehOnlineTimeout') : this.$t('m.ehOnlineFailed'))
+        }
       } finally {
         this.onlineLoading = false
+        this.onlineReloading = false
+        clearTimeout(this._onlineReloadGuard)
       }
     },
     // startIndex:从第几页开始翻(0 基);点预览缩略图时传页面序号
@@ -4259,6 +4552,39 @@ body.emm-mobile
     padding: 0 6px
   .book-card-list
     text-align: center
+  // EH在线 重新加载时的骨架卡:与真实卡片同尺寸,避免「空一下再突然冒出整片」
+  .online-skeleton
+    display: flex
+    flex-wrap: wrap
+    gap: 12px
+    align-content: flex-start
+    justify-content: flex-start
+    padding: 4px
+  .online-skeleton-card
+    width: calc(var(--emm-cover-size, 220px))
+    border-radius: 6px
+    padding: 6px
+    background: var(--el-fill-color-light)
+    box-sizing: border-box
+    .online-skeleton-cover
+      width: 100%
+      aspect-ratio: 3 / 4
+      border-radius: 4px
+      background: var(--el-fill-color-dark)
+      animation: emm-skeleton-pulse 1.2s ease-in-out infinite
+    .online-skeleton-line
+      height: 10px
+      margin-top: 8px
+      border-radius: 4px
+      background: var(--el-fill-color-dark)
+      animation: emm-skeleton-pulse 1.2s ease-in-out infinite
+      &.short
+        width: 60%
+  @keyframes emm-skeleton-pulse
+    0%, 100%
+      opacity: .55
+    50%
+      opacity: 1
   // 对话框全屏(设置/详情/搜索等)
   .el-dialog
     width: 100vw !important
@@ -5157,7 +5483,11 @@ html.theme-custom
     flex: none
     &:hover
       color: var(--el-color-primary)
-  // 中间标签行:原图标签 · 状态
+  // 中间标签行:原图标签 · 状态 · 尺寸
+  .download-size
+    font-size: 11px
+    color: var(--el-text-color-secondary)
+    font-variant-numeric: tabular-nums
   .download-meta
     display: flex
     align-items: center
@@ -5287,24 +5617,33 @@ html.theme-custom
   padding: 8px 10px
   border-radius: 8px
   background: var(--el-fill-color-light)
+  // 种子界面全部居中
+  text-align: center
   &.is-outdated
     opacity: .6
   .torrent-name
     font-size: 13px
     margin-bottom: 4px
     word-break: break-all
+    // 点标题 = 用浏览器打开种子页链接
+    color: var(--el-color-primary)
+    cursor: pointer
+    &:hover
+      text-decoration: underline
   .torrent-meta
     display: flex
     flex-wrap: wrap
     gap: 8px
     font-size: 12px
     color: var(--el-text-color-secondary)
+    justify-content: center
   .torrent-outdated
     color: var(--el-color-danger)
   .torrent-actions
     margin-top: 6px
     display: flex
     gap: 6px
+    justify-content: center
 .torrent-loading, .torrent-empty
   padding: 20px 0
   text-align: center

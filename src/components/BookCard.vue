@@ -16,7 +16,7 @@
       @click="$emit('titleClick')"
       @contextmenu="onTitleContextMenu($event)"
       :title="getDisplayTitle(book)"
-    >{{getDisplayTitle(book)}}</p>
+    ><span class="book-title-inner">{{getDisplayTitle(book)}}</span></p>
     <div class="book-cover-frame">
       <div class="book-task-mask" v-if="bookTaskChar">
         <div class="book-task-ring"></div>
@@ -26,7 +26,7 @@
       </div>
       <img
         class="book-cover"
-        :src="book.coverPath"
+        :src="coverSrc"
         @click="onCoverClickOnce"
         @dblclick="onCoverDblClick"
         @touchstart.passive="startCoverPress($event)"
@@ -69,10 +69,10 @@
         @touchmove.passive="cancelTagPress"
         @contextmenu="onCollectTagContextMenu($event, tag)"
         class="book-collect-tag"
-        :color="tag.color"
+        effect="plain"
+        :style="tag.color ? { color: tag.color, borderColor: tag.color } : null"
         size="small"
-        effect="dark"
-      >{{tag.letter}}:{{ getDisplayTagName(setting, resolveCatKey(tag.cat), tag.tag) || resolvedTranslation[resolveCatKey(tag.cat)]?.[tag.tag]?.name || tag.tag }}</el-tag>
+      >{{ tagDisplayPrefix(setting, resolvedTranslation, tag.cat, tag.tag) }}:{{ tagDisplayName(setting, resolvedTranslation, resolveCatKey(tag.cat), tag.tag) }}</el-tag>
     </div>
     <div class="book-card-footer">
       <el-button-group class="outer-read-button-group" v-if="!setting.hideReadButton">
@@ -87,7 +87,7 @@
         :type="book.status === 'non-tag' ? 'info' : book.status === 'tagged' ? 'success' : 'warning'"
         :title="book.status"
         @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
-      >{{ book.category || book.status }}</el-tag>
+      >{{ galleryCategoryName(book.category, $t) || book.status }}</el-tag>
       <el-rate v-if="!setting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
     </div>
     </template>
@@ -126,7 +126,7 @@
           @click="$emit('titleClick')"
           @contextmenu="onTitleContextMenu($event)"
           :title="getDisplayTitle(book)"
-        >{{getDisplayTitle(book)}}</p>
+        ><span class="fill-title-inner">{{getDisplayTitle(book)}}</span></p>
         <!-- 收藏按钮:与角标/标题同一行;标题在角标与收藏按钮之间居中,
              隐藏任一侧时标题自动伸展填补空位 -->
         <el-icon
@@ -155,7 +155,7 @@
             :color="tag.color"
             size="small"
             effect="dark"
-          >{{tag.letter}}:{{ getDisplayTagName(setting, resolveCatKey(tag.cat), tag.tag) || resolvedTranslation[resolveCatKey(tag.cat)]?.[tag.tag]?.name || tag.tag }}</el-tag>
+          >{{tag.letter}}:{{ tagDisplayName(setting, resolvedTranslation, resolveCatKey(tag.cat), tag.tag) }}</el-tag>
           <el-tag class="fill-badge" size="small" v-if="!setting.hidePageCount && book.pageDiff" @click="$emit('pageCountClick')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
           <el-tag class="fill-badge" size="small" v-else-if="!setting.hidePageCount" @click="$emit('pageCountClick')">{{ book.pageCount }}P</el-tag>
           <el-button-group class="outer-read-button-group" v-if="!setting.hideReadButton">
@@ -167,7 +167,7 @@
             class="fill-badge"
             :title="book.status"
             @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
-          >{{ book.category || book.status }}</el-tag>
+          >{{ galleryCategoryName(book.category, $t) || book.status }}</el-tag>
           <el-rate v-if="!setting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
         </div>
       </div>
@@ -186,7 +186,7 @@ import ContextMenu from '@imengyu/vue3-context-menu'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, getDisplayTagName, resolveCatKey } from '../utils.js'
+import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, getDisplayTagName, tagDisplayName, resolveCatKey, galleryCategoryName, tagDisplayPrefix } from '../utils.js'
 const appStore = useAppStore()
 const TASK_CHARS = { translate: '翻', colorize: '色', upscale: '分', extract: '字' }
 const bookTaskProgress = computed(() => (appStore.bookTaskProgress && appStore.bookTaskProgress[props.book && props.book.id]) || null)
@@ -312,6 +312,14 @@ watchEffect(() => {
 // 封面加载动画:封面路径变化 / 懒加载生成中保持转圈,<img> 加载完成由 @load 关闭
 const coverLoading = ref(true)
 // 封面懒加载:路径为空(扫描未生成)或加载失败时,按需生成封面
+// 封面重新生成后文件名不变,给 src 加一个时间戳,强制浏览器重新拉图
+const coverSrc = computed(() => {
+  const p0 = props.book && props.book.coverPath
+  if (!p0) return ''
+  const n = props.book._coverNonce
+  if (!n) return p0
+  return p0 + (String(p0).includes('?') ? '&' : '?') + 'r=' + n
+})
 const onCoverError = () => {
   // 在线画廊的封面是远程地址,没有「本地封面生成」这回事
   if (props.book?.online) { coverLoading.value = false; return }
@@ -529,6 +537,20 @@ const onMangaTitleContextMenu = (e, book) => {
   font-size: var(--emm-custom-font-size, 14px)
   cursor: pointer
   line-height: 18px
+  // 一行、两行都居中(用户要求):
+  //   内层盒子是「收缩包裹」的 —— 一行时宽度=文字宽度,外层 flex 居中;
+  //   两行时撑满可用宽度,再用 text-align:center 让两行文字本身也居中
+  display: flex
+  align-items: center
+  justify-content: center
+  .book-title-inner
+    max-width: 100%
+    text-align: center
+    display: -webkit-box
+    -webkit-box-orient: vertical
+    -webkit-line-clamp: 2
+    overflow: hidden
+    word-break: break-word
 .book-card-mark, .book-card-language, .book-card-pagecount
   position: absolute
   cursor: pointer
@@ -634,12 +656,17 @@ const onMangaTitleContextMenu = (e, book) => {
       cursor: pointer
       text-shadow: 0 1px 2px rgba(0, 0, 0, .85)
       pointer-events: auto
-      text-align: center
-      display: -webkit-box
-      -webkit-box-orient: vertical
-      -webkit-line-clamp: 2
-      overflow: hidden
-      word-break: break-all
+      display: flex
+      align-items: center
+      justify-content: center
+      .fill-title-inner
+        max-width: 100%
+        text-align: center
+        display: -webkit-box
+        -webkit-box-orient: vertical
+        -webkit-line-clamp: 2
+        overflow: hidden
+        word-break: break-all
       &:hover
         color: #ffd04b
     // 收藏按钮(右上,随开关显隐;与角标、标题同一行)

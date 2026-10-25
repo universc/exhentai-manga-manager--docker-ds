@@ -54,8 +54,8 @@
           </div>
         </div>
         <!-- 分类标签:信息区右下的角上,底边和封面底边对齐 -->
-        <div class="detail-cat-badge" v-if="book.category" :title="book.category">
-          <el-tag size="small" type="info" class="detail-tag" @click="onTagClick(book.category, 'category')">{{ book.category }}</el-tag>
+        <div class="detail-cat-badge" v-if="book.category" :title="galleryCategoryName(book.category, $t)">
+          <el-tag size="small" type="info" class="detail-tag" @click="onTagClick(book.category, 'category')">{{ galleryCategoryName(book.category, $t) }}</el-tag>
         </div>
       </div>
       <!-- 操作按钮:照 JHenTai 用「图标 + 文字」的小按钮;两个下载按钮合并成一个(弹窗里选原图) -->
@@ -66,27 +66,64 @@
         <el-button v-if="book.online" class="detail-act" size="small" :icon="MdAttach" @click="$emit('open-torrents', book)">{{ $t('m.torrent') }}<template v-if="book.torrentCount != null"> {{ book.torrentCount }}</template></el-button>
         <el-button v-if="book.online" class="detail-act" size="small" :icon="Star" @click="$emit('favorite', book)">{{ book.favcat == null ? $t('m.favorite') : $t('m.favoriteRemoveOption') }}</el-button>
         <el-button v-if="book.online" class="detail-act" size="small" :icon="Link" @click="openInBrowser">{{ $t('m.ehOnlineOpen') }}</el-button>
-        <el-button v-else class="detail-act" size="small" :icon="FolderOpened" @click="showFile">{{ $t('m.sideDetailShowFile') }}</el-button>
+        <!-- H@H 归档下载(照 JHenTai 详情页的 H@H 按钮) -->
+        <el-button v-if="book.online && !viewerRole && book.archivePageUrl" class="detail-act" size="small" type="warning" plain @click="$emit('open-hh-download', book)">H@H</el-button>
+        <!-- 本地库:把「详细界面」里那一整排按钮也搬过来
+             (查看/编辑信息、获取元数据、隐藏、打开文件位置、重新扫描、删除、显示评论) -->
+        <template v-else>
+          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="Edit" @click="$emit('open-book-detail', book)">{{ $t('m.editInfo') }}</el-button>
+          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="MdSearch" @click="$emit('get-metadata', book)">{{ $t('m.getMetadata') }}</el-button>
+          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="Hide" @click="$emit('toggle-hidden', book)">{{ book.hiddenBook ? $t('m.showManga') : $t('m.hideManga') }}</el-button>
+          <el-button class="detail-act" size="small" :icon="FolderOpened" @click="showFile">{{ $t('m.openMangaFileLocation') }}</el-button>
+          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="Refresh" @click="$emit('rescan', book)">{{ $t('m.rescan') }}</el-button>
+          <el-button v-if="!viewerRole" class="detail-act detail-act-danger" size="small" :icon="Delete" @click="$emit('delete-book', book)">{{ $t('m.deleteFile') }}</el-button>
+          <el-button class="detail-act" size="small" :icon="ChatDotSquare" @click="toggleSideComments">{{ sideCommentsOn ? $t('m.hideComment') : $t('m.showComment') }}</el-button>
+        </template>
       </div>
       <!-- 标签分组:点一个标签 = 按它搜(JHenTai 详情页点标签也是这个动作) -->
       <div class="detail-tags">
         <template v-if="tagGroups.length">
           <div class="detail-tag-group" v-for="g in tagGroups" :key="g.cat">
+            <!-- 自然行内流:类别名和标签在同一条基线上,标签换行就回到左边缘,不做列对齐 -->
             <span class="detail-tag-cat">{{ g.label }}</span>
-            <el-tag v-for="tag in g.tags" :key="tag" size="small" class="detail-tag" @click="onTagClick(tag, g.cat)">{{ tag }}</el-tag>
+            <el-tag
+              v-for="tag in g.tags"
+              :key="tag"
+              size="small"
+              class="detail-tag"
+              :effect="'plain'"
+              :style="tagStyle(g.cat, tag)"
+              @click="onTagClick(tag, g.cat)"
+            >{{ tagName(g.cat, tag) }}</el-tag>
           </div>
         </template>
         <div class="detail-tags-empty" v-else>{{ $t('m.sideDetailNoTags') }}</div>
       </div>
-      <!-- 评论:在浏览图上方(在线画廊才有;设置里关了「显示评论」就不拉) -->
-      <div class="detail-comments" v-if="comments.length">
-        <div class="detail-comments-title">{{ $t('m.comment') }} · {{ comments.length }}</div>
-        <div class="detail-comment" v-for="c in comments" :key="c.id">
-          <div class="dc-head">
-            <span class="dc-author" :title="c.author">{{ c.author }}</span>
-            <span class="dc-score">{{ c.score }}</span>
+      <!-- 评论:照 JHenTai 的 EHComment 排布 ——
+           头(作者 + 时间)/ 正文(详情页里最多 5 行省略)/ 尾(评分 + 评分明细 + 编辑时间) -->
+      <!-- 评论:照 JHenTai details_page 的横排评论区 ——
+           一排可以左右滑动的卡片(单卡 300x160),高度固定,不会把下面的页预览挤下去 -->
+      <div class="detail-comments" v-if="sideCommentsOn && comments.length">
+        <div class="detail-comments-title">
+          <span>{{ $t('m.comment') }} · {{ comments.length }}</span>
+          <span class="detail-comments-all" @click="emit('search-from-tag', '', '')">{{ $t('m.sideDetailAllComments') }}</span>
+        </div>
+        <div class="detail-comments-row" @click="onCommentClick">
+          <div class="detail-comment" v-for="c in comments" :key="c.id">
+            <div class="dc-head">
+              <span
+                class="dc-author"
+                :class="{ 'dc-author-me': c.fromMe }"
+                :title="c.userId ? c.author + ' (#' + c.userId + ')' : c.author"
+              >{{ c.author || $t('m.sideDetailUnknownUser') }}<template v-if="c.fromMe"> ({{ $t('m.sideDetailYou') }})</template></span>
+              <span class="dc-time" :title="c.time">{{ c.time }}</span>
+            </div>
+            <div class="dc-content" :class="{ 'dc-content-clamped': !commentExpanded[c.id] }" @click="toggleComment(c)" v-html="commentHtml(c)"></div>
+            <div class="dc-footer">
+              <span class="dc-score" :title="(c.scoreDetails || []).join(' ')">{{ c.score }}</span>
+              <span class="dc-edited" v-if="c.lastEditTime">{{ $t('m.sideDetailEdited') }} {{ c.lastEditTime }}</span>
+            </div>
           </div>
-          <div class="dc-content">{{ c.content }}</div>
         </div>
       </div>
       <!-- 页预览:显示**全部页**,自动换行的网格(像 JHenTai 的页预览),竖向滚动;点一下 = 打开阅读器 -->
@@ -107,6 +144,11 @@
           <el-icon class="is-loading" :size="16"><Loading /></el-icon>
         </div>
         <div v-else-if="previewError && !previewItems.length" class="detail-preview-error">{{ previewError }}</div>
+        <!-- 滚动哨兵:滑到这里就再取一批(侧栏只有一个滚动条,用可视区判断) -->
+        <div ref="previewSentinel" class="detail-preview-sentinel"></div>
+        <div v-if="previewLoading && previewItems.length" class="detail-preview-more">
+          <el-icon class="is-loading" :size="14"><Loading /></el-icon>
+        </div>
       </div>
       <div class="detail-loading" v-if="detailLoading">
         <el-icon class="is-loading" :size="14"><Loading /></el-icon> {{ $t('m.sideDetailLoading') }}
@@ -117,16 +159,16 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Loading, View, Download, Star, Link, FolderOpened } from '@element-plus/icons-vue'
-import { MdAttach } from '@vicons/ionicons4'
+import { Loading, View, Download, Star, Link, FolderOpened, Edit, Hide, Refresh, Delete, ChatDotSquare } from '@element-plus/icons-vue'
+import { MdAttach, MdSearch } from '@vicons/ionicons4'
 import { MdRefresh } from '@vicons/ionicons4'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc } from '../ehOnline.js'
-import { catDisplayName, toAssetUrl } from '../utils.js'
+import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, collectGalleryThumbs } from '../ehOnline.js'
+import { catDisplayName, toAssetUrl, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName } from '../utils.js'
 
 const props = defineProps({
   // 面板宽度(px):App.vue 持有并持久化,拖动时双向同步
@@ -134,7 +176,21 @@ const props = defineProps({
   // 面板是否可见:藏起来时不自动拉 EH 详情(省请求,也少给 EH 添乱)
   visible: { type: Boolean, default: true }
 })
-const emit = defineEmits(['close', 'update:width', 'read', 'download-gallery', 'open-torrents', 'favorite', 'search-from-tag', 'refresh-list'])
+const emit = defineEmits([
+  'close', 'update:width', 'read', 'download-gallery', 'open-torrents', 'favorite',
+  'search-from-tag', 'refresh-list',
+  // 本地库:与「详细界面」同一套操作
+  'open-book-detail', 'get-metadata', 'toggle-hidden', 'rescan', 'delete-book', 'toggle-comments',
+  // 评论里的 EH 画廊链接:交给软件内部跳转
+  'open-gallery-url', 'open-hh-download'
+])
+// 侧边详情的评论开关:独立于「详细界面」的 setting.showComment(那是一整栏评论页)
+const sideCommentsOn = ref(true)
+const toggleSideComments = () => {
+  sideCommentsOn.value = !sideCommentsOn.value
+  if (sideCommentsOn.value) loadComments(book.value)
+  else comments.value = []
+}
 
 const appStore = useAppStore()
 const { bookDetail, setting } = storeToRefs(appStore)
@@ -153,36 +209,155 @@ const comments = ref([])
 const loadComments = async (b) => {
   comments.value = []
   if (!b || !b.online || !b.url) return
-  if (setting.value.showComment === false) return
+  // ⚠ 这里原本有一个 `setting.showComment === false` 的提前返回 ——
+  //   那个开关是「详细界面(大弹窗)里要不要显示评论栏」,和侧边详情是两个独立界面。
+  //   结果用户关掉大弹窗的评论后,侧边详情也一条评论都不显示。
+  //   侧边详情的评论只看它自己的开关(sideDetailShowComments)。
   try {
     const cookie = ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star']
       .map(k => k + '=' + (setting.value[k] || ''))
       .join('; ')
     const html = await ipcRenderer.invoke('get-ex-webpage', { url: b.url, cookie })
     const doc = new DOMParser().parseFromString(html, 'text/html')
+    // 解析口径照 JHenTai 的 EHSpiderParser._parseGalleryDetailsComments:
+    //   .c2 > .c3 > a        作者(第 3 个 a 的 showuser= 是用户 id)
+    //   .c2 > .c5.nosel>span 评分
+    //   .c7                  评分明细(逗号分隔)
+    //   .c6                  正文(带 id="comment_<n>")
+    //   .c2 > .c3            里面含 "Posted on …" 的原文时间
+    //   .c8 > strong         编辑时间
+    //   .c2 > .c4.nosel > a  自己的评论有 Edit 链接
+    const parseTime = (raw) => {
+      const s = String(raw || '')
+      // 原文形如 "Posted on 10 March 2022, 03:49 by: xxx"
+      const m = /Posted on\s+([^,]+,\s*\d{1,2}:\d{2})/.exec(s)
+      if (!m) return ''
+      const d = new Date(m[1].replace(/\s+/g, ' '))
+      if (isNaN(d.getTime())) return m[1]
+      const p = (n) => String(n).padStart(2, '0')
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+    }
+    const decode = (str) => String(str || '')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ')
     const list = []
     doc.querySelectorAll('#cdiv>.c1').forEach((e, i) => {
-      const author = ((e.querySelector('.c2 .c3') || {}).textContent || '').trim()
-      const scoreEls = e.querySelectorAll('.c2 .nosel')
-      const score = scoreEls.length ? (scoreEls[scoreEls.length - 1].textContent || '').trim() : ''
-      let content = (e.querySelector('.c6') || {}).innerHTML || ''
-      content = content.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '')
-        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
-        .trim()
+      const c2 = e.querySelector('.c2')
+      const authorLink = c2 ? c2.querySelector('.c3 > a') : null
+      const author = ((authorLink && authorLink.textContent) || '').trim()
+      const userId = (() => {
+        const a = c2 ? c2.querySelector('.c3 > a:nth-child(3)') : null
+        const m = /showuser=(\d+)/.exec((a && a.getAttribute('href')) || '')
+        return m ? m[1] : ''
+      })()
+      const score = ((c2 && c2.querySelector('.c5.nosel > span')) || {}).textContent || ''
+      const scoreDetails = ((e.querySelector('.c7') || {}).textContent || '')
+        .split(',').map(s => s.trim()).filter(Boolean)
+      const c6 = e.querySelector('.c6')
+      // 评论正文:保留链接(照 JHenTai 的 buildTag —— 链接可点)
+      let content = (c6 && c6.innerHTML) || ''
+      content = content
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<div[^>]*>/gi, '\n')
+        // 先把 <a href="...">…</a> 转成占位标记,避免被「去标签」时丢掉链接
+        .replace(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+          (_m, href, text) => LINK_SEP_A + href + LINK_SEP_B + decode(String(text).replace(/<[^>]+>/g, '')) + LINK_SEP_C)
+        .replace(/<[^>]+>/g, '')
+      content = decode(content).replace(/\n{3,}/g, '\n\n').trim()
+      // 正文纯文本(用于折叠判断/无障碍);富文本在渲染时再拼
+      const contentRich = content
+      const timeRaw = ((c2 && c2.querySelector('.c3')) || {}).textContent || ''
+      const time = parseTime(timeRaw)
+      const lastEditRaw = ((e.querySelector('.c8 > strong')) || {}).textContent || ''
+      const lastEditTime = lastEditRaw ? parseTime('Posted on ' + lastEditRaw) || lastEditRaw.trim() : ''
+      const fromMe = !!((c2 && c2.querySelector('.c4.nosel > a')) && ((c2.querySelector('.c4.nosel > a')).textContent || '').trim() === 'Edit')
       if (!author && !content) return
-      list.push({ id: i + '-' + author, author, score, content })
+      const cid = ((c6 && c6.getAttribute('id')) || '').replace(/^comment_/, '') || String(i)
+      list.push({ id: cid || (i + '-' + author), author, userId, score, scoreDetails, content, contentRich, time, lastEditTime, fromMe })
     })
-    comments.value = list.slice(0, 12)
+    comments.value = list
   } catch (e) { comments.value = [] }
 }
+// 链接占位符:用不可见控制字符分隔(避免与正文冲突)。
+// ⚠ 用 String.fromCharCode 生成,不要直接写 \u0001 字面量 —— 那会在源码里变成裸控制字符,
+//    ESLint 会报 control-character-in-input-stream,某些编辑器也会把它吃掉。
+const LINK_SEP_A = String.fromCharCode(1)
+const LINK_SEP_B = String.fromCharCode(2)
+const LINK_SEP_C = String.fromCharCode(3)
+// 评论正文里的链接:把解析时的占位标记还原成 <a>(先做 HTML 转义,防注入)
+const escapeHtml = (s) => String(s || '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+const commentHtml = (c) => {
+  const raw = String((c && (c.contentRich || c.content)) || '')
+  // ① a 标记 ( url  text ) → 可点链接
+  let out = ''
+  let rest = raw
+  for (;;) {
+    const a = rest.indexOf(LINK_SEP_A)
+    if (a < 0) { out += escapeHtml(rest); break }
+    out += escapeHtml(rest.slice(0, a))
+    const b = rest.indexOf(LINK_SEP_B, a)
+    const e = rest.indexOf(LINK_SEP_C, b)
+    if (b < 0 || e < 0) { out += escapeHtml(rest.slice(a)); break }
+    const href = rest.slice(a + 1, b)
+    const text = rest.slice(b + 1, e)
+    out += '<a href="' + escapeHtml(href) + '" data-ext="1">' + escapeHtml(text || href) + '</a>'
+    rest = rest.slice(e + 1)
+  }
+  // ② 纯文本里的裸 URL 也要能点(评论区常见)
+  out = out.replace(/(^|[^"'>])(https?:\/\/[^\s<>"']+)/g,
+    (_m, pre, url) => pre + '<a href="' + escapeHtml(url) + '" data-ext="1">' + escapeHtml(url) + '</a>')
+  return out
+}
+// 评论里的链接点击:EH 链接用软件内部跳转,其它用系统浏览器
+const onCommentClick = (e) => {
+  const a = e && e.target && e.target.closest ? e.target.closest('a[data-ext]') : null
+  if (!a) return
+  e.preventDefault()
+  e.stopPropagation()
+  const href = a.getAttribute('href') || ''
+  if (!href) return
+  if (/^https?:\/\/([^/]+\.)?(e-hentai\.org|exhentai\.org|forums\.e-hentai\.org)\/g\//i.test(href)) {
+    // 画廊链接:用软件自己的详情/阅读流程打开
+    emit('open-gallery-url', href)
+    return
+  }
+  try { ipcRenderer.invoke('open-url', href) } catch (err) { /* 忽略 */ }
+}
+// 评论过长时折叠成 5 行(与 JHenTai 详情页一致),点一下展开
+const commentExpanded = ref({})
+const toggleComment = (c) => {
+  if (!c || !c.id) return
+  commentExpanded.value = { ...commentExpanded.value, [c.id]: !commentExpanded.value[c.id] }
+}
 // 页预览:在线 = 详情页雪碧缩略图;本地 = 前几页图片。点一下打开阅读器。
-const PREVIEW_W = 92
+//
+// 尺寸照 e-hentai 详情页的做法:缩略图不是固定 px,而是**跟着容器宽度自适应** —
+// 面板宽就多列、格子更大,面板窄就少列。EH 详情页里一格大约占 1/5 容器宽(横向 5 列),
+// 这里按同一比例算:每列宽度 = 容器宽 / 列数,列数随面板宽度取 3~6。
+// 结果就是「都比原来的固定 118px 大」,而且窄面板也不会挤成一团。
+const previewCols = computed(() => {
+  const w = Number(props.width) || 360
+  // 360 宽 → 3 列(约 112),420 → 4 列,520+ → 5 列,640+ → 6 列
+  if (w >= 640) return 6
+  if (w >= 520) return 5
+  if (w >= 420) return 4
+  return 3
+})
+// 每格的实际宽度(px):减去网格间距与内边距后按列数平分
+const PREVIEW_W = computed(() => {
+  const w = Number(props.width) || 360
+  const gap = 8
+  const pad = 16
+  return Math.max(96, Math.floor((w - pad - gap * (previewCols.value - 1)) / previewCols.value))
+})
 const previewItems = ref([])
 const previewLoading = ref(false)
 const previewError = ref('')
 const spriteStyleOf = (th) => {
   const w = th.width || 200
-  const sc = PREVIEW_W / w
+  const sc = PREVIEW_W.value / w
   return {
     width: w + 'px',
     height: (th.height || 287) + 'px',
@@ -194,15 +369,122 @@ const spriteStyleOf = (th) => {
     marginBottom: '-' + Math.round((th.height || 287) - (th.height || 287) * sc) + 'px'
   }
 }
-// 本地书:后端直接给前几页的文件路径
-const loadLocalPreview = async (b) => {
-  if (!b || !b.filepath) return
-  // limit: 0 = 全部页(目录书直接给所有图片路径;压缩包最多前 60 页)
-  const res = await ipcRenderer.invoke('book-preview-images', { filepath: b.filepath, type: b.type, limit: 0 })
-  if (res && res.ok && res.files && res.files.length) {
-    previewItems.value = res.files.map(f => ({ src: toAssetUrl(f) }))
+// ---------- 在线书预览 ----------
+// 关键:previewItems **派生自** bookDetail.thumbnails,而不是只认自己那次 onUpdate。
+// 以前 previewItems 只在「自己启动的 collectGalleryThumbs 回调」里赋值,而 thumbnails
+// 还会被详细界面的补页/详情刷新写(同一个对象)→ 两边各跑一套,侧栏永远卡在第一页 20 张,
+// 滑到底也没有后续(用户反馈的「只能加载部分,滑动到底根本不继续加载」)。
+const syncOnlinePreview = () => {
+  const b = book.value
+  if (!b || !b.online) return
+  const th = b.thumbnails || []
+  previewTotal.value = Math.max(Number(b.pageCount) || 0, th.length)
+  if (th.length) previewItems.value = th.map(x => ({ sprite: spriteStyleOf(x) }))
+}
+let onlineThumbsRunning = false
+let onlineThumbsToken = 0
+const ensureOnlineThumbs = async () => {
+  const b = book.value
+  if (!b || !b.online || !b.url) return
+  const th = b.thumbnails || []
+  const want = Number(b.pageCount) || 0
+  // 已经够数 / 没有标注页数但已经拉过一批 → 不重复启动
+  if (onlineThumbsRunning) return
+  if (want && th.length >= want) return
+  if (!want && th.length >= 20 && onlineThumbsToken > 0) return
+  onlineThumbsRunning = true
+  const token = ++onlineThumbsToken
+  const host = String(b.url || '').replace(/^https?:\/\//i, '').split('/')[0]
+  try {
+    await collectGalleryThumbs({
+      url: b.url, host, pageCount: want, first: th,
+      fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie: ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star'].map(k => k + '=' + (setting.value[k] || '')).join('; ') }),
+      shouldStop: () => token !== onlineThumbsToken,
+      onUpdate: (thumbs) => {
+        if (token !== onlineThumbsToken) return
+        b.thumbnails = thumbs
+        syncOnlinePreview()
+      }
+    })
+  } catch (e) { /* 某一页拉不到就算了,已显示的先留着 */ } finally {
+    if (token === onlineThumbsToken) onlineThumbsRunning = false
   }
 }
+// 本地书:分批取页预览。先自动加载 PREVIEW_AUTO 页,滑到底部哨兵再继续
+// (以前是一次 while 把所有页全拉完:几百页的书要把整本解压一遍才显示,侧栏直接卡住;
+//  用户看到的就是「只能加载部分,滑到底根本不继续加载」)
+let previewToken = 0
+const PREVIEW_BATCH = 12
+const PREVIEW_AUTO = 60
+const previewTotal = ref(0)
+const previewAutoLimit = ref(PREVIEW_AUTO)
+const previewSentinel = ref(null)
+let previewObserver = null
+let previewAutoBusy = false
+const loadLocalPreview = async (b, reset = true) => {
+  if (!b || !b.filepath) return
+  const token = ++previewToken
+  if (reset) {
+    previewItems.value = []
+    previewAutoLimit.value = PREVIEW_AUTO
+    previewTotal.value = 0
+  }
+  previewLoading.value = true
+  try {
+    let start = previewItems.value.length
+    while (token === previewToken && start < previewAutoLimit.value) {
+      const res = await ipcRenderer.invoke('book-preview-images', {
+        filepath: b.filepath, type: b.type, start, count: PREVIEW_BATCH
+      })
+      if (token !== previewToken) return
+      if (!res || !res.ok) break
+      previewTotal.value = res.total || 0
+      const fresh = (res.files || []).map(f => ({ src: toAssetUrl(f) }))
+      if (!fresh.length) break
+      previewItems.value = previewItems.value.concat(fresh)
+      // 按「请求的批量」前进,而不是按实际返回条数:个别页解压失败时不会重复请求同一段
+      start += PREVIEW_BATCH
+      if (start >= previewTotal.value) break
+    }
+  } catch (e) { /* 预览失败不影响其它信息 */ } finally {
+    if (token === previewToken) previewLoading.value = false
+  }
+}
+// 滑到底自动加载下一页(哨兵 + IntersectionObserver,和详细界面同一套)
+const autoLoadMorePreview = async () => {
+  if (previewAutoBusy || previewLoading.value) return
+  if (previewItems.value.length >= previewTotal.value) return
+  previewAutoBusy = true
+  try {
+    if (book.value && book.value.online) {
+      // 在线书:后台补页没在跑就再启动一次(它自己会从当前 thumbnails 继续)
+      await ensureOnlineThumbs()
+    } else {
+      await loadLocalPreview(book.value, false)
+    }
+    await nextTick()
+    const el = previewSentinel.value
+    if (el && previewItems.value.length < previewTotal.value) {
+      const rect = el.getBoundingClientRect()
+      const visible = rect.top < (window.innerHeight || 0) + 200 && rect.bottom > -200
+      if (visible) await autoLoadMorePreview()
+    }
+  } finally { previewAutoBusy = false }
+}
+const setupPreviewObserver = () => {
+  if (previewObserver) { previewObserver.disconnect(); previewObserver = null }
+  const el = previewSentinel.value
+  if (!el || typeof IntersectionObserver === 'undefined') return
+  previewObserver = new IntersectionObserver((entries) => {
+    if (entries.some(e => e.isIntersecting)) autoLoadMorePreview()
+  }, { rootMargin: '240px 0px' })
+  previewObserver.observe(el)
+}
+watch(previewSentinel, (el) => { if (el) setupPreviewObserver() })
+onBeforeUnmount(() => { if (previewObserver) previewObserver.disconnect() })
+
+// 标签显示名:先用手动填写的多语言名,再用 EhTagTranslation 词库(语言 = 中文时就显示中文)
+const tagName = (cat, tag) => tagDisplayName(setting.value, appStore.resolvedTranslation, cat, tag)
 
 const book = computed(() => (bookDetail.value && bookDetail.value.id) ? bookDetail.value : {})
 const mainTitle = computed(() => book.value.title_jpn || book.value.title || '')
@@ -220,20 +502,56 @@ const tagGroups = computed(() => {
     // category 键在本地书里也可能出现(用户自建类别),原样展示即可
     return {
       cat,
-      label: (setting.value.showTranslation && translated[cat] && translated[cat]._name) || catDisplayName(cat) || cat,
+      label: categoryDisplayName(setting.value, translated, cat) || cat,
       tags: Array.isArray(tags_) ? tags_ : []
     }
   }).filter(g => g.tags.length)
+    // 分类顺序跟设置里拖动的一致
+    .sort((a, b) => tagCatRank(setting.value, a.cat) - tagCatRank(setting.value, b.cat))
+})
+// 标签颜色 = 字体颜色
+const tagStyle = (cat, tag) => {
+  const c = tagColorOf(setting.value, cat, tag)
+  return c ? { color: c, borderColor: c } : {}
+}
+
+// 在线书:thumbnails 会被别的入口写胖(详细界面的补页 / 详情刷新 / 阅读器解析),
+// 它们写的是**同一个** bookDetail 对象。侧栏预览必须跟着同步 ——
+// 以前只在「书 id 变化」的 watch 里赋值一次,所以永远停在第一页 20 张,
+// 滑到底也没有后续(用户反馈的「只能加载部分,滑动到底根本不继续加载」)。
+watch(() => (book.value.thumbnails || []).length, (n, old) => {
+  if (!book.value.online || n === old) return
+  syncOnlinePreview()
+})
+// 面板被拖宽/拖窄:缩略图是按「容器宽 / 列数」算的,宽度一变就要重算(否则会错位或留白)
+watch(() => props.width, () => {
+  if (!book.value || !book.value.online) return
+  syncOnlinePreview()
 })
 
 // 换书时:在线画廊如果还没拉过详情(没有上传者信息),自动补一次 ——
 // 与 BookDetailDialog 的 enrichOnlineBook 同一套口径,合并回同一个 store 对象。
 // 面板藏起来(v-show)时不拉:只给看得见的面板发请求
+// 兜底:面板从「隐藏」变「显示」、或书已经设置好但评论还没拉过时,补拉一次评论。
+// (只在 book.id 变化时拉的话,先设 bookDetail 再开面板就不会触发 —— 用户看到的就是「没有评论」)
+watch(() => [props.visible, book.value.id, book.value.online], async () => {
+  const b = book.value
+  if (!props.visible || !b || !b.id || !b.online) return
+  if (comments.value.length) return
+  if (!sideCommentsOn.value) return
+  await loadComments(b)
+})
+
 watch(() => book.value.id, async (id) => {
   const b = book.value
   if (!props.visible) return
+  previewToken++
   previewItems.value = []
   previewError.value = ''
+  previewTotal.value = 0
+  previewAutoLimit.value = PREVIEW_AUTO
+  onlineThumbsToken++
+  onlineThumbsRunning = false
   if (!id || !b || !b.id) return
   // 评论:在线画廊才拉(不阻塞预览)
   loadComments(b)
@@ -243,8 +561,12 @@ watch(() => book.value.id, async (id) => {
     try { await loadLocalPreview(b) } catch (e) { /* 预览失败不打扰 */ } finally { previewLoading.value = false }
     return
   }
+  // 在线书:thumbnails 被别人(详细界面/详情刷新)补了页,侧栏也跟着同步
+  syncOnlinePreview()
   if ((b.thumbnails || []).length) {
-    previewItems.value = b.thumbnails.map(th => ({ sprite: spriteStyleOf(th) }))
+    syncOnlinePreview()
+    // 缩略图也是分页的(每页 20 张):后台继续把后面的补进来
+    ensureOnlineThumbs()
     return
   }
   if (b.uploader || detailLoading.value) return
@@ -482,16 +804,33 @@ const startResize = (e) => {
     display: flex
     flex-direction: column
     gap: 6px
+    // 面板里某处继承下来 text-align:center(标签就被居中了),这里明确拉回左对齐
+    text-align: left
+  // 标签组:普通行内流(不用 grid / 固定列)—— 类别名后面直接跟标签,一起换行
   .detail-tag-group
-    display: flex
-    flex-wrap: wrap
-    align-items: center
-    gap: 4px
+    display: block
+    font-size: 12px
+    line-height: 26px
+    min-width: 0
+    overflow: hidden
+    text-align: left
   .detail-tag-cat
-    flex: none
+    display: inline
     font-size: 12px
     color: var(--el-text-color-secondary)
-    margin-right: 2px
+    margin-right: 6px
+    white-space: nowrap
+  .detail-tag
+    vertical-align: middle
+    // el-tag 默认 justify-content:center —— 标签一旦撑满一行,里面的文字就被居中(用户看到的"标签居中了")
+    justify-content: flex-start
+    // 超长标签最多占满一行,超出用省略号(不再把面板顶出横向滚动)
+    max-width: 100%
+    // 样式块不是 scoped,直接写子元素选择器(:deep() 在这种写法里不会被编译,会原样输出成无效选择器)
+    .el-tag__content
+      overflow: hidden
+      text-overflow: ellipsis
+      white-space: nowrap
   .detail-tag
     cursor: pointer
   .detail-tags-empty
@@ -503,43 +842,106 @@ const startResize = (e) => {
     gap: 6px
     font-size: 12px
     color: var(--el-text-color-secondary)
-  // 评论:紧凑列表,最多占 28vh,超出自己滚
+  // 评论:照 JHenTai details_page —— 一排**横向滚动**的卡片(单卡 300x160),
+  // 高度固定,评论再多也只是左右滑,不会把下面的页预览挤下去(用户要求)。
   .detail-comments
     margin: 8px 0 4px
-    max-height: 28vh
-    overflow-y: auto
     display: flex
     flex-direction: column
-    gap: 6px
+    gap: 4px
+    flex: none
   .detail-comments-title
+    display: flex
+    align-items: baseline
+    justify-content: space-between
+    gap: 8px
     font-size: 12px
     font-weight: 600
     color: var(--el-text-color-secondary)
+  .detail-comments-all
+    font-weight: 400
+    font-size: 11px
+    color: var(--el-color-primary)
+    cursor: pointer
+  // 横向一行:溢出左右滑动(JHenTai 的 ListView scrollDirection: Axis.horizontal)
+  .detail-comments-row
+    display: flex
+    flex-direction: row
+    gap: 8px
+    overflow-x: auto
+    overflow-y: hidden
+    padding-bottom: 4px
+    scroll-snap-type: x proximity
+    &::-webkit-scrollbar
+      height: 6px
   .detail-comment
-    padding: 4px 6px
-    border-radius: 4px
-    background: var(--el-fill-color-light)
+    flex: 0 0 300px
+    width: 300px
+    height: 160px
+    box-sizing: border-box
+    display: flex
+    flex-direction: column
+    overflow: hidden
+    scroll-snap-align: start
+    padding: 6px 8px
+    border-radius: 6px
+    border: 1px solid var(--el-border-color-lighter, var(--el-border-color))
+    background: var(--el-bg-color, #fff)
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .04)
     .dc-head
       display: flex
       align-items: baseline
       justify-content: space-between
-      gap: 6px
-      margin-bottom: 2px
+      gap: 8px
+      margin-bottom: 3px
     .dc-author
-      font-size: 11px
-      font-weight: 600
+      font-size: 12px
+      font-weight: 700
       color: var(--el-color-primary)
       overflow: hidden
       text-overflow: ellipsis
       white-space: nowrap
+      // 自己的评论用不同颜色(JHenTai 的 commentOwnAuthorTextColor)
+      &.dc-author-me
+        color: var(--el-color-success)
+    .dc-time
+      flex: none
+      font-size: 10px
+      color: var(--el-text-color-placeholder)
+      white-space: nowrap
+    .dc-content
+      flex: 1
+      min-height: 0
+      overflow-y: auto
+      font-size: 12px
+      line-height: 1.5
+      color: var(--el-text-color-regular)
+      white-space: pre-wrap
+      word-break: break-word
+      cursor: pointer
+      // 卡片高度固定,超出在自己的卡片里滚动(详情页口径:不再无限拉长整排)
+      &.dc-content-clamped
+        overflow: hidden
+      // 评论里的链接(照 JHenTai buildTag:可点、下划线)
+      a
+        color: var(--el-color-primary)
+        text-decoration: underline
+        cursor: pointer
+        word-break: break-all
+    .dc-footer
+      display: flex
+      align-items: center
+      justify-content: space-between
+      gap: 8px
+      margin-top: 3px
     .dc-score
       flex: none
       font-size: 10px
       color: var(--el-text-color-placeholder)
-    .dc-content
-      font-size: 11px
-      line-height: 1.4
-      color: var(--el-text-color-regular)
+    .dc-edited
+      flex: none
+      font-size: 10px
+      color: var(--el-text-color-placeholder)
       white-space: pre-wrap
       word-break: break-word
   // 页预览:全部页,自动换行的网格(像 JHenTai 的页预览),超出高度就竖向滚动
@@ -547,11 +949,11 @@ const startResize = (e) => {
     margin: 8px 0 4px
   .detail-preview-grid
     display: grid
-    // 和 EH 网站的缩略图差不多大(一列约 110px)
-    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr))
+    // 照 e-hentai 详情页:列数随面板宽度自适应(3~6 列),
+    // 不再用 auto-fill + 固定最小宽度(那种写法在窄面板里会掉到 2 列,格子反而更小)
+    grid-template-columns: repeat(v-bind(previewCols), 1fr)
     gap: 8px
-    max-height: 56vh
-    overflow-y: auto
+    // 不再自己滚动:整块高度跟着内容走,由 .detail-panel-body 那**一个**滚动条统一控制
     padding-right: 2px
   // 预览格:不要任何框/底色(用户要求把框隐藏),只留图片本身
   .detail-preview-item
@@ -571,6 +973,14 @@ const startResize = (e) => {
     position: absolute
     top: 0
     left: 0
+  .detail-preview-sentinel
+    height: 1px
+  .detail-preview-more
+    display: flex
+    align-items: center
+    justify-content: center
+    height: 32px
+    color: var(--el-text-color-placeholder)
   .detail-preview-loading
     display: flex
     align-items: center

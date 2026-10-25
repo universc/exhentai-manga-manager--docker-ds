@@ -19,6 +19,49 @@ const IMAGE_TIMEOUT = 60000
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
+// 请求频率节流(照 JHenTai executor 的 Rate(maximum, period)):
+//   滑动窗口内最多 maxPerPeriod 个请求,超了就等到窗口滑过去。
+//   与「速度限制(KB/s)」是两件事:这个限的是**请求数**,防的是 EH 的限速策略。
+const createRequestTicker = (maxPerPeriod, periodSec) => {
+  const max = Math.max(0, Number(maxPerPeriod) || 0)
+  const periodMs = Math.max(100, (Number(periodSec) || 1) * 1000)
+  if (max <= 0) return null
+  const stamps = []
+  return {
+    async acquire () {
+      for (;;) {
+        const now = Date.now()
+        // 丢掉滑出窗口的
+        while (stamps.length && now - stamps[0] >= periodMs) stamps.shift()
+        if (stamps.length < max) { stamps.push(now); return }
+        // 等最老的那次滑出窗口
+        const wait = Math.max(20, periodMs - (now - stamps[0]))
+        await sleep(Math.min(wait, periodMs))
+      }
+    }
+  }
+}
+
+// 全局限速(设置 → 下载设置 → 速度限制)。按「累计字节 / 累计耗时」算平均速度,
+// 超了就等一会儿再继续 —— 放在文件粒度就够:图片本身不大,多并发平均下来也很平滑,
+// 而且不需要在 request 层改流(JHenTai 也是在下载任务里做节流)。
+const createRateLimiter = (bytesPerSec) => {
+  const limit = Number(bytesPerSec) || 0
+  if (limit <= 0) return null
+  let start = Date.now()
+  let bytes = 0
+  return {
+    add: async (n) => {
+      bytes += Math.max(0, Number(n) || 0)
+      const elapsed = (Date.now() - start) / 1000
+      const wait = bytes / limit - elapsed
+      if (wait > 0) await sleep(Math.min(wait * 1000, 3000))
+      // 空闲很久后重新计一笔,避免攒下大量额度后突然爆发
+      if (Date.now() - start > 60000) { start = Date.now(); bytes = 0 }
+    }
+  }
+}
+
 // 文件名/目录名清理:去掉 Windows 不允许的字符(与 JHenTai computeSanitizedGalleryTitle 一致)
 const sanitizeName = (s, max = 120) => {
   const t = String(s == null ? '' : s).replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim()
@@ -81,10 +124,32 @@ const downloadFile = async (url, filePath, { proxy, cookie, referer } = {}) => {
 // onProgress(update) 会被频繁调用(每张图一次),调用方负责节流/合并。
 const runGalleryDownload = async ({
   galleryUrl, title, saveDir, original = false, proxy, cookie,
-  concurrency = DEFAULT_CONCURRENCY, state = {}, onProgress = () => {}
+  concurrency = DEFAULT_CONCURRENCY, speedLimit = 0, state = {}, onProgress = () => {},
+  dir: fixedDir = '', pageCount: knownPageCount = 0, pageRate = 0, pageRateSec = 0,
+  // 请求频率限制(照 JHenTai 的 executor Rate(maximum, period)):
+  // 每 periodSec 秒最多放 maxPerPeriod 个「取页/下载」请求。0 = 不限。
+  maxPerPeriod = 0, periodSec = 1
 } = {}) => {
   if (!galleryUrl) throw new Error('noUrl')
   if (!saveDir) throw new Error('noSaveDir')
+  const limiter = createRateLimiter(speedLimit)
+  // 请求节流:JHenTai 默认 2 个/秒 —— 这是避免被 EH 限速最直接的一档
+  const reqTick = createRequestTicker(maxPerPeriod, periodSec)
+  // 页数限速(每 pageRate 页至少间隔 pageRateSec 秒):0 = 不限
+  const ratePages = Math.max(0, Number(pageRate) || 0)
+  const rateSec = Math.max(0, Number(pageRateSec) || 0)
+  const pageLimiter = (ratePages > 0 && rateSec > 0) ? { n: 0, until: 0 } : null
+  const pageTick = async () => {
+    if (!pageLimiter) return
+    pageLimiter.n += 1
+    if (pageLimiter.n >= ratePages) {
+      const now = Date.now()
+      const wait = pageLimiter.until - now
+      if (wait > 0) await sleep(Math.min(wait, 60000))
+      pageLimiter.n = 0
+      pageLimiter.until = Date.now() + rateSec * 1000
+    }
+  }
   // 收页链接阶段也要报进度:1000+ 页的画廊这一步本身就要十几秒,界面不能只显示 0/0
   const linkStats = {}
   // ⚠️ 注意签名:listGalleryPageLinks(url, options) —— 第 16 轮我改这段时漏掉了第一个参数,
@@ -102,26 +167,38 @@ const runGalleryDownload = async ({
   // 目录名:默认**只用清理过的标题**(用户要的:不要 `4264378 - ` 这种前缀)。
   // 只有「同名目录已经存在」时才加 gid 前缀区分,避免两本同名漫画下进同一个文件夹。
   // 另外:如果这本以前已经按 `{gid} - {title}` 下过(断点续传),继续用老目录,不要新建一份。
-  const gidMatch = /\/g\/(\d+)\//.exec(galleryUrl)
-  const gid = gidMatch ? gidMatch[1] : ''
-  const plainName = sanitizeName(title)
-  const prefixedName = gid ? gid + ' - ' + plainName : plainName
-  let dirName = plainName
-  try {
-    if (gid && fs.existsSync(path.join(saveDir, prefixedName))) {
-      dirName = prefixedName            // 老目录(以前带 gid 下过)→ 续传
-    } else if (fs.existsSync(path.join(saveDir, plainName))) {
-      // 同名目录已存在:看是不是本画廊自己的(页文件名一致就当是),否则加 gid 区分
-      const own = fs.existsSync(path.join(saveDir, plainName, '001.jpg')) ||
-        fs.existsSync(path.join(saveDir, plainName, '001.webp')) ||
-        fs.existsSync(path.join(saveDir, plainName, '001.png'))
-      dirName = own ? plainName : prefixedName
-    }
-  } catch (e) { /* 读不了目录就当不存在 */ }
-  const dir = path.join(saveDir, dirName)
+  let dir = ''
+  if (fixedDir) {
+    // 任务记录里已经记过目录(第一次下载时定下来的):续传/继续一律用它。
+    // 以前每次重新推断,一旦推断出别的名字就新建空目录从头下 —— 已下好的文件被抛在原地。
+    dir = path.isAbsolute(fixedDir) ? fixedDir : path.join(saveDir, fixedDir)
+    try { fs.mkdirSync(dir, { recursive: true }) } catch (e) { /* 建不了再用推断 */ }
+  }
+  if (!dir || !fs.existsSync(dir)) {
+    const gidMatch = /\/g\/(\d+)\//.exec(galleryUrl)
+    const gid = gidMatch ? gidMatch[1] : ''
+    const plainName = sanitizeName(title)
+    const prefixedName = gid ? gid + ' - ' + plainName : plainName
+    let dirName = plainName
+    try {
+      if (gid && fs.existsSync(path.join(saveDir, prefixedName))) {
+        dirName = prefixedName          // 老目录(以前带 gid 下过)→ 续传
+      } else if (fs.existsSync(path.join(saveDir, plainName))) {
+        // 同名目录已存在:目录里任意一个 "数字.扩展名" 的非空文件就算是本画廊自己的
+        let own = false
+        try {
+          own = fs.readdirSync(path.join(saveDir, plainName)).some(f => /^\d+\.[A-Za-z0-9]+$/.test(f) && fs.statSync(path.join(saveDir, plainName, f)).size > 0)
+        } catch (e) { /* 读不了就当不是 */ }
+        dirName = own ? plainName : prefixedName
+      }
+    } catch (e) { /* 读不了目录就当不存在 */ }
+    dir = path.join(saveDir, dirName)
+  }
   fs.mkdirSync(dir, { recursive: true })
 
-  const total = links.length
+  // links 可能少收(EH 限速/反爬时静默丢页):与 EH 标注页数取大,
+  // 少的那几页会在下载时标失败,但计数不会出现 done > total
+  const total = Math.max(links.length, Number(knownPageCount) || 0)
   // 断点续传的初始计数:**先把目录里已下好的页数出来**,让进度从真实值开始。
   // 以前是边扫边数:继续下载后 done 先从 0 往上爬,界面进度条先掉到 0 再回来(用户看到的「短暂失灵」)。
   let existingDone = 0
@@ -147,6 +224,8 @@ const runGalleryDownload = async ({
       const i = cursor++
       const index = i + 1
       const name = String(index).padStart(pad, '0')
+      // 超过已知页数的页(links 没收够)没有页地址可下:直接记失败,不再去撞 EH
+      if (i >= links.length) { update.failed += 1; update.lastError = '页链接缺失( EH 限速时可能少收 )'; onProgress({ ...update, dir }); continue }
       try {
         // 断点续传:这一页的文件已经下好了(非空)就跳过 —— 暂停后再继续不用从头再来。
         // ⚠️ 这里**不能再** update.done += 1:启动时已经预扫过一遍全部已下好的页(见 existingDone),
@@ -162,10 +241,15 @@ const runGalleryDownload = async ({
         // (实测:同一本里奇数页所在的节点 TLS 直接断,重取后就落到能用的节点上)
         let lastErr = null
         let reloadKey = ''
-        // 6 次换源重试:EH 的 H@H 节点里确实有死节点,多换几次才能绕开(实测 4 次偶尔还差一页)
-        for (let attempt = 0; attempt < 6; attempt++) {
+        // 换源重试次数:EH 的 H@H 节点里确实有死节点,多换几次才能绕开。
+        // 以前固定 6 次,但每次只 sleep 400ms —— 节点被限速时这点间隔根本不够,
+        // 于是「一页反复失败、最后整本标失败」。改成递增退避(0.4s → 3.2s,最多 8 次)。
+        const maxAttempts = 8
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
           if (state.stopped) return
           try {
+            // 请求节流:取图片页、下图片各算一个请求(与 JHenTai 的 Rate 一致)
+            if (reqTick) await reqTick.acquire()
             const info = await resolveImagePage(links[i], { proxy, cookie, reloadKey })
             reloadKey = info.reloadKey || reloadKey
             // 原图:只下原图。**不再退回普通图** —— 用户要的是原图,拿不到就留着让任务等
@@ -173,9 +257,12 @@ const runGalleryDownload = async ({
             // 只有当这一页压根没有原图链接时才用普通图(那不是失败,是 EH 就没给原图)。
             const target = original ? (info.originalUrl || info.url) : info.url
             if (!target) { lastErr = new Error('noImageUrl'); continue }
+            if (reqTick) await reqTick.acquire()
             const bytes = await downloadFile(target, path.join(dir, name + '.' + extOf(target)), { proxy, cookie, referer: links[i] })
             update.done += 1
             update.bytes += bytes
+            if (limiter) await limiter.add(bytes)
+            if (pageLimiter) await pageTick()
             lastErr = null
             break
           } catch (e) {
@@ -189,7 +276,10 @@ const runGalleryDownload = async ({
               onProgress({ ...update, dir })
               return
             }
-            await sleep(400)
+            // 递增退避:第 n 次失败后等 0.4s * 2^(n-1),上限 3.2s。
+            // 给被限速的节点一点恢复时间,比死磕 400ms 成功率高得多。
+            const backoff = Math.min(3200, 400 * Math.pow(2, Math.min(attempt, 3)))
+            await sleep(backoff)
           }
         }
         if (lastErr) throw lastErr

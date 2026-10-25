@@ -37,6 +37,10 @@ export const ehListUrl = (setting, { source = 'front', query = '', cursor = null
   // 语言照 JHenTai 的做法并进 f_search(写进查询串:`language:"chinese"`)
   let search = kw
   if (filter && filter.language) search = (search ? search + ' ' : '') + `language:"${filter.language}"`
+  // 黑名单标签:EH 搜索语法里 `-tag` 是排除;多词标签要写成下划线形式
+  if (filter && Array.isArray(filter.blacklist) && filter.blacklist.length) {
+    search = (search ? search + ' ' : '') + filter.blacklist.map(t => '-' + String(t).trim().replace(/\s+/g, '_')).join(' ')
+  }
   if (search) params.push('f_search=' + encodeURIComponent(search))
   if (filter) {
     if (filter.fCats) params.push('f_cats=' + filter.fCats)
@@ -256,9 +260,9 @@ const parseDetailTags = (doc) => {
   return out
 }
 
-// 详情页页预览缩略图。⚠ 真实页面(#gdt class="gt200")是「雪碧图」:所有页共用同一张 url,
+// 详情页页预览缩略图(导出给「详情界面/侧栏」做分页续拉)。⚠ 真实页面(#gdt class="gt200")是「雪碧图」:所有页共用同一张 url,
 // 靠 style 里的 width/height 与 background-position 的 -Npx 偏移定位第几页(见 JHenTai offSet 的处理)。
-const parseDetailThumbs = (doc, host) => {
+export const parseGalleryThumbs = (doc, host) => {
   const roots = [...doc.querySelectorAll('#gdt > a')]
   if (!roots.length) roots.push(...doc.querySelectorAll('#gdt a'))
   const out = []
@@ -321,7 +325,18 @@ export const parseGalleryDetail = (html, host = EH_HOST) => {
   out.uploader = (doc.querySelector('#gdn a')?.textContent || '').trim()
   out.rating = parseRating(doc.querySelector('#grt2') || doc)
   out.tags = parseDetailTags(doc)
-  out.thumbnails = parseDetailThumbs(doc, host)
+  out.thumbnails = parseGalleryThumbs(doc, host)
+  // H@H 归档页链接(照 JHenTai 的 detailsPage 里的 archivePageUrl):
+  // ⚠ EH 把「Archive Download」写成 <a href="#" onclick="return popUp('…archiver.php?gid=…&token=…',480,320)">
+  //   —— 链接在 onclick 里、href 是 "#"。以前只查 href 所以永远拿不到。
+  let archLink = doc.querySelector('a[href*="archiver.php"]')?.getAttribute('href') || ''
+  if (!archLink || archLink === '#') {
+    const el = doc.querySelector('[onclick*="archiver.php"]')
+    const oc = (el && el.getAttribute('onclick')) || ''
+    const m = /['"]([^'"]*archiver\.php[^'"]*)['"]/i.exec(oc)
+    if (m) archLink = m[1]
+  }
+  out.archivePageUrl = archLink && archLink !== '#' ? absUrl(archLink.replace(/&amp;/g, '&'), host) : ''
   return out
 }
 
@@ -358,6 +373,39 @@ export const galleryToBook = (g) => {
   }
 }
 
+// EH 详情页的缩略图是**分页**的(每页 20 张,?p=1/2/3...)。
+// 这里按页续拉,边拉边通过 onUpdate 回传,直到页数够或某页没有新图。
+//   fetchHtml(url) -> Promise<html>   由调用方注入(渲染进程用 get-ex-webpage)
+export const collectGalleryThumbs = async ({
+  url, host = EH_HOST, pageCount = 0, first = [], fetchHtml,
+  onUpdate = null, shouldStop = null, maxPages = 40, perPage = 20
+} = {}) => {
+  const out = Array.isArray(first) ? first.slice() : []
+  const seen = new Set(out.map(t => t && t.href).filter(Boolean))
+  const total = Math.max(Number(pageCount) || 0, out.length)
+  const pages = Math.min(Math.ceil(total / Math.max(1, perPage)), maxPages)
+  for (let p = 1; p < pages; p++) {
+    if (shouldStop && shouldStop()) break
+    const pageUrl = String(url).replace(/#.*$/, '') + (String(url).includes('?') ? '&' : '?') + 'p=' + p
+    let html = ''
+    try { html = await fetchHtml(pageUrl) } catch (e) { break }
+    if (!html) break
+    let doc
+    try { doc = new DOMParser().parseFromString(html, 'text/html') } catch (e) { break }
+    const more = parseGalleryThumbs(doc, host)
+    let added = 0
+    for (const th of more) {
+      if (!th || !th.href || seen.has(th.href)) continue
+      seen.add(th.href)
+      out.push(th)
+      added++
+    }
+    if (!added) break
+    if (onUpdate) onUpdate(out.slice())
+  }
+  return out
+}
+
 // 把详情页解析结果合并进卡片对象(详情界面要用:日文标题 / 上传者 / 时间 / 大小 / 页预览)
 export const mergeDetailIntoBook = (book, detail) => {
   if (!book || !detail) return book
@@ -375,7 +423,9 @@ export const mergeDetailIntoBook = (book, detail) => {
     posted: detail.posted || '',
     size: detail.size || '',
     language: detail.language || '',
-    thumbnails: detail.thumbnails || []
+    thumbnails: detail.thumbnails || [],
+    // H@H 归档页(详情页底部 Archive Download 的链接)
+    archivePageUrl: detail.archivePageUrl || book.archivePageUrl || ''
   }
 }
 
@@ -384,11 +434,14 @@ export const mergeDetailIntoBook = (book, detail) => {
 // 所以在线读图与页预览不能直接把原地址丢给 <img>,一律改写成应用自己的取图地址:
 //   网页版 → /api/ex-image(服务端带 Cookie 与代理取回再转发)
 //   桌面版 → emm-eh:// 自定义协议(主进程同样带 Cookie 与代理)
-export const ehImageSrc = (url) => {
+// tracker:可选的「进度标识」(通常是这一页的 id)。带上它,主进程就能在读取图片时
+// 按这个 id 回推下载进度,占位上的环形进度条就显示真实百分比(照 JHenTai 的 loadingProgress)。
+export const ehImageSrc = (url, tracker) => {
   const u = String(url || '')
   if (!u || !/^https?:\/\//i.test(u)) return u
+  const tr = tracker ? '&t=' + encodeURIComponent(String(tracker)) : ''
   if (typeof window !== 'undefined' && window.__WEB_MODE__) {
-    return '/api/ex-image?url=' + encodeURIComponent(u)
+    return '/api/ex-image?url=' + encodeURIComponent(u) + tr
   }
-  return 'emm-eh://img/?u=' + encodeURIComponent(u)
+  return 'emm-eh://img/?u=' + encodeURIComponent(u) + tr
 }

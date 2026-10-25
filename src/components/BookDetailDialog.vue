@@ -36,16 +36,16 @@
         </el-row>
         <el-row class="book-detail-function">
           <el-descriptions :column="1">
-            <el-descriptions-item :label="$t('m.pageCount')+':'" :class-name="bookDetail.pageDiff ? 'text-red' : ''">
-              {{ isOnline ? bookDetail.pageCount : (bookDetail.pageCount + ' | ' + bookDetail.filecount) }}
+            <el-descriptions-item v-if="pageCountText !== '—'" :label="$t('m.pageCount')+':'" :class-name="bookDetail.pageDiff ? 'text-red' : ''">
+              {{ pageCountText }}
             </el-descriptions-item>
-            <el-descriptions-item :label="$t('m.fileSize')+':'">
-              {{ isOnline ? (bookDetail.size || '—') : (Math.floor(bookDetail.bundleSize / 1048576) + ' | ' + Math.floor(bookDetail.filesize / 1048576) + ' MB') }}
+            <el-descriptions-item v-if="isOnline ? !!bookDetail.size : fileSizeText !== '—'" :label="$t('m.fileSize')+':'">
+              {{ isOnline ? bookDetail.size : fileSizeText }}
             </el-descriptions-item>
             <el-descriptions-item v-if="!isOnline" :label="$t('m.readCount')+':'">{{bookDetail.readCount}}</el-descriptions-item>
             <el-descriptions-item v-if="!isOnline" :label="$t('m.mtime')+':'">{{new Date(bookDetail.mtime).toLocaleString("zh-CN")}}</el-descriptions-item>
             <el-descriptions-item v-if="isOnline && bookDetail.uploader" :label="$t('m.ehOnlineUploader')+':'">{{bookDetail.uploader}}</el-descriptions-item>
-            <el-descriptions-item :label="$t('m.postTime')+':'">{{ isOnline ? (bookDetail.posted || '—') : new Date(bookDetail.posted * 1000).toLocaleString("zh-CN") }}</el-descriptions-item>
+            <el-descriptions-item v-if="bookDetail.posted" :label="$t('m.postTime')+':'">{{ isOnline ? bookDetail.posted : new Date(bookDetail.posted * 1000).toLocaleString("zh-CN") }}</el-descriptions-item>
           </el-descriptions>
         </el-row>
         <el-row class="book-detail-function">
@@ -61,6 +61,8 @@
           <!-- 下载整本(原图可选):与封面右键里的两项一致 -->
           <!-- 下载:合并成一个按钮,点开弹窗里选 位置 / 名称 / 原图 -->
           <el-button v-if="!viewerRole && isOnline" class="detail-func-btn" type="primary" :icon="Download" @click="emit('downloadGallery', { book: bookDetail, original: false })">{{$t('m.download')}}</el-button>
+          <!-- H@H 归档下载:照 JHenTai 详情页的 H@H 按钮(EH 服务端打包,选分辨率后下载) -->
+          <el-button v-if="!viewerRole && isOnline && bookDetail.archivePageUrl" class="detail-func-btn" type="warning" plain @click="emit('openHhDownload', bookDetail)">H@H</el-button>
         </el-row>
         <el-row class="book-detail-function" v-if="!isOnline">
           <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain @click="$emit('openSearchDialog')">{{$t('m.getMetadata')}}</el-button>
@@ -95,7 +97,7 @@
             </div>
             <div class="edit-line">
               <el-select v-model="bookDetail.category" :placeholder="$t('m.category')" @change="saveBook(bookDetail)" clearable>
-                <el-option v-for="cat in categoryOption" :value="cat" :key="cat" :label="cat" />
+                <el-option v-for="cat in categoryOption" :value="cat" :key="cat" :label="galleryCategoryName(cat, $t)" />
               </el-select>
             </div>
             <!-- 标签:与原选择框一致(框内可打字筛选/新建),下拉里标签一排一排排列 -->
@@ -138,7 +140,7 @@
             <el-dialog v-model="newTagDialogVisible" :title="$t('m.addNewTag')" width="420px" append-to-body>
               <div class="add-tag-form">
                 <el-select v-model="newTagCat" :placeholder="$t('m.category')" style="width: 100%; margin-bottom: 10px;" @change="checkNewTagDup">
-                  <el-option v-for="c in categoryOption" :key="c" :label="c" :value="c" />
+                  <el-option v-for="c in categoryOption" :key="c" :label="galleryCategoryName(c, $t)" :value="c" />
                 </el-select>
                 <el-input v-model="newTagName" :placeholder="$t('m.tagNamePlaceholder')" @input="checkNewTagDup" />
                 <div v-if="newTagDups.length" class="add-tag-warn">
@@ -154,7 +156,7 @@
               </template>
             </el-dialog>
           </div>
-          <div v-else>
+          <div v-else class="book-info-block">
             <el-descriptions :column="1">
               <!-- 标题:浏览模式只展示各语言已有标题;需要修改请点「编辑信息」 -->
               <el-descriptions-item v-if="bookDetail.title_jpn" :label="$t('m.titleLangJpn')+':'">{{ bookDetail.title_jpn }}</el-descriptions-item>
@@ -162,54 +164,39 @@
               <el-descriptions-item v-if="bookDetail.title" :label="$t('m.titleLangEn')+':'">{{ bookDetail.title }}</el-descriptions-item>
               <el-descriptions-item v-if="!isOnline" :label="$t('m.filename')+':'">{{returnFileNameWithExt(bookDetail.filepath)}}</el-descriptions-item>
               <el-descriptions-item v-if="!isOnline" :label="$t('m.fileLocation')+':'">{{returnDirname(bookDetail.filepath)}}</el-descriptions-item>
-              <el-descriptions-item :label="$t('m.category')+':'">
-                <el-tag type="info" class="book-tag" @click="$emit('searchFromTag', `cat:${bookDetail.category}`)">{{bookDetail.category}}</el-tag>
+              <!-- 没有的信息就不渲染这一行(特别是类别为空时,不再显示一个空行/空胶囊) -->
+              <el-descriptions-item v-if="bookDetail.category" :label="$t('m.category')+':'">
+                <span class="book-tag-cell">
+                  <span class="book-tag-pill" @click="$emit('searchFromTag', `cat:${bookDetail.category}`)">{{ galleryCategoryName(bookDetail.category, $t) }}</span>
+                </span>
               </el-descriptions-item>
-              <el-descriptions-item v-for="(tagArr, key) in bookDetail.tags" :label="(resolvedTranslation[key]?._name || catDisplayName(key)) + ':'" :key="key">
-                <el-popover
-                  effect="dark"
-                  trigger="hover"
-                  :content="getDisplayTagName(setting, key, tag) || resolvedTranslation[key]?.[tag]?.intro || tag"
-                  :disabled="!resolvedTranslation[key]?.[tag]?.intro"
-                  placement="top-start"
-                  :show-after="500"
-                  width="300px"
-                  v-for="tag in tagArr" :key="tag"
-                >
-                  <template #reference>
-                    <el-tag
-                      type="info"
-                      class="book-tag"
-                      @click="$emit('searchFromTag', tag, key)"
-                    >{{ getDisplayTagName(setting, key, tag) || resolvedTranslation[key]?.[tag]?.name || tag }}</el-tag>
-                  </template>
-                </el-popover>
+              <!-- 类别(标签的类别分组):**并入上面这张信息表**,每个类别一行,和页数/文件大小/上传者同款;
+                   分类顺序跟「设置 → 标签设置」里拖动的类别顺序一致。标签(胶囊)本身的样式不动 -->
+              <el-descriptions-item v-for="g in tagGroups" :key="g.key" :label="g.label">
+                <span class="book-tag-cell">
+                  <el-popover
+                    v-for="tag in g.tags"
+                    :key="tag"
+                    effect="dark"
+                    trigger="hover"
+                    :content="resolvedTranslation[g.key]?.[tag]?.intro || tagDisplayName(setting, resolvedTranslation, g.key, tag)"
+                    :disabled="!resolvedTranslation[g.key]?.[tag]?.intro"
+                    placement="top-start"
+                    :show-after="500"
+                    width="300px"
+                  >
+                    <template #reference>
+                      <span
+                        class="book-tag-pill"
+                        :style="tagPillStyle(g.key, tag)"
+                        @click="$emit('searchFromTag', tag, g.key)"
+                      >{{ tagDisplayName(setting, resolvedTranslation, g.key, tag) }}</span>
+                    </template>
+                  </el-popover>
+                </span>
               </el-descriptions-item>
             </el-descriptions>
           </div>
-          <!-- 预览:本地书取前 N 张图;在线画廊用它自己的页预览(雪碧图)。放在「故事简介」上方 -->
-          <div class="book-preview" v-if="previewItems.length || previewLoading">
-            <div class="book-preview-title">
-              <span>{{ $t('m.ehOnlinePagePreview') }}</span>
-              <span class="book-preview-hint" v-if="previewTotal > previewItems.length">{{ previewItems.length }}/{{ previewTotal }}</span>
-            </div>
-            <div class="book-preview-strip">
-              <div
-                v-for="(it, i) in previewItems"
-                :key="i"
-                class="book-preview-item"
-                :title="'P' + (i + 1)"
-                @click="readFromPreview(i)"
-              >
-                <div v-if="it.sprite" class="book-preview-sprite" :style="it.sprite" />
-                <img v-else :src="it.src" loading="lazy" @error="$event.target.style.display='none'" />
-              </div>
-              <div v-if="previewLoading" class="book-preview-loading">
-                <el-icon class="is-loading" :size="20"><Loading /></el-icon>
-              </div>
-            </div>
-          </div>
-          <div class="book-preview-error" v-else-if="previewError">{{ previewError }}</div>
           <!-- 故事简介:有内容才显示(在线画廊没有简介 → 整块不出现);编辑模式始终显示以便填写 -->
           <div class="story-summary" v-if="bookDetail.description || (editingTag && !viewerRole)">
             <div class="story-summary-title">{{ $t('m.storySummary') }}</div>
@@ -223,6 +210,40 @@
             />
             <div v-else class="story-summary-text">{{ bookDetail.description }}</div>
           </div>
+          <!-- 预览:本地书按批取图;在线画廊用它自己的页预览(雪碧图)。放在「故事简介」下方 -->
+          <div class="book-preview" v-if="previewItems.length || previewLoading">
+            <div class="book-preview-title">
+              <span>{{ $t('m.ehOnlinePagePreview') }}</span>
+              <span class="book-preview-hint" v-if="previewTotal > previewItems.length">{{ previewItems.length }}/{{ previewTotal }}</span>
+              <span class="book-preview-hint" v-else-if="previewRawTotal > previewTotal">{{ previewTotal }}/{{ previewRawTotal }}</span>
+            </div>
+            <div class="book-preview-strip">
+              <div
+                v-for="(it, i) in previewItems"
+                :key="i"
+                class="book-preview-item"
+                :title="'P' + (i + 1)"
+                @click="readFromPreview(i)"
+              >
+                <div v-if="it.sprite" class="book-preview-sprite" :style="it.sprite" />
+                <img v-else :src="it.src" loading="lazy" @error="$event.target.style.display='none'" />
+              </div>
+              <!-- 滑到这里就自动加载下一批,不用再点加号 -->
+              <div
+                v-if="previewItems.length < previewTotal"
+                ref="previewSentinel"
+                class="book-preview-loading book-preview-sentinel"
+                :title="$t('m.previewLoadMore')"
+              >
+                <el-icon v-if="previewLoading" class="is-loading" :size="18"><Loading /></el-icon>
+                <span>{{ previewItems.length }}/{{ previewTotal }}</span>
+              </div>
+              <div v-if="previewLoading" class="book-preview-loading">
+                <el-icon class="is-loading" :size="20"><Loading /></el-icon>
+              </div>
+            </div>
+          </div>
+          <div class="book-preview-error" v-else-if="previewError">{{ previewError }}</div>
         </el-scrollbar>
       </el-col>
       <el-col :span="8" v-if="setting.showComment">
@@ -238,21 +259,21 @@
 </template>
 
 <script setup>
-import { ref, computed, h, watch } from 'vue'
+import { ref, computed, h, watch, onBeforeUnmount, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { CaretRight20Regular, CaretLeft20Regular } from '@vicons/fluent'
 import { BookmarkTwotone } from '@vicons/material'
-import { Loading, ArrowDown, Download } from '@element-plus/icons-vue'
+import { Loading, ArrowDown, Download, Plus } from '@element-plus/icons-vue'
 import { nanoid } from 'nanoid'
 import he from 'he'
 import * as linkify from 'linkifyjs'
 import ContextMenu from '@imengyu/vue3-context-menu'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, catDisplayName, getDisplayTagName, resolveCatKey } from '../utils.js'
+import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, catDisplayName, getDisplayTagName, resolveCatKey, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName } from '../utils.js'
 import  { insertLocalReadRecord, toAssetUrl } from '../utils.js'
-import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc } from '../ehOnline.js'
+import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, collectGalleryThumbs } from '../ehOnline.js'
 
 const appStore = useAppStore()
 const {
@@ -288,6 +309,8 @@ const emit = defineEmits([
   'downloadGallery',
   // 详情页的「种子」按钮
   'openTorrents',
+  // H@H 归档下载(照 JHenTai 的 H@H 按钮)
+  'openHhDownload',
   'openContentView',
   'openThumbnailView',
   'saveCollection',
@@ -318,13 +341,52 @@ watch(() => bookDetail.value?.coverPath, (v) => {
 // ---------- 预览(放在「故事简介」上方) ----------
 // 本地书:取这本书的前 N 张图(只读 IPC,不占用阅读器的 viewerSession)
 // 在线画廊:用它自己的页预览缩略图(EH 详情页是雪碧图,按 background-position 偏移取页)
+// 页数:filecount 与 pageCount 相同时只显示一个,避免出现「18 | null」
+const pageCountText = computed(() => {
+  const b = bookDetail.value || {}
+  if (isOnline.value) return b.pageCount == null ? '—' : b.pageCount
+  const parts = []
+  if (b.pageCount != null) parts.push(b.pageCount)
+  if (b.filecount != null && b.filecount !== b.pageCount) parts.push(b.filecount)
+  return parts.length ? parts.join(' | ') : '—'
+})
+// 文件大小:压缩包大小 / 解压后大小;缺失或 0 的跳过(以前会显示「| 0 MB」)
+const fileSizeText = computed(() => {
+  const b = bookDetail.value || {}
+  const fmt = (n) => n >= 1048576 ? (Math.round(n / 1048576 * 10) / 10) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'
+  const parts = []
+  if (b.bundleSize > 0) parts.push(fmt(b.bundleSize))
+  if (b.filesize > 0 && b.filesize !== b.bundleSize) parts.push(fmt(b.filesize))
+  return parts.length ? parts.join(' | ') : '—'
+})
+
+// 标签分组:按「设置 → 标签设置」里拖动的类别顺序排(和设置里的列表一致)
+const tagGroups = computed(() => {
+  const tags = (bookDetail.value && bookDetail.value.tags) || {}
+  return Object.keys(tags)
+    .filter(k => Array.isArray(tags[k]) && tags[k].length)
+    .map(k => ({
+      key: k,
+      label: categoryDisplayName(setting.value, resolvedTranslation.value, k) + ':',
+      tags: tags[k],
+    }))
+    .sort((a, b) => tagCatRank(setting.value, a.key) - tagCatRank(setting.value, b.key))
+})
+// 胶囊配色:设置里给这个标签挑过颜色就用它(文字+描边),否则用主题默认
+const tagPillStyle = (cat, tag) => {
+  const c = tagColorOf(setting.value, cat, tag)
+  return c ? { color: c } : {}
+}
+
 const previewItems = ref([])
 const previewTotal = ref(0)
+// 这本书实际有多少页(预览有上限,超出时提示「240/1234」而不是假装只有 240 页)
+const previewRawTotal = ref(0)
 const previewLoading = ref(false)
 const previewError = ref('')
 
 // 雪碧图:所有页共用一张图,靠 -Npx 偏移定位;用原尺寸层 + scale 缩到 96px 宽
-const PREVIEW_W = 96
+const PREVIEW_W = 118
 const spriteStyleOf = (th) => {
   const w = th.width || 200
   const s = PREVIEW_W / w
@@ -355,8 +417,32 @@ const enrichOnlineBook = async (book) => {
       return
     }
     Object.assign(bookDetail.value, mergeDetailIntoBook(bookDetail.value, detail))
-    previewItems.value = (detail.thumbnails || []).map(th => ({ sprite: spriteStyleOf(th) }))
-    previewTotal.value = previewItems.value.length
+    const firstThumbs = detail.thumbnails || []
+    previewItems.value = firstThumbs.map(th => ({ sprite: spriteStyleOf(th) }))
+    // 详情页一页只给 20 张缩略图:总数按页数算,剩下的按 ?p=1.. 续拉(边拉边显示)
+    const pages = Number(detail.pageCount) || firstThumbs.length
+    previewTotal.value = Math.max(pages, firstThumbs.length)
+    previewRawTotal.value = previewTotal.value
+    const token = previewToken
+    if (previewTotal.value > firstThumbs.length) {
+      collectGalleryThumbs({
+        url: book.url,
+        host,
+        pageCount: previewTotal.value,
+        first: firstThumbs,
+        fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie }),
+        shouldStop: () => token !== previewToken,
+        onUpdate: (thumbs) => {
+          if (token !== previewToken) return
+          bookDetail.value.thumbnails = thumbs
+          previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
+        }
+      }).then((thumbs) => {
+        if (token !== previewToken) return
+        bookDetail.value.thumbnails = thumbs
+        previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
+      }).catch(() => { /* 某页拉不到就算了,已显示的先留着 */ })
+    }
   } catch (e) {
     previewError.value = t('m.ehOnlineFailed')
   } finally {
@@ -364,25 +450,93 @@ const enrichOnlineBook = async (book) => {
   }
 }
 
-const loadLocalPreview = async (book) => {
-  previewLoading.value = true
+// 预览分批取:每批 12 页,拿到就先显示,不等整本解压完
+// (以前 limit:0 会让压缩包一次解 60 页才返回 → 「卡半天然后突然全部冒出来」)
+let previewToken = 0
+const PREVIEW_BATCH = 12
+// 打开时先自动加载这么多页(再多就要点「加载更多」,免得几千页的画集一次拉满)
+const PREVIEW_AUTO_PAGES = 120
+const previewAutoLimit = ref(PREVIEW_AUTO_PAGES)
+// 滑到底部自动加载:用一个哨兵元素 + IntersectionObserver(容器里有滚动条也能触发,
+// 因为祖先的 overflow 裁剪会计入 intersection)
+const previewSentinel = ref(null)
+let previewObserver = null
+let previewAutoBusy = false
+const autoLoadMoreIfNeeded = async () => {
+  if (previewAutoBusy || previewLoading.value) return
+  if (previewItems.value.length >= previewTotal.value) return
+  previewAutoBusy = true
   try {
-    // limit: 0 = 全部页(详细界面也要能翻到最后一页;压缩包最多前 60 页)
-    const res = await ipcRenderer.invoke('book-preview-images', { filepath: book.filepath, type: book.type, limit: 0 })
-    if (res && res.ok && res.files && res.files.length) {
-      previewItems.value = res.files.map(f => ({ src: toAssetUrl(f) }))
-      previewTotal.value = res.total || res.files.length
+    await loadMorePreview()
+    // 内容还不够高、哨兵仍然在可视区里:继续加载,直到撑满或加载完
+    await nextTick()
+    const el = previewSentinel.value
+    if (el && previewItems.value.length < previewTotal.value) {
+      const rect = el.getBoundingClientRect()
+      const visible = rect.top < (window.innerHeight || 0) + 200 && rect.bottom > -200
+      if (visible) await autoLoadMoreIfNeeded()
+    }
+  } finally {
+    previewAutoBusy = false
+  }
+}
+const setupPreviewObserver = () => {
+  if (previewObserver) { previewObserver.disconnect(); previewObserver = null }
+  const el = previewSentinel.value
+  if (!el || typeof IntersectionObserver === 'undefined') return
+  previewObserver = new IntersectionObserver((entries) => {
+    if (entries.some(e => e.isIntersecting)) autoLoadMoreIfNeeded()
+  }, { rootMargin: '240px 0px' })
+  previewObserver.observe(el)
+}
+watch(previewSentinel, (el) => { if (el) setupPreviewObserver() })
+onBeforeUnmount(() => { if (previewObserver) previewObserver.disconnect() })
+
+const loadMorePreview = async () => {
+  const target = Math.min(previewTotal.value, previewItems.value.length + PREVIEW_AUTO_PAGES)
+  previewAutoLimit.value = Math.max(previewAutoLimit.value, target)
+  if (currentPreviewBook) loadLocalPreview(currentPreviewBook)
+}
+let currentPreviewBook = null
+const loadLocalPreview = async (book) => {
+  const token = ++previewToken
+  currentPreviewBook = book
+  previewLoading.value = true
+  previewError.value = ''
+  try {
+    let start = previewItems.value.length
+    while (token === previewToken && start < previewAutoLimit.value) {
+      const res = await ipcRenderer.invoke('book-preview-images', {
+        filepath: book.filepath, type: book.type, start, count: PREVIEW_BATCH
+      })
+      if (token !== previewToken) return
+      if (!res || !res.ok) {
+        if (!previewItems.value.length) previewError.value = ''
+        break
+      }
+      previewTotal.value = res.total || 0
+      previewRawTotal.value = res.rawTotal || res.total || 0
+      const fresh = (res.files || []).map(f => ({ src: toAssetUrl(f) }))
+      if (!fresh.length) break
+      previewItems.value = previewItems.value.concat(fresh)
+      // 按「请求的批量」前进,而不是按实际返回条数:个别页解压失败时不会重复请求同一段
+      start += PREVIEW_BATCH
+      if (start >= previewTotal.value) break
     }
   } catch (e) {
     // 预览是锦上添花,失败就不显示(不打扰用户)
   } finally {
-    previewLoading.value = false
+    if (token === previewToken) previewLoading.value = false
   }
 }
 
 // 换书就重新准备预览(在线书先拉详情页,本地书直接取图)
 watch(() => bookDetail.value?.id, (id) => {
+  previewToken++
   previewItems.value = []
+  previewRawTotal.value = 0
+  previewAutoLimit.value = PREVIEW_AUTO_PAGES
+  currentPreviewBook = null
   previewTotal.value = 0
   previewError.value = ''
   const b = bookDetail.value
@@ -759,11 +913,11 @@ const editTags = () => {
         }
       })
     })
-    const showTranslation = setting.value.showTranslation
     _.forIn(tempTagGroup, (tagSet, tagCat) => {
       tempTagGroup[tagCat] = [...tagSet].sort().map(tag => ({
         value: tag,
-        label: `${showTranslation ? (resolvedTranslation.value[tagCat]?.[tag]?.name || tag ) + ' || ' : ''}${tag}`
+        // 只显示「标签设置 → 语言」选中的那一种名字(以前是「中文 || 原文」,看起来像重复)
+        label: tagDisplayName(setting.value, resolvedTranslation.value, tagCat, tag)
       }))
     })
     tagGroup.value = tempTagGroup
@@ -888,7 +1042,8 @@ defineExpose({
   gap: 6px
   align-items: flex-start
 .book-preview-item
-  width: 96px
+  // 和 EH 详情页的缩略图一个量级(118px,原来 96 偏小)
+  width: 118px
   // 高度跟着缩略图比例走(3:4):固定 128 时雪碧图比格子高,底下会露一条白底
   height: auto
   aspect-ratio: 3 / 4
@@ -1021,10 +1176,73 @@ defineExpose({
     margin: 4px 0
     .el-select, .el-select-v2
       width: 100%
+  // 「标签不超过类别」:label 绝对定位在左列(80px 右对齐),内容格固定从 90px 起。
+  //  inline 排布时长标签列表换行会绕到类别名左边(之前截图里第二行胶囊跑到最左),
+  //  现在内容永远在自己列内换行,一行都不会越界。
+  .el-descriptions__cell
+    position: relative
+    padding-left: 90px !important
   .el-descriptions__label
-    display: inline-block
-    text-align: right
+    position: absolute
+    left: 0
+    // 实测标签胶囊比类别名低 4px(胶囊自带 2px 上边距 + 行高差),这里补齐让两者垂直居中对齐
+    top: 4px
+    line-height: inherit
     width: 80px
+    text-align: right
+  .el-descriptions__content
+    display: block
+    width: auto
+    min-width: 0
+    overflow-wrap: anywhere
+// ---------- 标签块(照 EH 详情页:类别名右对齐 + 圆角描边小胶囊) ----------
+// 用 flex 两列:左列类别名固定宽度右对齐,右列标签自己换行 —— 换行永远不会跑到类别名左边
+.book-tag-block
+  margin-top: 12px
+  display: flex
+  flex-direction: column
+  gap: 6px
+  text-align: left
+.book-tag-row
+  display: flex
+  align-items: flex-start
+  gap: 6px
+.book-tag-cat
+  flex: none
+  min-width: 92px
+  text-align: right
+  font-size: 13px
+  line-height: 26px
+  color: var(--el-text-color-secondary)
+  white-space: nowrap
+.book-tag-list
+  flex: 1 1 auto
+  min-width: 0
+  display: flex
+  flex-wrap: wrap
+  gap: 6px
+.book-tag-cell
+  // 信息表单元格里的标签列表:自动换行
+  display: inline
+  line-height: 2
+.book-tag-pill
+  // 标签:恢复原来的胶囊样式(用户明确说过「标签不改」) —— 只有类别行的**位置**并进信息表
+  display: inline-flex
+  align-items: center
+  height: 22px
+  padding: 0 7px
+  border: 1px solid var(--el-border-color)
+  border-radius: 4px
+  font-size: 12px
+  line-height: 1
+  color: var(--el-text-color-regular)
+  background: var(--el-fill-color-blank)
+  cursor: pointer
+  margin: 2px 6px 2px 0
+  &:hover
+    border-color: var(--el-color-primary)
+    color: var(--el-color-primary)
+
 .book-tag-edit-popover
   .el-descriptions__cell
     padding-bottom: 0 !important
@@ -1040,6 +1258,11 @@ defineExpose({
 .book-tag
   margin: 4px 6px
   cursor: pointer
+  // 长标签允许在格子内换行,不要顶出「类别:」那一行
+  max-width: 100%
+  height: auto
+  white-space: normal
+  word-break: break-word
 .tag-edit-buttons
   margin-top: 4px
 .book-comment-frame

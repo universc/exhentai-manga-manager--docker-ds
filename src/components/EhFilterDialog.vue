@@ -20,7 +20,7 @@
           @pointerdown="onCatDown(c.key)"
           @pointerup="onCatUp"
           @pointerleave="onCatUp"
-        >{{ c.name }}</div>
+        >{{ galleryCategoryName(c.name, $t) }}</div>
       </div>
 
       <div class="ehf-field">
@@ -47,9 +47,32 @@
 
       <div class="ehf-field">
         <div class="ehf-label">{{ $t('m.minimumRating') }}</div>
-        <el-select v-model="model.minimumRating" class="ehf-select">
-          <el-option v-for="n in 5" :key="n" :label="n === 1 ? $t('m.unlimited') : String(n)" :value="n"></el-option>
+        <!-- 星星评分(与主界面一致):半星可选;0 颗 = 不限 -->
+        <div class="ehf-rating-stars">
+          <el-rate v-model="ratingStars" allow-half :max="5" :clearable="true" />
+          <span class="ehf-rating-text">{{ ratingStars > 0 ? (ratingStars + ' ★ 及以上') : $t('m.unlimited') }}</span>
+        </div>
+      </div>
+
+      <!-- 黑名单标签:命中就整本隐藏(本地库与 EH在线 都生效;EH在线 还会作为 -tag 交给 EH 排) -->
+      <div class="ehf-field">
+        <div class="ehf-label">{{ $t('m.filterBlacklist') }}</div>
+        <el-input v-model="model.blacklist" clearable :placeholder="$t('m.filterBlacklistPlaceholder')" />
+        <!-- 记录标签:用过的黑名单标签记下来,点一下就追加,不用每次重新敲 -->
+        <el-select
+          v-if="blacklistHistory.length"
+          class="ehf-select ehf-blacklist-history"
+          :model-value="[]"
+          multiple
+          filterable
+          allow-create
+          default-first-option
+          :placeholder="$t('m.filterBlacklistHistory')"
+          @change="addBlacklistHistory"
+        >
+          <el-option v-for="tag in blacklistHistory" :key="tag" :label="tag" :value="tag"></el-option>
         </el-select>
+        <div class="ehf-hint">{{ $t('m.filterBlacklistHint') }}</div>
       </div>
 
       <!-- 这两个只对 EH在线 有意义(会作为 f_sh / f_sto 发给 EH),本地库列表不受影响 -->
@@ -73,6 +96,7 @@
 <script setup>
 import { ref, reactive, watch } from 'vue'
 import { EH_FILTER_CATEGORIES, EH_FILTER_LANGUAGES, defaultEhFilter } from '../ehFilter.js'
+import { galleryCategoryName } from '../utils.js'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -89,7 +113,49 @@ watch(visible_, v => emit('update:visible', v))
 
 // 每次打开都用外面那份筛选值重置一遍,避免上一次的临时改动留在界面上
 const model = reactive(defaultEhFilter())
+
+// 评分 0.5 步进:1(不限)/1.5/2/…/5
+const ratingOptions = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5]
+
+// 星星评分:0 颗 = 不限(映射回 minimumRating 的 1);半星直接对应 1.5/2.5/…
+const ratingStars = ref(0)
+watch(ratingStars, (v) => { model.minimumRating = (Number(v) || 0) > 1 ? Number(v) : 1 })
+watch(() => model.minimumRating, (v) => { const n = Number(v); if (n > 1 && n !== ratingStars.value) ratingStars.value = n })
+
+// 黑名单的「记录标签」:输入过的标签存 localStorage,下次打开直接点选追加
+const HISTORY_KEY = 'emmEhBlacklistHistory'
+const blacklistHistory = ref([])
+try { blacklistHistory.value = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]') } catch (e) { blacklistHistory.value = [] }
+const saveBlacklistHistory = () => {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(blacklistHistory.value.slice(0, 60))) } catch (e) { /* 忽略 */ }
+}
+const addBlacklistHistory = (tags) => {
+  const list = String(model.blacklist || '').split(/[,，、]+/).map(t => t.trim()).filter(Boolean)
+  for (const t of tags) {
+    const name = String(t).trim()
+    if (!name || list.includes(name)) continue
+    list.push(name)
+    if (!blacklistHistory.value.includes(name)) blacklistHistory.value.unshift(name)
+  }
+  blacklistHistory.value = blacklistHistory.value.slice(0, 60)
+  saveBlacklistHistory()
+  model.blacklist = list.join(',')
+}
+// 手动输入/修改黑名单时也把用过的标签记进历史(下次直接点选,不用重新敲)
+watch(() => model.blacklist, (v) => {
+  const tags = String(v || '').split(/[,，、]+/).map(t => t.trim()).filter(Boolean)
+  if (!tags.length) return
+  let changed = false
+  for (const t of tags.reverse()) {
+    if (!blacklistHistory.value.includes(t)) { blacklistHistory.value.unshift(t); changed = true }
+  }
+  if (changed) {
+    blacklistHistory.value = blacklistHistory.value.slice(0, 60)
+    saveBlacklistHistory()
+  }
+})
 const syncFromProps = () => {
+  ratingStars.value = (Number(model.minimumRating) || 0) > 1 ? Number(model.minimumRating) : 0
   const src = { ...defaultEhFilter(), ...(props.filter || {}) }
   for (const k of Object.keys(model)) model[k] = src[k]
 }
@@ -180,3 +246,15 @@ const apply = () => {
   font-size: 13px
   color: var(--el-text-color-regular)
 </style>
+
+.ehf-blacklist-history
+  margin-top: 6px
+  width: 100%
+
+.ehf-rating-stars
+  display: flex
+  align-items: center
+  gap: 10px
+  .ehf-rating-text
+    font-size: 12px
+    color: var(--el-text-color-secondary)

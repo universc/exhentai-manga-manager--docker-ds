@@ -256,6 +256,8 @@ const ensureBookCover = async (book) => {
     const res = await ipcRenderer.invoke('ensure-book-cover', book.id)
     if (res && res.coverPath) {
       book.coverPath = res.coverPath
+      // 同名文件重建后浏览器可能仍用旧缓存:换个 nonce 强制重新请求(BookCard 的 coverSrc 会用)
+      book._coverNonce = Date.now()
       return res.coverPath
     }
     book._coverFailed = true
@@ -565,8 +567,18 @@ const DEFAULT_CAT_NAMES = {
   cosplay: 'Cosplay',
   asianporn: '亚洲',
   misc: '杂项',
+  // EH 的 location / mixed / reclass 等命名空间此前缺中文名,直接显示英文键
+  location: '地点',
+  temp2: '临时2',
 }
-const catDisplayName = (key) => DEFAULT_CAT_NAMES[key] || key
+const catDisplayName = (key) => {
+  if (key == null || key === '') return ''
+  if (DEFAULT_CAT_NAMES[key]) return DEFAULT_CAT_NAMES[key]
+  // 大小写兜底:书里可能存 Female,内置表键是 female
+  const lk = String(key).toLowerCase()
+  const hit = Object.keys(DEFAULT_CAT_NAMES).find(k => k.toLowerCase() === lk)
+  return hit ? DEFAULT_CAT_NAMES[hit] : key
+}
 // 反向映射:中文显示名 → 英文分类键(收藏标签的历史数据可能存的是显示名,如 "角色")
 const CAT_NAME_TO_KEY = Object.fromEntries(Object.entries(DEFAULT_CAT_NAMES).map(([k, v]) => [v, k]))
 const resolveCatKey = (cat) => (DEFAULT_CAT_NAMES[cat] ? cat : (CAT_NAME_TO_KEY[cat] || cat))
@@ -602,6 +614,10 @@ const sortCatsByOrder = (setting, cats) => {
 
 // ---------- 标签多语言名称:按「目标语言标签」设置显示 ----------
 // 同一标签可保存多个语言的名称,显示时按 setting.tagTargetLang 选,缺失则依次回退
+// 一个标签可以有多个名字(用 / 分隔):第一个用于显示,其余用于匹配/写入
+const FIRST_NAME = (v) => String(v == null ? '' : v).split('/')[0].trim()
+const getAllNames = (v) => String(v == null ? '' : v).split('/').map(x => x.trim()).filter(Boolean)
+
 const getDisplayTagName = (setting, cat, tag) => {
   if (!tag) return tag
   const map = (setting && setting.tagNameLangs) || {}
@@ -609,7 +625,7 @@ const getDisplayTagName = (setting, cat, tag) => {
   if (!rec) return null
   const lang = (setting && setting.tagTargetLang) || ''
   // 「默认」:优先使用默认名称,再依次回退其它语言
-  if (!lang) return rec['default'] || null
+  if (!lang) return FIRST_NAME(rec['default']) || null
   const order = lang === 'en'
     ? ['en', 'default', 'zh-CN', 'zh-TW', 'ja']
     : lang === 'ja'
@@ -617,9 +633,87 @@ const getDisplayTagName = (setting, cat, tag) => {
       : lang === 'zh-TW'
         ? ['zh-TW', 'default', 'zh-CN', 'ja', 'en']
         : ['zh-CN', 'default', 'zh-TW', 'ja', 'en']
-  for (const k of order) { if (rec[k]) return rec[k] }
+  for (const k of order) { if (rec[k]) return FIRST_NAME(rec[k]) }
   return null
 }
+// 类别显示名(全 app 统一):① 设置 → 标签设置 → 编辑类别 里填的名字(按目标语言/默认)
+// ② EhTagTranslation 词库的 _name ③ 内置中文名 ④ 原键
+// 以前只有「设置」页读自定义类别名,其他界面直接读词库 → 用户填了中文名在别处还是英文
+const categoryDisplayName = (setting, resolved, cat) => {
+  if (cat == null || cat === '') return ''
+  const key = resolveCatKey(cat)
+  // ⚠ 库里同类别的键大小写混用(Female / female / 女性):严格相等会漏,
+  //   表现就是「部分类别的中文名不显示」。查记录时一律做不区分大小写的兜底。
+  const ciFind = (obj, k) => {
+    if (!obj) return undefined
+    if (obj[k] !== undefined) return obj[k]
+    const lk = String(k).toLowerCase()
+    const hit = Object.keys(obj).find(x => x.toLowerCase() === lk)
+    return hit !== undefined ? obj[hit] : undefined
+  }
+  const langs = (setting && setting.tagCatNameLangs) || {}
+  const rec = ciFind(langs, key) || ciFind(langs, cat)
+  if (rec) {
+    const lang = (setting && setting.tagTargetLang) || ''
+    if (lang && rec[lang] && String(rec[lang]).trim()) return String(rec[lang]).trim()
+    if (rec['default'] && String(rec['default']).trim()) return String(rec['default']).trim()
+  }
+  const dict = ciFind(resolved, key)
+  return (dict && dict._name) || catDisplayName(key) || cat
+}
+
+// 画廊类别(EH 的 Doujinshi/Manga/...)的本地化:app 里所有显示类别的地方都走这里
+const GALLERY_CATEGORY_KEYS = {
+  'Doujinshi': 'catDoujinshi',
+  'Manga': 'catManga',
+  'Artist CG': 'catArtistCG',
+  'Game CG': 'catGameCG',
+  'Non-H': 'catNonH',
+  'Image Set': 'catImageSet',
+  'Western': 'catWestern',
+  'Cosplay': 'catCosplay',
+  'Asian Porn': 'catAsianPorn',
+  'Misc': 'catMisc',
+}
+// t = vue-i18n 的 $t;没有对应键就原样返回(自建类别/空值安全)
+const galleryCategoryName = (cat, t) => {
+  if (!cat) return ''
+  const key = GALLERY_CATEGORY_KEYS[cat]
+  if (!key || typeof t !== 'function') return cat
+  const out = t('m.' + key)
+  return out && out !== 'm.' + key ? out : cat
+}
+
+// 标签颜色:设置 → 标签设置 → 编辑标签 里挑的颜色,对**所有出现这个标签的地方**生效。
+// 新键 setting.tagColors['分类::标签'];兼容老数据(收藏标签自带的 color)。
+const tagColorOf = (setting, cat, tag) => {
+  if (!setting || cat == null || tag == null) return ''
+  const norm = resolveCatKey(cat)
+  const map = setting.tagColors || {}
+  const hit = map[norm + '::' + tag] || map[cat + '::' + tag]
+  if (hit) return hit
+  const legacy = setting.collectTag || []
+  const one = legacy.find(x => x && (x.id === norm + ':' + tag || x.id === cat + ':' + tag))
+  return (one && one.color) || ''
+}
+
+// 标签最终显示名:①手动填写的多语言名 ②EhTagTranslation 词库(仅当语言是中文时)
+// 用户的要求:标签设置里的语言选中文时,就自动翻译(不必再单独开「显示翻译」)。
+const tagDisplayName = (setting, resolved, cat, tag) => {
+  if (!tag) return tag
+  const manual = getDisplayTagName(setting, cat, tag)
+  if (manual) return manual
+  const rec = resolved && resolved[cat] && resolved[cat][tag]
+  if (!rec) return tag
+  const lang = (setting && setting.tagTargetLang) || ''
+  const legacyOn = !!(setting && setting.showTranslation)
+  // 词库只有中文(简繁同源):语言选中文 / 中文(繁) 就用;选「默认」时仍尊重旧的「显示翻译」开关;
+  // 选 en / ja 时不再用中文词库硬翻(否则用户选英文反而看到中文)
+  if (lang === 'zh-CN' || lang === 'zh-TW') return FIRST_NAME(rec.name) || tag
+  if (!lang && legacyOn) return FIRST_NAME(rec.name) || tag
+  return tag
+}
+
 // ---------- 标签关联(包含 / 被包含) ----------
 // 结构:setting.tagRelations = { '分类::标签': { contains: ['分类2::标签2', ...] } }
 // 「被包含」由 contains 反向推导,避免双份数据不一致。
@@ -641,6 +735,49 @@ const getContains = (setting, cat, tag) => {
   const rel = getTagRelations(setting)[cat + '::' + tag]
   return (rel && Array.isArray(rel.contains)) ? rel.contains : []
 }
+// 该标签的全部名字(手动多语言名称 / 词库名 / 原始名),按 / 拆开去重 —— 用于「写入信息」时匹配
+const tagNameVariants = (setting, resolved, cat, tag) => {
+  const out = new Set()
+  if (tag) out.add(String(tag).trim())
+  const map = (setting && setting.tagNameLangs) || {}
+  // 键的类别部分可能是中英混用(character / 角色):把同组的键都收集起来,
+  // 否则「设置里明明填了中文名,查重/合并时却读不到」→ 合并不了
+  const norm = resolveCatKey(cat)
+  const keys = [cat + '::' + tag, norm + '::' + tag]
+  for (const k of Object.keys(map)) {
+    // 只取「同一个标签名」在其它类别写法(中文/英文键)下的记录,别把整个类别都收进来
+    const i = String(k).lastIndexOf('::')
+    if (i < 0) continue
+    const prefix = k.slice(0, i)
+    const name = k.slice(i + 2)
+    if (name !== String(tag)) continue
+    if (prefix === cat || resolveCatKey(prefix) === norm) keys.push(k)
+  }
+  for (const k of keys) {
+    const rec = map[k]
+    if (rec) for (const v of Object.values(rec)) for (const n of getAllNames(v)) out.add(n)
+  }
+  for (const c of [cat, norm]) {
+    const dict = resolved && resolved[c] && resolved[c][tag]
+    if (dict && dict.name) for (const n of getAllNames(dict.name)) out.add(n)
+  }
+  return [...out].filter(Boolean)
+}
+
+// 标签前面显示什么:① 被某个集合包含 → 用第一个包含它的标签名(如 原神:甘雨)
+// ② 否则用类别名(如 角色:甘雨)。绝不用 p/f/a 这种字母
+const tagDisplayPrefix = (setting, resolved, cat, tag) => {
+  try {
+    const sets = getContainedBy(setting, resolveCatKey(cat), tag)
+    if (sets && sets.length) {
+      const p = String(sets[0]).split('::')
+      const nm = getDisplayTagName(setting, resolveCatKey(p[0]), p[1]) || p[1]
+      if (nm) return nm
+    }
+  } catch (e) { /* 关系读不到就用类别名 */ }
+  return categoryDisplayName(setting, resolved, cat)
+}
+
 // 标签名后加括号显示前 maxSets 个所属集合,如 光辉(碧蓝航线,女)
 const formatTagWithSets = (setting, cat, tag, maxSets = 3) => {
   if (!tag) return tag
@@ -883,6 +1020,12 @@ export {
   sortCatsByOrder,
   catDisplayName,
   getDisplayTagName,
+  tagDisplayName,
+  tagColorOf,
+  galleryCategoryName,
+  tagNameVariants,
+  tagDisplayPrefix,
+  categoryDisplayName,
   getTagRelations,
   getContainedBy,
   getContains,

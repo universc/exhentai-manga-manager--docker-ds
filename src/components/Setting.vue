@@ -120,7 +120,7 @@
             <div class="setting-line">
               <el-input v-model="setting.proxy" @change="saveSetting" :placeholder="$t('m.like') + ' http://127.0.0.1:7890'">
                 <template #prepend><span class="setting-label">{{$t('m.proxy')}}</span></template>
-                <template #append><el-button @click="testProxy">{{$t('m.test')}}</el-button></template>
+                <template #append><el-button :loading="proxyTesting" @click="testProxy">{{$t('m.test')}}</el-button></template>
               </el-input>
             </div>
           </el-col>
@@ -373,9 +373,23 @@
           <el-col :span="24" class="setting-line collect-tag">
             <div class="tag-cat-header">
               <span class="context-menu-title">{{$t('m.tagCatSet')}}</span>
+              <!-- 用法说明:挪过去(悬停)或点一下都会弹出 -->
+              <el-popover placement="right-start" :width="380" trigger="hover" :show-after="120">
+                <template #reference>
+                  <span class="tag-help-dot" :title="$t('m.tagHelpTitle')">!</span>
+                </template>
+                <div class="tag-help-body">
+                  <div class="tag-help-title">{{ $t('m.tagHelpTitle') }}</div>
+                  <div class="tag-help-line">{{ $t('m.tagHelp1') }}</div>
+                  <div class="tag-help-line">{{ $t('m.tagHelp2') }}</div>
+                  <div class="tag-help-line">{{ $t('m.tagHelp3') }}</div>
+                  <div class="tag-help-line">{{ $t('m.tagHelp4') }}</div>
+                </div>
+              </el-popover>
               <el-space>
                 <el-button size="small" type="success" plain @click="openAddTagDialog()">{{$t('m.addNewTag')}}</el-button>
                 <el-button size="small" plain @click="openAddCategoryDialog">{{$t('m.tagCatAdd')}}</el-button>
+                <el-button size="small" type="primary" plain :loading="titleAnalyzing" @click="analyzeTitles">{{$t('m.titleAnalyze')}}</el-button>
               </el-space>
             </div>
             <!-- 类别标签:可拖动排序,顺序存 setting.tagCatOrder,并决定详细信息里标签分类的上下顺序 -->
@@ -400,8 +414,6 @@
                 </el-tag>
               </template>
             </draggable>
-            <div class="setting-hint">{{$t('m.tagCatOrderHint')}}</div>
-            <div class="setting-hint">{{$t('m.allTagsHint')}}</div>
             <div class="all-tags-list">
               <template v-for="g in allTagsGroups" :key="g.cat">
                 <div v-if="!selectedTagCat || selectedTagCat === g.cat" class="tag-group">
@@ -409,9 +421,9 @@
                   <el-tag
                     v-for="tag in g.tags"
                     :key="tag.id"
-                    class="all-tag-item"
-                    :effect="collectedTagMap[tag.id] ? 'dark' : 'plain'"
-                    :color="collectedTagMap[tag.id]?.color"
+                    :class="['all-tag-item', { 'is-collected': !!collectedTagMap[tag.id] }]"
+                    :effect="'plain'"
+                    :style="tagColorStyle(tag.cat, tag.tag)"
                     :closable="!!collectedTagMap[tag.id]"
                     @close="removeTag(tag.id)"
                     @pointerdown="startLongPressCollect(tag)"
@@ -420,23 +432,6 @@
                     @dblclick="openTagNameEditor(tag)"
                     :title="$t('m.editTagNames')"
                   >
-                    <el-popover
-                      v-if="collectedTagMap[tag.id]"
-                      trigger="click"
-                      placement="top"
-                      width="210"
-                      :visible="tagColorPopupId === tag.id"
-                      @hide="tagColorPopupId = null"
-                    >
-                      <template #reference>
-                        <span class="tag-color-dot" :style="{background: collectedTagMap[tag.id].color}" @click.stop="tagColorPopupId = tag.id"></span>
-                      </template>
-                      <el-color-picker
-                        :model-value="collectedTagMap[tag.id]?.color"
-                        :predefine="moderateSoftColors"
-                        @update:model-value="(c) => applyTagColor(tag, c)"
-                      />
-                    </el-popover>
                     {{ tagLabelWithSets(tag) }}
                   </el-tag>
                 </div>
@@ -453,47 +448,28 @@
               @change="saveSetting"
             >
               <template #item="{element}">
-                <el-tag :color="element.color" effect="dark" closable @close="removeTag(element.id)">
-                  <span class="tag-color-dot" :style="{background: element.color}" @click.stop="pickTagColor(element)"></span>
-                  {{element.letter}}:{{ getDisplayTagName(setting, resolveCatKey(element.cat), element.tag) || resolvedTranslation[resolveCatKey(element.cat)]?.[element.tag]?.name || element.tag }}
-                </el-tag>
+                <el-tag
+                  effect="plain"
+                  :style="tagColorStyle(element.cat, element.tag)"
+                  closable
+                  @close="removeTag(element.id)"
+                >{{ tagDisplayPrefix(setting, resolvedTranslation, element.cat, element.tag) }}:{{ getDisplayTagName(setting, resolveCatKey(element.cat), element.tag) || resolvedTranslation[resolveCatKey(element.cat)]?.[element.tag]?.name || element.tag }}</el-tag>
               </template>
             </draggable>
           </el-col>
-          <el-col :span="24" class="setting-line collect-tag">
-            <el-form :inline="true" :model="formTagAdd" :show-message="false">
-              <el-form-item :label="$t('m.tag')">
-                <el-select-v2
-                  v-model="formTagAdd.tag"
-                  filterable clearable :height="340"
-                  style="width: 500px"
-                  :options="tagListForCollect"
-                ></el-select-v2>
-              </el-form-item>
-              <el-form-item :label="$t('m.tagColor')">
-                <el-color-picker v-model="formTagAdd.color" show-alpha :predefine="moderateSoftColors"/>
-              </el-form-item>
-              <el-form-item>
-                <el-button plain @click="addTagToCollect">{{$t('m.addTag')}}</el-button>
-              </el-form-item>
-            </el-form>
-          </el-col>
-          <el-col :span="5" class="setting-switch">
+          <!-- 收藏标签 / 随机标签 / 语言 / 更新词库:一行放完 -->
+          <el-col :span="24" class="setting-line tag-option-row">
             <el-switch
               v-model="setting.showCollectTag"
               :active-text="$t('m.showCollectTag')"
               @change="onShowCollectTagChange"
             />
-          </el-col>
-          <el-col :span="5" class="setting-switch">
             <el-switch
               v-model="setting.randomTagsEnabled"
               :active-text="$t('m.randomTagsEnabled')"
               @change="onRandomTagsChange"
             />
-          </el-col>
-          <el-col :span="7" class="setting-switch tag-lang-col">
-            <span class="setting-label">{{$t('m.tagTranslate')}}</span>
+            <span class="setting-label tag-translate-label">{{$t('m.tagTranslate')}}</span>
             <el-select v-model="setting.tagTargetLang" size="small" class="tag-target-lang" @change="onTagLangChange">
               <el-option :label="$t('m.langDefault')" value=""></el-option>
               <el-option :label="$t('m.langZhCn')" value="zh-CN"></el-option>
@@ -501,6 +477,19 @@
               <el-option :label="$t('m.langEn')" value="en"></el-option>
               <el-option :label="$t('m.langJa')" value="ja"></el-option>
             </el-select>
+            <el-button
+              size="small"
+              plain
+              class="tag-translation-refresh"
+              :loading="translationStatus === 'loading'"
+              @click="loadTranslationFromEhTagTranslation(true)"
+            >{{ $t('m.tagTranslationUpdate') }}</el-button>
+            <span class="setting-hint tag-translation-status" v-if="translationStatus === 'ok' && translationUpdatedText">
+              {{ $t('m.tagTranslationUpdated') }} {{ translationUpdatedText }}
+            </span>
+            <span class="setting-hint tag-translation-status" v-else-if="translationStatus === 'fail'">
+              {{ $t('m.tagTranslationFailed') }}
+            </span>
           </el-col>
 </el-row>
         <!-- 添加类别:建立一个新的空类别,之后可以往里加标签 -->
@@ -533,15 +522,29 @@
           </template>
         </el-dialog>
         <!-- 双击标签/类别:编辑多语言名称,按「语言」下拉选定的语言显示 -->
-        <el-dialog v-model="tagEditVisible" :title="tagEditIsCategory ? $t('m.tagCatEditNames') : $t('m.editTagNames')" width="380px" append-to-body>
+        <el-dialog v-model="tagEditVisible" :title="tagEditIsCategory ? $t('m.tagCatEditNames') : $t('m.editTag')" width="380px" append-to-body>
           <div class="tag-name-editor">
             <p class="tag-edit-raw">{{ tagEditTitle }}</p>
+            <!-- 类别:标签可以换类别(保存时会把全库这条标签一起搬过去) -->
+            <div class="tag-cat-editor" v-if="!tagEditIsCategory">
+              <span class="tag-color-label">{{ $t('m.category') }}</span>
+              <el-select v-model="tagEditCat" size="small" style="width: 150px;">
+                <el-option v-for="g in allTagsGroups" :key="g.cat" :label="categoryLabel(g.cat)" :value="g.cat" />
+              </el-select>
+            </div>
+            <div class="tag-name-hint">{{ $t('m.tagMultiNameHint') }}</div>
             <!-- 默认名称排在最上面:显示时「选了语言但该语言没填」就回退到这个名称 -->
             <el-input v-model="tagEditLangs['default']" size="small" :placeholder="$t('m.tagNameDefault')" />
             <el-input v-model="tagEditLangs['zh-CN']" size="small" :placeholder="$t('m.tagNameZh')" />
             <el-input v-model="tagEditLangs['zh-TW']" size="small" :placeholder="$t('m.tagNameZhTw')" />
             <el-input v-model="tagEditLangs.ja" size="small" :placeholder="$t('m.tagNameJa')" />
             <el-input v-model="tagEditLangs.en" size="small" :placeholder="$t('m.tagNameEn')" />
+          </div>
+          <!-- 标签颜色:以前放在下方表单里,现在合并到「编辑标签」弹窗(关联标签上方) -->
+          <div class="tag-color-editor" v-if="!tagEditIsCategory">
+            <span class="tag-color-label">{{ $t('m.tagColor') }}</span>
+            <el-color-picker v-model="tagEditColor" show-alpha :predefine="moderateSoftColors" />
+            <el-button v-if="tagEditColor" size="small" text @click="tagEditColor = ''">{{ $t('m.reset') }}</el-button>
           </div>
           <!-- 关联标签:包含 / 被包含。类别是最大的分类,不参与包含关系,所以只在编辑标签时显示 -->
           <div class="tag-relation-editor" v-if="!tagEditIsCategory">
@@ -1092,89 +1095,7 @@
           </el-col>
         </el-row>
 
-        <!-- 下载设置(EH在线 的整本/单页下载;按用户要求放在「自定义主题」下方) -->
-        <div class="advanced-section-title">{{$t('m.downloadSettings')}}</div>
-        <el-row :gutter="8">
-          <el-col :span="24">
-            <div class="custom-theme-panel download-setting-panel">
-              <div class="theme-row theme-row-wide">
-                <span class="theme-label">{{$t('m.downloadPath')}}</span>
-                <div class="theme-value download-path-value">
-                  <el-input v-model="setting.downloadPath" size="small" :placeholder="$t('m.downloadPathPlaceholder')" @change="saveSetting">
-                    <template #append><el-button size="small" @click="pickDownloadPath">{{$t('m.select')}}</el-button></template>
-                  </el-input>
-                </div>
-              </div>
-              <div class="theme-row theme-row-wide">
-                <span class="theme-label">{{$t('m.downloadConcurrency')}}</span>
-                <div class="theme-value">
-                  <el-input-number v-model="setting.downloadConcurrency" :min="1" :max="10" :step="1" size="small" @change="saveSetting" />
-                </div>
-              </div>
-              <div class="theme-row theme-row-wide">
-                <span class="theme-label">{{$t('m.downloadOriginalDefault')}}</span>
-                <div class="theme-value">
-                  <el-switch v-model="setting.downloadOriginal" @change="saveSetting" />
-                </div>
-              </div>
-              <!-- 勾上后点「下载」不再弹窗,直接用下面的下载目录 + 默认名称 -->
-              <div class="theme-row theme-row-wide">
-                <span class="theme-label">{{$t('m.downloadUseDefault')}}</span>
-                <div class="theme-value">
-                  <el-switch v-model="setting.downloadUseDefault" @change="saveSetting" />
-                </div>
-              </div>
-              <div class="setting-hint">{{$t('m.downloadUseDefaultHint')}}</div>
-              <!-- 失败任务自动重试(主进程里定时跑,关掉网页也会继续) -->
-              <div class="download-subsection-title">{{$t('m.downloadRetryTitle')}}</div>
-              <div class="theme-row theme-row-wide">
-                <span class="theme-label">{{$t('m.downloadRetryEnabled')}}</span>
-                <div class="theme-value">
-                  <el-switch v-model="setting.retryEnabled" @change="saveSetting" />
-                </div>
-              </div>
-              <div class="theme-row theme-row-wide">
-                <span class="theme-label">{{$t('m.downloadRetryInterval')}}</span>
-                <div class="theme-value">
-                  <el-input-number v-model="setting.retryIntervalMin" :min="1" :max="1440" :step="5" size="small" @change="saveSetting" />
-                </div>
-              </div>
-              <div class="theme-row theme-row-wide">
-                <span class="theme-label">{{$t('m.downloadRetryTimes')}}</span>
-                <div class="theme-value">
-                  <el-input-number v-model="setting.retryTimes" :min="0" :max="99" :step="1" size="small" @change="saveSetting" />
-                </div>
-              </div>
-              <div class="setting-hint">{{$t('m.downloadRetryHint')}}</div>
-              <!-- 默认移动路径:下载记录头部的「移动」用它(填了并启用就直接移,不再弹选择)。
-                   只能在「已有库的文件夹及其子文件夹」里选,不允许随便一个目录。 -->
-              <div class="theme-row theme-row-wide">
-                <span class="theme-label">{{$t('m.downloadMoveDefaultPath')}}</span>
-                <div class="theme-value download-path-value">
-                  <LibraryFolderPicker v-model="setting.moveDefaultPath" :placeholder="$t('m.downloadMovePick')" @update:model-value="saveSetting" />
-                </div>
-              </div>
-              <div class="theme-row theme-row-wide">
-                <span class="theme-label">{{$t('m.downloadMoveDefaultPathEnabled')}}</span>
-                <div class="theme-value">
-                  <el-switch v-model="setting.moveDefaultPathEnabled" @change="saveSetting" />
-                </div>
-              </div>
-              <div class="setting-hint">{{$t('m.downloadMoveDefaultPathHint')}}</div>
-              <!-- 单本移动路径:记录上的移动按钮用它(同样只能选库里的目录) -->
-              <div class="theme-row theme-row-wide">
-                <span class="theme-label">{{$t('m.downloadMoveSinglePath')}}</span>
-                <div class="theme-value download-path-value">
-                  <LibraryFolderPicker v-model="setting.moveSinglePath" :placeholder="$t('m.downloadMovePick')" @update:model-value="saveSetting" />
-                </div>
-              </div>
-              <div class="setting-hint">{{$t('m.downloadMoveSinglePathHint')}}</div>
-              <div class="setting-hint">{{$t('m.downloadSettingsHint')}}</div>
-            </div>
-          </el-col>
-        </el-row>
-
-        <!-- 右键菜单自定义:拖动排序 + 点击 ✕ 取消 / 点击标签加回 -->
+<!-- 右键菜单自定义:拖动排序 + 点击 ✕ 取消 / 点击标签加回 -->
         <div class="advanced-section-title">{{$t('m.contextMenu')}}</div>
         <div class="setting-hint">{{$t('m.contextMenuSortHint')}}</div>
         <el-row :gutter="8">
@@ -1322,306 +1243,473 @@
         </el-row>
       </el-tab-pane>
             <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.aiFeatures')" name="translation">
-        <el-row :gutter="8">
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-divider content-position="left">{{$t('m.imageUpscale')}}</el-divider>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">使用的模型</span></template>
-                <el-select v-model="upscaleEngine" clearable placeholder=" ">
-                  <el-option-group label="本地模型(离线运行,需先下载)">
-                    <el-option
-                      v-for="m in localModels"
-                      :key="'up-' + m.id"
-                      :label="m.name + (m.installed ? '' : '(未安装)')"
-                      :value="'local:' + m.id"
-                      :disabled="!m.installed" />
-                  </el-option-group>
-                  <el-option-group label="API 服务">
-                    <el-option v-for="p in (setting.aiApiProfiles || [])" :key="'api-' + p.id" :label="p.name || p.baseUrl" :value="'api:' + p.id" />
-                  </el-option-group>
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-            <div class="setting-hint">{{$t('m.localModelComicReadHint')}}</div>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.saveMode')}}</span></template>
-                <el-select v-model="setting.upscaleSaveMode" placeholder=" " @change="saveSetting">
-                  <el-option :label="$t('m.saveModeSame')" value="same"></el-option>
-                  <el-option :label="$t('m.saveModeReplace')" value="replace"></el-option>
-                  <el-option :label="$t('m.saveModePreview')" value="preview"></el-option>
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <!-- 过滤设置:阈值 + 「启用过滤」开关(开关与自动超分并排放在下面) -->
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.upscaleFilter')}}</span></template>
-                <div class="upscale-filter-row">
-                  <el-input-number
-                    v-model="setting.upscaleSkipWidth"
-                    :min="0" :max="20000" :step="100" :value-on-clear="1200" :disabled="!setting.upscaleSkipHighRes"
-                    size="small" controls-position="right" @change="saveSetting" />
-                  <span class="upscale-filter-sep">×</span>
-                  <el-input-number
-                    v-model="setting.upscaleSkipHeight"
-                    :min="0" :max="20000" :step="100" :value-on-clear="2000" :disabled="!setting.upscaleSkipHighRes"
-                    size="small" controls-position="right" @change="saveSetting" />
-                  <span class="upscale-filter-unit">px</span>
-                </div>
-              </NameFormItem>
-            </div>
-            <div class="setting-hint">{{$t('m.upscaleFilterHint')}}</div>
-          </el-col>
-          <!-- 两个开关并排:启用过滤 / 自动超分(阅读) -->
-          <el-col :span="12" class="setting-switch">
-            <el-switch v-model="setting.upscaleSkipHighRes" :active-text="$t('m.upscaleSkipHighRes')" @change="saveSetting" />
-          </el-col>
-          <el-col :span="12" class="setting-switch">
-            <el-switch v-model="setting.autoUpscale" :active-text="$t('m.autoUpscaleSection')" @change="saveSetting" />
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-hint">{{$t('m.autoUpscaleHint')}}</div>
-          </el-col>
-          <!-- 清理超分替换原文件时留下的 .bak 备份 -->
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-button type="danger" plain size="small" @click="deleteAllBakFiles">{{$t('m.deleteAllBak')}}</el-button>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-divider content-position="left">{{$t('m.imageColorize')}}</el-divider>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.useApi')}}</span></template>
-                <el-select v-model="setting.colorizeApiProfileId" clearable placeholder=" " @change="saveSetting">
-                  <el-option v-for="p in (setting.aiApiProfiles || [])" :key="p.id" :label="p.name || p.baseUrl" :value="p.id" />
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.saveMode')}}</span></template>
-                <el-select v-model="setting.colorizeSaveMode" placeholder=" " @change="saveSetting">
-                  <el-option :label="$t('m.saveModeSame')" value="same"></el-option>
-                  <el-option :label="$t('m.saveModeReplace')" value="replace"></el-option>
-                  <el-option :label="$t('m.saveModePreview')" value="preview"></el-option>
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-divider content-position="left">{{$t('m.aiInfoProcessing')}}</el-divider>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.textExtractModel')}}</span></template>
-                <el-select v-model="setting.ocrApiProfileId" clearable placeholder=" " @change="saveSetting">
-                  <el-option v-for="p in (setting.aiApiProfiles || [])" :key="p.id" :label="p.name || p.baseUrl" :value="p.id" />
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.textProcessModel')}}</span></template>
-                <el-select v-model="setting.infoProcessApiProfileId" clearable placeholder=" " @change="saveSetting">
-                  <el-option v-for="p in (setting.aiApiProfiles || [])" :key="p.id" :label="p.name || p.baseUrl" :value="p.id" />
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.tagGenCategories')}}</span></template>
-                <el-select v-model="setting.tagGenCategories" multiple collapse-tags clearable placeholder=" " @change="saveSetting">
-                  <el-option v-for="c in tagCategoryKeys" :key="c" :label="tagCategoryLabel(c)" :value="c" />
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.storyGenTypes')}}</span></template>
-                <el-select v-model="setting.storyGenTypes" placeholder=" " @change="saveSetting">
-                  <el-option :label="$t('m.storySummaryOpt')" value="summary"></el-option>
-                  <el-option :label="$t('m.storyFullOpt')" value="full"></el-option>
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.translateTargetLang')}}</span></template>
-                <el-select v-model="setting.translateTargetLang" placeholder=" " @change="saveSetting">
-                  <el-option :label="$t('m.langZhCn')" value="zh-CN"></el-option>
-                  <el-option :label="$t('m.langZhTw')" value="zh-TW"></el-option>
-                  <el-option :label="$t('m.langEn')" value="en"></el-option>
-                  <el-option :label="$t('m.langJa')" value="ja"></el-option>
-                  <el-option :label="$t('m.langKo')" value="ko"></el-option>
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.translateSaveMode')}}</span></template>
-                <el-select v-model="setting.translateSaveMode" placeholder=" " @change="saveSetting">
-                  <el-option :label="$t('m.saveToMangaFolder')" value="folder"></el-option>
-                  <el-option :label="$t('m.saveModePreview')" value="preview"></el-option>
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">{{$t('m.ocrSaveMode')}}</span></template>
-                <el-select v-model="setting.ocrSaveMode" placeholder=" " @change="saveSetting">
-                  <el-option :label="$t('m.saveToMangaFolder')" value="folder"></el-option>
-                  <el-option :label="$t('m.saveNone')" value="none"></el-option>
-                </el-select>
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line toolbar-tip">{{$t('m.aiProcessTip')}}</div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line toolbar-tip">{{$t('m.imageApiTip')}}</div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-divider content-position="left">{{$t('m.apiProfiles')}}</el-divider>
-            </div>
-          </el-col>
-          <el-col :span="24" v-for="p in (setting.aiApiProfiles || [])" :key="p.id">
-            <div class="setting-line api-profile-row">
-              <el-input v-model="p.name" class="api-profile-name" :placeholder="$t('m.apiName')" @change="saveSetting" />
-              <el-input v-model="p.baseUrl" class="api-profile-url" :placeholder="$t('m.apiBaseUrl')" @change="saveSetting" />
-              <el-select
-                v-model="p.model"
-                class="api-profile-model"
-                filterable
-                allow-create
-                default-first-option
-                :placeholder="$t('m.apiModel')"
-                @change="saveSetting"
-              >
-                <el-option v-for="mid in (p.models || [])" :key="mid" :label="mid" :value="mid" />
-              </el-select>
-              <el-input v-model="p.apiKey" class="api-profile-key" type="password" show-password :placeholder="$t('m.apiKey')" @change="saveSetting" />
-              <el-button :loading="!!p._loading" @click="fetchApiModels(p)">{{$t('m.fetchModels')}}</el-button>
-              <el-button :loading="!!p._testing" @click="testApiProfile(p)">{{$t('m.testApi')}}</el-button>
-              <el-button text type="danger" @click="removeApiProfile(p.id)">{{$t('m.deleteApi')}}</el-button>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-button type="primary" plain @click="addApiProfile">{{$t('m.addApi')}}</el-button>
-            </div>
-          </el-col>
+      <!-- 功能设置:左边内容、右边选项(图片超分 / 图片上色 / 信息处理 / 下载 / 文件移动) -->
+      <div class="feature-settings">
+        <!-- 左侧选项 -->
+        <div class="feature-menu">
+          <div
+            v-for="f in featureTabs"
+            :key="f.id"
+            class="feature-menu-item"
+            :class="{ active: activeFeature === f.id }"
+            @click="activeFeature = f.id"
+          >{{ f.label }}</div>
+        </div>
+        <div class="feature-content">
+          <div class="feature-pane" v-show="activeFeature === 'upscale'">
+            <el-row :gutter="8">
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <el-divider content-position="left">{{$t('m.imageUpscale')}}</el-divider>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">使用的模型</span></template>
+                              <el-select v-model="upscaleEngine" clearable placeholder=" ">
+                                <el-option-group label="本地模型(离线运行,需先下载)">
+                                  <el-option
+                                    v-for="m in localModels"
+                                    :key="'up-' + m.id"
+                                    :label="m.name + (m.installed ? '' : '(未安装)')"
+                                    :value="'local:' + m.id"
+                                    :disabled="!m.installed" />
+                                </el-option-group>
+                                <el-option-group label="API 服务">
+                                  <el-option v-for="p in (setting.aiApiProfiles || [])" :key="'api-' + p.id" :label="p.name || p.baseUrl" :value="'api:' + p.id" />
+                                </el-option-group>
+                              </el-select>
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+                          <div class="setting-hint">{{$t('m.localModelComicReadHint')}}</div>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">{{$t('m.saveMode')}}</span></template>
+                              <el-select v-model="setting.upscaleSaveMode" placeholder=" " @change="saveSetting">
+                                <el-option :label="$t('m.saveModeSame')" value="same"></el-option>
+                                <el-option :label="$t('m.saveModeReplace')" value="replace"></el-option>
+                                <el-option :label="$t('m.saveModePreview')" value="preview"></el-option>
+                              </el-select>
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+                        <!-- 过滤设置:阈值 + 「启用过滤」开关(开关与自动超分并排放在下面) -->
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">{{$t('m.upscaleFilter')}}</span></template>
+                              <div class="upscale-filter-row">
+                                <el-input-number
+                                  v-model="setting.upscaleSkipWidth"
+                                  :min="0" :max="20000" :step="100" :value-on-clear="1200" :disabled="!setting.upscaleSkipHighRes"
+                                  size="small" controls-position="right" @change="saveSetting" />
+                                <span class="upscale-filter-sep">×</span>
+                                <el-input-number
+                                  v-model="setting.upscaleSkipHeight"
+                                  :min="0" :max="20000" :step="100" :value-on-clear="2000" :disabled="!setting.upscaleSkipHighRes"
+                                  size="small" controls-position="right" @change="saveSetting" />
+                                <span class="upscale-filter-unit">px</span>
+                              </div>
+                            </NameFormItem>
+                          </div>
+                          <div class="setting-hint">{{$t('m.upscaleFilterHint')}}</div>
+                        </el-col>
+                        <!-- 两个开关并排:启用过滤 / 自动超分(阅读) -->
+                        <el-col :span="12" class="setting-switch">
+                          <el-switch v-model="setting.upscaleSkipHighRes" :active-text="$t('m.upscaleSkipHighRes')" @change="saveSetting" />
+                        </el-col>
+                        <el-col :span="12" class="setting-switch">
+                          <el-switch v-model="setting.autoUpscale" :active-text="$t('m.autoUpscaleSection')" @change="saveSetting" />
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-hint">{{$t('m.autoUpscaleHint')}}</div>
+                        </el-col>
+                        <!-- 清理超分替换原文件时留下的 .bak 备份 -->
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <el-button type="danger" plain size="small" @click="deleteAllBakFiles">{{$t('m.deleteAllBak')}}</el-button>
+                          </div>
+                        </el-col>
+          
+              <el-col :span="24">
+                          <div class="setting-line">
+                            <el-divider content-position="left">{{$t('m.apiProfiles')}}</el-divider>
+                          </div>
+                        </el-col>
+                        <el-col :span="24" v-for="p in (setting.aiApiProfiles || [])" :key="p.id">
+                          <div class="setting-line api-profile-row">
+                            <el-input v-model="p.name" class="api-profile-name" :placeholder="$t('m.apiName')" @change="saveSetting" />
+                            <el-input v-model="p.baseUrl" class="api-profile-url" :placeholder="$t('m.apiBaseUrl')" @change="saveSetting" />
+                            <el-select
+                              v-model="p.model"
+                              class="api-profile-model"
+                              filterable
+                              allow-create
+                              default-first-option
+                              :placeholder="$t('m.apiModel')"
+                              @change="saveSetting"
+                            >
+                              <el-option v-for="mid in (p.models || [])" :key="mid" :label="mid" :value="mid" />
+                            </el-select>
+                            <el-input v-model="p.apiKey" class="api-profile-key" type="password" show-password :placeholder="$t('m.apiKey')" @change="saveSetting" />
+                            <el-button :loading="!!p._loading" @click="fetchApiModels(p)">{{$t('m.fetchModels')}}</el-button>
+                            <el-button :loading="!!p._testing" @click="testApiProfile(p)">{{$t('m.testApi')}}</el-button>
+                            <el-button text type="danger" @click="removeApiProfile(p.id)">{{$t('m.deleteApi')}}</el-button>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <el-button type="primary" plain @click="addApiProfile">{{$t('m.addApi')}}</el-button>
+                          </div>
+                        </el-col>
 
-          <!-- 本地模型:下载到本机后离线推理,不需要 API 服务 -->
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-divider content-position="left">本地模型</el-divider>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line toolbar-tip">本地模型直接在本机运行,下载后离线可用。下载完成后,在<div style="display:inline;color:#409eff;margin:0 4px;">图片超分 → 使用的模型</div>里选择即可。</div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="110px">
-                <template #prepend><span class="setting-label">下载源</span></template>
-                <el-input v-model="setting.localModelMirror" placeholder="留空用 GitHub 官方地址;国内可填镜像前缀,如 https://ghproxy.net/" @change="saveSetting" />
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line toolbar-tip">下载失败时:可在 设置 → 常用 → 代理 里填本机代理(会用于模型下载),或在上面填镜像前缀。当前代理:{{ setting.proxy || "未设置" }}</div>
-          </el-col>
-          <el-col :span="24" v-for="m in localModels" :key="m.id">
-            <div class="setting-line api-profile-row local-model-row">
-              <span class="local-model-name">{{ m.name }}</span>
-              <el-tag :type="m.installed ? 'success' : 'info'" size="small">{{ m.installed ? '已安装 ' + m.installedSizeText : '未安装' }}</el-tag>
-              <template v-if="m.downloading">
-                <el-progress :percentage="m.percent || 0" :stroke-width="14" style="width: 180px;" />
-                <span class="local-model-status">{{ m.message }}</span>
-                <el-button text type="danger" @click="cancelLocalModel(m.id)">取消</el-button>
-              </template>
-              <template v-else>
-                <span class="local-model-status">{{ m.desc }}</span>
-                <span style="flex: 1;"></span>
-                <el-button type="primary" plain @click="downloadLocalModel(m.id)">{{ m.installed ? '重新下载' : '下载' }}</el-button>
-                <el-button text :disabled="!m.installed" @click="openLocalModelDir(m.id)">打开目录</el-button>
-                <el-button text type="danger" :disabled="!m.installed" @click="deleteLocalModel(m.id)">删除</el-button>
-              </template>
-            </div>
-            <!-- 该模型自己的参数(权重/倍数/降噪/分块/显卡等),schema 由后端 OPTION_SCHEMA 提供 -->
-            <div v-if="m.installed && localModelMeta[m.id] && (localModelMeta[m.id].schema || []).length" class="local-model-options">
-              <div class="local-model-option" v-for="f in localModelMeta[m.id].schema" :key="f.key">
-                <span class="local-model-option-label">{{ f.label }}</span>
-                <el-select
-                  v-if="f.type === 'weights'"
-                  class="local-model-option-control"
-                  :model-value="localModelOptions(m.id)[f.key]"
-                  @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)"
-                  filterable allow-create default-first-option>
-                  <el-option v-for="w in (localModelMeta[m.id].weights || [])" :key="w" :label="w" :value="w" />
-                </el-select>
-                <el-select
-                  v-else-if="f.type === 'select'"
-                  class="local-model-option-control"
-                  :model-value="localModelOptions(m.id)[f.key]"
-                  @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)">
-                  <el-option v-for="o in f.options" :key="String(o)" :label="String(o)" :value="o" />
-                </el-select>
-                <el-input-number
-                  v-else-if="f.type === 'number'"
-                  class="local-model-option-control"
-                  :model-value="localModelOptions(m.id)[f.key]"
-                  :min="f.min" :max="f.max"
-                  @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)" />
-                <el-switch
-                  v-else-if="f.type === 'bool'"
-                  :model-value="localModelOptions(m.id)[f.key]"
-                  @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)" />
-                <span class="local-model-option-hint">{{ f.hint }}</span>
-              </div>
-            </div>
-            <div v-if="m.installed && !(localModelMeta[m.id] && (localModelMeta[m.id].schema || []).length)" class="setting-line toolbar-tip">该模型没有额外参数</div>
-            <div v-if="m.error" class="setting-line" style="color: #f56c6c;">{{ m.error }}</div>
-            <div v-else-if="!m.available" class="setting-line" style="color: #e6a23c;">{{ m.unavailableReason }}</div>
-          </el-col>
-        </el-row>
-      </el-tab-pane>
-      <!-- 账户(网页版/Docker,所有登录用户可见;管理员另有账户管理/IP 控制) -->
-      <el-tab-pane v-if="isWebLoggedIn || !isWebMode" :label="$t('m.accounts')" name="accounts">
+                        <!-- 本地模型:下载到本机后离线推理,不需要 API 服务 -->
+          
+              <el-col :span="24">
+                          <div class="setting-line">
+                            <el-divider content-position="left">本地模型</el-divider>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line toolbar-tip">本地模型直接在本机运行,下载后离线可用。下载完成后,在<div style="display:inline;color:#409eff;margin:0 4px;">图片超分 → 使用的模型</div>里选择即可。</div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">下载源</span></template>
+                              <el-input v-model="setting.localModelMirror" placeholder="留空用 GitHub 官方地址;国内可填镜像前缀,如 https://ghproxy.net/" @change="saveSetting" />
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line toolbar-tip">下载失败时:可在 设置 → 常用 → 代理 里填本机代理(会用于模型下载),或在上面填镜像前缀。当前代理:{{ setting.proxy || "未设置" }}</div>
+                        </el-col>
+                        <el-col :span="24" v-for="m in localModels" :key="m.id">
+                          <div class="setting-line api-profile-row local-model-row">
+                            <span class="local-model-name">{{ m.name }}</span>
+                            <el-tag :type="m.installed ? 'success' : 'info'" size="small">{{ m.installed ? '已安装 ' + m.installedSizeText : '未安装' }}</el-tag>
+                            <template v-if="m.downloading">
+                              <el-progress :percentage="m.percent || 0" :stroke-width="14" style="width: 180px;" />
+                              <span class="local-model-status">{{ m.message }}</span>
+                              <el-button text type="danger" @click="cancelLocalModel(m.id)">取消</el-button>
+                            </template>
+                            <template v-else>
+                              <span class="local-model-status">{{ m.desc }}</span>
+                              <span style="flex: 1;"></span>
+                              <el-button type="primary" plain @click="downloadLocalModel(m.id)">{{ m.installed ? '重新下载' : '下载' }}</el-button>
+                              <el-button text :disabled="!m.installed" @click="openLocalModelDir(m.id)">打开目录</el-button>
+                              <el-button text type="danger" :disabled="!m.installed" @click="deleteLocalModel(m.id)">删除</el-button>
+                            </template>
+                          </div>
+                          <!-- 该模型自己的参数(权重/倍数/降噪/分块/显卡等),schema 由后端 OPTION_SCHEMA 提供 -->
+                          <div v-if="m.installed && localModelMeta[m.id] && (localModelMeta[m.id].schema || []).length" class="local-model-options">
+                            <div class="local-model-option" v-for="f in localModelMeta[m.id].schema" :key="f.key">
+                              <span class="local-model-option-label">{{ f.label }}</span>
+                              <el-select
+                                v-if="f.type === 'weights'"
+                                class="local-model-option-control"
+                                :model-value="localModelOptions(m.id)[f.key]"
+                                @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)"
+                                filterable allow-create default-first-option>
+                                <el-option v-for="w in (localModelMeta[m.id].weights || [])" :key="w" :label="w" :value="w" />
+                              </el-select>
+                              <el-select
+                                v-else-if="f.type === 'select'"
+                                class="local-model-option-control"
+                                :model-value="localModelOptions(m.id)[f.key]"
+                                @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)">
+                                <el-option v-for="o in f.options" :key="String(o)" :label="String(o)" :value="o" />
+                              </el-select>
+                              <el-input-number
+                                v-else-if="f.type === 'number'"
+                                class="local-model-option-control"
+                                :model-value="localModelOptions(m.id)[f.key]"
+                                :min="f.min" :max="f.max"
+                                @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)" />
+                              <el-switch
+                                v-else-if="f.type === 'bool'"
+                                :model-value="localModelOptions(m.id)[f.key]"
+                                @update:model-value="(val) => setLocalModelOption(m.id, f.key, val)" />
+                              <span class="local-model-option-hint">{{ f.hint }}</span>
+                            </div>
+                          </div>
+                          <div v-if="m.installed && !(localModelMeta[m.id] && (localModelMeta[m.id].schema || []).length)" class="setting-line toolbar-tip">该模型没有额外参数</div>
+                          <div v-if="m.error" class="setting-line" style="color: #f56c6c;">{{ m.error }}</div>
+                          <div v-else-if="!m.available" class="setting-line" style="color: #e6a23c;">{{ m.unavailableReason }}</div>
+                        </el-col>
+        
+            </el-row>
+          </div>
+          <div class="feature-pane" v-show="activeFeature === 'colorize'">
+            <el-row :gutter="8">
+              <el-col :span="24">
+                          <div class="setting-line">
+                            <el-divider content-position="left">{{$t('m.imageColorize')}}</el-divider>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">{{$t('m.useApi')}}</span></template>
+                              <el-select v-model="setting.colorizeApiProfileId" clearable placeholder=" " @change="saveSetting">
+                                <el-option v-for="p in (setting.aiApiProfiles || [])" :key="p.id" :label="p.name || p.baseUrl" :value="p.id" />
+                              </el-select>
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">{{$t('m.saveMode')}}</span></template>
+                              <el-select v-model="setting.colorizeSaveMode" placeholder=" " @change="saveSetting">
+                                <el-option :label="$t('m.saveModeSame')" value="same"></el-option>
+                                <el-option :label="$t('m.saveModeReplace')" value="replace"></el-option>
+                                <el-option :label="$t('m.saveModePreview')" value="preview"></el-option>
+                              </el-select>
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+          
+            </el-row>
+          </div>
+          <div class="feature-pane" v-show="activeFeature === 'metadata'">
+            <el-row :gutter="8">
+              <el-col :span="24">
+                          <div class="setting-line">
+                            <el-divider content-position="left">{{$t('m.aiInfoProcessing')}}</el-divider>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">{{$t('m.textExtractModel')}}</span></template>
+                              <el-select v-model="setting.ocrApiProfileId" clearable placeholder=" " @change="saveSetting">
+                                <el-option v-for="p in (setting.aiApiProfiles || [])" :key="p.id" :label="p.name || p.baseUrl" :value="p.id" />
+                              </el-select>
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">{{$t('m.textProcessModel')}}</span></template>
+                              <el-select v-model="setting.infoProcessApiProfileId" clearable placeholder=" " @change="saveSetting">
+                                <el-option v-for="p in (setting.aiApiProfiles || [])" :key="p.id" :label="p.name || p.baseUrl" :value="p.id" />
+                              </el-select>
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">{{$t('m.tagGenCategories')}}</span></template>
+                              <el-select v-model="setting.tagGenCategories" multiple collapse-tags clearable placeholder=" " @change="saveSetting">
+                                <el-option v-for="c in tagCategoryKeys" :key="c" :label="tagCategoryLabel(c)" :value="c" />
+                              </el-select>
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">{{$t('m.storyGenTypes')}}</span></template>
+                              <el-select v-model="setting.storyGenTypes" placeholder=" " @change="saveSetting">
+                                <el-option :label="$t('m.storySummaryOpt')" value="summary"></el-option>
+                                <el-option :label="$t('m.storyFullOpt')" value="full"></el-option>
+                              </el-select>
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">{{$t('m.translateTargetLang')}}</span></template>
+                              <el-select v-model="setting.translateTargetLang" placeholder=" " @change="saveSetting">
+                                <el-option :label="$t('m.langZhCn')" value="zh-CN"></el-option>
+                                <el-option :label="$t('m.langZhTw')" value="zh-TW"></el-option>
+                                <el-option :label="$t('m.langEn')" value="en"></el-option>
+                                <el-option :label="$t('m.langJa')" value="ja"></el-option>
+                                <el-option :label="$t('m.langKo')" value="ko"></el-option>
+                              </el-select>
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">{{$t('m.translateSaveMode')}}</span></template>
+                              <el-select v-model="setting.translateSaveMode" placeholder=" " @change="saveSetting">
+                                <el-option :label="$t('m.saveToMangaFolder')" value="folder"></el-option>
+                                <el-option :label="$t('m.saveModePreview')" value="preview"></el-option>
+                              </el-select>
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line">
+                            <NameFormItem class="label-input" prependWidth="110px">
+                              <template #prepend><span class="setting-label">{{$t('m.ocrSaveMode')}}</span></template>
+                              <el-select v-model="setting.ocrSaveMode" placeholder=" " @change="saveSetting">
+                                <el-option :label="$t('m.saveToMangaFolder')" value="folder"></el-option>
+                                <el-option :label="$t('m.saveNone')" value="none"></el-option>
+                              </el-select>
+                            </NameFormItem>
+                          </div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line toolbar-tip">{{$t('m.aiProcessTip')}}</div>
+                        </el-col>
+                        <el-col :span="24">
+                          <div class="setting-line toolbar-tip">{{$t('m.imageApiTip')}}</div>
+                        </el-col>
+          
+            </el-row>
+          </div>
+          <div class="feature-pane" v-show="activeFeature === 'download'">
+            <el-row :gutter="8">
+              <el-col :span="24">
+                <div class="custom-theme-panel download-setting-panel">
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadPath')}}</span>
+                                  <div class="theme-value download-path-value">
+                                    <el-input v-model="setting.downloadPath" size="small" :placeholder="$t('m.downloadPathPlaceholder')" @change="saveSetting">
+                                      <template #append><el-button size="small" @click="pickDownloadPath">{{$t('m.select')}}</el-button></template>
+                                    </el-input>
+                                  </div>
+                                </div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadConcurrency')}}</span>
+                                  <div class="theme-value">
+                                    <el-input-number v-model="setting.downloadConcurrency" :min="1" :max="10" :step="1" size="small" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadPageRate')}}</span>
+                                  <div class="theme-value rate-inputs">
+                                    <el-input-number v-model="setting.downloadPageRate" :min="0" :max="1000" :step="1" size="small" controls-position="right" @change="saveSetting" />
+                                    <span class="rate-sep">页 /</span>
+                                    <el-input-number v-model="setting.downloadPageRateSec" :min="0" :max="3600" :step="5" size="small" controls-position="right" @change="saveSetting" />
+                                    <span class="rate-sep">秒</span>
+                                  </div>
+                                </div>
+                                <div class="setting-hint">{{$t('m.downloadPageRateHint')}}</div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadOriginalDefault')}}</span>
+                                  <div class="theme-value">
+                                    <el-switch v-model="setting.downloadOriginal" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <!-- 勾上后点「下载」不再弹窗,直接用下面的下载目录 + 默认名称 -->
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadUseDefault')}}</span>
+                                  <div class="theme-value">
+                                    <el-switch v-model="setting.downloadUseDefault" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="setting-hint">{{$t('m.downloadUseDefaultHint')}}</div>
+                                <!-- 失败任务自动重试(主进程里定时跑,关掉网页也会继续) -->
+                                <div class="download-subsection-title">{{$t('m.downloadRetryTitle')}}</div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadRetryEnabled')}}</span>
+                                  <div class="theme-value">
+                                    <el-switch v-model="setting.retryEnabled" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadRetryInterval')}}</span>
+                                  <div class="theme-value">
+                                    <el-input-number v-model="setting.retryIntervalMin" :min="1" :max="1440" :step="5" size="small" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadRetryTimes')}}</span>
+                                  <div class="theme-value">
+                                    <el-input-number v-model="setting.retryTimes" :min="0" :max="99" :step="1" size="small" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="setting-hint">{{$t('m.downloadRetryHint')}}</div>
+                                <!-- 请求频率限制:照 JHenTai 的 Rate(maximum/period),防 EH 限速最有效 -->
+                                <div class="download-subsection-title">{{$t('m.downloadRateTitle')}}</div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadMaxPerPeriod')}}</span>
+                                  <div class="theme-value">
+                                    <el-input-number v-model="setting.downloadMaxPerPeriod" :min="0" :max="20" :step="1" size="small" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadPeriodSec')}}</span>
+                                  <div class="theme-value">
+                                    <el-input-number v-model="setting.downloadPeriodSec" :min="0.1" :max="60" :step="0.5" size="small" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="setting-hint">{{$t('m.downloadRateHint')}}</div>
+              
+                </div>
+              </el-col>
+            </el-row>
+          </div>
+          <div class="feature-pane" v-show="activeFeature === 'fileMove'">
+            <el-row :gutter="8">
+              <el-col :span="24">
+                <div class="custom-theme-panel download-setting-panel">
+                  <!-- 默认移动路径:下载记录头部的「移动」用它(填了并启用就直接移,不再弹选择)。
+                                     只能在「已有库的文件夹及其子文件夹」里选,不允许随便一个目录。 -->
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadMoveDefaultPath')}}</span>
+                                  <div class="theme-value download-path-value">
+                                    <LibraryFolderPicker v-model="setting.moveDefaultPath" :placeholder="$t('m.downloadMovePick')" @update:model-value="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadMoveDefaultPathEnabled')}}</span>
+                                  <div class="theme-value">
+                                    <el-switch v-model="setting.moveDefaultPathEnabled" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="setting-hint">{{$t('m.downloadMoveDefaultPathHint')}}</div>
+                                <!-- 单本移动路径:记录上的移动按钮用它(同样只能选库里的目录) -->
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadMoveSinglePath')}}</span>
+                                  <div class="theme-value download-path-value">
+                                    <LibraryFolderPicker v-model="setting.moveSinglePath" :placeholder="$t('m.downloadMovePick')" @update:model-value="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="setting-hint">{{$t('m.downloadMoveSinglePathHint')}}</div>
+                                <!-- 下载完成后自动移动:下完就搬到指定目录,不用再手点「移动」 -->
+                                <div class="download-subsection-title">{{$t('m.downloadAutoMoveTitle')}}</div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadAutoMoveEnabled')}}</span>
+                                  <div class="theme-value">
+                                    <el-switch v-model="setting.downloadAutoMoveEnabled" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadAutoMovePath')}}</span>
+                                  <div class="theme-value download-path-value">
+                                    <LibraryFolderPicker v-model="setting.downloadAutoMovePath" :placeholder="$t('m.downloadMovePick')" @update:model-value="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="setting-hint">{{$t('m.downloadAutoMoveHint')}}</div>
+                                <!-- 移动完成后移除记录:移进库里就把下载记录删掉,列表不会越积越多 -->
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.downloadRemoveAfterMove')}}</span>
+                                  <div class="theme-value">
+                                    <el-switch v-model="setting.downloadRemoveAfterMove" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="setting-hint">{{$t('m.downloadRemoveAfterMoveHint')}}</div>
+                                <div class="setting-hint">{{$t('m.downloadSettingsHint')}}</div>
+            
+                </div>
+              </el-col>
+            </el-row>
+          </div>
+        </div>
+      </div>
+    </el-tab-pane><el-tab-pane v-if="isWebLoggedIn || !isWebMode" :label="$t('m.accounts')" name="accounts">
         <el-row :gutter="8">
           <el-col :span="24">
             <!-- 未登录(网页版已启用鉴权但无会话):在设置内直接登录,避免整页空白 -->
@@ -1903,10 +1991,10 @@ import LibraryFolderPicker from './LibraryFolderPicker.vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import draggable from 'vuedraggable'
-import { MdRefresh, MdSync, MdShuffle, MdCodeDownload, MdBook, MdColorPalette, MdPhonePortrait, MdFunnel } from '@vicons/ionicons4'
+import { MdRefresh, MdSync, MdShuffle, MdCodeDownload, MdBook, MdColorPalette, MdPhonePortrait, MdFunnel, MdOptions, MdCloudDownload, MdSettings } from '@vicons/ionicons4'
 import { Delete, InfoFilled } from '@element-plus/icons-vue'
-import { TreeViewAlt, CicsSystemGroup, TagGroup, Maximize } from '@vicons/carbon'
-import { sortCatsByOrder, tagCatRank, getDisplayTagName, FALLBACK_CAT, isBuiltinCat } from '../utils.js'
+import { TreeViewAlt, CicsSystemGroup, TagGroup, Maximize, Catalog } from '@vicons/carbon'
+import { sortCatsByOrder, tagCatRank, getDisplayTagName, tagColorOf, tagDisplayPrefix, tagNameVariants, categoryDisplayName, FALLBACK_CAT, isBuiltinCat } from '../utils.js'
 import { Search32Filled, ArrowTrendingLines20Filled } from '@vicons/fluent'
 
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
@@ -1979,6 +2067,11 @@ const toolbarIconMap = {
   themeSwitch: MdColorPalette,
   fullscreen: Maximize,
   detailPanel: InfoFilled,
+  // 下面几项以前缺图标,「设置 → 高级 → 工具栏按钮」列表里是空白
+  switchLibrary: Catalog,
+  filter: MdOptions,
+  downloads: MdCloudDownload,
+  setting: MdSettings,
 }
 const toolbarButtonsShown = computed({
   get: () => {
@@ -3252,35 +3345,72 @@ const resetImageExplorer = async () => {
   saveSetting()
 }
 
-const loadTranslationFromEhTagTranslation = async () => {
-  const resultObject = {}
-  const translationCache = JSON.parse(localStorage.getItem('translationCache') || "{}")
-  resolvedTranslation.value = translationCache
-  ipcRenderer.invoke('update-tag-translation', translationCache)
-  await fetch('https://github.com/EhTagTranslation/Database/releases/latest/download/db.text.json')
-  .then(res => res.json())
-  .then(res => {
-    const database = Array.isArray(res) ? res : (res.data || [])
+// 标签词库(EhTagTranslation):下载/缓存都交给主进程 —— 渲染进程直接 fetch GitHub
+// 在 NAS / 国内网络下经常拿不到,拿不到就一直是原始英文标签。
+const translationStatus = ref('')      // '' | 'loading' | 'ok' | 'fail'
+const translationUpdatedAt = ref(0)
+const translationUpdatedText = computed(() => {
+  if (!translationUpdatedAt.value) return ''
+  const d = new Date(translationUpdatedAt.value)
+  const p2 = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`
+})
+// 把词库里的中文名写进「标签名称」(setting.tagNameLangs['分类::标签']['zh-CN'])。
+// 只补空着的,不覆盖用户手填的;库里全部标签跑一遍,所以更新词库之后
+// 双击任意标签都能看到对应名称(以前只有下载记录会写,库里标签永远空着)。
+const backfillTagNames = async () => {
+  const tr = resolvedTranslation.value || {}
+  if (!tr || !Object.keys(tr).length) return 0
+  if (!setting.value.tagNameLangs) setting.value.tagNameLangs = {}
+  const map = setting.value.tagNameLangs
+  let changed = 0
+  const put = (cat, tag) => {
+    if (!cat || !tag) return
+    const ck = resolveCatKey(cat)
+    const hit = (tr[ck] || {})[tag]
+    if (!hit || !hit.name) return
+    const key = ck + '::' + tag
+    const cur = map[key] || {}
+    if (cur['zh-CN']) return
+    map[key] = { ...cur, 'zh-CN': hit.name }
+    changed++
+  }
+  for (const t of (tagListRaw.value || [])) put(t.cat, t.tag)
+  for (const [cat, arr] of Object.entries(setting.value.globalTags || {})) {
+    for (const t of (Array.isArray(arr) ? arr : [])) put(cat, t)
+  }
+  if (changed) {
+    await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+    emit('loadBookList')
+  }
+  return changed
+}
 
-    database.forEach(namespaceObj => {
-      const namespace = namespaceObj.namespace
-      resultObject[namespace] = {}
-      if (namespaceObj.frontMatters) {
-        resultObject[namespace]._name = namespaceObj.frontMatters.name
-      }
-      _.forIn(namespaceObj.data, (value, key) => {
-        resultObject[namespace][key] = _.pick(value, ['name', 'intro'])
-      })
-    })
-
-    resolvedTranslation.value = resultObject
-    ipcRenderer.invoke('update-tag-translation', resultObject)
-    localStorage.setItem('translationCache', JSON.stringify(resultObject))
-  })
-  .catch((error) => {
-    console.log(error)
-    // 抓取失败:安静退回本地翻译缓存(不再弹「使用翻译缓存」提示)
-  })
+const loadTranslationFromEhTagTranslation = async (force = false) => {
+  translationStatus.value = 'loading'
+  try {
+    const res = await ipcRenderer.invoke('load-tag-translation', { force: !!force })
+    if (res && res.ok && res.data && Object.keys(res.data).length) {
+      resolvedTranslation.value = res.data
+      translationUpdatedAt.value = res.updatedAt || 0
+      translationStatus.value = 'ok'
+      ipcRenderer.invoke('update-tag-translation', res.data)
+      // 词库到位后立刻补齐「标签名称」,不要求用户再逐个双击
+      const n = await backfillTagNames()
+      if (n && force) printMessage('success', t('m.tagTranslationUpdated') + ' ' + translationUpdatedText.value)
+      return
+    }
+    // 主进程也拿不到(第一次且没网):退回本机以前缓存的旧词库,总比没有强
+    const cache = JSON.parse(localStorage.getItem('translationCache') || '{}')
+    if (cache && Object.keys(cache).length) {
+      resolvedTranslation.value = cache
+      translationStatus.value = 'ok'
+    } else {
+      translationStatus.value = 'fail'
+    }
+  } catch (e) {
+    translationStatus.value = 'fail'
+  }
 }
 
 const handleTranslationSettingChange = (val) => {
@@ -3293,17 +3423,21 @@ const handleTranslationSettingChange = (val) => {
 }
 
 const testProxy = async () => {
-  await fetch('https://e-hentai.org')
-  .then((res) => {
-    if (res.status === 200) {
-      printMessage('success', t('c.proxyWorking'))
+  // ⚠ 必须在主进程里测:渲染进程的 fetch 不读 setting.proxy,
+  //   以前这里直接 fetch EH,结果「代理明明连上了也一直报连接错误」
+  proxyTesting.value = true
+  try {
+    const r = await ipcRenderer.invoke('test-proxy', { proxy: setting.value.proxy })
+    if (r && r.ok) {
+      printMessage('success', t('c.proxyWorking') + ` (${r.proxy}, HTTP ${r.status}, ${r.ms}ms)`)
     } else {
-      printMessage('error', `Error ${res.status}: ` + t('c.proxyNotWorking'))
+      printMessage('error', t('c.proxyNotWorking') + (r && r.error ? ' — ' + r.error : ''))
     }
-  })
-  .catch((error) => {
-    printMessage('error', t('c.proxyNotWorking'))
-  })
+  } catch (e) {
+    printMessage('error', t('c.proxyNotWorking') + ' — ' + String((e && e.message) || e))
+  } finally {
+    proxyTesting.value = false
+  }
 }
 
 const autoCheckUpdates = async (forceShowDialog) => {
@@ -3835,7 +3969,7 @@ const allTagsGroups = computed(() => {
     // 标签显示名:① 自定义(按目标语言) ② 词库(按目标语言) ③ 原始名
     const labelTail = getDisplayTagName(setting.value, resolveCatKey(tag.cat), tag.tag)
       || (setting.value.showTranslation ? (resolvedTranslation.value[resolveCatKey(tag.cat)]?.[tag.tag]?.name || tag.tag) : tag.tag)
-    map[normCat].tags.push({ id: tag.id, cat: tag.cat, tag: tag.tag, letter: tag.letter, label: labelTail })
+    map[normCat].tags.push({ id: tag.id, cat: normCat, tag: tag.tag, letter: tag.letter, label: labelTail })
   }
   // 设置里登记的「全局标签」(用「增加标签」建的,不挂在任何书上):也要显示出来
   const globalTags = setting.value.globalTags || {}
@@ -3876,6 +4010,17 @@ const allTagsGroups = computed(() => {
   return groups
 })
 
+// 标签块里每个标签用什么颜色:设置里配过就用配的(收藏标签自带颜色兜底)
+const tagChipColor = (tag) => {
+  if (!tag) return ''
+  return tagColorOf(setting.value, tag.cat, tag.tag) || ''
+}
+// 标签颜色 = 字体颜色(文字和描边走同一个色,不填背景)
+const tagColorStyle = (cat, tag) => {
+  const c = tagColorOf(setting.value, cat, tag)
+  return c ? { color: c, borderColor: c } : {}
+}
+
 // 类别标签拖动排序:列表只用于拖拽,v-model 改动后写回 setting.tagCatOrder 并落盘。
 // 存的是归一化后的英文类别键(resolveCatKey 已在 allTagsGroups 里统一),避免中英混用出现两条。
 const orderedTagCats = computed({
@@ -3914,19 +4059,8 @@ const categoryDefaultName = (cat) => {
   return d || catDisplayName(key)
 }
 // 类别显示名:① 用户给类别起的多语言名 ② 在线词库的分类名 ③ 内置中文名 ④ 原键
-const categoryLabel = (cat) => {
-  const key = resolveCatKey(cat)
-  // 自定义类别名:目标语言优先,没有则用默认名称
-  const rec = (setting.value.tagCatNameLangs || {})[key] || (setting.value.tagCatNameLangs || {})[cat]
-  if (rec) {
-    const lang = setting.value.tagTargetLang || ''
-    if (lang && rec[lang] && String(rec[lang]).trim()) return String(rec[lang]).trim()
-    const d = rec['default']
-    if (d && String(d).trim()) return String(d).trim()
-  }
-  if (setting.value.showTranslation) return resolvedTranslation.value[key]?._name || catDisplayName(key)
-  return catDisplayName(key)
-}
+// 自定义类别名:目标语言优先,没有则用默认名称(与全 app 统一的类别显示名同一套规则)
+const categoryLabel = (cat) => categoryDisplayName(setting.value, resolvedTranslation.value, cat)
 
 // ---------- 添加类别 ----------
 // 只创建「空类别」:写进 setting.tagCatOrder 末尾,于是它会立刻出现在类别标签区(0 个标签),
@@ -4029,6 +4163,13 @@ const tagEditItem = ref(null)
 // 类别本身也有多语言名称:存在 setting.tagCatNameLangs[cat] = { 'zh-CN', 'zh-TW', ja, en }
 const tagEditIsCategory = ref(false)
 const tagEditLangs = ref({ 'zh-CN': '', 'zh-TW': '', ja: '', en: '' })
+// 标签颜色(改到「编辑标签」弹窗里设置):存 setting.tagColors['分类::标签']
+const tagEditColor = ref('')
+// 标签所属类别(保存时若变了,就把全库这条标签搬到新类别)
+const tagEditCat = ref('')
+const tagEditOrigCat = ref('')
+// 标题分析(本地对比 + 格式识别,不调用 AI)
+const titleAnalyzing = ref(false)
 // 标题只显示所属类别,不再拼接标签名 —— 标签名已经交给下面的「默认名称」输入框编辑
 const tagEditTitle = computed(() => {
   const it = tagEditItem.value
@@ -4042,15 +4183,28 @@ const openTagNameEditor = (tag) => {
   if (!tag || !tag.cat) return
   const isCat = !tag.tag
   tagEditIsCategory.value = isCat
+  const catKey = resolveCatKey(tag.cat)
   const rec = isCat
-    ? ((setting.value.tagCatNameLangs || {})[resolveCatKey(tag.cat)] || {})
-    : ((setting.value.tagNameLangs || {})[tag.cat + '::' + tag.tag] || {})
+    ? ((setting.value.tagCatNameLangs || {})[catKey] || {})
+    : ((setting.value.tagNameLangs || {})[catKey + '::' + tag.tag] || {})
   // 默认名称 = 标签/类别的原始名,可在弹窗里改;选了具体语言但没填时回退到它
   tagEditLangs.value = {
     'default': rec['default'] || (isCat ? catDisplayName(resolveCatKey(tag.cat)) : String(tag.tag || '')),
-    'zh-CN': rec['zh-CN'] || '', 'zh-TW': rec['zh-TW'] || '', ja: rec.ja || '', en: rec.en || '',
+    // 没写过「标签名称」时,直接把词库里的中文名填进来(双击就能看到对应名称)
+    'zh-CN': rec['zh-CN'] || (!isCat ? ((resolvedTranslation.value[catKey] || {})[tag.tag] || {}).name : '') || '',
+    'zh-TW': rec['zh-TW'] || '', ja: rec.ja || '', en: rec.en || '',
   }
   tagEditItem.value = isCat ? { cat: resolveCatKey(tag.cat), isCategory: true } : tag
+  tagEditCat.value = resolveCatKey(tag.cat)
+  tagEditOrigCat.value = resolveCatKey(tag.cat)
+  // 颜色:新键优先,兼容老数据(收藏标签里的 color)
+  if (!isCat) {
+    const key = catKey + '::' + tag.tag
+    const old = ((setting.value.collectTag || []).find(x => x && (x.id === (catKey + ':' + tag.tag) || x.id === (tag.cat + ':' + tag.tag))) || {}).color
+    tagEditColor.value = ((setting.value.tagColors || {})[key]) || old || ''
+  } else {
+    tagEditColor.value = ''
+  }
   tagEditVisible.value = true
 }
 // ---------- 关联标签(包含 / 被包含) ----------
@@ -4150,22 +4304,136 @@ const saveTagNames = async () => {
     en: (tagEditLangs.value.en || '').trim(),
   }
   const empty = !lang['default'] && !lang['zh-CN'] && !lang['zh-TW'] && !lang.ja && !lang.en
+
   if (tagEditIsCategory.value) {
-    // 类别的多语言名称:setting.tagCatNameLangs[cat]
     if (!setting.value.tagCatNameLangs) setting.value.tagCatNameLangs = {}
     const ck = resolveCatKey(it.cat)
     if (empty) delete setting.value.tagCatNameLangs[ck]
     else setting.value.tagCatNameLangs[ck] = { ...(setting.value.tagCatNameLangs[ck] || {}), ...lang }
-  } else {
-    if (!setting.value.tagNameLangs) setting.value.tagNameLangs = {}
-    const key = it.cat + '::' + it.tag
-    if (empty) delete setting.value.tagNameLangs[key]
-    else setting.value.tagNameLangs[key] = { ...(setting.value.tagNameLangs[key] || {}), ...lang }
+    await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+    tagEditVisible.value = false
+    printMessage('success', t('m.saveTagNamesDone'))
+    emit('loadBookList')
+    return
   }
+
+  const oldCat = resolveCatKey(tagEditOrigCat.value || it.cat)
+  const newCat = resolveCatKey(tagEditCat.value || oldCat)
+  // 本标签的全部名字(用 / 分隔),用于查重
+  const myNames = new Set()
+  for (const v of Object.values(lang)) for (const n of String(v || '').split('/')) {
+    const x = n.trim().toLowerCase()
+    if (x) myNames.add(x)
+  }
+  // 同类别同名 → 合并;不同类别同名 → 问要不要搬过去
+  let conflict = null
+  for (const g of (allTagsGroups.value || [])) {
+    for (const t of (g.tags || [])) {
+      if (t.tag === it.tag && resolveCatKey(t.cat) === oldCat) continue
+      const variants = tagNameVariants(setting.value, resolvedTranslation.value, t.cat, t.tag).map(v => String(v).toLowerCase())
+      if (variants.some(v => myNames.has(v))) { conflict = { cat: resolveCatKey(t.cat), tag: t.tag }; break }
+    }
+    if (conflict) break
+  }
+
+  let movedToCat = newCat
+  try {
+    if (conflict && conflict.cat === newCat) {
+      await ElMessageBox.confirm(
+        t('m.tagMergeConfirm', { name: getDisplayTagName(setting.value, conflict.cat, conflict.tag) || conflict.tag }),
+        t('m.tagMergeTitle'),
+        { type: 'warning' }
+      )
+      // 合并:全库把这条标签改成目标标签,再删掉自己的名称/颜色记录
+      await ipcRenderer.invoke('rename-tag', { cat: newCat, oldName: it.tag, newName: conflict.tag })
+      if (setting.value.tagNameLangs) delete setting.value.tagNameLangs[oldCat + '::' + it.tag]
+      if (setting.value.tagColors) delete setting.value.tagColors[oldCat + '::' + it.tag]
+      await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+      tagEditVisible.value = false
+      printMessage('success', t('m.saveTagNamesDone'))
+      emit('loadBookList')
+      return
+    }
+    if (conflict && conflict.cat !== newCat) {
+      await ElMessageBox.confirm(
+        t('m.tagMoveToCatConfirm', { cat: categoryLabel(conflict.cat), name: getDisplayTagName(setting.value, conflict.cat, conflict.tag) || conflict.tag }),
+        t('m.tagMergeTitle'),
+        { type: 'warning' }
+      )
+      movedToCat = conflict.cat
+      await ipcRenderer.invoke('move-tag', { fromCat: oldCat, name: it.tag, toCat: movedToCat, newName: conflict.tag })
+      // 记住:以后遇到同名标签都自动归到这个类别
+      if (!setting.value.tagNameCategoryMap) setting.value.tagNameCategoryMap = {}
+      for (const n of myNames) setting.value.tagNameCategoryMap[n] = movedToCat
+      if (setting.value.tagNameLangs) delete setting.value.tagNameLangs[oldCat + '::' + it.tag]
+      if (setting.value.tagColors) delete setting.value.tagColors[oldCat + '::' + it.tag]
+      if (setting.value.tagRelations) delete setting.value.tagRelations[oldCat + '::' + it.tag]
+      await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
+      tagEditVisible.value = false
+      printMessage('success', t('m.saveTagNamesDone'))
+      emit('loadBookList')
+      return
+    }
+    // 换了类别(没冲突):全库搬过去
+    if (movedToCat !== oldCat) {
+      await ipcRenderer.invoke('move-tag', { fromCat: oldCat, name: it.tag, toCat: movedToCat })
+      if (setting.value.tagNameLangs) delete setting.value.tagNameLangs[oldCat + '::' + it.tag]
+      if (setting.value.tagColors) delete setting.value.tagColors[oldCat + '::' + it.tag]
+      if (setting.value.tagRelations) {
+        const oldKey = oldCat + '::' + it.tag
+        const newKey = movedToCat + '::' + it.tag
+        const rel = setting.value.tagRelations[oldKey]
+        if (rel) { delete setting.value.tagRelations[oldKey]; setting.value.tagRelations[newKey] = rel }
+        for (const [k, v] of Object.entries(setting.value.tagRelations)) {
+          if (v && Array.isArray(v.contains)) {
+            setting.value.tagRelations[k] = { ...v, contains: v.contains.map(x => (x === oldKey ? newKey : x)) }
+          }
+        }
+      }
+      tagEditItem.value = { ...it, cat: movedToCat }
+      tagEditOrigCat.value = movedToCat
+    }
+  } catch (e) {
+    // 用户取消确认:什么都不做,保持弹窗
+    return
+  }
+
+  if (!setting.value.tagNameLangs) setting.value.tagNameLangs = {}
+  const key = movedToCat + '::' + it.tag
+  if (empty) delete setting.value.tagNameLangs[key]
+  else setting.value.tagNameLangs[key] = { ...(setting.value.tagNameLangs[key] || {}), ...lang }
+  if (!setting.value.tagColors) setting.value.tagColors = {}
+  if (tagEditColor.value) setting.value.tagColors[key] = tagEditColor.value
+  else delete setting.value.tagColors[key]
+  // 记住「这个名字属于哪个类别」,以后同名标签自动归到这里
+  if (!setting.value.tagNameCategoryMap) setting.value.tagNameCategoryMap = {}
+  for (const n of myNames) setting.value.tagNameCategoryMap[n] = movedToCat
+
   await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
   tagEditVisible.value = false
   printMessage('success', t('m.saveTagNamesDone'))
   emit('loadBookList')
+}
+// 标题分析:和库里已有标签做对比(标题按括号/分隔符切开),命中就写入 团队/作者/原作/角色
+const analyzeTitles = async () => {
+  if (titleAnalyzing.value) return
+  try {
+    await ElMessageBox.confirm(t('m.titleAnalyzeConfirm'), t('m.titleAnalyze'), { type: 'info' })
+  } catch (e) { return }
+  titleAnalyzing.value = true
+  try {
+    const res = await ipcRenderer.invoke('analyze-titles-by-tags', {})
+    if (res && res.ok) {
+      printMessage('success', t('m.titleAnalyzeDone', { changed: res.changed || 0, added: res.added || 0 }))
+      emit('loadBookList')
+    } else {
+      printMessage('error', (res && res.error) || 'failed')
+    }
+  } catch (e) {
+    printMessage('error', String(e.message || e))
+  } finally {
+    titleAnalyzing.value = false
+  }
 }
 // ---------- 删除类别 ----------
 // 类别是「大分类」。删掉它时,该类别下的标签不能凭空消失,统一归入内置的「其他」类别。
@@ -4811,6 +5079,16 @@ const changelog = [
   },
 ]
 const activeSettingPanel = ref('general')
+const proxyTesting = ref(false)
+// 「功能」页:右边选项 / 左边内容
+const activeFeature = ref('upscale')
+const featureTabs = computed(() => [
+  { id: 'upscale', label: t('m.imageUpscale') },
+  { id: 'colorize', label: t('m.imageColorize') },
+  { id: 'metadata', label: t('m.aiInfoProcessing') },
+  { id: 'download', label: t('m.download') },
+  { id: 'fileMove', label: t('m.fileMove') },
+])
 // 打开设置 / 切到「账户」页时,把上次用的 EH 账号带出来(密码永不回填)
 watch([dialogVisibleSetting, activeSettingPanel], ([open, panel]) => {
   if (open && panel === 'accounts') seedEhUsername()
@@ -4869,7 +5147,53 @@ defineExpose({
 .setting-line.regexp
   .el-input__inner
     font-family: 'Consolas', 'Monaco', 'Courier New', monospace
-.setting-line.collect-tag
+.setting-line.tag-option-row
+  // 收藏标签 / 随机标签 / 语言 / 更新词库:强制一行(用户要求),放不下就压缩状态文字
+  display: flex
+  align-items: center
+  flex-wrap: nowrap
+  gap: 12px
+  overflow: hidden
+  .tag-translate-label
+    margin-left: 4px
+    flex: none
+  .tag-target-lang
+    flex: none
+    width: 128px
+  .tag-translation-refresh
+    flex: none
+  .tag-translation-status
+    margin: 0
+    flex: 1 1 auto
+    min-width: 0
+    white-space: nowrap
+    overflow: hidden
+    text-overflow: ellipsis
+.tag-color-editor
+  display: flex
+  align-items: center
+  gap: 8px
+  margin: 4px 0 10px
+  .tag-color-label
+    font-size: 13px
+    color: var(--el-text-color-regular)
+.tag-cat-editor
+  display: flex
+  align-items: center
+  gap: 8px
+  margin: 2px 0 6px
+.tag-name-hint
+  font-size: 12px
+  color: var(--el-text-color-secondary)
+  margin-bottom: 6px
+.rate-inputs
+  display: flex
+  align-items: center
+  gap: 4px
+  .rate-sep
+    font-size: 12px
+    color: var(--el-text-color-secondary)
+.collect-tag
   .el-form-item
     margin-bottom: 0
   .el-tag
@@ -4900,6 +5224,34 @@ defineExpose({
   justify-content: space-between
   gap: 8px
   margin-bottom: 8px
+  // 标题 + 感叹号贴在一起,按钮组仍然靠右(感叹号吃掉中间空档)
+  .context-menu-title
+    margin-right: 0
+.tag-help-dot
+  flex: none
+  // 和标题字一样高、灰色、紧贴标题(不留大空隙)
+  width: 13px
+  height: 13px
+  line-height: 12px
+  text-align: center
+  border-radius: 50%
+  border: 1px solid var(--el-text-color-secondary)
+  color: var(--el-text-color-secondary)
+  font-size: 10px
+  font-weight: 700
+  cursor: help
+  user-select: none
+  // 父级 flex 还有 8px gap,这里补 -4px 让感叹号真正贴住标题
+  margin-left: -4px
+  margin-right: auto
+.tag-help-body
+  font-size: 12px
+  line-height: 1.7
+  .tag-help-title
+    font-weight: 600
+    margin-bottom: 4px
+  .tag-help-line
+    color: var(--el-text-color-regular)
 .tag-cat-list
   display: flex
   flex-wrap: wrap
@@ -4977,6 +5329,10 @@ defineExpose({
     transition: transform .15s ease
     &:hover
       transform: scale(1.05)
+// 已收藏的标签:加一圈圆角描边(用户要的「圆形框」),和未收藏的一眼区分
+.all-tag-item.is-collected
+  box-shadow: 0 0 0 1.5px var(--el-color-primary)
+  border-color: var(--el-color-primary)
 .tag-color-dot
   display: inline-block
   width: 10px
@@ -5087,6 +5443,42 @@ defineExpose({
 .guide-about-section
   .el-descriptions
     margin-top: 8px
+
+// 功能设置:左内容、右选项
+.feature-settings
+  display: flex
+  align-items: flex-start
+  gap: 14px
+  width: 100%
+  .feature-content
+    flex: 1 1 auto
+    min-width: 0
+    max-height: 60vh
+    overflow-y: auto
+    padding-right: 6px
+  .feature-menu
+    flex: 0 0 128px
+    display: flex
+    flex-direction: column
+    gap: 2px
+    padding-right: 10px
+    border-right: 1px solid var(--el-border-color-lighter)
+    position: sticky
+    top: 0
+  .feature-menu-item
+    padding: 7px 10px
+    border-radius: 4px
+    font-size: 13px
+    color: var(--el-text-color-regular)
+    cursor: pointer
+    user-select: none
+    white-space: nowrap
+    &:hover
+      background: var(--el-fill-color-light)
+    &.active
+      background: var(--el-color-primary-light-9)
+      color: var(--el-color-primary)
+      font-weight: 600
 
 .setting-tabs
   // 标签栏均分居中

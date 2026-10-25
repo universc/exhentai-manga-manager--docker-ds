@@ -119,7 +119,7 @@
                 v-lazy:[image.id]="{enter: handleImageEnter, leave: handleImageLeave}"
               >
                 <img
-                  v-if="loadedImages[image.id] || (image.online && image.filepath)"
+                  v-if="(loadedImages[image.id] || (image.online && image.filepath)) && !viewerImageFailed[image.id] && !image.failed"
                   :src="imageSrc(image)"
                   class="viewer-image" draggable="false"
                     @load="onViewerImageLoad(image)" @error="onViewerImageError(image)"
@@ -132,6 +132,7 @@
                   v-else
                   :style="{height: frameStyle(image, 'horizontal').height}"
                   :state="placeholderState(image)"
+                  :progress="imageLoadProgress(image)"
                   :index="index"
                   :total="viewerImageList.length"
                   @retry="retryOnlinePage(image)"
@@ -151,7 +152,7 @@
                   v-lazy:[image.id]="{enter: handleImageEnter, leave: handleImageLeave}"
                 >
                   <img
-                    v-if="loadedImages[image.id] || (image.online && image.filepath)"
+                    v-if="(loadedImages[image.id] || (image.online && image.filepath)) && !viewerImageFailed[image.id] && !image.failed"
                     :src="imageSrc(image)"
                     class="viewer-image" draggable="false"
                     @load="onViewerImageLoad(image)" @error="onViewerImageError(image)"
@@ -164,6 +165,7 @@
                     v-else
                     :style="{height: frameStyle(image, 'scrollSingle').height}"
                     :state="placeholderState(image)"
+                    :progress="imageLoadProgress(image)"
                     :index="index"
                     :total="viewerImageList.length"
                     @retry="retryOnlinePage(image)"
@@ -185,7 +187,7 @@
                     v-lazy:[image.id]="{enter: handleImageEnter, leave: handleImageLeave}"
                   >
                     <img
-                      v-if="loadedImages[image.id] || (image.online && image.filepath)"
+                      v-if="(loadedImages[image.id] || (image.online && image.filepath)) && !viewerImageFailed[image.id] && !image.failed"
                       :src="imageSrc(image)"
                       class="viewer-image" draggable="false"
                     @load="onViewerImageLoad(image)" @error="onViewerImageError(image)"
@@ -198,6 +200,7 @@
                       v-else
                       :style="{height: frameStyle(image, 'scrollDouble').height}"
                       :state="placeholderState(image)"
+                      :progress="imageLoadProgress(image)"
                       :index="viewerImageList.findIndex(im => im.id === image.id)"
                       :total="viewerImageList.length"
                       @retry="retryOnlinePage(image)"
@@ -259,6 +262,7 @@
                   >
                     <ViewerPagePlaceholder
                       :state="placeholderState(image)"
+                      :progress="imageLoadProgress(image)"
                       :index="viewerImageList.findIndex(im => im.id === image.id)"
                       :total="viewerImageList.length"
                       @retry="retryOnlinePage(image)"
@@ -956,7 +960,8 @@ const imageSrc = (image) => {
   const base = String(image.filepath)
   const sep = base.includes('?') ? '&' : '?'
   const ver = imageVersion.value[image.id]
-  return base + sep + 'id=' + image.id + (ver ? '&v=' + ver : '')
+  // t= 这一页的 id:主进程据此把下载进度回推给这一页的占位环
+  return base + sep + 'id=' + image.id + '&t=' + encodeURIComponent(image.id) + (ver ? '&v=' + ver : '')
 }
 
 const viewerZoomLabel = computed(() => isNovelMode.value ? String(novelFontSize.value) : Math.round(viewerZoom.value * 100) + '%')
@@ -1695,6 +1700,15 @@ onMounted(() => {
     }
   })
 
+  // 在线图片下载进度(主进程 emm-eh:// 读响应体时回推):占位上的环形进度条据此显示真实百分比
+  ipcRenderer.on('eh-image-progress', (event, arg) => {
+    if (!arg || !arg.t) return
+    const ratio = (typeof arg.ratio === 'number') ? arg.ratio : -1
+    // 只在页面还没出图时更新,减少无谓重渲染
+    if (loadedImages.value[arg.t]) return
+    setImageProgress(arg.t, ratio)
+  })
+
   showViewerSide.value = localStorage.getItem('showViewerSide') === 'true'
 
   window.addEventListener('resize', handleWindowResize)
@@ -1757,11 +1771,55 @@ const viewerImageReady = ref({})
 const viewerImageFailed = ref({})
 const onViewerImageLoad = (image) => {
   if (!image || !image.id) return
+  // H@H 节点抽风时会吐「加载了一半的残图」,这种中断经常不触发 @error:
+  // load 完后看实际宽高,解不出来(或小得离谱)就按失败处理,让用户能点重试
+  const el = document.getElementById(image.id)
+  if (el && el.tagName === 'IMG' && (!el.naturalWidth || el.naturalWidth < 10)) {
+    onViewerImageError(image)
+    return
+  }
   viewerImageReady.value = { ...viewerImageReady.value, [image.id]: true }
+  // 图片真实高度落地会改动整卷布局:加载的是当前页时校回一次(带节流,连续加载不抖)
+  if (image.id === currentImageId.value) {
+    clearTimeout(onViewerImageLoad._alignT)
+    onViewerImageLoad._alignT = setTimeout(() => {
+      try { scrollToImageElement(currentImageId.value) } catch (e) { /* 忽略 */ }
+    }, 120)
+  }
 }
+// ★在线图片加载失败:自动换 H@H 节点重试(照 JHenTai 的 reParse 机制)。
+//   ⚠ 这里以前有个观感 bug:先把 viewerImageFailed 置 true(界面**立刻**显示「这一页加载失败」),
+//     紧接着又把 resolving 设回 true → 界面下一帧又变成「正在解析」。
+//     于是用户看到「先失败、再正在解析」的乱跳。
+//   现在:失败不写「最终失败」标记,只做换节点重试;重试期间状态保持 resolving(转圈/进度),
+//     只有三轮都失败才真正标记失败(见 markImageFailed)。
 const onViewerImageError = (image) => {
   if (!image || !image.id) return
+  if (image.online && image.pageUrl) {
+    const tries = (image.__retry || 0) + 1
+    image.__retry = tries
+    if (tries <= 3) {
+      // 换节点重试:保持「解析中」的中间态,不要先闪一下失败
+      image.resolving = true
+      image.failed = false
+      image.loaded = false
+      setImageLoaded(image.id, false)
+      image.filepath = ''
+      if (!onlineResolveQueue.includes(image)) onlineResolveQueue.push(image)
+      setTimeout(() => {
+        if (viewerLoadToken.value) drainOnlineQueue(viewerLoadToken.value)
+      }, 250 * tries)
+      return
+    }
+  }
+  markImageFailed(image)
+}
+// 真正判定失败(所有重试都用尽了)
+const markImageFailed = (image) => {
+  if (!image || !image.id) return
   viewerImageFailed.value = { ...viewerImageFailed.value, [image.id]: true }
+  image.failed = true
+  image.resolving = false
 }
 // 阅读心跳定时器:每 60 秒向主进程报一次「还在阅读」
 let viewerHeartbeat = null
@@ -1791,15 +1849,34 @@ const makeOnlineItem = (index, total) => ({
 })
 
 // 占位状态:解析中 / 图片加载中 / 失败(可点重试)
+// 占位状态 —— 只由三个明确的事实决定,不再"先失败再解析"地来回跳:
+//   failed   → 所有换节点重试都失败(final 标记由 markImageFailed 写入)
+//   resolving→ 还在解析图片地址(含换节点重试中)
+//   loading  → 地址已就绪,图片本体正在下载(此时显示真实进度环)
 const placeholderState = (image) => {
-  if (image && image.failed) return 'failed'
-  if (image && image.online && image.resolving) return 'resolving'
+  if (!image) return 'loading'
+  if (image.failed && viewerImageFailed.value[image.id]) return 'failed'
+  if (image.online && image.resolving) return 'resolving'
   return 'loading'
+}
+
+// 每页的图片下载进度(0~1;-1 = 未知)。照 JHenTai 的 _computeLoadingProgress:
+// 有 content-length 就 cur/total,否则返回 -1 让占位显示转圈而不是假的百分比。
+// 进度来自 emm-eh:// 协议回传的字节数(见主进程 protocol.handle 的 onProgress)。
+const imageLoadProgress = (image) => {
+  if (!image || !image.id) return -1
+  const p = loadedProgress.value[image.id]
+  return (typeof p === 'number' && p >= 0) ? p : -1
 }
 
 // 并发解析数:每页都要回站上取一次图片地址,4 是「不太会被 EH 限速」的保守值;
 // 6 是本机实测的平衡点(再多容易触发 EH 的限速页,反而更慢)
 const ONLINE_RESOLVE_CONCURRENCY = 6
+// 预加载窗口(照 JHenTai 的 preloadPageCount / preloadDistance 口径):
+//   只解析「当前页前后 N 页」,不再整本一次性入队。
+//   JHenTai 默认在线 preloadPageCount=1、本地=3,这里放宽一点(7)兼顾连续阅读;
+//   窗口外的页在翻到附近时再补队,所以既有预读、又不会把请求堆成几百个。
+const PRELOAD_WINDOW = 7
 const onlineResolveQueue = []
 let onlineResolveRunning = 0
 
@@ -1816,11 +1893,24 @@ const prioritizeOnlineQueue = (currentIndex) => {
   })
 }
 
-const resolveOnlineItem = async (image, token) => {
+const resolveOnlineItem = async (image, token, attempt = 0) => {
   if (!image || !image.pageUrl) { if (image) image.failed = true; return }
   try {
-    const r = await ipcRenderer.invoke('eh-page-image', { pageUrl: image.pageUrl })
+    // 每轮都带上 reloadKey(= 上一轮页面里的 nl 值):节点被限速/挂掉时,
+    // EH 会据此重新挑一个 H@H 节点 —— 与 JHenTai 的 _reParseImageUrlAndDownload 同一做法。
+    // 这就是用户看到的 ?nl=42598-498016;实测「换节点重试」能把连续失败压成 0。
+    const r = await ipcRenderer.invoke('eh-page-image', {
+      pageUrl: image.pageUrl,
+      reloadKey: image.reloadKey || ''
+    })
     if (token !== viewerLoadToken.value) return
+    if (r && r.reloadKey) image.reloadKey = r.reloadKey
+    // 换节点重试:最多 4 轮(原来只重试 2 次且不带 nl),失败率会明显下降
+    if (!(r && r.ok && r.url) && attempt < 3) {
+      await new Promise(r2 => setTimeout(r2, 250 * (attempt + 1)))
+      if (token !== viewerLoadToken.value) return
+      return resolveOnlineItem(image, token, attempt + 1)
+    }
     if (r && r.ok && r.url) {
       image.rawUrl = r.url
       image.originalUrl = r.originalUrl || ''
@@ -1832,19 +1922,50 @@ const resolveOnlineItem = async (image, token) => {
       image.failed = false
       // 在线条目要自己标「已渲染」:内置阅读器靠 loadedImages 决定渲不渲染 <img>
       setImageLoaded(image.id, true)
+      // 高度从占位估算值变成真实值会让布局跳动(卷轴模式下**前面的页**变高会把
+      // 当前页往下推):不论解析的是哪一页,都把当前页拉回视口(节流,批量解析不抖)
+      clearTimeout(resolveOnlineItem._alignT)
+      resolveOnlineItem._alignT = setTimeout(() => {
+        if (currentImageId.value) nextTick(() => { try { scrollToImageElement(currentImageId.value) } catch (e) { /* 忽略 */ } })
+      }, 120)
       return
     }
-    image.failed = true
+    // 解析彻底失败:统一走 markImageFailed(同时写最终失败标记,界面不会再闪回「正在解析」)
+    markImageFailed(image)
+    return
   } catch (e) {
-    image.failed = true
+    markImageFailed(image)
+    return
   } finally {
-    image.resolving = false
+    // ⚠ 只有「已成功/已彻底失败」时这里才是 false;重试排队中的那些由上面提前 return,
+    //    不会被执行到这里(否则会把 resolving 抹掉,界面又跳回「加载失败」)
+    if (image.failed || (image.filepath && !image.__retryPending)) image.resolving = false
   }
 }
 
 // 「从第 N 页打开」的目标页:占位图是估算高度,真实图片陆续撑开后滚动位置会漂到别的页,
 // 所以队列跑空后再对齐一次(在线画廊点预览进阅读器「跳过去又变了」的根因)
 let onlineJumpTargetId = null
+// 翻页时推进「预加载窗口」:把当前页前后 PRELOAD_WINDOW 页里还没解析的补进队列。
+// 已经在队列里的不重复加;已解析好/已失败的也不加(失败要用户点重试才重来)。
+const enqueuePreloadWindow = (currentIndex) => {
+  const list = viewerImageList.value
+  if (!list || !list.length) return
+  const idx = Math.max(0, Math.min(Number(currentIndex) || 0, list.length - 1))
+  const token = viewerLoadToken.value
+  const inQueue = new Set(onlineResolveQueue.map(it => it && it.id))
+  const from = Math.max(0, idx - PRELOAD_WINDOW)
+  const to = Math.min(list.length - 1, idx + PRELOAD_WINDOW)
+  for (let i = from; i <= to; i++) {
+    const it = list[i]
+    if (!it || !it.pageUrl) continue
+    if (!it.resolving) continue          // 已解析/已失败:不重复入队
+    if (inQueue.has(it.id)) continue
+    onlineResolveQueue.push(it)
+  }
+  drainOnlineQueue(token)
+}
+
 const drainOnlineQueue = (token) => {
   while (onlineResolveRunning < ONLINE_RESOLVE_CONCURRENCY && onlineResolveQueue.length) {
     const image = onlineResolveQueue.shift()
@@ -1870,8 +1991,20 @@ const retryOnlinePage = (image) => {
   if (!image || !image.pageUrl) return
   image.failed = false
   image.resolving = true
+  // 记住重试时正在看的页:解析成功后图片高度会从占位变成实际值,滚动位置会漂
+  // (用户反馈「点重新加载居然跳转页码」)。成功后把当前页拉回视口。
+  const anchorId = currentImageId.value
   onlineResolveQueue.push(image)
   drainOnlineQueue(viewerLoadToken.value)
+  if (anchorId) {
+    const requeue = setInterval(() => {
+      if (!image.resolving || image.failed) {
+        clearInterval(requeue)
+        if (!image.failed) nextTick(() => { try { scrollToImageElement(anchorId) } catch (e) { /* 忽略 */ } })
+      }
+    }, 200)
+    setTimeout(() => clearInterval(requeue), 20000)
+  }
 }
 
 const openOnlineBook = async (book, startIndex = null) => {
@@ -1888,17 +2021,44 @@ const openOnlineBook = async (book, startIndex = null) => {
   pendingThumbnails.length = 0
   currentImageIndex.value = 0
 
-  // ①先用卡片上已知的页数摆好占位 —— 立刻把阅读器打开,不让用户干等
+  // ①先用卡片上已知的页数摆好占位 —— 立刻把阅读器打开,不让用户干等。
+  //   ★「从第 N 页进入」时占位阶段就直接定位到第 N 页:
+  //     以前固定落在第一页,等链接收完再跳 N 页 —— 看起来就是「先跳第一页再跳回来」
   const known = Math.max(0, Number(book.pageCount) || 0)
   viewerImageList.value = Array.from({ length: known }, (_, i) => makeOnlineItem(i, known))
   totalPage.value = known
-  currentImageId.value = viewerImageList.value.length ? viewerImageList.value[0].id : ''
+  // ⚠ startIdx 与 known 解算:卡片没带页数时 known=0,若在这里把 startIndex 清零,
+  //   「从第 N 页进入」就丢了目标,links 到手后只会停在第一页
+  const startIdx = (startIndex != null && startIndex > 0) ? Number(startIndex) : 0
+  currentImageId.value = viewerImageList.value.length
+    ? viewerImageList.value[startIdx].id
+    : ''
   drawerVisibleViewer.value = true
+  // ★占位阶段就定位到目标页:以前占位/currentImageId 定了但界面还在第一页,
+  //   等链接收完才跳,看起来就是「先跳第一页再跳点击页」
+  if (startIdx > 0) {
+    const jumpToPlaceholder = () => {
+      const it = viewerImageList.value[startIdx] || viewerImageList.value[viewerImageList.value.length - 1]
+      if (!it) return false
+      if (imageStyleType.value === 'scroll') {
+        return scrollToImageElement(it.id)
+      }
+      // 横向/单页/双页:直接设当前页序号
+      const idx = _.findIndex(viewerImageList.value, { id: it.id })
+      if (idx >= 0) currentImageIndex.value = idx
+      return true
+    }
+    nextTick(() => {
+      if (jumpToPlaceholder()) return
+      const t0 = setInterval(() => { if (jumpToPlaceholder()) clearInterval(t0) }, 80)
+      setTimeout(() => clearInterval(t0), 3000)
+    })
+  }
   // 页数未知(少数卡片没有)时先用可关闭的遮罩撑着,拿到链接就换成占位
   if (!known) showViewerLoading(t('m.ehOnlineOpening'))
 
   try {
-    // ②收页链接(几次请求就够):拿到真实总数后按它重建占位
+    // ②收页链接(几次请求就够):拿到真实总数后按它修补占位
     const res = await ipcRenderer.invoke('eh-gallery-page-links', { url: book.url })
     if (token !== viewerLoadToken.value) return
     const links = (res && res.links) || []
@@ -1909,14 +2069,39 @@ const openOnlineBook = async (book, startIndex = null) => {
       hideViewerLoading()
       return
     }
-    const items = Array.from({ length: links.length }, (_, i) => makeOnlineItem(i, links.length))
-    items.forEach((it, i) => { it.pageUrl = links[i] })
+    // ⚠ 增量修补,不要整体重建:以前直接 viewerImageList.value = 新数组,
+    //   ① 卡片页数与真实不符时列表长度突变,已经渲染出来的页全部丢掉重来
+    //     (观感就是「加载混乱:图突然全空又慢慢冒出来」);
+    //   ② 当前页/滚动位置跟着丢,用户被弹回第一页。
+    const prev = viewerImageList.value
+    const sameLen = prev.length === links.length
+    const items = Array.from({ length: links.length }, (_, i) => {
+      const old = (sameLen || i < prev.length) ? prev[i] : null
+      // 已经解析好的页原样保留(URL、宽高、loaded 状态都不动)
+      if (old && old.pageUrl === links[i] && old.filepath) return old
+      const it = makeOnlineItem(i, links.length)
+      it.pageUrl = links[i]
+      return it
+    })
     viewerImageList.value = items
     totalPage.value = links.length
-    currentImageId.value = items[0].id
+    // 当前页保留:占位阶段的定位(第 N 页)在真列表里沿用,不回第一页
+    if (!currentImageId.value || !items.some(it => it.id === currentImageId.value)) {
+      currentImageId.value = (startIdx && items[startIdx]) ? items[startIdx].id : items[0].id
+    }
     hideViewerLoading()
-    // ③并发逐页解析,谁先好谁先显示
-    onlineResolveQueue.push(...items)
+    // ③按「预加载窗口」入队(口径照 JHenTai 的 preloadPageCount / preloadDistance):
+    //   以前是把**整本**一次性塞进队列 —— 一本 200 页的漫画会先生成 200 个请求,
+    //   前面几十个还在排队,用户当前看的这几页反而要等它们跑完才轮到(观感就是「加载巨慢」)。
+    //   现在只入队「当前页前后 window 页」;用户翻页时再往前推窗口(见 enqueuePreloadWindow)。
+    onlineResolveQueue.length = 0
+    const seed = (startIdx > 0 ? startIdx : 0)
+    const needResolve = items
+      .filter((it, i) => it.resolving && it.pageUrl && Math.abs(i - seed) <= PRELOAD_WINDOW)
+    onlineResolveQueue.push(...needResolve)
+    // 「从第 N 页进入」:目标页最先解析(以前从第 1 页顺序爬,目标页排在队尾,
+    //   前后页都出图了本页还在转圈)
+    if (startIdx > 0) prioritizeOnlineQueue(startIdx)
     drainOnlineQueue(token)
     // 「进入阅读(第 N 页)」跳转:列表已同步建好,直接跳
     // (handleClickThumbnail 会自己处理 卷轴/单页/双页 三种模式的换算)
@@ -2415,6 +2600,14 @@ const handleClickThumbnail = (id) => {
       // 图片懒加载会让每张的高度陆续变化,多校正几次,保证最终对齐
       for (const delay of [120, 320, 700, 1200]) setTimeout(scrollToTarget, delay)
     })
+  } else if (imageStyleType.value === 'horizontal') {
+    // ⚠ 横向翻页(默认模式)原来根本没有分支:点缩略图/从第 N 页进入都不跳,
+    //   一直停在第一页 —— 用户反馈「预览还是先跳第一页」的根因
+    const index = _.findIndex(viewerImageList.value, { id })
+    if (index >= 0) {
+      currentImageIndex.value = index
+      nextTick(() => { getCurrentImageId(); scrollCurrentThumbnailIntoView() })
+    }
   } else if (imageStyleType.value === 'single') {
     const index = _.findIndex(viewerImageList.value, { id })
     if (index >= 0) currentImageIndex.value = index
@@ -3168,6 +3361,15 @@ const triggerAutoUpscaleForCurrentPage = () => {
   const pages = imageStyleType.value === 'double' ? (current.page || []) : [current]
   for (const image of pages) if (image) enqueueAutoUpscale(image)
 }
+// 卷轴模式:当前页由滚动位置决定(currentImageId 变化),同样推进预加载窗口,
+// 否则往下滚到第 50 页时那一片还没解析,一直在转圈。
+watch(currentImageId, (id) => {
+  if (!id) return
+  if (!bookDetail.value || !bookDetail.value.online) return
+  if (imageStyleType.value !== 'scroll') return
+  const idx = viewerImageList.value.findIndex(it => it.id === id)
+  if (idx >= 0) enqueuePreloadWindow(idx)
+})
 watch(currentImageIndex, () => {
   // 在线阅读:翻页时把「离当前页近的页」提到解析队列前面 ——
   // 不重排的话,翻到第 30 页时它还在整本队列的尾巴上,看着就是「一直正在解析」
@@ -3181,6 +3383,8 @@ watch(currentImageIndex, () => {
       if (found >= 0) pageIdx = found
     }
     prioritizeOnlineQueue(pageIdx)
+    // 翻页时推进预加载窗口(不再是「整本一次性入队」):只补当前页附近的页
+    enqueuePreloadWindow(pageIdx)
   }
   triggerAutoUpscaleForCurrentPage()
   scrollCurrentThumbnailIntoView()
@@ -3226,6 +3430,12 @@ const scrollCurrentThumbnailIntoView = (id = null) => {
 // 旧写法 `loadedImages.value[id] = x` 每张图进出视口都会触发整棵列表组件 re-render
 // (500 页 = 每次 diff 500 项);合并到 rAF 后,滚动时每帧最多一次。
 const loadedImages = ref({})
+// 每页图片的真实下载进度(0~1),供占位的环形进度使用(照 JHenTai 的 loadingProgressWidgetBuilder)。
+// 由主进程 emm-eh:// 协议在读取响应体时回传(见 index.js 的 onImgProgress)。
+const loadedProgress = ref({})
+const setImageProgress = (id, p) => {
+  loadedProgress.value = { ...loadedProgress.value, [id]: p }
+}
 const pendingImageState = new Map()
 let imageStateRaf = null
 const flushImageState = () => {
@@ -3833,6 +4043,8 @@ defineExpose({
     margin: auto
     .viewer-image
       user-select: none
+      // 图片还没下载完时先垫一层深色底,避免「加载中发白」
+      background: var(--el-fill-color-dark)
     .viewer-image-bar
       position: absolute
       height: 100%

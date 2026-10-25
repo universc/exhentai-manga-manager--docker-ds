@@ -113,7 +113,7 @@
     </el-space>
     <el-divider content-position="left">{{$t('m.category')}}</el-divider>
     <el-select v-model="categorySelected" :placeholder="$t('m.category')" clearable>
-      <el-option v-for="cat in categoryOption" :value="cat" :key="cat" :label="cat" />
+      <el-option v-for="cat in categoryOption" :value="cat" :key="cat" :label="galleryCategoryName(cat, $t)" />
     </el-select>
     <el-space wrap class="book-tag-edit-buttons">
       <el-button type="primary" plain @click="applyCategory">{{$t('m.apply')}}</el-button>
@@ -182,6 +182,7 @@ import { nanoid } from 'nanoid'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
+import { galleryCategoryName } from '../utils.js'
 const appStore = useAppStore()
 const {
   cat2letter,
