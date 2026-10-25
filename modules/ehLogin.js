@@ -396,6 +396,8 @@ const galleryTorrents = async ({ gid, token, site = '', proxy, cookie, bases = E
   const torrents = []
   const forms = body.split(/<form/i).slice(1)
   for (const block of forms) {
+    // ⚠ 这里原本是 /\.torrent/ —— 少写一个 t,会把 URL 截成 ".torren"(少一个 t),
+    //   于是「打开种子」下载到的是坏链接。用 \.torrent 完整匹配。
     const link = /<a[^>]+href="(https?:\/\/[^"]+\.torrent)"[^>]*>([^<]*)<\/a>/i.exec(block)
     if (!link) continue
     const flat = block.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ')
@@ -406,8 +408,12 @@ const galleryTorrents = async ({ gid, token, site = '', proxy, cookie, bases = E
     // 取第一个像日期的 span(别取最后一个 —— 末尾还有 tracker announce 那种 span)
     const spans = [...block.matchAll(/<span[^>]*>([^<]*)<\/span>/gi)].map(m => m[1].trim()).filter(Boolean)
     const postTime = spans.find(s => /^\d{4}-\d{2}-\d{2}/.test(s)) || spans.find(s => /ago$/i.test(s)) || ''
+    // 名称里常带 HTML 实体(&amp; &quot; &#39; 等):不解码的话界面上显示成 "[FOE &amp; JINGG]"
+    const decodeEntities = (s) => String(s || '')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&nbsp;/g, ' ')
     torrents.push({
-      name: String(link[2] || '').trim() || 'torrent',
+      name: decodeEntities(String(link[2] || '').trim()) || 'torrent',
       url: link[1],
       magnet: hash ? 'magnet:?xt=urn:btih:' + hash[1] : '',
       // 大小带单位(真实页面是「Size:</span> 27.15 MiB」,只取第一个词会丢掉单位)

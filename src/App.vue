@@ -152,6 +152,8 @@
           <!-- 合集/标签编辑按钮(仅编辑视图显示;管理入口已并入可自定义工具栏按钮) -->
           <div class="edit-btn-group">
             <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.addCollection()" :icon="Collections24Regular" :title="$t('m.addCollection')"></el-button>
+            <!-- 智能生成:按名字与文件夹结构自动建议合集 -->
+            <el-button type="success" plain v-if="editCollectionView" @click="autoCollectionVisible = true" :icon="MdColorWand" :title="$t('m.autoCollectionTitle')"></el-button>
             <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.editCollection()" :icon="Edit" :title="$t('m.editCollection')"></el-button>
             <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.saveCollection()" :icon="Save16Regular" :title="$t('m.save')"></el-button>
             <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.exitCollectionView()" :icon="MdExit" :title="$t('m.exit')"></el-button>
@@ -622,6 +624,11 @@
       v-model="hhDialogVisible"
       :archive-page-url="hhDialogUrl"
     />
+    <!-- 自动生成合集:按名字与文件夹结构给出建议,用户勾选后才写盘 -->
+    <AutoCollectionDialog
+      v-model="autoCollectionVisible"
+      @applied="$refs.EditViewRef && $refs.EditViewRef.saveCollection && null"
+    />
     <InternalViewer
       ref="InternalViewerRef"
       @to-next-manga="toNextManga"
@@ -644,7 +651,7 @@ import { defineComponent } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { Setting as SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened } from '@element-plus/icons-vue'
 import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular } from '@vicons/fluent'
-import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdOptions, MdTrash, MdCloudDownload, MdPlay, MdPause } from '@vicons/ionicons4'
+import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdOptions, MdTrash, MdCloudDownload, MdPlay, MdPause, MdColorWand } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup, Catalog } from '@vicons/carbon'
 
 import { getWidth, fetchRecentReadRecords, removeReadRecord, clearReadRecords, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes, tagDisplayName, tagColorOf, galleryCategoryName as galleryCategoryNameOf, tagDisplayPrefix as tagDisplayPrefixOf } from './utils.js'
@@ -659,6 +666,7 @@ import TagGraph from './components/TagGraph.vue'
 import InternalViewer from './components/InternalViewer.vue'
 import SearchDialog from './components/SearchDialog.vue'
 import HhDownloadDialog from './components/HhDownloadDialog.vue'
+import AutoCollectionDialog from './components/AutoCollectionDialog.vue'
 import BookDetailDialog from './components/BookDetailDialog.vue'
 import FolderTree from './components/FolderTree.vue'
 import BookCard from './components/BookCard.vue'
@@ -691,6 +699,7 @@ export default defineComponent({
     LoginDialog,
     EhFilterDialog,
     HhDownloadDialog,
+    AutoCollectionDialog,
     SideDetailPanel,
     DownloadDialog,
     LibraryFolderPicker,
@@ -745,6 +754,8 @@ export default defineComponent({
       // H@H 归档下载弹窗(照 JHenTai 的 H@H 按钮)
       hhDialogVisible: false,
       hhDialogUrl: '',
+      // 自动生成合集的对话框
+      autoCollectionVisible: false,
       // 封面加载失败的任务(网络/代理挂了):{ [taskId]: true },失败就退回灰底占位,不显示破图
       failedCovers: {},
       // 在线列表:改每页数量等操作期间先压住「自动补页」,避免自激循环(改完 1 秒后恢复)

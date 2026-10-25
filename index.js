@@ -49,6 +49,7 @@ const { inventoryLibrary, diffInventory, snapshotFromInventory, loadSnapshotFile
 const localModels = require('./modules/localModels.js')
 const ehLogin = require('./modules/ehLogin.js')
 const ehDownload = require('./modules/ehDownload.js')
+const collectionAuto = require('./modules/collectionAuto.js')
 const {
   ensureLibraries, libraryDataDir, libraryRuntimePaths, isLibraryActive, shouldMoveLibraryData, migrateLibraryData,
   runtimeLibraries, localLibraryPath, localLibraryDataPath
@@ -4267,6 +4268,22 @@ ipcMain.handle('save-collection-list', async (event, list) => {
   const tempPath = path.join(STORE_PATH, 'collectionList.json.tmp')
   await fs.promises.writeFile(tempPath, JSON.stringify(list, null, '  '), { encoding: 'utf-8' })
   return await fs.promises.rename(tempPath, targetPath)
+})
+
+// ---------- 合集自动识别(按名字与文件夹结构归组) ----------
+// 算法本体在 modules/collectionAuto.js(纯函数、零磁盘 IO、可单测)。
+// 这里只做 IPC 包装。要点(两位评审方案的合并结论):
+//   · 结构信号(同容器目录 / 标题主干 / 卷号连续)权重最高
+//   · parody 是强语义信号;artist 单列「作者专辑」
+//   · 一卷一个文件夹与系列一个文件夹都要能认(取父目录做容器)
+//   · libraryId 硬隔离,绝不跨库合并
+ipcMain.handle('suggest-collections', async (event, books) => {
+  try {
+    const suggestions = collectionAuto.buildPlan(books, { threshold: 0.55 })
+    return { ok: true, suggestions }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), suggestions: [] }
+  }
 })
 
 // detail
