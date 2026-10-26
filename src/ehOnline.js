@@ -287,6 +287,11 @@ export const parseGalleryThumbs = (doc, host) => {
       offsetX: om ? Number(om[1]) : 0
     })
   }
+  // 整张雪碧图的总宽 = max(每格 offsetX + 单格宽)。
+  // 预览格子要用 CSS 变量做缩放(拖宽时零 JS 重算),必须知道原图总宽,
+  // 才能把 background-size 写成「总宽 × 缩放比」;否则只会显示第一格。
+  const spriteWidth = out.reduce((mx, t) => Math.max(mx, (t.offsetX || 0) + (t.width || 0)), 0)
+  if (spriteWidth > 0) out.forEach(t => { t.spriteWidth = spriteWidth })
   return out
 }
 
@@ -434,14 +439,18 @@ export const mergeDetailIntoBook = (book, detail) => {
 // 所以在线读图与页预览不能直接把原地址丢给 <img>,一律改写成应用自己的取图地址:
 //   网页版 → /api/ex-image(服务端带 Cookie 与代理取回再转发)
 //   桌面版 → emm-eh:// 自定义协议(主进程同样带 Cookie 与代理)
-// tracker:可选的「进度标识」(通常是这一页的 id)。带上它,主进程就能在读取图片时
-// 按这个 id 回推下载进度,占位上的环形进度条就显示真实百分比(照 JHenTai 的 loadingProgress)。
-export const ehImageSrc = (url, tracker) => {
+// opts.tracker:可选的「进度标识」(通常是这一页的 id)。带上它,主进程就能在读取图片时
+//   按这个 id 回推下载进度,占位上的环形进度条就显示真实百分比(照 JHenTai 的 loadingProgress)。
+// opts.referer:这一页的**图片页 URL**(/s/<hash>/<gid>-<n>)。
+//   ⚠ 很重要:EH 的 H@H 节点会校验收图来源。以前统一用站点根当 referer,实测更容易被拒;
+//   浏览器读图时 referer 天然就是图片页本身。现在把它透传给主进程。
+export const ehImageSrc = (url, tracker, referer) => {
   const u = String(url || '')
   if (!u || !/^https?:\/\//i.test(u)) return u
   const tr = tracker ? '&t=' + encodeURIComponent(String(tracker)) : ''
+  const rf = referer ? '&r=' + encodeURIComponent(String(referer)) : ''
   if (typeof window !== 'undefined' && window.__WEB_MODE__) {
-    return '/api/ex-image?url=' + encodeURIComponent(u) + tr
+    return '/api/ex-image?url=' + encodeURIComponent(u) + tr + rf
   }
-  return 'emm-eh://img/?u=' + encodeURIComponent(u) + tr
+  return 'emm-eh://img/?u=' + encodeURIComponent(u) + tr + rf
 }

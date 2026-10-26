@@ -100,6 +100,19 @@ const request = (url, options = {}) => new Promise((resolveOuter, rejectOuter) =
   //   TLS connection was established)。复用后 keep-alive 生效,连接数大幅下降。
   if (options.proxy) reqOptions.agent = agentFor(options.proxy)
   const req = lib.request(u, reqOptions, (res) => {
+    // ★ 流式模式:把原始 IncomingMessage 直接交出去,调用方边收边转,
+    //   这样图片可以「一段一段地出来」(照浏览器 <img> 的行为),而不是等整包收完。
+    //   注意:这个模式下重试只能覆盖「连不上/首字节前」的错误,一旦已开始推流就不能重来。
+    if (options.stream) {
+      if (typeof options.onProgress === 'function') {
+        try {
+          const t = Number(res.headers['content-length']) || 0
+          options.onProgress({ received: 0, total: t, ratio: t ? 0 : -1 })
+        } catch (e) { /* 忽略 */ }
+      }
+      resolve({ status: res.statusCode, headers: res.headers, stream: res })
+      return
+    }
     const chunks = []
     // 下载进度(照 JHenTai 的 ImageChunkEvent):按「已收字节 / content-length」回报。
     // 没有 content-length 时报 -1,前端显示转圈而不是假百分比。

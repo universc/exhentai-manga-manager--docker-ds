@@ -1280,60 +1280,106 @@ if (!WEB_MODE) {
     app.whenReady().then(() => {
       // 在线图片代理(桌面版):只放行 EH 的几个域名,避免变成任意 URL 的代理
       try {
+
         protocol.handle(EH_IMG_SCHEME, async (req) => {
           try {
             const reqUrl = new URL(req.url)
             const raw = reqUrl.searchParams.get('u') || ''
-            // t = 前端这一页的 id:用来把下载进度回推给对应的占位环(照 JHenTai 的 loadingProgress)
+            // t = 前端这一页的 id:用来把下载进度回推给对应的占位环
             const progressTag = reqUrl.searchParams.get('t') || ''
+            // referer 由前端带过来:必须是「图片所在的 /s/<hash>/<gid>-<n> 页」。
+            // EH 的 H@H 节点会校验收图来源;用站点根当 referer 更容易被拒。
+            const pageRef = reqUrl.searchParams.get('r') || 'https://e-hentai.org/'
             if (!EH_IMG_HOST_RE.test(raw)) return new Response('bad url', { status: 400 })
-            // 与网页版 /api/ex-image 同一套:缓存 → 并发闸门 → 失败重试一次
             const cached = ehImgCacheGet(raw)
             if (cached) {
               return new Response(cached.buffer, {
                 status: 200,
-                headers: { 'Content-Type': cached.type, 'X-Img-Cache': 'hit' }
+                headers: { 'Content-Type': cached.type, 'X-Img-Cache': 'hit', 'Cache-Control': 'no-store' }
               })
             }
             await ehImgAcquire()
             try {
-              let r = null
               let lastErr = null
-              // nl 换节点:EH 的原图主机是随机分配的 H@H 节点,某些节点会直接断 TLS。
-              // 带上 ?nl= 重新请求图片页,会换一个节点重试(JHenTai 的 _reParseImageUrlAndDownload)。
-              // 这里对「图片本身」也做:失败时把 u 换成带 nl 的形式再试一轮。
+              // 重试链:① 同 URL 再试(网络抖动) → ② 回图片页重新解析拿新 nl 换 H@H 节点
+              //   注意:以前是把 ?nl=xxx 直接拼到**图片 URL** 上 —— 那是无效的,
+              //   必须回到「图片页」读 return nl('...') 才能真正换节点。
               for (let attempt = 0; attempt < 3; attempt++) {
+                let target = raw
+                if (attempt >= 1) {
+                  try {
+                    const fresh = await ehLogin.resolvePageImageInfo(pageRef, {
+                      proxy: setting.proxy, cookie: ehCookieHeader(), reloadKey: ''
+                    })
+                    if (fresh && fresh.url && fresh.url !== raw) target = fresh.url
+                  } catch (e) { /* 拿不到新节点就沿用原地址再试 */ }
+                }
                 try {
-                  const target = raw + (attempt > 0
-                    ? (raw.includes('?') ? '&' : '?') + 'nl=' + encodeURIComponent(String(Date.now()).slice(-6))
-                    : '')
-                  r = await ehLogin.request(target, {
+                  const r = await ehLogin.request(target, {
                     proxy: setting.proxy,
                     raw: true,
-                    referer: 'https://e-hentai.org/',
-                    timeout: 20000,
-                    // 把「已收字节 / 总字节」推给前端,占位环显示真实百分比
-                    onProgress: progressTag ? (p) => {
-                      try { emitToRenderer('eh-image-progress', { t: progressTag, ratio: p.ratio }) } catch (e) { /* 忽略 */ }
-                    } : undefined
+                    stream: true,
+                    referer: pageRef,
+                    timeout: 30000
                   })
-                  if (r && r.status === 200 && r.buffer && r.buffer.length) break
-                  lastErr = new Error('upstream ' + (r && r.status))
+                  if (!r || r.status !== 200) {
+                    lastErr = new Error('upstream ' + (r && r.status))
+                    if (r && r.stream && r.stream.resume) r.stream.resume()
+                    await new Promise(cb => setTimeout(cb, 400 * (attempt + 1)))
+                    continue
+                  }
+                  // 限速页 / 删图页返回的是 HTML:不能当图片交出去,更不能写进缓存
+                  const ctype = String((r.headers && r.headers['content-type']) || '')
+                  if (!/^image\//i.test(ctype)) {
+                    lastErr = new Error('not-image:' + ctype.slice(0, 30))
+                    if (r.stream && r.stream.resume) r.stream.resume()
+                    await new Promise(cb => setTimeout(cb, 400 * (attempt + 1)))
+                    continue
+                  }
+                  // ★ 关键改造:边收边转,而不是等整包收完再回 Response。
+                  //   浏览器直接看 EH 之所以「从不失败」,很大一部分原因是首块到达就开始画;
+                  //   以前要 Buffer 收满才返回,慢节点会白屏很久并最终被判失败。
+                  const total = Number((r.headers && r.headers['content-length']) || 0)
+                  const sink = r.stream
+                  let received = 0
+                  const collect = []
+                  const imgStream = new ReadableStream({
+                    start (controller) {
+                      sink.on('data', (chunk) => {
+                        received += chunk.length
+                        // 小图整包缓存(重复翻页不再下载);超过阈值的只推流、不缓存
+                        if (received <= EH_IMG_CACHE_MAX_BYTES / 8) collect.push(chunk)
+                        if (progressTag) {
+                          try {
+                            emitToRenderer('eh-image-progress', {
+                              t: progressTag,
+                              ratio: total ? Math.min(1, received / total) : -1
+                            })
+                          } catch (e) { /* 忽略 */ }
+                        }
+                        try { controller.enqueue(new Uint8Array(chunk)) } catch (e) { /* 已关闭 */ }
+                      })
+                      sink.on('end', () => {
+                        if (received <= EH_IMG_CACHE_MAX_BYTES / 8) {
+                          ehImgCachePut(raw, Buffer.concat(collect), ctype)
+                        }
+                        try { controller.close() } catch (e) { /* 已关闭 */ }
+                      })
+                      sink.on('error', (e) => {
+                        lastErr = e
+                        try { controller.error(e) } catch (e2) { /* 已关闭 */ }
+                      })
+                    }
+                  })
+                  const hdrs = { 'Content-Type': ctype, 'X-Img-Cache': 'miss', 'Cache-Control': 'no-store' }
+                  if (total) hdrs['Content-Length'] = String(total)
+                  return new Response(imgStream, { status: 200, headers: hdrs })
                 } catch (e) {
                   lastErr = e
-                  r = null
+                  await new Promise(cb => setTimeout(cb, 400 * (attempt + 1)))
                 }
-                if (attempt < 2) await new Promise(r2 => setTimeout(r2, 250 * (attempt + 1)))
               }
-              if (!r || r.status !== 200 || !r.buffer || !r.buffer.length) {
-                return new Response(String((lastErr && lastErr.message) || 'upstream error'), { status: 502 })
-              }
-              const type = r.headers['content-type'] || 'image/jpeg'
-              ehImgCachePut(raw, r.buffer, type)
-              return new Response(r.buffer, {
-                status: 200,
-                headers: { 'Content-Type': type, 'X-Img-Cache': 'miss' }
-              })
+              return new Response(String((lastErr && lastErr.message) || 'upstream error'), { status: 502 })
             } finally {
               ehImgRelease()
             }
@@ -1341,6 +1387,7 @@ if (!WEB_MODE) {
             return new Response(String((e && e.message) || e), { status: 502 })
           }
         })
+
       } catch (e) { console.error('register eh image protocol failed', e) }
     })
 

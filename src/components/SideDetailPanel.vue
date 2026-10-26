@@ -128,16 +128,21 @@
       </div>
       <!-- 页预览:显示**全部页**,自动换行的网格(像 JHenTai 的页预览),竖向滚动;点一下 = 打开阅读器 -->
       <div class="detail-preview" v-if="previewItems.length || previewLoading || previewError">
-        <div class="detail-preview-grid" v-if="previewItems.length">
+        <div class="detail-preview-grid" v-if="previewItems.length" :style="{ '--cell': PREVIEW_W + 'px' }">
           <div
             v-for="(it, i) in previewItems"
-            :key="i"
+            :key="'p' + i"
             class="detail-preview-item"
+            :class="{ 'is-ready': it.loaded }"
             :title="'P' + (i + 1)"
             @click="emit('read', book, i)"
           >
             <div v-if="it.sprite" class="detail-preview-sprite" :style="it.sprite" />
-            <img v-else :src="it.src" loading="lazy" @error="$event.target.style.display='none'" />
+            <img
+              v-else :src="it.src" loading="lazy" decoding="async"
+              @load="it.loaded = true"
+              @error="$event.target.style.display='none'; it.loaded = true"
+            />
           </div>
         </div>
         <div v-if="previewLoading && !previewItems.length" class="detail-preview-loading">
@@ -355,18 +360,23 @@ const PREVIEW_W = computed(() => {
 const previewItems = ref([])
 const previewLoading = ref(false)
 const previewError = ref('')
+// 雪碧图切片:交给 CSS 的 --cell 变量缩放。
+// 以前每次算 style 都带 transform:scale + 负 margin,而且 watch(width) 在拖拽时
+// 每个 mousemove 都要把整张网格的 style 重算一遍 —— 这就是「拖动侧栏时预览卡」的根因。
+// 现在每格只需在**插入时**记下自己的原图偏移与尺寸,缩放完全由 CSS 变量驱动:
+//   background-size / background-position 都用 calc(var(--cell) * ...) 表达,
+//   拖宽时只改根节点的 --cell,零 JS 重算。
 const spriteStyleOf = (th) => {
-  const w = th.width || 200
-  const sc = PREVIEW_W.value / w
+  const w = Number(th.width) || 200
+  const h = Number(th.height) || 287
+  // sw = 整张雪碧图总宽(解析时算好);缺失时退化成一格宽(至少不错位到离谱)
+  const sw = Number(th.spriteWidth) || w
   return {
-    width: w + 'px',
-    height: (th.height || 287) + 'px',
-    backgroundImage: `url(${ehImageSrc(th.thumb)})`,
-    backgroundPosition: `-${th.offsetX || 0}px 0`,
-    transform: `scale(${sc})`,
-    transformOrigin: '0 0',
-    marginRight: '-' + Math.round(w - w * sc) + 'px',
-    marginBottom: '-' + Math.round((th.height || 287) - (th.height || 287) * sc) + 'px'
+    backgroundImage: 'url(' + ehImageSrc(th.thumb, '', th.pageUrl || '') + ')',
+    '--ox': String(th.offsetX || 0),
+    '--tw': String(w),
+    '--th': String(h),
+    '--sw': String(sw)
   }
 }
 // ---------- 在线书预览 ----------
@@ -421,9 +431,45 @@ const previewAutoLimit = ref(PREVIEW_AUTO)
 const previewSentinel = ref(null)
 let previewObserver = null
 let previewAutoBusy = false
+// ── 预览图的「逐张平滑插入」队列 ──
+// 以前是:一次 IPC 拿 12 张 → 整表 concat(换新数组)→ 整张网格重渲染 → 再等下一次 IPC。
+// 体感就是「几十几十地蹦一下」。现在拆成两层:
+//   ① IPC 照旧批量取(减少往返),但取回来先进**队列**
+//   ② 渲染端用 requestAnimationFrame 按帧消费,每帧最多 PREVIEW_PER_FRAME 张,
+//      并且只 push 进同一个数组(不换引用),CSS 上再做淡入 —— 视觉上是连续长出来的。
+const PREVIEW_PER_FRAME = 3
+const previewQueue = []
+let previewRaf = 0
+const flushPreviewQueue = () => {
+  previewRaf = 0
+  if (!previewQueue.length) return
+  const token = previewToken
+  let n = 0
+  while (previewQueue.length && n < PREVIEW_PER_FRAME) {
+    const item = previewQueue.shift()
+    // 就地 push:引用不变,Vue 只 patch 新增的节点,不会整表重 diff
+    previewItems.value.push(item)
+    n += 1
+  }
+  if (previewQueue.length && token === previewToken) {
+    previewRaf = requestAnimationFrame(flushPreviewQueue)
+  }
+}
+const pushPreviewQueue = (files) => {
+  for (const f of files) {
+    previewQueue.push({ src: toAssetUrl(f), loaded: false })
+  }
+  if (!previewRaf) previewRaf = requestAnimationFrame(flushPreviewQueue)
+}
+const clearPreviewQueue = () => {
+  previewQueue.length = 0
+  if (previewRaf) { cancelAnimationFrame(previewRaf); previewRaf = 0 }
+}
+
 const loadLocalPreview = async (b, reset = true) => {
   if (!b || !b.filepath) return
   const token = ++previewToken
+  clearPreviewQueue()
   if (reset) {
     previewItems.value = []
     previewAutoLimit.value = PREVIEW_AUTO
@@ -431,7 +477,7 @@ const loadLocalPreview = async (b, reset = true) => {
   }
   previewLoading.value = true
   try {
-    let start = previewItems.value.length
+    let start = previewItems.value.length + previewQueue.length
     while (token === previewToken && start < previewAutoLimit.value) {
       const res = await ipcRenderer.invoke('book-preview-images', {
         filepath: b.filepath, type: b.type, start, count: PREVIEW_BATCH
@@ -439,9 +485,9 @@ const loadLocalPreview = async (b, reset = true) => {
       if (token !== previewToken) return
       if (!res || !res.ok) break
       previewTotal.value = res.total || 0
-      const fresh = (res.files || []).map(f => ({ src: toAssetUrl(f) }))
+      const fresh = (res.files || [])
       if (!fresh.length) break
-      previewItems.value = previewItems.value.concat(fresh)
+      pushPreviewQueue(fresh)
       // 按「请求的批量」前进,而不是按实际返回条数:个别页解压失败时不会重复请求同一段
       start += PREVIEW_BATCH
       if (start >= previewTotal.value) break
@@ -964,15 +1010,35 @@ const startResize = (e) => {
     cursor: pointer
     position: relative
     border-radius: 2px
+    // 离屏的格子跳过渲染,几百页预览也不会拖慢滚动
+    content-visibility: auto
+    contain-intrinsic-size: auto 140px
     img
       width: 100%
       height: 100%
       object-fit: cover
       display: block
+      // 淡入:图片解码完成才浮现,配合逐帧插入,观感是连续长出来的
+      opacity: 0
+      transition: opacity .16s ease
+    &.is-ready img
+      opacity: 1
+  // 雪碧图格子:一张大图切成 N 格,缩放全部由 --cell 驱动(拖宽不重算 JS)
+  // 几何关系:
+  //   --tw  这一格在原图里的**单格宽度**(px,来自 EH 的 style="width:Npx")
+  //   --ox  这一格在原图里的 x 偏移(px)
+  //   --cell 目标显示宽度(随侧栏宽度变化)
+  // 于是 scale = --cell / --tw,图片整体按这个比例缩放,偏移也同比例。
   .detail-preview-sprite
     position: absolute
     top: 0
     left: 0
+    width: var(--cell)
+    height: calc(var(--cell) * var(--th) / var(--tw))
+    background-repeat: no-repeat
+    // scale = 目标显示宽 / 原图单格宽;整张雪碧图按 scale 缩放
+    background-size: calc(var(--sw) * var(--cell) / var(--tw)) auto
+    background-position: calc(var(--ox) * var(--cell) / var(--tw) * -1) 0
   .detail-preview-sentinel
     height: 1px
   .detail-preview-more

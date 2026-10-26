@@ -1914,7 +1914,8 @@ const resolveOnlineItem = async (image, token, attempt = 0) => {
     if (r && r.ok && r.url) {
       image.rawUrl = r.url
       image.originalUrl = r.originalUrl || ''
-      image.filepath = ehImageSrc(r.url)
+      // 带上这一页的图片页 URL 当 referer —— 浏览器读图「从不失败」的关键之一
+      image.filepath = ehImageSrc(r.url, image.id, image.pageUrl)
       const size = onlinePageSize(r.url)
       image.width = size.width
       image.height = size.height
