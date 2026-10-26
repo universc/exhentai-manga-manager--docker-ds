@@ -108,6 +108,35 @@ const ehImgRelease = () => {
   else ehImgRunning = Math.max(0, ehImgRunning - 1)
 }
 
+// ---------- 让图片能「一段一段地显示」 ----------
+// 实测结论(在本机 Electron 26 用真实截图逐帧验证):
+//   · baseline JPEG → <img> 边收边画,从上往下逐行出现 ✓
+//   · progressive JPEG → 先出整页模糊、再逐层变清晰 ✓
+//   · **WebP → 整张不显示(naturalWidth=0),直到 complete** ✗
+// EH 的原图大量是 WebP,这就是「看着不流式」的真正根因 —— 不是协议层的问题。
+//
+// 所以:对 WebP 原图,在服务端用 sharp 转成 **progressive JPEG** 再下发,
+// 视觉上就是「先糊一片、再逐段清晰」,和浏览器里看 e-hentai 一致。
+const TRANSCODE_MAX_BYTES = 24 * 1024 * 1024   // 超过这个体积不转(太占内存)
+const isWebpType = (type, buffer) => {
+  if (/^image\/webp/i.test(String(type || ''))) return true
+  // 兜底看魔数:RIFF....WEBP
+  return !!(buffer && buffer.length > 12 &&
+    buffer.slice(0, 4).toString('latin1') === 'RIFF' &&
+    buffer.slice(8, 12).toString('latin1') === 'WEBP')
+}
+const transcodeToProgressiveJpeg = async (buffer) => {
+  if (!buffer || buffer.length > TRANSCODE_MAX_BYTES) return null
+  try {
+    const out = await sharp(buffer, { animated: false })
+      .jpeg({ quality: 90, progressive: true, mozjpeg: true })
+      .toBuffer()
+    return (out && out.length) ? out : null
+  } catch (e) {
+    return null
+  }
+}
+
 if (!WEB_MODE) {
   try {
     protocol.registerSchemesAsPrivileged([{
@@ -1299,6 +1328,9 @@ if (!WEB_MODE) {
               })
             }
             await ehImgAcquire()
+            // 并发槽只释放一次:正常由 finally 释放;若流被 cancel(用户滑走),
+            // cancel 里提前释放并置位,finally 就不再重复放。
+            let slotReleased = false
             try {
               let lastErr = null
               // 重试链:① 同 URL 再试(网络抖动) → ② 回图片页重新解析拿新 nl 换 H@H 节点
@@ -1330,6 +1362,44 @@ if (!WEB_MODE) {
                   }
                   // 限速页 / 删图页返回的是 HTML:不能当图片交出去,更不能写进缓存
                   const ctype = String((r.headers && r.headers['content-type']) || '')
+                  // ★ WebP 原图先整张取回、转成 progressive JPEG 再返回。
+                  //   原因:实测浏览器对 WebP 是「整张解码」的,流式喂进去也不会逐段显示;
+                  //   progressive JPEG 才会「先出模糊整页、再逐层清晰」——
+                  //   这就是用户要的「像 e-hentai 那样一点点加载出来」。
+                  //   代价:WebP 这一支要等整张收完才能转码(但换来的是视觉上的渐进)。
+                  if (/^image\/webp/i.test(ctype)) {
+                    try {
+                      const full = await new Promise((resolve, reject) => {
+                        const bufs = []
+                        let size = 0
+                        r.stream.on('data', (c) => {
+                          size += c.length
+                          if (size > TRANSCODE_MAX_BYTES) { reject(new Error('too-large')) ; try { r.stream.destroy() } catch (e) { /* 忽略 */ } ; return }
+                          bufs.push(c)
+                        })
+                        r.stream.on('end', () => resolve(Buffer.concat(bufs)))
+                        r.stream.on('error', reject)
+                      })
+                      const jpg = await transcodeToProgressiveJpeg(full)
+                      if (jpg) {
+                        ehImgCachePut(raw, jpg, 'image/jpeg')
+                        if (progressTag) {
+                          try { emitToRenderer('eh-image-progress', { t: progressTag, ratio: 1 }) } catch (e) { /* 忽略 */ }
+                        }
+                        return new Response(jpg, {
+                          status: 200,
+                          headers: { 'Content-Type': 'image/jpeg', 'X-Img-Cache': 'miss', 'Cache-Control': 'no-store' }
+                        })
+                      }
+                      // 转码失败:退回把原始 WebP 直接给(至少能显示)
+                      return new Response(full, {
+                        status: 200,
+                        headers: { 'Content-Type': ctype, 'X-Img-Cache': 'miss', 'Cache-Control': 'no-store' }
+                      })
+                    } catch (e) {
+                      // 太大或取流出错:继续走下面的通用流式路径
+                    }
+                  }
                   if (!/^image\//i.test(ctype)) {
                     lastErr = new Error('not-image:' + ctype.slice(0, 30))
                     if (r.stream && r.stream.resume) r.stream.resume()
@@ -1343,32 +1413,47 @@ if (!WEB_MODE) {
                   const sink = r.stream
                   let received = 0
                   const collect = []
+                  // 进度节流状态(每 5% 或 120ms 才发一次 IPC)
+                  let lastRatio = -1
+                  let lastEmit = 0
                   const imgStream = new ReadableStream({
                     start (controller) {
+                      const endWith = (err) => {
+                        if (!err && received <= EH_IMG_CACHE_MAX_BYTES / 8 && collect.length) {
+                          try { ehImgCachePut(raw, Buffer.concat(collect), ctype) } catch (e) { /* 忽略 */ }
+                        }
+                        if (err) { lastErr = err; try { controller.error(err) } catch (e) { /* 已关闭 */ } }
+                        else { try { controller.close() } catch (e) { /* 已关闭 */ } }
+                      }
                       sink.on('data', (chunk) => {
                         received += chunk.length
-                        // 小图整包缓存(重复翻页不再下载);超过阈值的只推流、不缓存
                         if (received <= EH_IMG_CACHE_MAX_BYTES / 8) collect.push(chunk)
+                        // 进度节流:不是每块都发 IPC(几百条会把渲染进程压垮)
                         if (progressTag) {
-                          try {
-                            emitToRenderer('eh-image-progress', {
-                              t: progressTag,
-                              ratio: total ? Math.min(1, received / total) : -1
-                            })
-                          } catch (e) { /* 忽略 */ }
+                          const now = Date.now()
+                          const ratio = total ? Math.min(1, received / total) : -1
+                          const due = ratio < 0 ? (now - lastEmit >= 120) : (ratio >= 1 || ratio - lastRatio >= 0.05 || now - lastEmit >= 120)
+                          if (due) {
+                            lastRatio = ratio
+                            lastEmit = now
+                            try { emitToRenderer('eh-image-progress', { t: progressTag, ratio }) } catch (e) { /* 忽略 */ }
+                          }
                         }
                         try { controller.enqueue(new Uint8Array(chunk)) } catch (e) { /* 已关闭 */ }
+                        // 背压:下游缓冲满了就暂停上游,别把内存灌爆
+                        if (controller.desiredSize !== null && controller.desiredSize <= 0) sink.pause()
                       })
-                      sink.on('end', () => {
-                        if (received <= EH_IMG_CACHE_MAX_BYTES / 8) {
-                          ehImgCachePut(raw, Buffer.concat(collect), ctype)
-                        }
-                        try { controller.close() } catch (e) { /* 已关闭 */ }
-                      })
-                      sink.on('error', (e) => {
-                        lastErr = e
-                        try { controller.error(e) } catch (e2) { /* 已关闭 */ }
-                      })
+                      sink.on('end', () => endWith(null))
+                      sink.on('error', (e) => endWith(e))
+                    },
+                    pull () {
+                      if (typeof sink.isPaused === 'function' && sink.isPaused()) sink.resume()
+                    },
+                    // 用户滑走/关阅读器时 Chromium 会 cancel:断开上游并立刻归还并发槽,
+                    // 否则「没人看的页」会把槽占死,后面的页只能排队。
+                    cancel () {
+                      try { if (sink.destroy) sink.destroy() } catch (e) { /* 忽略 */ }
+                      if (!slotReleased) { slotReleased = true; try { ehImgRelease() } catch (e) { /* 忽略 */ } }
                     }
                   })
                   const hdrs = { 'Content-Type': ctype, 'X-Img-Cache': 'miss', 'Cache-Control': 'no-store' }
@@ -1381,7 +1466,8 @@ if (!WEB_MODE) {
               }
               return new Response(String((lastErr && lastErr.message) || 'upstream error'), { status: 502 })
             } finally {
-              ehImgRelease()
+              // cancel 已提前释放过就不再放,否则计数会变成负数
+              if (!slotReleased) ehImgRelease()
             }
           } catch (e) {
             return new Response(String((e && e.message) || e), { status: 502 })

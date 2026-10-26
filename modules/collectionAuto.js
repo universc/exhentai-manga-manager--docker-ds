@@ -216,21 +216,32 @@ const scorePair = (a, b, ctx) => {
       if (s > best) best = s
     }
   }
-  if (best > 0) {
-    score += 0.55 * best
-    reasons.push(best >= 0.9 ? 'title-core' : 'title-similar')
+  // ★ 硬门槛:标题主干相似度必须 >= 0.85 才可能成组。
+  //   为什么用硬门槛而不是加权:合集的定义是「同一部作品的各卷/各篇」,
+  //   这个关系几乎完全由书名决定。加权会让「同目录」「同角色」「同社团」这些噪音
+  //   凑够分数,拼出大量不是同一部作品的假合集(这正是之前 1022 个作者合集的教训)。
+  const TITLE_GATE = 0.85
+  if (best < TITLE_GATE) {
+    // 没通过硬门槛 → 直接 0 分,不参与连边
+    return { score: 0, reasons: best > 0 ? ['below-title-gate'] : ['no-title-match'] }
   }
-  // ② 卷号可解析且不同 → 是同一系列的不同卷(0.15)
+  score += 0.70 * best
+  reasons.push(best >= 0.9 ? 'title-core' : 'title-similar')
+
+  // 补充证据(都不是必要条件,只在小范围内微调排序)
+  // ② 卷号可解析且不同 → 同一系列的不同卷
   const va = ctx.volA, vb = ctx.volB
-  if (va != null && vb != null && va !== vb && best >= 0.5) { score += 0.15; reasons.push('volume-seq') }
-
-  // ④ parody 标签(0.10 × Jaccard;强语义但结构信号已占大头)
+  if (va != null && vb != null && va !== vb) { score += 0.10; reasons.push('volume-seq') }
+  // ③ 同目录(弱证据;平铺目录里对所有书都成立,不能当主证据)
+  if (ctx.dirA && ctx.dirA === ctx.dirB) { score += 0.05; reasons.push('same-dir') }
+  // ④ parody 标签一致
   const pj = jaccard(a.tags && a.tags.parody, b.tags && b.tags.parody)
-  if (pj > 0) { score += 0.10 * pj; reasons.push('parody') }
+  if (pj > 0) { score += 0.08 * pj; reasons.push('parody') }
 
-  // ⑤ artist 一致(0.10)
+  // ⑤ 同作者:只作为理由提示,**不加分**
+  //   作者相同不代表同一部作品(同作者可以有很多部不同作品),用户明确要求不能按作者分。
   const aj = jaccard(a.tags && a.tags.artist, b.tags && b.tags.artist)
-  if (aj > 0) { score += 0.10 * aj; reasons.push('artist') }
+  if (aj > 0) reasons.push('same-artist')
 
   // ⑥ 括号内容命中已有标签(group/artist/parody)(0.10)
   const bracketHit = ctx.bracketsA.some(x => ctx.tagNames.has(String(x).toLowerCase()))
@@ -327,6 +338,13 @@ const buildPlan = (books, opts = {}) => {
     for (const g of m.values()) if (g.length >= 2) buckets.push(g)
   }
   addBucket(x => x.cores.length ? x.libraryId + '|core|' + x.cores[0] : '')
+  // ★ 跨目录前缀桶:同一系列换作者连载时,书可能落在不同作者目录下
+  //   (/library/S/作者A/某系列 与 /library/S/作者B/某系列)。
+  //   只按 core 全等分桶的话,它们永远碰不到面 —— 所以再加一个「core 前 6 字符」的桶。
+  addBucket(x => {
+    const c = x.cores[0] || ''
+    return c.length >= 4 ? x.libraryId + '|cp|' + c.slice(0, 6) : ''
+  })
   // ⚠ 目录桶要**限制桶大小**:/library/2 这种「几千本平铺在同一个目录」的情况,
   //   如果按目录成桶就是 3900² ≈ 760 万次两两打分(实测 25 秒且全是噪音)。
   //   目录信号只在「同一目录下书不多」时才有意义(说明用户按系列分了子文件夹)。
@@ -490,10 +508,11 @@ const buildPlan = (books, opts = {}) => {
       .replace(/^[\s\-_:：,，.。\[\]【】()（）]+/, '')
       .replace(/[\s\-_:：,，.。\[\]【】()（）]+$/, '')
       .trim() || usableDirName || '合集'
-    // 作者专辑:组内 artist 一致且没有 parody → kind=artist
+    // 不再产出「作者合集」:作者是跨作品聚合,和「合集 = 同一部作品的各卷」是两回事。
+    // 用户明确指出:有合作本、有换作者连载、有同作者不同作品 —— 按作者分全是噪音。
+    // 作者只作为副字段(authors)展示,不参与分组决策。
     const artists = _.uniq(_.flatMap(members.map(m => (m.book.tags && m.book.tags.artist) || [])))
-    const kind = (!parody.length && artists.length === 1) ? 'artist' : 'series'
-    if (kind === 'artist' && !parody[0]) title = artists[0]
+    const kind = 'series'
 
     // 组内每一本都是重复文件 → 这根本不是合集,跳过
     if (sigCount.size === 1 && dupCount === members.length - 1) continue
@@ -514,71 +533,6 @@ const buildPlan = (books, opts = {}) => {
     })
   }
 
-  // ---------- 作者合集(按目录结构,独立规则) ----------
-  // 用户库里 /library/S/<作者名>/ 这种「一个作者一个目录」是**人工整理过的强信号**,
-  // 而且比 artist 标签可靠得多(实测这个库大多数书根本没填 artist 标签)。
-  // 所以:目录名不是通用容器名、且该目录下书数 >= 2 时,整个目录 = 一个作者合集。
-  const assigned0 = new Set(out.flatMap(g => g.books.map(b => b.hash)))
-  const GENERIC_AUTHOR_DIR = /^(download|downloads|下载|temp|tmp|manga|漫画|books?|comics?|eh|s|2|单图|new|新建文件夹)$/i
-  const byDirGroup = new Map()
-  for (const m of meta) {
-    if (!m.dir) continue
-    const key = m.libraryId + '|' + m.dir
-    if (!byDirGroup.has(key)) byDirGroup.set(key, { dir: m.dir, members: [] })
-    byDirGroup.get(key).members.push(m)
-  }
-  for (const { dir, members } of byDirGroup.values()) {
-    if (members.length < 2) continue
-    const name = String(dir).split(/[\\/]/).pop() || ''
-    if (!name || GENERIC_AUTHOR_DIR.test(name)) continue
-    if (/^\d+$/.test(name.trim())) continue
-    // 已经被系列规则整组收走的目录,就不再重复出一个「作者合集」
-    const fresh = members.filter(m => !assigned0.has(m.book.hash))
-    if (fresh.length < 2) continue
-    out.push({
-      id: 'dirgroup-' + name.slice(0, 12) + '-' + fresh.length,
-      title: name,
-      kind: 'artist',
-      // 目录结构是强人工信号,但组内可能混着不同作品,给 60 左右
-      confidence: Math.min(70, 50 + Math.min(fresh.length, 20)),
-      reasons: ['same-dir-group'],
-      books: fresh.map(m => ({
-        hash: m.book.hash, id: m.book.id,
-        title: m.book.title || m.book.title_jpn || '',
-        filepath: m.book.filepath, volume: m.volume
-      }))
-    })
-  }
-
-  // ---------- 作者专辑(按 artist 标签,补充规则) ----------
-  // 上面按目录没覆盖到的(比如书散在不同目录但确实是同一作者),再用标签补一次。
-  const assigned = new Set(out.flatMap(g => g.books.map(b => b.hash)))
-  const byArtist = new Map()
-  for (const m of meta) {
-    if (assigned.has(m.book.hash)) continue
-    for (const a of ((m.book.tags && m.book.tags.artist) || [])) {
-      if (!a) continue
-      const key = m.libraryId + '|' + String(a).toLowerCase()
-      if (!byArtist.has(key)) byArtist.set(key, { name: a, members: [] })
-      byArtist.get(key).members.push(m)
-    }
-  }
-  for (const { name, members } of byArtist.values()) {
-    if (members.length < 3) continue
-    out.push({
-      id: 'artist-' + String(name).slice(0, 12) + '-' + members.length,
-      title: String(name),
-      kind: 'artist',
-      // 作者专辑只靠一条弱信号,给 45~55 的保守置信度
-      confidence: Math.min(55, 35 + members.length * 3),
-      reasons: ['artist'],
-      books: members.map(m => ({
-        hash: m.book.hash, id: m.book.id,
-        title: m.book.title || m.book.title_jpn || '',
-        filepath: m.book.filepath, volume: m.volume
-      }))
-    })
-  }
 
   // 大组优先;置信度高的优先;系列排在作者专辑之前
   out.sort((a, b) =>

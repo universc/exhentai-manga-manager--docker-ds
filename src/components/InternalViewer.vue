@@ -219,6 +219,8 @@
                   v-if="viewerImageList[currentImageIndex] && viewerImageList[currentImageIndex].online && (!viewerImageList[currentImageIndex].filepath || viewerImageList[currentImageIndex].failed)"
                   class="viewer-page-placeholder-abs"
                   :state="placeholderState(viewerImageList[currentImageIndex])"
+                  :progress="imageLoadProgress(viewerImageList[currentImageIndex])"
+                  :thumb="(viewerImageList[currentImageIndex] || {}).thumb || ''"
                   :index="currentImageIndex"
                   :total="viewerImageList.length"
                   @retry="retryOnlinePage(viewerImageList[currentImageIndex])"
@@ -3434,8 +3436,26 @@ const loadedImages = ref({})
 // 每页图片的真实下载进度(0~1),供占位的环形进度使用(照 JHenTai 的 loadingProgressWidgetBuilder)。
 // 由主进程 emm-eh:// 协议在读取响应体时回传(见 index.js 的 onImgProgress)。
 const loadedProgress = ref({})
+// ⚠ 进度事件非常密集:一张图按块回推,几十次/张;读一页就是上百次更新。
+//   以前每次 `loadedProgress.value = { ...old, [id]: p }` 都换一个**新对象**,
+//   等于让所有引用它的模板全部失效重算 —— 观感就是「进度一格一格地卡」。
+//   现在:同一帧内的多次更新合并成一次提交。
+const pendingProgress = new Map()
+let progressRaf = null
+const flushProgress = () => {
+  progressRaf = null
+  if (!pendingProgress.size) return
+  const target = loadedProgress.value
+  for (const [id, p] of pendingProgress) target[id] = p
+  pendingProgress.clear()
+  // 换一次引用以触发响应式(一帧一次,而不是每个事件一次)
+  loadedProgress.value = { ...target }
+}
 const setImageProgress = (id, p) => {
-  loadedProgress.value = { ...loadedProgress.value, [id]: p }
+  // 已经加载完的页不必再更新
+  if (loadedImages.value[id]) return
+  pendingProgress.set(id, p)
+  if (!progressRaf) progressRaf = requestAnimationFrame(flushProgress)
 }
 const pendingImageState = new Map()
 let imageStateRaf = null

@@ -1064,7 +1064,11 @@
     "autoCollectionReasonFolder": "Same folder",
     "autoCollectionReasonTitle": "Shared title prefix",
     "autoCollectionReasonTag": "Shared tags",
-    "autoCollectionReasonArtist": "Same artist"
+    "autoCollectionReasonArtist": "Same artist",
+    "autoCollectionReasonTitleCore": "Same title",
+    "autoCollectionReasonTitleSimilar": "Similar title",
+    "autoCollectionReasonVolume": "Sequential volumes",
+    "autoCollectionReasonCharacter": "Same character"
   },
   "cm": {
     "title": "Title menu (right-click / long-press)",

@@ -7,6 +7,21 @@
 const express = require('express')
 const path = require('path')
 const fs = require('fs')
+// 让图片能「一段一段显示」:WebP 浏览器是整张解码的(不逐段画),
+// 而 progressive JPEG 会先出模糊整页再逐层清晰。所以 WebP 原图先转码再下发。
+const sharp = require('sharp')
+const TRANSCODE_MAX_BYTES = 24 * 1024 * 1024
+const transcodeToProgressiveJpeg = async (buffer) => {
+  if (!buffer || buffer.length > TRANSCODE_MAX_BYTES) return null
+  try {
+    const out = await sharp(buffer, { animated: false })
+      .jpeg({ quality: 90, progressive: true, mozjpeg: true })
+      .toBuffer()
+    return (out && out.length) ? out : null
+  } catch (e) {
+    return null
+  }
+}
 const os = require('os')
 const { ipcMain, setBroadcast } = require('./web-electron-shim.js')
 const { STORE_PATH } = require('./modules/init_folder_setting.js')
@@ -353,14 +368,11 @@ const imgCachePut = (url, buffer, type) => {
   const prev = imgCache.get(url)
   if (prev) { imgCacheBytes -= prev.buffer.length; imgCache.delete(url) }
   imgCache.set(url, { buffer, type, at: Date.now() })
-  imgCacheBytes += buffer.length
-  while (imgCacheBytes > IMG_CACHE_MAX_BYTES && imgCache.size) {
-    const oldest = imgCache.keys().next().value
-    const v = imgCache.get(oldest)
-    imgCache.delete(oldest)
-    if (v) imgCacheBytes -= v.buffer.length
-  }
 }
+
+// 取图并发闸门:EH 的 H@H 节点对同一 IP 的并发很敏感,开太多会被 509。
+// ⚠ 之前只定义了 IMG_MAX_CONCURRENCY 却没实现闸门(handler 里调用的 acquireImgSlot
+//   根本不存在),等于并发完全没限制 —— 这也是「一页接一页地失败」的原因之一。
 let imgRunning = 0
 const imgWaiters = []
 const acquireImgSlot = () => new Promise((resolve) => {
@@ -376,6 +388,8 @@ const releaseImgSlot = () => {
 app.get('/api/ex-image', requireLogin, async (req, res) => {
   const url = String(req.query.url || '')
   if (!EX_IMAGE_HOST_RE.test(url)) return res.status(400).send('bad url')
+  // r = 图片页 URL(/s/<hash>/<gid>-<n>);EH 的 H@H 节点会校验来源,用站点根当 referer 容易被拒
+  const pageRef = String(req.query.r || 'https://e-hentai.org/')
   const hit = imgCacheGet(url)
   if (hit) {
     res.set('Content-Type', hit.type)
@@ -384,41 +398,113 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
     return res.send(hit.buffer)
   }
   let release = null
+  let slotHeld = false
   try {
     await acquireImgSlot()
     release = releaseImgSlot
-    const s = await settingForAccount(profileNameOf(sessionOf(req)))
-    let r = null
+    slotHeld = true
+    // 该账户的设置(含 proxy);拿不到就退回全局设置
+    let prof = {}
+    try {
+      prof = (await settingForAccount(profileNameOf(sessionOf(req)))) || {}
+    } catch (e) {
+      prof = (typeof getSetting === 'function' ? getSetting() : {}) || {}
+    }
     let lastErr = null
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let target = url
+      if (attempt >= 1) {
+        try {
+          const fresh = await ehLogin.resolvePageImageInfo(pageRef, { proxy: prof.proxy, cookie: prof.cookie || '', reloadKey: '' })
+          if (fresh && fresh.url) target = fresh.url
+        } catch (e) { /* 拿不到新节点就沿用原地址 */ }
+      }
       try {
-        r = await ehLogin.request(url, {
-          proxy: s.proxy,
+        const r = await ehLogin.request(target, {
+          proxy: prof.proxy,
           raw: true,
-          referer: 'https://e-hentai.org/',
-          timeout: 20000
+          stream: true,
+          referer: pageRef,
+          timeout: 30000
         })
-        if (r && r.status === 200 && r.buffer && r.buffer.length) break
-        lastErr = new Error('upstream ' + (r && r.status))
+        if (!r || r.status !== 200) {
+          lastErr = new Error('upstream ' + (r && r.status))
+          if (r && r.stream && r.stream.resume) r.stream.resume()
+          if (attempt < 2) await new Promise((cb) => setTimeout(cb, 400 * (attempt + 1)))
+          continue
+        }
+        const type = String((r.headers && r.headers['content-type']) || '')
+        if (!/^image\//i.test(type)) {
+          lastErr = new Error('not-image:' + type.slice(0, 30))
+          if (r.stream && r.stream.resume) r.stream.resume()
+          if (attempt < 2) await new Promise((cb) => setTimeout(cb, 400 * (attempt + 1)))
+          continue
+        }
+        // ★ WebP 先整张取回并转成 progressive JPEG:浏览器对 WebP 是整张解码的,
+        //   流式喂进去也不会逐段显示;progressive JPEG 才会先糊后清晰。
+        if (/^image\/webp/i.test(type)) {
+          try {
+            const full = await new Promise((resolve, reject) => {
+              const bufs = []
+              let size = 0
+              r.stream.on('data', (c) => {
+                size += c.length
+                if (size > TRANSCODE_MAX_BYTES) { try { r.stream.destroy() } catch (e) { /* 忽略 */ } ; reject(new Error('too-large')); return }
+                bufs.push(c)
+              })
+              r.stream.on('end', () => resolve(Buffer.concat(bufs)))
+              r.stream.on('error', reject)
+            })
+            const jpg = await transcodeToProgressiveJpeg(full)
+            if (jpg) {
+              imgCachePut(url, jpg, 'image/jpeg')
+              res.set('Content-Type', 'image/jpeg')
+              res.set('Cache-Control', 'private, max-age=3600')
+              res.set('X-Img-Cache', 'miss')
+              res.send(jpg)
+              return
+            }
+            imgCachePut(url, full, type)
+            res.set('Content-Type', type)
+            res.set('Cache-Control', 'private, max-age=3600')
+            res.set('X-Img-Cache', 'miss')
+            res.send(full)
+            return
+          } catch (e) { /* 太大或出错,落回流式路径 */ }
+        }
+        const total = Number((r.headers && r.headers['content-length']) || 0)
+        res.set('Content-Type', type)
+        res.set('Cache-Control', 'private, max-age=3600')
+        res.set('X-Img-Cache', 'miss')
+        if (total) res.set('Content-Length', String(total))
+        res.flushHeaders()
+        const CACHE_LIMIT = IMG_CACHE_MAX_BYTES / 8
+        const collect = []
+        let received = 0
+        const upstream = r.stream
+        upstream.on('data', (chunk) => {
+          received += chunk.length
+          if (received <= CACHE_LIMIT) collect.push(chunk)
+        })
+        upstream.on('error', () => { try { res.destroy() } catch (e) { /* 忽略 */ } })
+        upstream.on('end', () => {
+          if (received <= CACHE_LIMIT && collect.length) {
+            try { imgCachePut(url, Buffer.concat(collect), type) } catch (e) { /* 忽略 */ }
+          }
+        })
+        res.on('close', () => { if (!upstream.destroyed) upstream.destroy() })
+        upstream.pipe(res)
+        return
       } catch (e) {
         lastErr = e
-        r = null
+        if (attempt < 2) await new Promise((cb) => setTimeout(cb, 400 * (attempt + 1)))
       }
-      if (attempt === 0) await new Promise(r2 => setTimeout(r2, 250))
     }
-    if (!r || r.status !== 200 || !r.buffer || !r.buffer.length) {
-      return res.status((r && r.status) || 502).send(String((lastErr && lastErr.message) || 'upstream error'))
-    }
-    const type = r.headers['content-type'] || 'image/jpeg'
-    imgCachePut(url, r.buffer, type)
-    res.set('Content-Type', type)
-    res.set('Cache-Control', 'private, max-age=3600')
-    res.set('X-Img-Cache', 'miss')
-    res.send(r.buffer)
+    return res.status(502).send(String((lastErr && lastErr.message) || 'upstream error'))
   } catch (e) {
     res.status(502).send(String((e && e.message) || e))
   } finally {
-    if (release) release()
+    if (slotHeld && release) release()
   }
 })
 

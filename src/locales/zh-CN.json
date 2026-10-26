@@ -1064,7 +1064,11 @@
     "autoCollectionReasonFolder": "同一文件夹",
     "autoCollectionReasonTitle": "标题前缀相同",
     "autoCollectionReasonTag": "共用标签",
-    "autoCollectionReasonArtist": "同一作者"
+    "autoCollectionReasonArtist": "同一作者",
+    "autoCollectionReasonTitleCore": "书名主干相同",
+    "autoCollectionReasonTitleSimilar": "书名高度相似",
+    "autoCollectionReasonVolume": "卷号连续",
+    "autoCollectionReasonCharacter": "同角色"
   },
   "cm": {
     "title": "标题右键/长按菜单",

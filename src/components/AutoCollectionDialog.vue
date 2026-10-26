@@ -82,11 +82,18 @@ const totalBooks = computed(() => (props.books || bookList.value || []).filter(b
 const filteredSuggestions = computed(() => suggestions.value.filter(s => s.confidence >= minConfidence.value))
 const pickedCount = computed(() => filteredSuggestions.value.filter(s => picked.value[s.id]).length)
 
+// 判定理由的显示文案。作者维度已取消(作者不等于同一部作品),所以不再有 artist 项;
+// 现在只有「书名主干(强证据)」+ 卷号/目录/标签等补充证据。
 const reasonText = (r) => ({
-  'same-folder': t('m.autoCollectionReasonFolder'),
-  'title-prefix': t('m.autoCollectionReasonTitle'),
-  'shared-tag': t('m.autoCollectionReasonTag'),
-  'artist': t('m.autoCollectionReasonArtist')
+  'title-core': t('m.autoCollectionReasonTitleCore'),
+  'title-similar': t('m.autoCollectionReasonTitleSimilar'),
+  'volume-seq': t('m.autoCollectionReasonVolume'),
+  'same-dir': t('m.autoCollectionReasonFolder'),
+  'same-dir-group': t('m.autoCollectionReasonFolder'),
+  'parody': t('m.autoCollectionReasonTag'),
+  'same-artist': t('m.autoCollectionReasonArtist'),
+  'bracket-tag': t('m.autoCollectionReasonTag'),
+  'character': t('m.autoCollectionReasonCharacter')
 } [r] || r)
 const confType = (c) => c >= 80 ? "success" : c >= 60 ? "warning" : "info"
 

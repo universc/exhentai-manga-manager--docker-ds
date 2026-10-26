@@ -7,6 +7,9 @@
          百分比相关的假象一并去掉。 -->
     <!-- 照 JHenTai 的 _loadingProgressWidgetBuilder:
          环形进度(真实下载百分比) + 「loading」 + 页码 -->
+    <!-- 低清缩略图垫底:原图是整张解码的,先垫一张模糊缩略图,
+         视觉上就不会是「白屏等很久」,而是「先是糊的、再变清晰」 -->
+    <div v-if="thumb" class="viewer-page-placeholder-thumb" :style="{ backgroundImage: 'url(' + thumb + ')' }"></div>
     <template v-if="state !== 'failed'">
       <!-- progress < 0 = 还不知道总大小(EH 偶尔不返回 content-length):转圈即可 -->
       <el-progress
@@ -48,6 +51,8 @@ const props = defineProps({
   total: { type: Number, default: 0 },
   // 下载进度:0~1;负数 = 未知(显示转圈而不是百分比)
   progress: { type: Number, default: -1 },
+  // 低清缩略图(模糊垫底用)
+  thumb: { type: String, default: '' },
   style: { type: Object, default: () => ({}) }
 })
 defineEmits(['retry'])
@@ -76,6 +81,16 @@ const text = computed(() => {
   // 加载中/失败用深色底:以前浅色底在白背景里像「变白了」,在线图没出来时尤其明显
   background-color: var(--el-fill-color-dark)
   color: var(--el-text-color-secondary)
+.viewer-page-placeholder-thumb
+  position: absolute
+  inset: 0
+  background-size: cover
+  background-position: center
+  // 模糊 + 压暗:让「糊图」明确是占位,不与真图混淆
+  filter: blur(14px)
+  transform: scale(1.06)
+  opacity: .55
+  pointer-events: none
 .viewer-page-placeholder-spinner
   color: var(--el-color-primary)
 .viewer-page-placeholder-icon
