@@ -1372,10 +1372,25 @@ if (!WEB_MODE) {
                       const full = await new Promise((resolve, reject) => {
                         const bufs = []
                         let size = 0
+                        // 转码要等整张收完(可能好几秒):期间必须持续上报进度,
+                        // 否则前端占位会停在 0% 像卡死,Chromium 也可能先给出一次 error。
+                        const tTotal = Number((r.headers && r.headers['content-length']) || 0)
+                        let tLastEmit = 0
+                        let tLastRatio = -1
                         r.stream.on('data', (c) => {
                           size += c.length
                           if (size > TRANSCODE_MAX_BYTES) { reject(new Error('too-large')) ; try { r.stream.destroy() } catch (e) { /* 忽略 */ } ; return }
                           bufs.push(c)
+                          if (progressTag) {
+                            const now = Date.now()
+                            const ratio = tTotal ? Math.min(0.95, size / tTotal * 0.95) : -1
+                            const due = ratio < 0 ? (now - tLastEmit >= 120) : (ratio - tLastRatio >= 0.05 || now - tLastEmit >= 120)
+                            if (due) {
+                              tLastRatio = ratio
+                              tLastEmit = now
+                              try { emitToRenderer('eh-image-progress', { t: progressTag, ratio }) } catch (e) { /* 忽略 */ }
+                            }
+                          }
                         })
                         r.stream.on('end', () => resolve(Buffer.concat(bufs)))
                         r.stream.on('error', reject)

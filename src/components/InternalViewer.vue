@@ -225,7 +225,12 @@
                   :total="viewerImageList.length"
                   @retry="retryOnlinePage(viewerImageList[currentImageIndex])"
                 />
+                <!-- ⚠ 单页模式的 <img> 以前是**无条件渲染**的:在线页地址还没解析出来时
+                     imageSrc() 返回空字符串,<img src=""> 会立刻报一次 error,
+                     重试很快耗尽 → 界面先闪「加载失败」,等地址真的到了才加载。
+                     滚动/双页模式都有 v-if 守卫,只有这里漏了。 -->
                 <img
+                  v-if="viewerImageList[currentImageIndex] && viewerImageList[currentImageIndex].filepath && !viewerImageFailed[viewerImageList[currentImageIndex].id]"
                   :key="viewerImageList[currentImageIndex]?.id"
                   :src="imageSrc(viewerImageList[currentImageIndex])"
                   class="viewer-image" draggable="false"
@@ -1780,6 +1785,10 @@ const onViewerImageLoad = (image) => {
     onViewerImageError(image)
     return
   }
+  // 图片真的出来了:把之前的失败标记清掉(否则占位会一直显示「加载失败」)
+  clearImageFailed(image)
+  image.failed = false
+  image.resolving = false
   viewerImageReady.value = { ...viewerImageReady.value, [image.id]: true }
   // 图片真实高度落地会改动整卷布局:加载的是当前页时校回一次(带节流,连续加载不抖)
   if (image.id === currentImageId.value) {
@@ -1798,9 +1807,30 @@ const onViewerImageLoad = (image) => {
 const onViewerImageError = (image) => {
   if (!image || !image.id) return
   if (image.online && image.pageUrl) {
+    // ⚠ 杀手级细节:EH 的图是 WebP,主进程要先整张收完、用 sharp 转成 progressive JPEG
+    //   才回 Response。这中间可能好几秒,而 Chromium 对自定义协议的请求会**先报一次 error**
+    //   (图片还没开始解码),于是界面闪一下「加载失败」,随后转码完成又正常显示。
+    //   这就是用户看到的「先失败再加载」。
+    //   对策:首次 error 不算数 —— 只要这一页还在「进行中」(没到最终失败),就一直保持
+    //   加载态;重试间隔也拉长(给转码留时间),而不是 250ms 连打三次。
     const tries = (image.__retry || 0) + 1
     image.__retry = tries
-    if (tries <= 3) {
+    // 前两次只「静默重排」,不改变占位状态,也不要清掉 filepath(清了会让 <img> 卸载重挂)
+    if (tries <= 2) {
+      image.resolving = true
+      image.failed = false
+      setTimeout(() => {
+        if (viewerLoadToken.value && image.filepath) {
+          // 已经拿到地址的:只重新触发一次加载(换 source URL 的版本号 —— 与其它地方一致用时间戳)
+          imageVersion.value = { ...imageVersion.value, [image.id]: Date.now() }
+        } else if (viewerLoadToken.value) {
+          if (!onlineResolveQueue.includes(image)) onlineResolveQueue.push(image)
+          drainOnlineQueue(viewerLoadToken.value)
+        }
+      }, 1200 * tries)
+      return
+    }
+    if (tries <= 4) {
       // 换节点重试:保持「解析中」的中间态,不要先闪一下失败
       image.resolving = true
       image.failed = false
@@ -1816,12 +1846,32 @@ const onViewerImageError = (image) => {
   }
   markImageFailed(image)
 }
+// 批量标记失败(拿不到页链接 / 取链接时异常)。
+// ⚠ 以前这里是 `viewerImageList.value.forEach(it => { it.failed = true })` ——
+//   直接写条目字段、绕过了 viewerImageFailed,于是占位状态判断和条目状态**不同步**:
+//   条目已经 failed,map 里却没有记录,界面就出现「一会儿失败一会儿加载」的错乱。
+//   现在统一走 markImageFailed,保证两处状态一致。
+const markAllImagesFailed = () => {
+  for (const it of (viewerImageList.value || [])) markImageFailed(it)
+}
 // 真正判定失败(所有重试都用尽了)
 const markImageFailed = (image) => {
   if (!image || !image.id) return
   viewerImageFailed.value = { ...viewerImageFailed.value, [image.id]: true }
   image.failed = true
   image.resolving = false
+}
+// ★ 清除「最终失败」标记。
+//   ⚠ 以前只写不清:某页一旦失败过,即使之后换节点重试成功、图片已经正常显示,
+//     viewerImageFailed 里那条记录还在,占位仍然渲染「加载失败」——用户看到的就是
+//     「先显示加载失败,然后才开始加载」而且失败态不消失。
+//   所有「这一页又能用了」的路径都必须调用它。
+const clearImageFailed = (image) => {
+  if (!image || !image.id) return
+  if (!viewerImageFailed.value[image.id]) return
+  const next = { ...viewerImageFailed.value }
+  delete next[image.id]
+  viewerImageFailed.value = next
 }
 // 阅读心跳定时器:每 60 秒向主进程报一次「还在阅读」
 let viewerHeartbeat = null
@@ -1896,7 +1946,12 @@ const prioritizeOnlineQueue = (currentIndex) => {
 }
 
 const resolveOnlineItem = async (image, token, attempt = 0) => {
-  if (!image || !image.pageUrl) { if (image) image.failed = true; return }
+  // ⚠ 以前这里直接写 image.failed = true,绕过了 markImageFailed,
+  //   导致 viewerImageFailed 里没有记录 → placeholderState 判 failed 的条件不同步,
+  //   界面会一直挂着「加载失败」而实际还在解析。
+  //   pageUrl 还没拿到的情形应该是「等待中」,不是失败。
+  if (!image) return
+  if (!image.pageUrl) { image.resolving = true; image.failed = false; return }
   try {
     // 每轮都带上 reloadKey(= 上一轮页面里的 nl 值):节点被限速/挂掉时,
     // EH 会据此重新挑一个 H@H 节点 —— 与 JHenTai 的 _reParseImageUrlAndDownload 同一做法。
@@ -1923,6 +1978,9 @@ const resolveOnlineItem = async (image, token, attempt = 0) => {
       image.height = size.height
       image.resolving = false
       image.failed = false
+      // 地址重新拿到了:之前那次的「最终失败」标记要摘掉,
+      // 否则占位会一直显示「加载失败」,即使图片这次能正常加载。
+      clearImageFailed(image)
       // 在线条目要自己标「已渲染」:内置阅读器靠 loadedImages 决定渲不渲染 <img>
       setImageLoaded(image.id, true)
       // 高度从占位估算值变成真实值会让布局跳动(卷轴模式下**前面的页**变高会把
@@ -1992,6 +2050,8 @@ const drainOnlineQueue = (token) => {
 // 某一页失败后点「重新加载」:重新解析这一页
 const retryOnlinePage = (image) => {
   if (!image || !image.pageUrl) return
+  // 点了重试先把「最终失败」标记摘掉,占位才会立刻回到转圈/进度态
+  clearImageFailed(image)
   image.failed = false
   image.resolving = true
   // 记住重试时正在看的页:解析成功后图片高度会从占位变成实际值,滚动位置会漂
@@ -2023,6 +2083,15 @@ const openOnlineBook = async (book, startIndex = null) => {
   pendingImages.length = 0
   pendingThumbnails.length = 0
   currentImageIndex.value = 0
+  // ★ 换书必须清掉「上一本的失败/进度记录」。
+  //   每页的 id 是按序号生成的(eh-online-0、eh-online-1 …),换一本书后**完全重号**;
+  //   这些 map 又是组件级的、不随书切换重置 —— 于是上一本失败过的页号,
+  //   会直接让新书的同一页号显示「加载失败」,直到该页真正解析成功才消失。
+  //   用户看到的「先显示加载失败、然后才开始加载」就是这么来的。
+  viewerImageFailed.value = {}
+  viewerImageReady.value = {}
+  loadedProgress.value = {}
+  pendingProgress.clear()
 
   // ①先用卡片上已知的页数摆好占位 —— 立刻把阅读器打开,不让用户干等。
   //   ★「从第 N 页进入」时占位阶段就直接定位到第 N 页:
@@ -2066,9 +2135,18 @@ const openOnlineBook = async (book, startIndex = null) => {
     if (token !== viewerLoadToken.value) return
     const links = (res && res.links) || []
     if (!links.length) {
-      // 一页都收不到:把现有占位标成失败(每页可以单独重试),不再傻等
-      viewerImageList.value.forEach(it => { it.resolving = false; it.failed = true })
-      if (!viewerImageList.value.length) ElMessage.warning(t('m.ehOnlineOpenFallback'))
+      // 一页都收不到(画廊页打不开 / 被限速 / 网络抖动):这是**整本**的问题,
+      // 不是「每一页各自失败」。所以:
+      //   · 不标任何单页失败(否则屏幕上会一次挂出 N 个「加载失败」,看着像软件坏了)
+      //   · 保持「等待中」,并给出一次明确提示 + 让用户能整本重试
+      const list = viewerImageList.value || []
+      for (const it of list) {
+        it.failed = false
+        it.resolving = true
+        it.retry = 0
+      }
+      viewerImageFailed.value = {}
+      if (!list.length) ElMessage.warning(t('m.ehOnlineOpenFallback'))
       hideViewerLoading()
       return
     }
@@ -2114,7 +2192,7 @@ const openOnlineBook = async (book, startIndex = null) => {
     }
   } catch (e) {
     console.error(e)
-    viewerImageList.value.forEach(it => { it.resolving = false; it.failed = true })
+    markAllImagesFailed()
     hideViewerLoading()
   }
 }

@@ -152,8 +152,10 @@
           <!-- 合集/标签编辑按钮(仅编辑视图显示;管理入口已并入可自定义工具栏按钮) -->
           <div class="edit-btn-group">
             <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.addCollection()" :icon="Collections24Regular" :title="$t('m.addCollection')"></el-button>
-            <!-- 智能生成:按名字与文件夹结构自动建议合集 -->
-            <el-button type="success" plain v-if="editCollectionView" @click="autoCollectionVisible = true" :icon="MdColorWand" :title="$t('m.autoCollectionTitle')"></el-button>
+            <!-- 智能生成:按名字与文件夹结构自动建议合集。
+                 按钮样式与同一排的其它按钮保持一致(primary + plain + 24 号 fluent 图标),
+                 以前用 success 绿色 + ionicons 的魔杖图标,在一排里显得突兀、图标也偏小不明显。 -->
+            <el-button type="primary" plain v-if="editCollectionView" @click="autoCollectionVisible = true" :icon="Wand24Regular" :title="$t('m.autoCollectionTitle')"></el-button>
             <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.editCollection()" :icon="Edit" :title="$t('m.editCollection')"></el-button>
             <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.saveCollection()" :icon="Save16Regular" :title="$t('m.save')"></el-button>
             <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.exitCollectionView()" :icon="MdExit" :title="$t('m.exit')"></el-button>
@@ -650,8 +652,8 @@
 import { defineComponent } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { Setting as SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened } from '@element-plus/icons-vue'
-import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular } from '@vicons/fluent'
-import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdOptions, MdTrash, MdCloudDownload, MdPlay, MdPause, MdColorWand } from '@vicons/ionicons4'
+import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular, Wand24Regular } from '@vicons/fluent'
+import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdOptions, MdTrash, MdCloudDownload, MdPlay, MdPause } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup, Catalog } from '@vicons/carbon'
 
 import { getWidth, fetchRecentReadRecords, removeReadRecord, clearReadRecords, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes, tagDisplayName, tagColorOf, galleryCategoryName as galleryCategoryNameOf, tagDisplayPrefix as tagDisplayPrefixOf } from './utils.js'
@@ -707,7 +709,7 @@ export default defineComponent({
   setup () {
     return {
       SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened, MdPlay, MdPause,
-      Collections24Regular, Search32Filled, ArrowTrendingLines20Filled, Save16Regular,
+      Collections24Regular, Search32Filled, ArrowTrendingLines20Filled, Save16Regular, Wand24Regular,
       MdRefresh, MdCodeDownload, MdExit, MdShuffle, MdFolderOpen, MdCloudDone,
       MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdOptions, MdTrash, MdCloudDownload,
       TreeViewAlt, CicsSystemGroup, TagGroup
