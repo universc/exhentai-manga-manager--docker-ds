@@ -297,11 +297,38 @@ const closeLibraryModel = (libraryId) => {
   const model = mangaModels.get(libraryId)
   if (!model) return
   mangaModels.delete(libraryId)
+  // ⚠ 按文件路径的缓存也必须一起清:否则库数据目录改过之后,
+  //   旧 dbFile 的条目还留着,后面按文件复用时会拿到指向**老文件**的实例。
+  for (const [file, m] of [...mangaModelsByFile.entries()]) {
+    if (m === model) mangaModelsByFile.delete(file)
+  }
   try { model.sequelize.close() } catch (e) { /* 忽略:连接可能已断 */ }
+}
+// 只读场景的容错版:库不存在/未生效时返回 null,让调用方跳过这库,而不是让整页 500。
+// ⚠ 绝不回退到全局 Manga —— 那正是把 A 库数据写进 B 库的来源。
+const modelForLibraryOrNull = async (libraryId) => {
+  try {
+    return await modelForLibrary(libraryId)
+  } catch (e) {
+    console.warn('[libraries] 跳过库 ' + String(libraryId) + ':' + String((e && e.message) || e))
+    return null
+  }
 }
 const modelForLibrary = async (libraryId) => {
   const lib = (setting.libraries || []).find(l => l.id === libraryId)
-  if (!lib || !isLibraryActive(lib)) return Manga
+  if (!lib) {
+    // ⚠ 以前这里 return Manga —— 会在「库不存在/未配置好」时**静默退回到当前全局模型**,
+    //   而那个模型很可能属于另一个库。扫描循环里一旦发生,数据就会写进错误的库
+    //   (线上事故:小说库里混进 1.4 万条漫画,filepath 形如 "S/作者/作品")。
+    //   现在:找不到库就抛错,让调用方明确跳过,绝不猜。
+    throw new Error('[libraries] 找不到库:' + String(libraryId))
+  }
+  if (!isLibraryActive(lib, IS_WEB_ENV)) {
+    // ⚠ 必须显式传 IS_WEB_ENV:不传时 libraries.js 内部会用「只认 WEB_LIBRARY」的旧判定,
+    //   与 index.js 的 IS_WEB_ENV(WEB_LIBRARY || WEB_MODE)不一致 —— 容器只设 WEB_MODE 时,
+    //   好库会被误判「未生效」,进而静默回退到别的库模型(事故根因之一)。
+    throw new Error('[libraries] 库未生效(缺 path 或 dataPath):' + String(lib.name || lib.id))
+  }
   const cached = mangaModels.get(lib.id)
   if (cached) return cached
   const paths = libraryRuntimePaths(STORE_PATH, lib)
@@ -330,7 +357,7 @@ const modelForBookId = async (id) => modelForLibrary(bookLibraryById.get(id))
 // 在「当前框的所有库 + 当前库」里找一条记录,返回 { model, row, libraryId }
 const findBookAcrossLibraries = async (where) => {
   const entries = []
-  for (const lib of boxLibraries()) entries.push({ lib, model: await modelForLibrary(lib.id) })
+  for (const lib of boxLibraries()) entries.push({ lib, model: await modelForLibraryOrNull(lib.id) })
   if (!entries.some(e => e.model === Manga)) entries.push({ lib: activeLibraryOf(setting), model: Manga })
   for (const e of entries) {
     try {
@@ -425,6 +452,27 @@ const openLibraryForScan = async (lib) => {
   setting.library = lib.path
   Manga = await modelForLibrary(lib.id)
   return true
+}
+
+// ★ 扫描用的「上下文」:把「这个库是谁、它的模型、它的根目录」打包成一个不可变对象,
+//   传给 runScan 全程使用 —— 不再在中途读全局 Manga / setting.library。
+//   事故复盘:以前 runScan 里写入用全局 Manga、路径换算用 scanLib,两者不同源。
+//   扫描循环 openLibraryForScan(下一个库) 一旦参与了时序,就可能出现
+//   「路径按 A 库算、数据写进 B 库数据库」——小说库混进 1.4 万条漫画就是这么来的。
+const scanContextFor = async (lib) => {
+  if (!lib) throw new Error('[scan] 没有可用的库')
+  const model = await modelForLibrary(lib.id)
+  const paths = libraryRuntimePaths(STORE_PATH, lib)
+  return {
+    lib,
+    model,
+    root: String(lib.path || '').replace(/[\/]+$/, ''),
+    dataDir: paths.dataDir,
+    dbFile: paths.dbFile,
+    coverDir: paths.coverDir,
+    snapshotFile: paths.snapshotFile,
+    viewcacheDir: paths.viewcacheDir
+  }
 }
 
 const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}) => {
@@ -1660,10 +1708,20 @@ const toExternalPath = (p, kind, lib, coverDir) => {
   if (!p) return p
   if (kind === 'filepath') {
     if (isUrlLike(p)) return p
-    const owner = lib || libraryOwnerOfPath(p, runtimeLibs(), IS_WEB_ENV)
+    // ★ 严格归属校验(事故根因修复):
+    //   以前是 owner = lib || libraryOwnerOfPath(p, ...) —— 传进来的 lib 会被无条件采信,
+    //   于是「扫描小说库时把漫画的绝对路径 /library/S/xxx 传进来」会被压成
+    //   「相对小说库根」的 "S/xxx",写进小说库后已无从判断归属(线上就是这么脏了 1.4 万行)。
+    //   现在:传了 lib 就必须真的落在该库根下才折算;否则退回自动识别,绝不硬猜。
+    let owner = null
+    if (lib) {
+      const rel = relativeToLibrary(p, lib, IS_WEB_ENV)
+      if (rel !== null && rel !== '' && !rel.split(/[\\/]/).includes('..')) owner = lib
+    }
+    if (!owner) owner = libraryOwnerOfPath(p, runtimeLibs(), IS_WEB_ENV)
     if (owner) {
       const rel = relativeToLibrary(p, owner, IS_WEB_ENV)
-      if (rel !== null && rel !== '') return rel
+      if (rel !== null && rel !== '' && !rel.split(/[\\/]/).includes('..')) return rel
     }
     // ① 老规矩:本端路径 → 桌面(规范)形式
     const externalized = externalizeBookPath(p)
@@ -2458,7 +2516,14 @@ const compileExclude = () => {
 // 封面由用户浏览时按需生成(见 ensureBookCover),不再提供切换开关
 // fp = inventoryLibrary 顺手拿到的指纹 { m: mtimeMs, s?: size } —— 免费,不用再 stat/dirSize
 const processScanItem = async (ctx, filepath, type, fp) => {
+  // ★ 全程只用 ctx 里的模型与封面目录(哪本书属于哪个库就写哪个库)。
   const { bookMap, bookIdMap, batchNewBooks, skipRelocateLookup } = ctx
+  const Db = ctx.model || Manga
+  const scanCtx = {
+    coverDir: ctx.coverDir || CURRENT_COVER_DIR,
+    snapshotFile: ctx.snapshotFile || SNAPSHOT_FILE,
+    viewcacheDir: ctx.viewcacheDir || LIBRARY_VIEWCACHE_DIR
+  }
   const foundData = bookMap.get(filepath)
   if (foundData === undefined) {
     /*
@@ -2466,7 +2531,7 @@ const processScanItem = async (ctx, filepath, type, fp) => {
     * return the existing data if and only if there is one match
     * */
     // 首次建库(库里一条记录都没有)不可能存在"搬家的老书" → 直接跳过这趟全表查询
-    const existingManga = skipRelocateLookup ? null : await findSameFile(filepath, type, Manga, fp)
+    const existingManga = skipRelocateLookup ? null : await findSameFile(filepath, type, Db, fp)
     if (existingManga) {
       // the file is relocated only, so no need to regenerate the cover
       const foundPrevBook = bookIdMap.get(existingManga.id)
@@ -2476,10 +2541,10 @@ const processScanItem = async (ctx, filepath, type, fp) => {
         // update the Mangas table in database.sqlite(路径写 Windows 格式)
         // 懒加载模式下旧封面可能为空:保留空,由用户使用时按需生成
         const newCoverPath = foundPrevBook.coverPath
-          ? path.join(CURRENT_COVER_DIR, path.basename(foundPrevBook.coverPath))
+          ? path.join(scanCtx.coverDir, path.basename(foundPrevBook.coverPath))
           : null
         foundPrevBook.coverPath = newCoverPath
-        await Manga.update(
+        await Db.update(
           {
             filepath: toExternalPath(filepath, 'filepath', ctx.lib),
             coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath') : null
@@ -2513,21 +2578,32 @@ const processScanItem = async (ctx, filepath, type, fp) => {
     foundData.exist = true
     if (isPortable) {
       const newCoverPath = foundData.coverPath
-        ? path.join(CURRENT_COVER_DIR, path.basename(foundData.coverPath))
+        ? path.join(scanCtx.coverDir, path.basename(foundData.coverPath))
         : null
       if (foundData.coverPath !== newCoverPath) {
         foundData.coverPath = newCoverPath
-        await Manga.update({ coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath') : null }, { where: { id: foundData.id } })
+        await Db.update({ coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath') : null }, { where: { id: foundData.id } })
       }
     }
   }
 }
 
-const runScan = async () => {
+const runScan = async (ctx) => {
+  // ★ ctx 由 runScanAll 显式传入(哪个库、哪个模型、哪个根目录/封面目录/快照文件),
+  //   全程不再读全局 Manga / CURRENT_COVER_DIR / SNAPSHOT_FILE。
+  //   事故复盘:这些全局量会在「几万文件的 await」期间被别的入口改掉,
+  //   结果就是「枚举 A 库、写进 B 库、清 C 库封面」。ctx 把它们钉死在本次扫描上。
+  const scanLib = ctx ? ctx.lib : currentLibrary()
+  const Db = ctx ? ctx.model : Manga
+  // 没有 ctx(单库/旧的单次扫描)时,用当前运行时值兜底
+  const scanCtx = {
+    coverDir: ctx ? ctx.coverDir : CURRENT_COVER_DIR,
+    snapshotFile: ctx ? ctx.snapshotFile : SNAPSHOT_FILE,
+    viewcacheDir: ctx ? ctx.viewcacheDir : LIBRARY_VIEWCACHE_DIR
+  }
   // 库里老格式的绝对路径先规范化成相对路径,否则下面按「本端绝对路径」索引会对不上
   await ensureLibraryPathsNormalized()
-  const scanLib = currentLibrary()
-  const bookList = await Manga.findAll({ raw: true })
+  const bookList = await Db.findAll({ raw: true })
   bookList.forEach(b => {
     b.filepath = translateBookPath(b.filepath, 'filepath', scanLib)
     b.coverPath = translateBookPath(b.coverPath, 'coverPath')
@@ -2546,7 +2622,7 @@ const runScan = async () => {
   const excludeRe = compileExclude()
   // ⚠ 用本次扫描的库对象,不要读全局 setting.library ——
   //   多库依次扫描时,全局值可能已被别的库改掉,导致「扫的是 A 库、快照写的是 B 库、
-  //   清理封面却清的是当前 CURRENT_COVER_DIR」,书单和封面目录对不上 → 整目录被当孤儿删掉。
+  //   清理封面却清的是当前 scanCtx.coverDir」,书单和封面目录对不上 → 整目录被当孤儿删掉。
   const scanRoot = String(scanLib.path || setting.library || '')
   const inv = await inventoryLibrary(scanRoot, { excludeRe })
   let list = inv.books
@@ -2592,11 +2668,30 @@ const runScan = async () => {
     })
     // 批量入库:一个事务写入一批,避免逐条 fsync(路径写入 Windows 格式)
     if (batchNewBooks.length) {
-      await Manga.bulkCreate(batchNewBooks.map(b => ({
-        ...b,
-        filepath: toExternalPath(b.filepath, 'filepath', scanLib),
-        coverPath: toExternalPath(b.coverPath, 'coverPath')
-      })))
+      // ★ 最后一道防线:入库前确认每本书的绝对路径**真的落在本次扫描的库根下**。
+      //   事故复盘:一旦「枚举的是 A 库、写入时模型/库上下文是 B 库」,就会把 A 库的
+      //   书压成相对 B 库根的路径写进 B 库(小说库里那 1.4 万条 "S/作者/作品" 就是)。
+      //   这里做零 I/O 的归属校验:不属于本库的直接剔除并记日志,绝不写进去。
+      const rootForCheck = String(scanLib.path || '').replace(/[\/]+$/, '')
+      const owned = []
+      const rejected = []
+      for (const b of batchNewBooks) {
+        const abs = String(b.filepath || '')
+        const inRoot = rootForCheck && (abs === rootForCheck || abs.startsWith(rootForCheck + '/') || abs.startsWith(rootForCheck + '\\'))
+        if (inRoot) owned.push(b)
+        else rejected.push(abs)
+      }
+      if (rejected.length) {
+        console.error(`[scan-guard] 剔除 ${rejected.length} 本不属于本库「${rootForCheck}」的记录:`, rejected.slice(0, 3).join(' | '))
+        sendMessageToWebContents(`已跳过 ${rejected.length} 本不属于当前库「${scanLib.name || rootForCheck}」的书(路径不符,已阻止写入)`)
+      }
+      if (owned.length) {
+        await Db.bulkCreate(owned.map(b => ({
+          ...b,
+          filepath: toExternalPath(b.filepath, 'filepath', scanLib),
+          coverPath: toExternalPath(b.coverPath, 'coverPath')
+        })))
+      }
       for (const newBook of batchNewBooks) {
         bookMap.set(newBook.filepath, newBook)
         bookList.push(newBook)
@@ -2627,7 +2722,7 @@ const runScan = async () => {
       const removeIds = removeData.map(b => b.id)
       const removeHashes = removeData.map(b => b.hash).filter(Boolean)
       for (let i = 0; i < removeIds.length; i += 400) {
-        await Manga.destroy({ where: { id: { [Op.in]: removeIds.slice(i, i + 400) } } })
+        await Db.destroy({ where: { id: { [Op.in]: removeIds.slice(i, i + 400) } } })
       }
       for (let i = 0; i < removeHashes.length; i += 400) {
         await Metadata.destroy({ where: { hash: { [Op.in]: removeHashes.slice(i, i + 400) } } })
@@ -2639,13 +2734,13 @@ const runScan = async () => {
     }
   }
   try {
-    // 清理孤儿封面。封面文件都存放在 CURRENT_COVER_DIR,而数据库里的 coverPath 可能是
+    // 清理孤儿封面。封面文件都存放在 scanCtx.coverDir,而数据库里的 coverPath 可能是
     // Windows 盘符 / UNC / Linux(/data/...) 任意一种格式 —— 统一取「文件名」再比较。
     // ⚠ 必须自己按 / 和 \\ 切:Linux 的 path.basename() 不认反斜杠,
     //   以前直接用 path.basename('D:\\cover\\x.webp') 会得到整串,匹配不上 →
     //   把整目录的封面全当孤儿删掉(用户反馈的「全库扫描后封面全丢」就是这个)。
     const baseNameOf = (p0) => String(p0 || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').split('/').pop()
-    const coverList = await fs.promises.readdir(CURRENT_COVER_DIR)
+    const coverList = await fs.promises.readdir(scanCtx.coverDir)
     const existCoverSet = new Set(existData.map(b => baseNameOf(b.coverPath)).filter(Boolean))
     // 安全阀:一条都没匹配上,或要删掉一大半 —— 一律不删,只提示。
     // 宁可留几个孤儿文件,也不能再把用户封面清空。
@@ -2653,7 +2748,7 @@ const runScan = async () => {
       sendMessageToWebContents('封面清理已跳过:数据库里没有可匹配的封面路径(不会删除任何封面)')
     } else {
       const removeCoverList = coverList
-        .map(p0 => path.join(CURRENT_COVER_DIR, p0))
+        .map(p0 => path.join(scanCtx.coverDir, p0))
         .filter(p0 => !existCoverSet.has(path.basename(p0)))
       if (coverList.length > 20 && removeCoverList.length > coverList.length * 0.5) {
         sendMessageToWebContents(`封面清理已跳过:本次要删 ${removeCoverList.length}/${coverList.length} 个封面,比例异常`)
@@ -2668,7 +2763,7 @@ const runScan = async () => {
   }
   // 全量扫描成功收尾:保存目录指纹快照,供增量扫描使用
   try {
-    await saveSnapshotFile(SNAPSHOT_FILE, snapshotFromInventory(scanRoot, setting.excludeFile || '', inv))
+    await saveSnapshotFile(scanCtx.snapshotFile, snapshotFromInventory(scanRoot, setting.excludeFile || '', inv))
   } catch (e) {
     console.log('save scan snapshot failed', e)
   }
@@ -2688,8 +2783,18 @@ const runScanAll = async () => {
   for (let i = 0; i < libs.length; i++) {
     const lib = libs[i]
     sendMessageToWebContents(`[${i + 1}/${libs.length}] 开始扫描库「${lib.name}」:${lib.path}`)
+    // ★ 先建 ctx(把这个库的模型/根目录/数据目录绑死),再用 ctx 扫描。
+    //   以前是「切运行时 → runScan() 里读全局」:扫描中途全局被改动就会
+    //   「路径按 A 库算、数据写进 B 库」。ctx 让这一层不再依赖全局状态。
+    let ctx = null
+    try {
+      ctx = await scanContextFor(lib)
+    } catch (e) {
+      sendMessageToWebContents(`跳过库「${lib.name}」:${String((e && e.message) || e)}`)
+      continue
+    }
     await openLibraryForScan(lib)
-    await runScan()
+    await runScan(ctx)
   }
   // 扫完还原到当前活动库(路径/数据库模型)
   const active = activeLibraryOf(setting)
@@ -5586,7 +5691,7 @@ ipcMain.handle('set-active-library', async (event, id) => {
   try {
     const lib = (setting.libraries || []).find(l => l.id === id)
     if (!lib) return { ok: false, error: '找不到该漫画库' }
-    if (!isLibraryActive(lib)) return { ok: false, error: `库「${lib.name}」还没填「库数据存放位置」,填完才会生效` }
+    if (!isLibraryActive(lib, IS_WEB_ENV)) return { ok: false, error: `库「${lib.name}」还没填「库数据存放位置」,填完才会生效` }
     const prev = activeLibraryOf(setting)
     if (prev && prev.id === lib.id) return { ok: true, activeChanged: false, ...librariesSnapshot() }
     if (isScanning) return { ok: false, error: '正在扫描漫画库,请等扫描结束后再切换库' }

@@ -61,7 +61,15 @@ const localLibraryPath = (lib, isWeb) => {
 }
 const localLibraryDataPath = (lib, isWeb) => {
   if (!lib) return ''
-  const web = isWeb === undefined ? !!process.env.WEB_LIBRARY : !!isWeb
+  // ⚠ 这里的 web 判定必须和 localLibraryPath 完全一致(WEB_LIBRARY **或** WEB_MODE=1)。
+  //   以前只认 WEB_LIBRARY:容器只设 WEB_MODE=1 时,
+  //     localLibraryPath 取 pathWeb(有值)→「有 path」
+  //     localLibraryDataPath 取 dataPath(桌面值,可能为空)→「没 dataPath」
+  //   于是 isLibraryActive 判这个库「未生效」,modelForLibrary 又静默回退到全局 Manga,
+  //   扫描时就把 A 库的书写进了 B 库(线上事故:小说库混进 1.4 万条漫画)。
+  const web = isWeb === undefined
+    ? !!(process.env.WEB_LIBRARY || process.env.WEB_MODE === '1')
+    : !!isWeb
   const desk = String(lib.dataPath || '').trim()
   if (!web) return desk
   return String(lib.dataPathWeb || '').trim() || desk
