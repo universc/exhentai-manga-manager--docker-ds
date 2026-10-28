@@ -580,8 +580,48 @@ const catDisplayName = (key) => {
   return hit ? DEFAULT_CAT_NAMES[hit] : key
 }
 // 反向映射:中文显示名 → 英文分类键(收藏标签的历史数据可能存的是显示名,如 "角色")
-const CAT_NAME_TO_KEY = Object.fromEntries(Object.entries(DEFAULT_CAT_NAMES).map(([k, v]) => [v, k]))
-const resolveCatKey = (cat) => (DEFAULT_CAT_NAMES[cat] ? cat : (CAT_NAME_TO_KEY[cat] || cat))
+// ⚠ 不能直接 Object.fromEntries:cosplay 与 cosplayer 的显示名都是 'Cosplay',
+//   反向表会互相覆盖,导致「两个同名分组」,而其中一个永远归不到正确类别。
+//   这里遇到重复显示名时保留**先出现的**(cosplayer 在表里更靠前,是 EH 的正名)。
+const CAT_NAME_TO_KEY = (() => {
+  const out = {}
+  for (const [k, v] of Object.entries(DEFAULT_CAT_NAMES)) {
+    if (out[v] === undefined) out[v] = k
+  }
+  return out
+})()
+// 分类键归一:① 内置键直接用 ② 中文显示名转回英文键 ③ 大小写兜底 ④ 别名归一
+// ⚠ 大小写兜底是必须的:书里可能存 Female,而内置表键是 female,
+//   没有这层会分成「Female 组」和「female 组」两个组。
+const CAT_ALIASES = {
+  '作品': 'parody',
+  '原作': 'parody',
+  '社团': 'group',
+  '社團': 'group',
+  '团队': 'group',
+  '作者': 'artist',
+  '艺术家': 'artist',
+  '藝術家': 'artist',
+  '角色': 'character',
+  '语言': 'language',
+  '語言': 'language',
+  '其他': 'other',
+}
+const resolveCatKey = (cat) => {
+  if (cat == null || cat === '') return cat
+  const raw = String(cat)
+  if (DEFAULT_CAT_NAMES[raw]) return raw
+  if (CAT_ALIASES[raw]) return CAT_ALIASES[raw]
+  const byName = CAT_NAME_TO_KEY[raw]
+  if (byName) return byName
+  // 大小写兜底
+  const lk = raw.toLowerCase()
+  const hit = Object.keys(DEFAULT_CAT_NAMES).find(k => k.toLowerCase() === lk)
+  if (hit) return hit
+  const aliasHit = Object.keys(CAT_ALIASES).find(k => k.toLowerCase() === lk)
+  if (aliasHit) return CAT_ALIASES[aliasHit]
+  return raw
+}
 
 // ---------- 标签类别的显示顺序 ----------
 // 默认顺序沿用 EH 官方命名空间的惯例(语言→作品→角色→社团→作者→性別→其它),

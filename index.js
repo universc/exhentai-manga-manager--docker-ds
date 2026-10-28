@@ -5424,8 +5424,12 @@ ipcMain.handle('load-setting', async (event, arg) => {
 //
 // 所以用「未确认新增」小本子:add-global-tag 写盘时登记一笔,保存时把这些笔补回内存值;
 // 前端把新标签带回(说明它已经看到了)就销账。删除走显式 removeGlobalTag,不受影响。
-const pendingGlobalTags = new Map() // 'cat\u0000name' -> true
-const pendingKey = (cat, name) => String(cat) + '\u0000' + String(name)
+// ⚠ 按「账户 profile」分桶:setting 是按 profile 隔离的(见 198-213 的 Proxy),
+//   但这个未确认小本子以前是模块级单例 —— 网页版多账户并发时,
+//   A 账户「还没被前端确认的新增」会被补进 B 账户的 save-setting,造成跨账户污染。
+const pendingGlobalTags = new Map() // '<profile>\u0000<cat>\u0000<name>' -> true
+const currentProfileTag = () => String(getActiveProfile() || '')
+const pendingKey = (cat, name) => currentProfileTag() + '\u0000' + String(cat) + '\u0000' + String(name)
 
 const notePendingGlobalTag = (cat, name) => {
   if (!cat || name == null) return
@@ -5434,27 +5438,31 @@ const notePendingGlobalTag = (cat, name) => {
 const clearPendingGlobalTag = (cat, name) => {
   pendingGlobalTags.delete(pendingKey(cat, name))
 }
-// 把还没被前端确认的新增标签补进 incoming,避免被整份回传冲掉
-const applyPendingGlobalTags = (incoming) => {
+// 只处理「当前账户」的待确认项:别的账户的笔绝不能补进这个账户
+const applyPendingGlobalTagsForProfile = (incoming) => {
+  const prof = currentProfileTag()
+  const prefix = prof + '\u0000'
+  if (![...pendingGlobalTags.keys()].some(k => k.startsWith(prefix))) return incoming
   if (!incoming || typeof incoming !== 'object') incoming = {}
-  if (!pendingGlobalTags.size) return incoming
   const out = {}
-  for (const [cat, arr] of Object.entries(incoming)) {
-    out[cat] = Array.isArray(arr) ? arr.slice() : []
-  }
+  for (const [cat, arr] of Object.entries(incoming)) out[cat] = Array.isArray(arr) ? arr.slice() : []
   const seen = new Set()
   for (const [cat, arr] of Object.entries(out)) {
-    for (const name of arr) seen.add(pendingKey(cat, name))
+    for (const name of arr) seen.add(String(cat) + '\u0000' + String(name))
   }
   for (const key of [...pendingGlobalTags.keys()]) {
-    if (seen.has(key)) { pendingGlobalTags.delete(key); continue } // 前端已经带回来了,销账
-    const [cat, name] = key.split('\u0000')
+    if (!key.startsWith(prefix)) continue
+    const rest = key.slice(prefix.length)
+    if (seen.has(rest)) { pendingGlobalTags.delete(key); continue }
+    const [cat, name] = rest.split('\u0000')
     if (!cat || name == null) { pendingGlobalTags.delete(key); continue }
     if (!out[cat]) out[cat] = []
     if (!out[cat].includes(name)) out[cat].push(name)
   }
   return out
 }
+// 把还没被前端确认的新增标签补进 incoming,避免被整份回传冲掉
+
 // 显式删除一个全局标签(不碰书里的标签,只从登记表里去掉)
 const removeGlobalTag = (cat, name) => {
   if (!setting.globalTags || typeof setting.globalTags !== 'object') return false
@@ -5482,7 +5490,7 @@ const applySetting = async (receiveSetting) => {
   // 「全局标签」并发保护:把 add-global-tag 刚写入、前端还没带回来的新增标签补上,
   // 否则前端整份回传会把它覆盖掉(表现正是「加完立刻消失」)。
   // 只补「未确认的新增」,不做无脑并集 —— 否则用户主动删除的标签会被旧值并回来。
-  receiveSetting.globalTags = applyPendingGlobalTags(receiveSetting.globalTags)
+  receiveSetting.globalTags = applyPendingGlobalTagsForProfile(receiveSetting.globalTags)
   if (receiveSetting.proxy) {
     // ⚠ 不能 await:代理不可达时 Electron 的 setProxy 会挂住,后面整条保存链全卡住
     //   (表现为「切库没反应 / 设置保存转圈」)。改成后台设置 + 吞掉异常。
@@ -6965,6 +6973,66 @@ ipcMain.handle('rename-image', async (event, { oldPath, newName } = {}) => {
 })
 
 // 重命名标签:更新全库所有漫画中该标签(某分类下)的名称
+// 把「标签变更」写回每个库的 Mangas 表。
+// 传进来的 mutate(tags) 返回新的 tags(或 null = 这本书不用改)。
+// 与 move-tag-category 完全同口径:某个库写失败只记日志,不影响其它库与 metadata。
+const writeTagToLibraries = async (mutate) => {
+  for (const lib of boxLibraries()) {
+    try {
+      const model = await modelForLibrary(lib.id)
+      const books = await model.findAll({ attributes: ['id', 'tags'] })
+      for (const book of books) {
+        const tags = book.tags
+        if (!tags || typeof tags !== 'object') continue
+        const nextTags = mutate(tags)
+        if (!nextTags) continue
+        await model.update({ tags: nextTags }, { where: { id: book.id } })
+      }
+    } catch (e) {
+      console.error('[tags] 写回库失败(' + String(lib.name || lib.id) + '):', String((e && e.message) || e))
+    }
+  }
+}
+
+// 改名时,把「以标签名为键」的用户配置一起搬走:
+//   tagColors(Map: 'cat::tag' -> 颜色) / tagNameLangs(Map) / tagRelations(Map: 'cat::tag' -> {contains, containedBy})
+// 不搬的话:改完名颜色没了、译文没了、集合关系断了 —— 用户看到「改个名字全丢了」。
+const renameKeyedTagConfigs = (cat, oldName, newName) => {
+  const oldKey = cat + '::' + oldName
+  const newKey = cat + '::' + newName
+  const remap = (obj) => {
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false
+    // 只处理「键里带 :: 」的映射表(ANDC 的 tagColors/tagNameLangs/tagRelations 都是这种形状)
+    const keys = Object.keys(obj)
+    if (!keys.some(k => k.includes('::'))) return false
+    let changed = false
+    if (Object.prototype.hasOwnProperty.call(obj, oldKey)) {
+      const v = obj[oldKey]
+      delete obj[oldKey]
+      obj[newKey] = v
+      changed = true
+    }
+    // tagRelations 里别的条目可能「引用」了这个标签名(contains / containedBy)
+    for (const k of Object.keys(obj)) {
+      const v = obj[k]
+      if (!v || typeof v !== 'object') continue
+      for (const f of ['contains', 'containedBy']) {
+        const arr = v[f]
+        if (!Array.isArray(arr)) continue
+        if (!arr.includes(oldKey)) continue
+        v[f] = [...new Set(arr.map(x => (x === oldKey ? newKey : x)))]
+        changed = true
+      }
+    }
+    return changed
+  }
+  let dirty = false
+  for (const f of ['tagColors', 'tagNameLangs', 'tagRelations', 'tagCatOrder']) {
+    if (remap(setting[f])) dirty = true
+  }
+  if (dirty) { try { persistSettingNow() } catch (e) { /* 忽略 */ } }
+}
+
 ipcMain.handle('rename-tag', async (event, { cat, oldName, newName } = {}) => {
   try {
     if (!cat || !oldName || !newName) return { ok: false, error: '参数错误' }
@@ -6989,6 +7057,39 @@ ipcMain.handle('rename-tag', async (event, { cat, oldName, newName } = {}) => {
         count++
       }
     })
+    // ⚠ 各库 Mangas 里也必须改名(与 move-tag-category 同口径)。
+    //   书架卡片/详情读的是**库数据库**里的 book.tags,只改 metadata 的话
+    //   会出现「设置页显示新名、书架还是旧名」的两份数据打架。
+    await writeTagToLibraries((tags) => {
+      const keys = Object.keys(tags).filter(k => sameCat(k, cat) && Array.isArray(tags[k]) && tags[k].includes(oldName))
+      if (!keys.length) return null
+      const nextTags = { ...tags }
+      for (const k of keys) nextTags[k] = [...new Set(nextTags[k].map(v => (v === oldName ? newName : v)))]
+      return nextTags
+    })
+    // ★ 还要改「全局标签登记表」以及所有「以标签名为键」的用户配置。
+    //   事故:用「新增标签」建的全局标签只存在 setting.globalTags 里(不在 any 书上),
+    //   上面的 Metadata 遍历命中 0 行 → rename-tag 返回 ok 但什么都没改,
+    //   Setting.vue 里双击改名对它完全无效。
+    const renameInGlobalTags = () => {
+      const gs = setting.globalTags
+      if (!gs || typeof gs !== 'object') return null
+      let changed = false
+      const next = {}
+      for (const [k, arr] of Object.entries(gs)) {
+        if (!Array.isArray(arr)) { next[k] = arr; continue }
+        if (!sameCat(k, cat)) { next[k] = arr; continue }
+        const mapped = arr.map(v => (v === oldName ? newName : v))
+        if (arr.includes(oldName)) changed = true
+        next[k] = [...new Set(mapped)]
+      }
+      return changed ? next : null
+    }
+    const gNext = renameInGlobalTags()
+    if (gNext) { setting.globalTags = gNext; count += 1 }
+    // 以「cat::name」为键的配置也要跟着改:否则改完名颜色/译文/关系全丢
+    try { renameKeyedTagConfigs(cat, oldName, newName) } catch (e) { /* 忽略:配置是可选增强 */ }
+    if (gNext) { try { persistSettingNow() } catch (e) { /* 忽略 */ } }
     return { ok: true, count }
   } catch (e) {
     return { ok: false, error: String(e.message || e) }
@@ -7047,6 +7148,24 @@ ipcMain.handle('move-tag', async (event, { fromCat, name, toCat, newName, dryRun
         count++
       }
     })
+    // ⚠ 各库 Mangas 同步(与 rename-tag 同口径):否则书架还是旧名/旧类别。
+    if (!dryRun) {
+      await writeTagToLibraries((tags) => {
+        const fromKeys = Object.keys(tags).filter(k => sameCat(k, fromCat) && Array.isArray(tags[k]) && tags[k].includes(name))
+        if (!fromKeys.length) return null
+        const nextTags = { ...tags }
+        for (const k of fromKeys) {
+          const left = nextTags[k].filter(v => v !== name)
+          if (left.length) nextTags[k] = left
+          else delete nextTags[k]
+        }
+        const targetKey = Object.keys(nextTags).find(k => sameCat(k, toCat) && Array.isArray(nextTags[k])) || toCat
+        const target = Array.isArray(nextTags[targetKey]) ? nextTags[targetKey].slice() : []
+        if (!target.includes(finalName)) target.push(finalName)
+        nextTags[targetKey] = target
+        return nextTags
+      })
+    }
     return { ok: true, count }
   } catch (e) {
     return { ok: false, error: String(e.message || e) }
@@ -7074,6 +7193,41 @@ ipcMain.handle('delete-tag', async (event, { cat, name } = {}) => {
         count++
       }
     })
+    // ★ 同时把它从「全局标签登记表」里摘掉(收口在这里,前端不必各调一遍)。
+    //   事故:App.vue 的快捷删除只调 delete-tag,globalTags 不动,
+    //   下次 save-setting 时 applySetting 又把它补回来 —— 用户看到「删了又回来」。
+    //   删除 = 元数据 + 各库 Mangas + 登记表,三处一起清才干净。
+    const dropFromGlobal = (gs) => {
+      if (!gs || typeof gs !== 'object') return null
+      let changed = false
+      const next = {}
+      for (const [k, arr] of Object.entries(gs)) {
+        if (!Array.isArray(arr)) { next[k] = arr; continue }
+        // 类别键中英混用(角色/character):用 sameCat 归一,否则只删一半
+        const left = sameCat(k, cat) ? arr.filter(v => v !== name) : arr
+        if (left.length !== arr.length) changed = true
+        if (left.length) next[k] = left
+      }
+      return changed ? next : null
+    }
+    const g1 = dropFromGlobal(setting.globalTags)
+    if (g1) { setting.globalTags = g1; try { persistSettingNow() } catch (e) { /* 忽略 */ } }
+    const g2 = dropFromGlobal(setting.collectTag)
+    if (g2) { setting.collectTag = g2; try { persistSettingNow() } catch (e) { /* 忽略 */ } }
+    // ⚠ 各库 Mangas 同步删除(与 move-tag-category 同口径),
+    //   否则书架卡片上那个标签会一直留着,而设置页已经没了 —— 两份数据打架。
+    await writeTagToLibraries((tags) => {
+      // 同样用 sameCat:库里可能存「角色」而传进来的是 character
+      const keys = Object.keys(tags).filter(k => sameCat(k, cat) && Array.isArray(tags[k]) && tags[k].includes(name))
+      if (!keys.length) return null
+      const nextTags = { ...tags }
+      for (const k of keys) {
+        const next = nextTags[k].filter(v => v !== name)
+        if (next.length) nextTags[k] = next
+        else delete nextTags[k]
+      }
+      return nextTags
+    })
     return { ok: true, count }
   } catch (e) {
     return { ok: false, error: String(e.message || e) }
@@ -7092,13 +7246,19 @@ ipcMain.handle('move-tag-category', async (event, { from, to } = {}) => {
     await Metadata.sequelize.transaction(async (tx) => {
       for (const row of rows) {
         const tags = row.tags
-        const arr = tags && tags[from]
-        if (!Array.isArray(arr) || !arr.length) continue
+        if (!tags || typeof tags !== 'object') continue
+        // ⚠ 必须用 sameCat 找键:库里可能存中文「角色」而传进来是 character,
+        //   用 tags[from] 精确匹配会一个都搬不走(类别删了、标签还挂在中文键下)。
+        const fromKeys = Object.keys(tags).filter(k => sameCat(k, from) && Array.isArray(tags[k]) && tags[k].length)
+        if (!fromKeys.length) continue
         const nextTags = { ...tags }
-        delete nextTags[from]
-        const target = Array.isArray(nextTags[to]) ? nextTags[to].slice() : []
-        for (const tag of arr) if (!target.includes(tag)) target.push(tag)
-        nextTags[to] = target
+        const targetKey = Object.keys(nextTags).find(k => sameCat(k, to) && Array.isArray(nextTags[k])) || to
+        const target = Array.isArray(nextTags[targetKey]) ? nextTags[targetKey].slice() : []
+        for (const k of fromKeys) {
+          for (const tag of nextTags[k]) if (!target.includes(tag)) target.push(tag)
+          delete nextTags[k]
+        }
+        nextTags[targetKey] = target
         await Metadata.update({ tags: nextTags }, { where: { hash: row.hash }, transaction: tx })
         count++
       }

@@ -130,7 +130,9 @@ export const useAppStore = defineStore('appStore', {
       const uniqedTagArray = []
       for (const combinedTag of tagArray.sort()) {
         const parts = _.split(combinedTag, '##')
-        const dedupeKey = resolveCatKey(parts[0]) + '##' + parts[1]
+        // 标签名也要忽略大小写:Glasses 与 glasses 是同一个标签,
+        // 否则列表里并排显示两个,而「新增标签」的 canAddTag 忽略大小写又建不出第二个 —— 自相矛盾。
+        const dedupeKey = resolveCatKey(parts[0]) + '##' + String(parts[1]).toLowerCase()
         if (seen.has(dedupeKey)) continue
         seen.add(dedupeKey)
         uniqedTagArray.push(combinedTag)

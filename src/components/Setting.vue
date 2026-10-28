@@ -3930,21 +3930,13 @@ const addTagToCollect = () => {
   saveSetting()
 }
 
+// 取消「收藏」:只从收藏列表里摘掉,**不动 globalTags**。
+// ⚠ 以前这里调 remove-global-tag 并把 globalTags 里的同名项一起删了 ——
+//   等于「取消收藏」直接把用户自建的全局标签删掉(语义完全反了)。
+//   标签本身是否消失,是「删除标签」的事(设置页的删除按钮走 delete-tag);
+//   收藏只是一份书签清单,不该有副作用。
 const removeTag = (id) => {
   setting.value.collectTag = setting.value.collectTag.filter(tag => tag.id !== id)
-  // 只取消「收藏」,不删标签本身 —— 但要把登记表里对应的那条显式摘掉,
-  // 否则后端并发保护会把它当成「前端还没确认的新增」并回来。
-  const raw = String(id || '')
-  const sep = raw.indexOf(':')
-  if (sep > 0) {
-    const cat = raw.slice(0, sep)
-    const name = raw.slice(sep + 1)
-    try { ipcRenderer.invoke('remove-global-tag', { cat, name }) } catch (e) { /* 忽略 */ }
-    if (setting.value.globalTags && Array.isArray(setting.value.globalTags[cat])) {
-      const kept = setting.value.globalTags[cat].filter(v => String(v) !== name)
-      if (kept.length) setting.value.globalTags = { ...setting.value.globalTags, [cat]: kept }
-    }
-  }
   saveSetting()
 }
 
@@ -4500,6 +4492,26 @@ const deleteTagCategory = async () => {
     setting.value.tagCatOrder = setting.value.tagCatOrder.filter(c => resolveCatKey(c) !== key)
   }
   if (setting.value.tagCatNameLangs) delete setting.value.tagCatNameLangs[key]
+  // ★ 必须把 setting.globalTags 里这个类别整条删掉。
+  //   事故:allTagsGroups 会把 globalTags 里的标签建成组,
+  //   这里不清的话,删掉的类别/标签下一次渲染立刻复活(用户看到「删了又回来」)。
+  if (setting.value.globalTags && typeof setting.value.globalTags === 'object') {
+    const gs = { ...setting.value.globalTags }
+    let touched = false
+    for (const k of Object.keys(gs)) {
+      if (resolveCatKey(k) === key) { delete gs[k]; touched = true }
+    }
+    if (touched) setting.value.globalTags = gs
+  }
+  // 该类别下标签的颜色也一并清掉(颜色表的键是 'cat::tag')
+  if (setting.value.tagColors && typeof setting.value.tagColors === 'object') {
+    const next = { ...setting.value.tagColors }
+    let touched = false
+    for (const k of Object.keys(next)) {
+      if (resolveCatKey(String(k).split('::')[0]) === key) { delete next[k]; touched = true }
+    }
+    if (touched) setting.value.tagColors = next
+  }
   // 关联边:该类别下的标签作为「包含方」或「被包含方」的条目全部摘掉
   const rel = setting.value.tagRelations
   if (rel) {
