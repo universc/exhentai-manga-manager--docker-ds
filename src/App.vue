@@ -1928,9 +1928,10 @@ export default defineComponent({
     // 点一下工具栏按钮 = 切到下一条「库切换」框(循环)。只有一条框时点了不会变,所以提示一下
     // 启用了「EH在线」时,循环尾部多一站:最后一个框 → EH在线 → 回到第一个框
     async switchBox () {
-      // ★ 一开始就给反馈:后面 await set-active-box 在 NAS 上要几秒,
-      //   以前这几秒界面零反馈,用户以为"点了没反应"。
-      this.buttonLoadBookListLoading = true
+      // ⚠ 这里**不能**无条件置 loading:这个函数有好几条提前 return 的路
+      //   (只有一条框 / 切到 EH在线 / 已经在 EH在线),那些路径根本不加载列表,
+      //   置了不还原 → 工具栏按钮**永远转圈**(线上就是"一直转圈"这个死现象)。
+      //   所以 loading 只在「确实要拉列表」的分支里打开,由 loadBookList 自己收尾。
       const boxes = this.switchBoxes
       const n = boxes.length
       // ①「EH在线」已经勾进某个切换框:完全按框循环(勾进哪个框,切到那个框就显示在线漫画)
@@ -1958,9 +1959,9 @@ export default defineComponent({
             if (res.activeChanged) {
             // ★ 先清空旧列表再拉新库:以前直接 loadBookList() 但不清空,
             //   用户看到的一直是**上一个库的书**,以为"切了但还是本界面"。
+            //   ⚠ loading 不在这里置:交给 loadBookList 自己管,它每条路径都会收尾。
             this.bookList = []
             this.chunkDisplayBookList = []
-            this.buttonLoadBookListLoading = true
             this.loadBookList()   // 不 await:界面先切好,列表随后填
           }
           } else {
@@ -1995,7 +1996,9 @@ export default defineComponent({
       }
       if (this.ehOnlineAvailable && (n === 0 || this.activeBoxIndex + 1 >= n)) {
         // 最后一个框的下一个就是 EH在线:只切前端状态,后端仍停在原来的框(回来时不用重建运行时)
+        // ⚠ 这条路**不加载列表**:必须显式收掉 loading,否则按钮一直转圈
         this.onlineStopActive = true
+        this.buttonLoadBookListLoading = false
         return
       }
       if (n <= 1) {
@@ -2013,10 +2016,9 @@ export default defineComponent({
           this.setting.activeLibraryId = res.activeLibraryId
           this.setting.library = res.library
           if (res.activeChanged) {
-            // 同上一处:切库先清空,避免"还显示上一个库"
+            // 同上一处:切库先清空;loading 交给 loadBookList 自己管
             this.bookList = []
             this.chunkDisplayBookList = []
-            this.buttonLoadBookListLoading = true
             this.loadBookList()    // 后加载
           }
         } else {
@@ -2033,7 +2035,10 @@ export default defineComponent({
       if (this.onlineActive) {
         if (scan) this.$message.info(this.$t('m.ehOnlineScanUnsupported'))
         // scan(工具栏「重新加载」)= 真的重拉;切库/切界面回来 = 用手上这份(见 loadOnlineList)
+        this.loadAllTags()
         await this.loadOnlineList(!!scan)
+        // ⚠ 在线分支也要把 loading 收掉:否则切到 EH 在线后按钮一直转圈
+        this.buttonLoadBookListLoading = false
         return
       }
       // 顺带刷新全局标签列表(设置 → 标签 用)
@@ -2046,7 +2051,13 @@ export default defineComponent({
         this.buttonLoadBookListLoading = true
         if (scan) this.scanning = true
         const res = await ipcRenderer.invoke('load-book-list', scan)
-        if (seq !== this._libLoadSeq) return   // 过期响应,丢弃
+        // ⚠ 过期响应要**先复位 loading 再 return**:
+        //   以前这里直接 return,loading 永远停在 true → 工具栏一直转圈。
+        //   (连点两次切库、或切库时又点了重新加载,都会走到这里)
+        if (seq !== this._libLoadSeq) {
+          this.buttonLoadBookListLoading = false
+          return
+        }
         const bookList = this.prepareBookList(res)
         // ★ 首屏立刻出:以前这里还要 await 两件事(拉整份收藏、算 1.4 万条的文件夹树),
         //   等于切库额外多两次 IPC 往返 + 一棵大树。它们不影响首屏显示,挪到 $nextTick 后台跑。
