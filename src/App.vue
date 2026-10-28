@@ -4060,16 +4060,34 @@ export default defineComponent({
         this.torrentLoading = false
       }
     },
-    // 用种子下载:交给系统默认 BT 客户端(JHenTai 也是 launchUrlString 丢给外部)
-    openTorrent (tr) {
-      if (tr && tr.url) ipcRenderer.invoke('open-url', tr.url)
+    // 用种子下载:交给系统默认 BT 客户端。
+    // ⚠ 用**磁力链接**而不是 .torrent 直链:磁力链接交给 BT 客户端能直接开始,
+    //   直链还要走一次 HTTP 下载再交出去(而且 ehtracker 的直链带一次性 token,容易失效)。
+    async openTorrent (tr) {
+      if (!tr) return
+      const target = tr.magnet || tr.url
+      if (!target) return
+      if (window.__WEB_MODE__) { window.open(target, '_blank', 'noopener'); return }
+      const r = await ipcRenderer.invoke('open-url', target).catch(() => ({ ok: false }))
+      if (!r || !r.ok) {
+        try { window.open(target, '_blank', 'noopener') } catch (e) { this.printMessage('error', this.$t('m.openFailed')) }
+      }
     },
-    // 种子标题点击:**用浏览器直接打开**种子链接(不走 open-url 的应用内处理,
-    // 也不复用「打开」按钮 —— 用户要的就是浏览器打开这个链接本身)
-    openTorrentInBrowser (tr) {
-      if (!tr || !tr.url) return
-      if (window.__WEB_MODE__) window.open(tr.url, '_blank', 'noopener')
-      else ipcRenderer.invoke('open-url', tr.url)
+    // 种子标题点击:**用浏览器打开磁力链接**(相当于在地址栏输入 magnet:?xt=urn:btih:...)。
+    // ⚠ 以前这里是打开 tr.url(.torrent 直链)—— 与要求不符。
+    //   用户要的是磁力链接本身,浏览器/外部工具按 magnet: 协议接手。
+    async openTorrentInBrowser (tr) {
+      if (!tr) return
+      const target = tr.magnet || tr.url
+      if (!target) return
+      // 网页版/容器:没有桌面壳,直接让浏览器打开 magnet(浏览器会弹"交给 BT 客户端")
+      if (window.__WEB_MODE__) { window.open(target, '_blank', 'noopener'); return }
+      // 桌面版:交系统外壳。失败(没装 BT 客户端 / 协议未注册)时退回浏览器打开,
+      // 至少不会"点了没反应"。
+      const r = await ipcRenderer.invoke('open-url', target).catch(() => ({ ok: false }))
+      if (!r || !r.ok) {
+        try { window.open(target, '_blank', 'noopener') } catch (e) { this.printMessage('error', this.$t('m.openFailed')) }
+      }
     },
     async copyTorrentMagnet (tr) {
       if (!tr || !tr.magnet) return

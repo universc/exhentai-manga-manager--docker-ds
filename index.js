@@ -4584,8 +4584,19 @@ ipcMain.handle('suggest-collections', async (event, books) => {
 
 // detail
 ipcMain.handle('open-url', async (event, url) => {
-  if (WEB_MODE) return
-  shell.openExternal(url)
+  const target = String(url || '').trim()
+  if (!target) return { ok: false, error: 'noUrl' }
+  // magnet:?xt=urn:btih:... 交给系统注册的 BT/下载工具。
+  // ⚠ 网页版(容器)里没有桌面壳:shell.openExternal 不可用,
+  //   所以直接返回失败,由前端改成「在浏览器里打开」兜底(浏览器自己会弹交给 BT 客户端)。
+  if (!/^magnet:/i.test(target) && WEB_MODE) return { ok: false, error: 'webMode' }
+  if (WEB_MODE) return { ok: false, error: 'webMode' }
+  try {
+    await shell.openExternal(target)
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
 })
 
 ipcMain.handle('show-file', async (event, filepath) => {

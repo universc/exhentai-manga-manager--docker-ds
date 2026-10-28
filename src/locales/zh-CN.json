@@ -1068,7 +1068,8 @@
     "autoCollectionReasonTitleCore": "书名主干相同",
     "autoCollectionReasonTitleSimilar": "书名高度相似",
     "autoCollectionReasonVolume": "卷号连续",
-    "autoCollectionReasonCharacter": "同角色"
+    "autoCollectionReasonCharacter": "同角色",
+    "openFailed": "打开失败:系统里可能没有注册磁力链接的下载工具"
   },
   "cm": {
     "title": "标题右键/长按菜单",
