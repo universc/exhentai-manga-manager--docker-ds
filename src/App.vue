@@ -128,7 +128,7 @@
             <el-button v-else-if="id === 'setting'" :icon="SettingIcon" plain @click="$refs.SettingRef.dialogVisibleSetting = true" :title="$t('m.setting')"></el-button>
             <!-- 切换库:点一下 = 切到下一个「库切换」框(书架显示该框内所有库合并的漫画) -->
             <!-- 切换库:点一下 = 切到下一条「库切换」框(循环) -->
-            <el-button v-else-if="id === 'switchLibrary'" type="primary" plain :icon="switchLibraryIcon" @click="switchBox()" :title="$t('m.switchLibraryCurrent') + ':' + (boxLabel || '—')"></el-button>
+            <el-button v-else-if="id === 'switchLibrary'" type="primary" plain :icon="switchLibraryIcon" :loading="buttonLoadBookListLoading" @click="switchBox()" :title="$t('m.switchLibraryCurrent') + ':' + (boxLabel || '—')"></el-button>
             <!-- 可自定义的界面按钮 -->
             <el-button
               v-else-if="toolbarButtonMap[id]"
@@ -1928,6 +1928,9 @@ export default defineComponent({
     // 点一下工具栏按钮 = 切到下一条「库切换」框(循环)。只有一条框时点了不会变,所以提示一下
     // 启用了「EH在线」时,循环尾部多一站:最后一个框 → EH在线 → 回到第一个框
     async switchBox () {
+      // ★ 一开始就给反馈:后面 await set-active-box 在 NAS 上要几秒,
+      //   以前这几秒界面零反馈,用户以为"点了没反应"。
+      this.buttonLoadBookListLoading = true
       const boxes = this.switchBoxes
       const n = boxes.length
       // ①「EH在线」已经勾进某个切换框:完全按框循环(勾进哪个框,切到那个框就显示在线漫画)
@@ -1942,12 +1945,24 @@ export default defineComponent({
         const prevBoxIndex = this.activeBoxIndex
         this.setting.activeBoxIndex = next1
         try {
-          const res = await ipcRenderer.invoke('set-active-box', { index: next1 })
+          // ★ 5 秒兜底:后端在 NAS 上卡住时不能让界面永远不动 ——
+          //   超时也照样刷新列表(后端 setting 已改,列表会按新库读)。
+          const res = await Promise.race([
+            ipcRenderer.invoke('set-active-box', { index: next1 }),
+            new Promise((resolve) => setTimeout(() => resolve({ ok: true, activeChanged: true, timeout: true }), 5000)),
+          ])
           if (res && res.ok) {
             this.setting.activeBoxIndex = res.activeBoxIndex
             this.setting.activeLibraryId = res.activeLibraryId
             this.setting.library = res.library
-            if (res.activeChanged) this.loadBookList()   // 不 await:先把界面切好,列表慢慢填
+            if (res.activeChanged) {
+            // ★ 先清空旧列表再拉新库:以前直接 loadBookList() 但不清空,
+            //   用户看到的一直是**上一个库的书**,以为"切了但还是本界面"。
+            this.bookList = []
+            this.chunkDisplayBookList = []
+            this.buttonLoadBookListLoading = true
+            this.loadBookList()   // 不 await:界面先切好,列表随后填
+          }
           } else {
             this.setting.activeBoxIndex = prevBoxIndex   // 失败回滚
             this.$message.error((res && res.error) || this.$t('m.librarySaveFailed'))
@@ -1997,7 +2012,13 @@ export default defineComponent({
           this.setting.activeBoxIndex = res.activeBoxIndex
           this.setting.activeLibraryId = res.activeLibraryId
           this.setting.library = res.library
-          if (res.activeChanged) this.loadBookList()    // 后加载
+          if (res.activeChanged) {
+            // 同上一处:切库先清空,避免"还显示上一个库"
+            this.bookList = []
+            this.chunkDisplayBookList = []
+            this.buttonLoadBookListLoading = true
+            this.loadBookList()    // 后加载
+          }
         } else {
           this.setting.activeBoxIndex = prevIndex
           this.$message.error((res && res.error) || this.$t('m.librarySaveFailed'))
@@ -2017,20 +2038,31 @@ export default defineComponent({
       }
       // 顺带刷新全局标签列表(设置 → 标签 用)
       this.loadAllTags()
+      // ★ 竞态序号:连点两次切库时,先发的那次可能后回来,把新库的数据覆盖掉。
+      //   每次进来取一个新序号,await 回来后对不上就直接丢弃。
+      const seq = (this._libLoadSeq || 0) + 1
+      this._libLoadSeq = seq
       try {
         this.buttonLoadBookListLoading = true
         if (scan) this.scanning = true
         const res = await ipcRenderer.invoke('load-book-list', scan)
+        if (seq !== this._libLoadSeq) return   // 过期响应,丢弃
         const bookList = this.prepareBookList(res)
-        await this.loadCollectionList(bookList)
+        // ★ 首屏立刻出:以前这里还要 await 两件事(拉整份收藏、算 1.4 万条的文件夹树),
+        //   等于切库额外多两次 IPC 往返 + 一棵大树。它们不影响首屏显示,挪到 $nextTick 后台跑。
         this.bookList = bookList
+        this.buttonLoadBookListLoading = false
         // 词库比书先到(启动时 loadTagTranslation 是并行的):列表就绪后再补一次标签名称,
         // 否则第一次启动时 bookList 还是空的,一条名字都写不进去
         if (this.resolvedTranslation && Object.keys(this.resolvedTranslation).length) this.backfillLibraryTagNames()
-        await this.$refs.FolderTreeRef.geneFolderTree()
-        this.$refs.FolderTreeRef.resetSelect()
-        this.$refs.EditViewRef.selectBookList = []
-        this.buttonLoadBookListLoading = false
+        this.$nextTick(async () => {
+          try {
+            await this.loadCollectionList(bookList)
+            await this.$refs.FolderTreeRef.geneFolderTree()
+            this.$refs.FolderTreeRef.resetSelect()
+            this.$refs.EditViewRef.selectBookList = []
+          } catch (e) { /* 后台这两步失败不打扰:首屏已经出来了 */ }
+        })
       } catch (error) {
         this.buttonLoadBookListLoading = false
         console.error(error)

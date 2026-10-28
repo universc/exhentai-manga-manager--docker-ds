@@ -475,6 +475,8 @@ const scanContextFor = async (lib) => {
   }
 }
 
+// 已经做过「旧版库数据迁移」的库 id:迁移是一次性的历史动作,不该每次切库都跑。
+const libraryDataMigrated = new Set()
 const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}) => {
   // 切换账户(另一份 setting.<账户>.json)时只切运行时,绝不搬数据 ——
   // 两个账户可能给同一个库配了不同的库数据目录,搬一次就是灾难。
@@ -489,8 +491,17 @@ const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}
   LIBRARY_VIEWCACHE_DIR = paths.viewcacheDir
   CURRENT_COVER_DIR = paths.coverDir
   try { fs.mkdirSync(CURRENT_COVER_DIR, { recursive: true }) } catch (e) { /* 稍后生成封面时再试 */ }
-  // 首次升级:旧版放在数据存放目录根部的库数据
-  libraryDataMigration = lib ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
+  // ⚠ 只跑一次:旧版放在数据存放目录根部的库数据,迁进库数据目录。
+  //   以前这里**每次切库都跑**:默认 dataDir=libraries/<库名>,src≠dst 恒成立,
+  //   于是每次切库都 mkdirSync + 6 个文件各 2 次 existsSync(网络盘 50~300ms),
+  //   renameSync 失败时还会走 cpSync 把上万张缩略图整份拷贝 —— 秒级到分钟级阻塞。
+  //   迁移是一次性的历史动作, 每个库迁过就记下来不再跑。
+  if (lib && !libraryDataMigrated.has(lib.id)) {
+    libraryDataMigrated.add(lib.id)
+    libraryDataMigration = migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR)
+  } else {
+    libraryDataMigration = { moved: [], kept: [] }
+  }
   SNAPSHOT_FILE = paths.snapshotFile
   LIBRARY_DB_FILE = paths.dbFile
   // 不关旧连接:每个库的 model 缓存在 mangaModels 里复用,关掉会破坏合并书架
@@ -2108,6 +2119,26 @@ const warnMissingLibraryPaths = () => {
   } catch (e) { /* 忽略 */ }
 }
 
+// 元数据缓存:切库时 metadata 通常不变,没必要每次重读 1.6 万行(含 tags JSON)。
+// 签名用「行数 + 最大 updatedAt」:任何一条被写(扫描/导入/改标签)都会变,此时才重读。
+const metadataCache = { list: null, sig: null }
+// 任何一次写 Metadata(扫描补写、导入、改标签)都要调用它:
+// 否则签名会命中旧值,切库时把**改标签之前**的旧数据又读回来。
+const invalidateMetadataCache = () => {
+  metadataCache.list = null
+  metadataCache.sig = null
+}
+const metadataSignature = async () => {
+  try {
+    const [row] = await Metadata.sequelize.query(
+      'SELECT COUNT(*) AS c, COALESCE(MAX(updatedAt), \'\') AS u FROM Metadata',
+      { type: Metadata.sequelize.QueryTypes.SELECT }
+    )
+    return String((row && row.c) || 0) + '|' + String((row && row.u) || '')
+  } catch (e) {
+    return ''   // 查询失败 → 不命中缓存,走完整读(宁可慢也不出错)
+  }
+}
 const loadBookListFromDatabase = async () => {
   // 先把旧版书架搬过来(只在书架为空时做一次),再走原来的合并逻辑
   try { await migrateLegacyMangaTable() } catch (e) { /* 迁移失败不影响书架 */ }
@@ -2158,8 +2189,18 @@ const loadBookListFromDatabase = async () => {
       await saveBookListToDatabase(bookList, { rebuild: true })
     }
   }
-  let metadataList = await Metadata.findAll()
-  metadataList = metadataList.map(m => m.toJSON())
+  // ★ 元数据全表(16436 行,含 tags 这个最大的 JSON 字段,网络盘上 1~3s)。
+  //   用户的元数据在一次会话里几乎不变(只有扫描/导入才写),所以切库时没必要重读。
+  //   这里按「行数 + updatedAt 最大值」做签名:签名没变就复用内存里那份。
+  let metadataList = null
+  if (metadataCache.list && metadataCache.sig && metadataCache.sig === await metadataSignature()) {
+    metadataList = metadataCache.list
+  } else {
+    const rows = await Metadata.findAll()
+    metadataList = rows.map(m => m.toJSON())
+    metadataCache.list = metadataList
+    metadataCache.sig = await metadataSignature()
+  }
   // 用 Map 按 hash 索引,替代 O(n²) 的数组 find
   const metadataMap = new Map(metadataList.map(m => [m.hash, m]))
   const bookListLength = bookList.length
@@ -2192,6 +2233,7 @@ const loadBookListFromDatabase = async () => {
       try {
         for (const book of pendingUpserts.slice(i, i + META_BATCH)) {
           await Metadata.upsert(book, { transaction: t })
+          invalidateMetadataCache()
         }
         await t.commit()
       } catch (e) {
@@ -2236,6 +2278,7 @@ const saveBookToDatabase = async (book) => {
   await target.update(extBook, { where: { id: extBook.id } })
   // 元数据始终写全局 metadata.sqlite
   await Metadata.upsert(extBook)
+  invalidateMetadataCache()
   console.log(`Saved ${extBook.title}`)
 }
 
@@ -7054,6 +7097,7 @@ ipcMain.handle('rename-tag', async (event, { cat, oldName, newName } = {}) => {
           nextTags[k] = mapped
         }
         await Metadata.update({ tags: nextTags }, { where: { hash: row.hash }, transaction: tx })
+        invalidateMetadataCache()
         count++
       }
     })
@@ -7190,6 +7234,7 @@ ipcMain.handle('delete-tag', async (event, { cat, name } = {}) => {
         if (next.length) nextTags[cat] = next
         else delete nextTags[cat]
         await Metadata.update({ tags: nextTags }, { where: { hash: row.hash }, transaction: tx })
+        invalidateMetadataCache()
         count++
       }
     })
@@ -7260,6 +7305,7 @@ ipcMain.handle('move-tag-category', async (event, { from, to } = {}) => {
         }
         nextTags[targetKey] = target
         await Metadata.update({ tags: nextTags }, { where: { hash: row.hash }, transaction: tx })
+        invalidateMetadataCache()
         count++
       }
     })
@@ -7352,6 +7398,7 @@ ipcMain.handle('sync-category-tags', async (event, { cat, add = [], remove = [] 
           if (kept.length) nextTags[cat] = kept
           else delete nextTags[cat]
           await Metadata.update({ tags: nextTags }, { where: { hash: row.hash }, transaction: tx })
+        invalidateMetadataCache()
           removed++
         }
       })
