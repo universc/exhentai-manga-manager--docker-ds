@@ -4,6 +4,12 @@ import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
+// 废弃主题1（皮肤级主题）：必须排在 Element Plus 样式之后，
+// 因为它要重映射 EP 的 --el-* 变量；用 html.deprecated1 提权，不依赖顺序也能生效，
+// 但放在后面可以覆盖 App.vue 自带的浅色规则。
+import './styles/deprecated1.css'
+// 侧边详情 / 下载记录栏的皮肤（移植自 redesign/v1，只含这两块的面板样式）
+import './styles/panels.css'
 import App from './App.vue'
 import _ from 'lodash'
 import '@imengyu/vue3-context-menu/lib/vue3-context-menu.css'

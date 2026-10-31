@@ -2,7 +2,7 @@
   <!-- 侧边详细信息:与「下载记录」同款的右栏(可拖宽度)。
        内容排布照 JHenTai 的详情页:左封面 + 右标题/评分,下面依次是信息行、操作按钮、标签分组。
        数据源是 pinia 里的 bookDetail(点开任意一本的详情/封面后自动跟着变) -->
-  <div class="detail-panel" :style="{ width: width + 'px' }">
+  <div class="detail-panel" :class="{ 'is-narrow': isNarrow }" :style="{ width: width + 'px' }">
     <div class="detail-panel-resizer" :title="$t('m.downloadPanelResizeHint')" @mousedown="startResize"></div>
     <div class="detail-panel-header">
       <span class="detail-panel-title">{{ $t('m.sideDetailTitle') }}</span>
@@ -26,7 +26,7 @@
         <div class="detail-head-info">
           <div class="detail-title" :title="mainTitle">{{ mainTitle }}</div>
           <div class="detail-subtitle" v-if="subTitle" :title="subTitle">{{ subTitle }}</div>
-          <div class="detail-info" v-if="!isNarrow">
+          <div class="detail-info">
             <div class="detail-info-row">
               <span class="k">{{ $t('m.sideDetailPages') }}</span>
               <span class="v">{{ book.pageCount == null ? (book.filecount == null ? '—' : book.filecount) : book.pageCount }}</span>
@@ -159,7 +159,7 @@
         <el-icon class="is-loading" :size="14"><Loading /></el-icon> {{ $t('m.sideDetailLoading') }}
       </div>
     </div>
-    <div class="detail-empty" v-else>{{ $t('m.sideDetailEmpty') }}</div>
+    <EmptyState v-else class="detail-empty" :title="$t('m.sideDetailEmpty')" />
   </div>
 </template>
 
@@ -174,6 +174,8 @@ import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, collectGalleryThumbs } from '../ehOnline.js'
 import { catDisplayName, toAssetUrl, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName } from '../utils.js'
+// 统一空态（P0-08）：侧栏没有选中漫画时的提示
+import EmptyState from './states/EmptyState.vue'
 
 const props = defineProps({
   // 面板宽度(px):App.vue 持有并持久化,拖动时双向同步
@@ -660,7 +662,6 @@ const showFile = () => {
   if (fp) ipcRenderer.invoke('show-file', fp)
 }
 
-
 // 拖左边缘调宽度(与下载记录面板同款;宽度由 App.vue 持久化)
 const startResize = (e) => {
   e.preventDefault()
@@ -679,380 +680,3 @@ const startResize = (e) => {
 }
 </script>
 
-<style lang="stylus">
-.detail-panel
-  position: relative
-  flex: none
-  display: flex
-  flex-direction: column
-  box-sizing: border-box
-  min-width: 240px
-  max-width: 70vw
-  height: calc(100vh - 8px)
-  padding: 10px 10px 10px 6px
-  border-left: 1px solid var(--el-border-color)
-  background: var(--el-bg-color, #fff)
-  overflow: hidden
-  // 拖宽的手柄:贴着左边缘的一条窄条(不要高亮色,安安静静能拖就行)
-  .detail-panel-resizer
-    position: absolute
-    left: -3px
-    top: 0
-    bottom: 0
-    width: 6px
-    cursor: col-resize
-    z-index: 5
-  .detail-panel-header
-    display: flex
-    align-items: center
-    justify-content: space-between
-    gap: 8px
-    padding-bottom: 8px
-    font-size: 15px
-    .detail-panel-title
-      font-weight: 600
-    .detail-panel-actions
-      display: flex
-      align-items: center
-      gap: 2px
-      flex: none
-  .detail-panel-body
-    flex: 1
-    min-height: 0
-    overflow-y: auto
-    display: flex
-    flex-direction: column
-    gap: 10px
-  .detail-empty
-    flex: 1
-    display: flex
-    align-items: center
-    justify-content: center
-    padding: 24px
-    text-align: center
-    font-size: 13px
-    color: var(--el-text-color-secondary)
-  // 头部:左封面 + 右标题(JHenTai 详情页布局)
-  .detail-head
-    position: relative
-    display: flex
-    align-items: flex-start
-    gap: 10px
-  // 左列:封面 + 封面下方的评分
-  .detail-head-left
-    flex: none
-    width: 108px
-    display: flex
-    flex-direction: column
-    gap: 2px
-  .detail-cover-wrap
-    flex: none
-    cursor: pointer
-    border-radius: 4px
-    transition: box-shadow .15s ease, transform .15s ease
-    &:hover
-      box-shadow: 0 0 0 2px var(--el-color-primary-light-5, var(--el-color-primary))
-    &:active
-      transform: scale(.97)
-  .detail-cover
-    display: block
-    width: 108px
-    height: 150px
-    object-fit: cover
-    border-radius: 4px
-    background: var(--el-fill-color-light)
-    &.detail-cover-empty
-      background: var(--el-fill-color-dark)
-  .detail-head-info
-    flex: 1
-    min-width: 0
-    display: flex
-    flex-direction: column
-    align-items: flex-start
-    text-align: left
-    gap: 4px
-  .detail-title
-    font-size: 13px
-    font-weight: 600
-    line-height: 1.35
-    text-align: left
-    overflow: hidden
-    display: -webkit-box
-    -webkit-line-clamp: 4
-    -webkit-box-orient: vertical
-  .detail-subtitle
-    font-size: 12px
-    line-height: 1.3
-    color: var(--el-text-color-secondary)
-    overflow: hidden
-    display: -webkit-box
-    -webkit-line-clamp: 2
-    -webkit-box-orient: vertical
-  .detail-rate
-    // 评分只读,放在封面下面:以封面宽度为准居中
-    height: 18px
-    width: 108px
-    display: flex
-    align-items: center
-    justify-content: center
-    text-align: center
-    padding: 0
-    margin: 0
-    --el-rate-icon-size: 14px
-    --el-rate-icon-margin: 1px
-  // 分类标签:贴在信息区最右边,底边和封面底边(150px)对齐
-  .detail-cat-badge
-    position: absolute
-    right: 0
-    top: 150px
-    transform: translateY(-100%)
-    display: flex
-  // 信息行:封面右侧这一列里,紧凑、全部靠左;底部留出分类徽标的位置
-  .detail-info
-    display: flex
-    flex-direction: column
-    align-items: flex-start
-    gap: 1px
-    margin-top: 4px
-    padding-bottom: 20px
-    font-size: 11px
-    line-height: 1.5
-    min-width: 0
-    text-align: left
-  .detail-info-row
-    display: flex
-    align-items: baseline
-    justify-content: flex-start
-    text-align: left
-    gap: 8px
-    width: 100%
-    .k
-      flex: none
-      width: 52px
-      text-align: left
-      color: var(--el-text-color-secondary)
-    .v
-      flex: 1
-      min-width: 0
-      overflow: hidden
-      text-overflow: ellipsis
-      white-space: nowrap
-  // 操作按钮:允许换行
-  .detail-actions
-    display: flex
-    flex-wrap: wrap
-    gap: 6px
-    // 照 JHenTai:图标在前、文字在后的小按钮(不抢眼,一排能放好几个)
-    .detail-act
-      margin: 0
-  // 标签分组
-  .detail-tags
-    display: flex
-    flex-direction: column
-    gap: 6px
-    // 面板里某处继承下来 text-align:center(标签就被居中了),这里明确拉回左对齐
-    text-align: left
-  // 标签组:普通行内流(不用 grid / 固定列)—— 类别名后面直接跟标签,一起换行
-  .detail-tag-group
-    display: block
-    font-size: 12px
-    line-height: 26px
-    min-width: 0
-    overflow: hidden
-    text-align: left
-  .detail-tag-cat
-    display: inline
-    font-size: 12px
-    color: var(--el-text-color-secondary)
-    margin-right: 6px
-    white-space: nowrap
-  .detail-tag
-    vertical-align: middle
-    // el-tag 默认 justify-content:center —— 标签一旦撑满一行,里面的文字就被居中(用户看到的"标签居中了")
-    justify-content: flex-start
-    // 超长标签最多占满一行,超出用省略号(不再把面板顶出横向滚动)
-    max-width: 100%
-    // 样式块不是 scoped,直接写子元素选择器(:deep() 在这种写法里不会被编译,会原样输出成无效选择器)
-    .el-tag__content
-      overflow: hidden
-      text-overflow: ellipsis
-      white-space: nowrap
-  .detail-tag
-    cursor: pointer
-  .detail-tags-empty
-    font-size: 12px
-    color: var(--el-text-color-placeholder)
-  .detail-loading
-    display: flex
-    align-items: center
-    gap: 6px
-    font-size: 12px
-    color: var(--el-text-color-secondary)
-  // 评论:照 JHenTai details_page —— 一排**横向滚动**的卡片(单卡 300x160),
-  // 高度固定,评论再多也只是左右滑,不会把下面的页预览挤下去(用户要求)。
-  .detail-comments
-    margin: 8px 0 4px
-    display: flex
-    flex-direction: column
-    gap: 4px
-    flex: none
-  .detail-comments-title
-    display: flex
-    align-items: baseline
-    justify-content: space-between
-    gap: 8px
-    font-size: 12px
-    font-weight: 600
-    color: var(--el-text-color-secondary)
-  .detail-comments-all
-    font-weight: 400
-    font-size: 11px
-    color: var(--el-color-primary)
-    cursor: pointer
-  // 横向一行:溢出左右滑动(JHenTai 的 ListView scrollDirection: Axis.horizontal)
-  .detail-comments-row
-    display: flex
-    flex-direction: row
-    gap: 8px
-    overflow-x: auto
-    overflow-y: hidden
-    padding-bottom: 4px
-    scroll-snap-type: x proximity
-    &::-webkit-scrollbar
-      height: 6px
-  .detail-comment
-    flex: 0 0 300px
-    width: 300px
-    height: 160px
-    box-sizing: border-box
-    display: flex
-    flex-direction: column
-    overflow: hidden
-    scroll-snap-align: start
-    padding: 6px 8px
-    border-radius: 6px
-    border: 1px solid var(--el-border-color-lighter, var(--el-border-color))
-    background: var(--el-bg-color, #fff)
-    box-shadow: 0 1px 2px rgba(0, 0, 0, .04)
-    .dc-head
-      display: flex
-      align-items: baseline
-      justify-content: space-between
-      gap: 8px
-      margin-bottom: 3px
-    .dc-author
-      font-size: 12px
-      font-weight: 700
-      color: var(--el-color-primary)
-      overflow: hidden
-      text-overflow: ellipsis
-      white-space: nowrap
-      // 自己的评论用不同颜色(JHenTai 的 commentOwnAuthorTextColor)
-      &.dc-author-me
-        color: var(--el-color-success)
-    .dc-time
-      flex: none
-      font-size: 10px
-      color: var(--el-text-color-placeholder)
-      white-space: nowrap
-    .dc-content
-      flex: 1
-      min-height: 0
-      overflow-y: auto
-      font-size: 12px
-      line-height: 1.5
-      color: var(--el-text-color-regular)
-      white-space: pre-wrap
-      word-break: break-word
-      cursor: pointer
-      // 卡片高度固定,超出在自己的卡片里滚动(详情页口径:不再无限拉长整排)
-      &.dc-content-clamped
-        overflow: hidden
-      // 评论里的链接(照 JHenTai buildTag:可点、下划线)
-      a
-        color: var(--el-color-primary)
-        text-decoration: underline
-        cursor: pointer
-        word-break: break-all
-    .dc-footer
-      display: flex
-      align-items: center
-      justify-content: space-between
-      gap: 8px
-      margin-top: 3px
-    .dc-score
-      flex: none
-      font-size: 10px
-      color: var(--el-text-color-placeholder)
-    .dc-edited
-      flex: none
-      font-size: 10px
-      color: var(--el-text-color-placeholder)
-      white-space: pre-wrap
-      word-break: break-word
-  // 页预览:全部页,自动换行的网格(像 JHenTai 的页预览),超出高度就竖向滚动
-  .detail-preview
-    margin: 8px 0 4px
-  .detail-preview-grid
-    display: grid
-    // 照 e-hentai 详情页:列数随面板宽度自适应(3~6 列),
-    // 不再用 auto-fill + 固定最小宽度(那种写法在窄面板里会掉到 2 列,格子反而更小)
-    grid-template-columns: repeat(v-bind(previewCols), 1fr)
-    gap: 8px
-    // 不再自己滚动:整块高度跟着内容走,由 .detail-panel-body 那**一个**滚动条统一控制
-    padding-right: 2px
-  // 预览格:不要任何框/底色(用户要求把框隐藏),只留图片本身
-  .detail-preview-item
-    width: 100%
-    aspect-ratio: 3 / 4
-    overflow: hidden
-    background: transparent
-    cursor: pointer
-    position: relative
-    border-radius: 2px
-    // 离屏的格子跳过渲染,几百页预览也不会拖慢滚动
-    content-visibility: auto
-    contain-intrinsic-size: auto 140px
-    img
-      width: 100%
-      height: 100%
-      object-fit: cover
-      display: block
-      // 淡入:图片解码完成才浮现,配合逐帧插入,观感是连续长出来的
-      opacity: 0
-      transition: opacity .16s ease
-    &.is-ready img
-      opacity: 1
-  // 雪碧图格子:一张大图切成 N 格,缩放全部由 --cell 驱动(拖宽不重算 JS)
-  // 几何关系:
-  //   --tw  这一格在原图里的**单格宽度**(px,来自 EH 的 style="width:Npx")
-  //   --ox  这一格在原图里的 x 偏移(px)
-  //   --cell 目标显示宽度(随侧栏宽度变化)
-  // 于是 scale = --cell / --tw,图片整体按这个比例缩放,偏移也同比例。
-  .detail-preview-sprite
-    position: absolute
-    top: 0
-    left: 0
-    width: var(--cell)
-    height: calc(var(--cell) * var(--th) / var(--tw))
-    background-repeat: no-repeat
-    // scale = 目标显示宽 / 原图单格宽;整张雪碧图按 scale 缩放
-    background-size: calc(var(--sw) * var(--cell) / var(--tw)) auto
-    background-position: calc(var(--ox) * var(--cell) / var(--tw) * -1) 0
-  .detail-preview-sentinel
-    height: 1px
-  .detail-preview-more
-    display: flex
-    align-items: center
-    justify-content: center
-    height: 32px
-    color: var(--el-text-color-placeholder)
-  .detail-preview-loading
-    display: flex
-    align-items: center
-    justify-content: center
-    height: 60px
-  .detail-preview-error
-    font-size: 12px
-    color: var(--el-text-color-placeholder)
-</style>

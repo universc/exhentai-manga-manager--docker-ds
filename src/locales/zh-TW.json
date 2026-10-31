@@ -1070,7 +1070,8 @@
     "autoCollectionReasonTitleSimilar": "書名高度相似",
     "autoCollectionReasonVolume": "卷號連續",
     "autoCollectionReasonCharacter": "同角色",
-    "openFailed": "開啟失敗:系統裡可能沒有註冊磁力連結的下載工具"
+    "openFailed": "開啟失敗:系統裡可能沒有註冊磁力連結的下載工具",
+    "deprecatedTheme1": "廢棄主題1"
   },
   "cm": {
     "title": "標題右鍵/長按選單",

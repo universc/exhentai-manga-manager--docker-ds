@@ -93,6 +93,8 @@
                     <el-option label="ExHentai" value="dark exhentai"></el-option>
                     <el-option label="E-Hentai" value="light e-hentai"></el-option>
                     <el-option label="nHentai" value="dark nhentai"></el-option>
+                    <!-- 废弃主题1：把重构版的皮肤贴回旧版 DOM（皮肤级主题，不恢复新组件） -->
+                    <el-option :label="$t('m.deprecatedTheme1')" value="light deprecated1"></el-option>
                     <el-option :label="$t('m.customTheme')" value="custom"></el-option>
                   </el-select>
                   <!-- 「高级主题」与主题下拉拼成同一个框,点开的也是紧贴的浮层(不再单独弹对话框) -->

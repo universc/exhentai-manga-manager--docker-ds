@@ -294,197 +294,44 @@
       />
       <!-- 下载记录:和主界面**同层**(不是浮层);拖动左边缘可以调整这一栏的宽度。
            列表照 JHenTai 的下载网格模式:封面网格,没下完的封面上压暗 + 圆环进度 + 中央状态按钮 -->
-      <div v-else-if="name === 'download'" class="download-panel" v-show="downloadPanelVisible" :style="{ width: downloadPanelWidth + 'px' }">
-        <div class="download-panel-resizer" :title="$t('m.downloadPanelResizeHint')" @mousedown="startDownloadPanelResize"></div>
-        <div class="download-panel-header">
-          <template v-if="!previewTask">
-            <span class="download-panel-title">{{ $t('m.downloads') }}</span>
-            <span class="download-panel-actions">
-              <el-button size="small" :disabled="!resumableDownloadCount" @click="resumeAllDownloads">{{ $t('m.downloadResumeAll') }}</el-button>
-              <el-button size="small" @click="openDownloadFolder">{{ $t('m.downloadOpenFolder') }}</el-button>
-              <!-- 移动:把全部已完成的漫画移到本地库文件夹(设置里填了默认路径就直接移,不再弹选择) -->
-              <el-button size="small" :disabled="!movableDownloadCount" @click="moveAllCompletedDownloads">{{ $t('m.downloadMove') }}</el-button>
-            </span>
-            <!-- 收起右栏:始终钉在最右边(不受其它按钮多少/面板宽度影响) -->
-            <el-button class="download-panel-back" size="small" text :icon="ArrowLeft" :title="$t('m.back')" @click="downloadPanelVisible = false"></el-button>
-          </template>
-          <template v-else>
-            <el-button size="small" text @click="closeDownloadPreview">← {{ $t('m.back') }}</el-button>
-            <span class="download-panel-title" :title="previewTask.title">{{ previewTask.title }}</span>
-            <span class="download-panel-progress">
-              {{ $t('m.downloadStatusDone') }} {{ previewDoneCount }}/{{ previewTotalCount }}
-              <template v-if="previewTask.failed"> · ✗{{ previewTask.failed }}</template>
-            </span>
-          </template>
-        </div>
-        <!-- 任务列表:整体是列表模式(一行一条:左封面 + 右信息)。
-             封面照 JHenTai 网格模式:圆环居中,状态按钮嵌在圆环中间;右下角只留失败数徽标。
-             右侧三段:标题 → 中间标签行 → 右下角时间 + 底部细进度条 -->
-        <div class="download-list" v-if="!previewTask">
-          <div v-if="downloadPathMissing" class="download-hint">{{ $t('m.downloadNeedPath') }}</div>
-          <div v-if="!downloadRecords.length" class="download-empty">{{ $t('m.downloadEmpty') }}</div>
-          <div v-for="task in downloadRecords" :key="task.id" class="download-item">
-            <!-- 右侧一条竖轴:X(顶)/ 移动(中)/ 垃圾桶(底),三者 right:4 对齐 -->
-            <el-button
-              class="download-item-close"
-              size="small"
-              text
-              :icon="Close"
-              :title="$t('m.downloadDeleteRecordOnly')"
-              @click.stop="downloadAction(task, 'delete')"
-            ></el-button>
-            <el-button
-              v-if="canMoveDownload(task)"
-              class="download-item-move"
-              size="small"
-              link
-              type="primary"
-              :icon="FolderOpened"
-              :title="$t('m.downloadMove')"
-              @click.stop="moveOneDownload(task)"
-            ></el-button>
-            <el-button
-              class="download-item-trash"
-              size="small"
-              link
-              type="danger"
-              :icon="MdTrash"
-              :title="$t('m.downloadDeleteRecordAndFiles')"
-              @click.stop="deleteDownloadWithFiles(task)"
-            ></el-button>
-            <!-- 封面:左键 = 预览已下好的页。is-pending = 还没下完:封面做模糊 + 压暗 -->
-            <div class="download-card-cover" :class="{ 'is-pending': task.status !== 'done' }" :title="$t('m.downloadPreviewHint')" @click="openDownloadPreview(task)">
-              <!-- 封面图取不到(代理挂了 / EH 换图 / 网络不通)时不要留一个「破图」:
-                   直接退回灰底占位,等网络恢复重新打开面板再试 -->
-              <img
-                v-if="(task.coverPath || task.cover) && !failedCovers[task.id]"
-                :src="downloadCoverSrc(task)"
-                loading="lazy"
-                @error="onDownloadCoverError(task)"
-              />
-              <div v-else class="download-card-cover-empty"></div>
-              <!-- 封面上不再放任何徽标(✗失败数已挪到右侧标签行),圆环独占中央、保证居中 -->
-              <!-- 没下完:压暗 + 圆环进度(JHenTai 尺寸 40px,居中;状态按钮嵌在圆环中间) + 圆环下页码 -->
-              <template v-if="task.status !== 'done'">
-                <div class="download-card-mask"></div>
-                <div class="download-card-overlay">
-                  <div class="download-card-ringwrap">
-                    <el-progress
-                      type="circle"
-                      :percentage="downloadPercent(task)"
-                      :width="40"
-                      :stroke-width="4"
-                      :show-text="false"
-                      :status="task.status === 'failed' ? 'exception' : ''"
-                    />
-                    <!-- 状态按钮:plain span 而不是 el-button(el-button 自带的圆形 chrome 会和圆环叠成两个圈);
-                         照 JHenTai:就是圆环中间一颗大一点的图标,平时全透明 -->
-                    <span
-                      class="download-card-action"
-                      :title="task.status === 'downloading' ? $t('m.pauseTask') : $t('m.resumeTask')"
-                      @click.stop="downloadAction(task, task.status === 'downloading' ? 'pause' : 'resume')"
-                    >
-                      <el-icon :size="20"><component :is="task.status === 'downloading' ? MdPause : MdPlay" /></el-icon>
-                    </span>
-                  </div>
-                  <div class="download-card-count">
-                    {{ task.done }}/{{ task.total }}
-                  </div>
-                </div>
-              </template>
-            </div>
-            <!-- 右侧:标题(可点,与主界面点标题一样开详情)→ 中间标签行 → 漫画标签 → 右下角时间 + 底部细进度条 -->
-            <div class="download-body">
-              <!-- 标题始终一行(超出省略):整行高度由封面定住,进度条才能和封面底对齐 -->
-              <div class="download-title" :title="task.title" @click="openDownloadTaskDetail(task)">{{ task.title }}</div>
-              <!-- 漫画标签:照 JHenTai 列表 —— 浅底小方块、自动换行(最多两行,超出裁掉) -->
-              <div class="download-tags" v-if="downloadTaskTags(task).length || task.category">
-                <span v-if="task.category" class="download-tag is-cat" :title="galleryCategoryName(task.category, $t)" @click.stop="onDownloadTagClick({ text: task.category, ns: 'category' })">{{ galleryCategoryName(task.category, $t) }}</span>
-                <span
-                  v-for="(tg, ti) in downloadTaskTags(task)"
-                  :key="ti"
-                  class="download-tag"
-                  :title="tg.full"
-                  :style="tg.color ? { color: tg.color } : null"
-                  @click.stop="onDownloadTagClick(tg)"
-                >{{ tg.text }}</span>
-              </div>
-              <!-- 状态 / 失败数 / 进度:放到标签下面 -->
-              <div class="download-meta">
-                <span v-if="task.original" class="download-pill">{{ $t('m.downloadOriginalTag') }}</span>
-                <span v-if="task.failed > 0" class="download-fail-chip">✗{{ task.failed }}</span>
-                <span class="download-count">
-                  <template v-if="task.phase === 'links'">{{ $t('m.downloadCollecting', { n: task.linkCount || 0 }) }}</template>
-                  <template v-else>{{ task.done }}/{{ task.total }}</template>
-                </span>
-                <!-- 已下载尺寸(用户要求:任务记录里显示对应下载的尺寸) -->
-                <span v-if="task.bytes > 0" class="download-size" :title="task.bytes + ' bytes'">{{ downloadSizeText(task.bytes) }}</span>
-                <span v-if="task.movedTo" class="download-moved" :title="task.movedTo">{{ $t('m.downloadMoved') }}</span>
-                <span v-else class="download-status" :class="'is-' + task.status">{{ downloadStatusText(task.status) }}</span>
-              </div>
-              <div class="download-foot">
-                <span class="download-card-time">{{ downloadTimeText(task) }}</span>
-                <div class="download-bar-row">
-                  <el-progress
-                    class="download-thin-bar"
-                    :percentage="downloadPercent(task)"
-                    :stroke-width="4"
-                    :show-text="false"
-                    :status="task.status === 'done' ? 'success' : ''"
-                  />
-                  <!-- 错误信息只在这里显示:行内不再铺错误文字;悬浮显示,点击钉住再看 -->
-                  <span
-                    v-if="downloadHintText(task)"
-                    class="download-warn-wrap"
-                    @mouseenter.stop="hoverDownloadWarn(task.id)"
-                    @mouseleave.stop="leaveDownloadWarn()"
-                  >
-                    <el-icon class="download-card-warn" @click.stop="toggleDownloadWarn(task.id)"><Warning /></el-icon>
-                    <span v-if="downloadWarn.id === task.id" class="download-warn-pop">{{ downloadHintText(task) }}</span>
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <!-- 预览:点封面进来。整本的每一页都占一格 ——
-             下好的直接出图(左键点图 = 进入阅读),没下好的显示进度/失败;
-             右键 = 继续下载 / 重新下载 -->
-        <div class="download-preview" v-else>
-          <div
-            v-for="(f, i) in downloadPreviewFiles"
-            :key="i"
-            class="download-preview-item"
-            :class="{ 'is-ready': !!f, 'is-failed': !f && previewPageState(i) === 'failed' }"
-            @contextmenu="onPreviewContextMenu($event, i)"
-          >
-            <img
-              v-if="f && !previewImgFailed[i]"
-              :src="previewImgSrc(f, i)"
-              loading="lazy"
-              decoding="async"
-              :title="String(i + 1)"
-              @click="openDownloadPageInReader(previewTask, i)"
-              @error="onPreviewImgError($event, i)"
-            />
-            <!-- 图下好了但浏览器加载失败(多半是文件刚下完还在写):点一下重拉 -->
-            <div v-else-if="f" class="download-preview-blank is-imgfailed" @click="retryPreviewImg(i)">
-              <el-icon :size="16"><Refresh /></el-icon>
-              <span class="download-preview-page">{{ i + 1 }}</span>
-              <span class="download-preview-state">{{ $t('m.previewImgFailed') }}</span>
-            </div>
-            <div v-else class="download-preview-blank">
-              <el-icon v-if="previewPageState(i) === 'failed'" :size="16"><Close /></el-icon>
-              <el-icon v-else-if="previewPageState(i) === 'waiting'" class="is-loading" :size="16"><Loading /></el-icon>
-              <el-icon v-else-if="previewPageState(i) === 'pending'" :size="16"><Clock /></el-icon>
-              <span class="download-preview-page">{{ i + 1 }}</span>
-              <span class="download-preview-state">{{ previewPageStateText(i) }}</span>
-            </div>
-          </div>
-          <div v-if="previewTask && !previewTask.dir" class="download-empty">{{ $t('m.downloadPreviewNoDir') }}</div>
-          <div v-else-if="!downloadPreviewFiles.length" class="download-empty">{{ $t('m.downloadPreviewEmpty') }}</div>
-        </div>
-      </div>
+      <!-- 下载记录栏：移植自重构版（redesign/v1）的 DownloadPanel.vue。
+           纯展示组件：数据走 downloadTaskViews / previewViews 两个 computed，
+           动作全部 emit 回 App.vue 原方法（一个没改名）；拖宽手柄保留
+           （startDownloadPanelResize 与旧版同一实现）。 -->
+      <DownloadPanel
+        v-else-if="name === 'download'"
+        :visible="downloadPanelVisible"
+        :width="downloadPanelWidth"
+        :preview-task="previewTask"
+        :task-views="downloadTaskViews"
+        :path-missing="downloadPathMissing"
+        :resumable-count="resumableDownloadCount"
+        :movable-count="movableDownloadCount"
+        :done-count="previewDoneCount"
+        :total-count="previewTotalCount"
+        :preview-views="previewViews"
+        :warn-id="downloadWarn.id"
+        @resize-start="startDownloadPanelResize"
+        @resume-all="resumeAllDownloads"
+        @open-folder="openDownloadFolder"
+        @move-all="moveAllCompletedDownloads"
+        @close="downloadPanelVisible = false"
+        @back="closeDownloadPreview"
+        @task-action="downloadAction"
+        @move-one="moveOneDownload"
+        @delete-with-files="deleteDownloadWithFiles"
+        @open-preview="openDownloadPreview"
+        @open-task-detail="openDownloadTaskDetail"
+        @tag-click="onDownloadTagClick"
+        @cover-error="onDownloadCoverError"
+        @warn-hover="hoverDownloadWarn"
+        @warn-leave="leaveDownloadWarn"
+        @warn-toggle="toggleDownloadWarn"
+        @preview-context="onPreviewContextMenu"
+        @preview-page="openDownloadPageInReader"
+        @preview-img-error="onPreviewImgError"
+        @retry-img="retryPreviewImg"
+      />
     </template>
     </div>
     <el-drawer v-model="drawerVisibleCollection"
@@ -691,6 +538,7 @@ import RandomTags from './components/RandomTags.vue'
 import LoginDialog from './components/LoginDialog.vue'
 import EhFilterDialog from './components/EhFilterDialog.vue'
 import SideDetailPanel from './components/SideDetailPanel.vue'
+import DownloadPanel from './components/DownloadPanel.vue'
 import DownloadDialog from './components/DownloadDialog.vue'
 import LibraryFolderPicker from './components/LibraryFolderPicker.vue'
 import { EH_ONLINE_ID, hasEhCookies, ehHost, ehListUrl, parseGalleryList, parseGalleryDetail, galleryToBook, ehImageSrc, EX_HOST, EH_HOST } from './ehOnline.js'
@@ -716,6 +564,7 @@ export default defineComponent({
     HhDownloadDialog,
     AutoCollectionDialog,
     SideDetailPanel,
+    DownloadPanel,
     DownloadDialog,
     LibraryFolderPicker,
   },
@@ -939,6 +788,36 @@ export default defineComponent({
       return !String(this.setting.downloadPath || '').trim()
     },
     // 两个右栏的左右顺序:按打开顺序排(每次打开都重新排到最右),都没开过时默认详细信息在左
+    downloadTaskViews () {
+      return (this.downloadRecords || []).map((task) => ({
+        id: task.id,
+        task,
+        coverSrc: this.downloadCoverSrc(task),
+        coverFailed: !!this.failedCovers[task.id],
+        percent: this.downloadPercent(task),
+        canMove: this.canMoveDownload(task),
+        tags: this.downloadTaskTags(task),
+        sizeText: this.downloadSizeText(task.bytes),
+        timeText: this.downloadTimeText(task),
+        statusText: this.downloadStatusText(task.status),
+        hintText: this.downloadHintText(task),
+        pending: task.status !== 'done',
+      }))
+    },
+    // 预览页视图模型：页码状态/文案一次算好
+    previewViews () {
+      return (this.downloadPreviewFiles || []).map((f, i) => ({
+        index: i,
+        file: f,
+        src: f ? this.previewImgSrc(f, i) : '',
+        imgFailed: !!this.previewImgFailed[i],
+        ready: !!f,
+        state: this.previewPageState(i),
+        stateText: this.previewPageStateText(i),
+      }))
+    },
+    // 底部加载状态:在线模式下正在取下一页(触底加载的转圈)
+    // 两个右栏的左右顺序:按打开顺序排(每次打开都重新排到最右),都没开过时默认详细信息在左
     panelOrder () {
       const s = this.panelOpenSeq
       if (!s.detail && !s.download) return ['detail', 'download']
@@ -946,7 +825,6 @@ export default defineComponent({
       if (!s.download) return ['detail', 'download']
       return s.detail <= s.download ? ['detail', 'download'] : ['download', 'detail']
     },
-    // 底部加载状态:在线模式下正在取下一页(触底加载的转圈)
     listLoadingMore () {
       return this.onlineActive ? this.onlineLoading : false
     },
@@ -1896,7 +1774,8 @@ export default defineComponent({
     },
     // 主题循环切换按钮
     switchTheme () {
-      const themes = ['dark', 'light', 'dark exhentai', 'light e-hentai', 'nhentai', 'custom']
+      // 'light deprecated1' 放在末尾：不打断现有循环顺序，只是多停一站
+      const themes = ['dark', 'light', 'dark exhentai', 'light e-hentai', 'nhentai', 'custom', 'light deprecated1']
       const current = this.setting.theme || 'light'
       const idx = themes.indexOf(current)
       const next = themes[(idx + 1) % themes.length]
@@ -5476,420 +5355,6 @@ html.theme-custom
 .app-main
   flex: 1
   min-width: 0
-
-.download-panel
-  position: relative
-  flex: none
-  display: flex
-  flex-direction: column
-  box-sizing: border-box
-  min-width: 240px
-  max-width: 70vw
-  height: calc(100vh - 8px)
-  padding: 10px 10px 10px 6px
-  border-left: 1px solid var(--el-border-color)
-  background: var(--el-bg-color, #fff)
-  overflow: hidden
-  // 拖宽的手柄:贴着左边缘的一条窄条(不要高亮色,安安静静能拖就行)
-  .download-panel-resizer
-    position: absolute
-    left: -3px
-    top: 0
-    bottom: 0
-    width: 6px
-    cursor: col-resize
-    z-index: 5
-  .download-panel-header
-    display: flex
-    align-items: center
-    // 「下载记录」四个字和按钮在同一基线上(垂直居中),不换行
-    flex-wrap: nowrap
-    justify-content: flex-start
-    gap: 8px
-    min-height: 32px
-    padding-bottom: 8px
-    font-size: 15px
-    line-height: 1
-    .download-panel-title
-      flex: none
-      line-height: 1
-      overflow: hidden
-      text-overflow: ellipsis
-      white-space: nowrap
-      font-weight: 600
-    // 按钮多了就往左挤/裁掉,但不影响右边的返回箭头
-    .download-panel-actions
-      display: flex
-      align-items: center
-      justify-content: flex-end
-      gap: 2px
-      flex: 1 1 auto
-      min-width: 0
-      overflow: hidden
-    // 返回箭头:永远在最右
-    .download-panel-back
-      flex: none
-      margin-left: auto
-    .download-panel-progress
-      flex: none
-      font-size: 12px
-      color: var(--el-text-color-secondary)
-  // 列表 / 预览都要能自己滚
-  .download-list,
-  .download-preview
-    flex: 1
-    min-height: 0
-    overflow-y: auto
-  // 预览网格:整本每一页都占一格 —— 下好的出图,没下好的显示进度/失败
-  .download-preview
-    display: grid
-    grid-template-columns: repeat(auto-fill, minmax(88px, 1fr))
-    gap: 6px
-    align-content: start
-  .download-preview-item
-    position: relative
-    aspect-ratio: 3 / 4
-    // 兜底:万一本机 Chromium 不认 aspect-ratio(或图片还没解码),
-    // 格子高度也不会塌成 0 —— 高度一塌,所有图就会全叠在同一行(用户反馈的现象)。
-    min-height: 118px
-    border-radius: 6px
-    overflow: hidden
-    background: var(--el-fill-color-light)
-    border: 1px solid transparent
-    box-sizing: border-box
-    // 未下好的格子要能一眼看出「这里还空着」,而不是和背景糊成一片
-    &:not(.is-ready)
-      background: var(--el-fill-color-lighter, var(--el-fill-color-light))
-      border-color: var(--el-border-color-lighter, var(--el-border-color))
-    &.is-failed
-      border-color: var(--el-color-danger-light-5, var(--el-color-danger))
-    img
-      position: absolute
-      inset: 0
-      width: 100%
-      height: 100%
-      object-fit: cover
-      display: block
-      cursor: pointer
-  .download-preview-blank
-    position: absolute
-    inset: 0
-    display: flex
-    flex-direction: column
-    align-items: center
-    justify-content: center
-    gap: 2px
-    padding: 2px
-    box-sizing: border-box
-    font-size: 11px
-    line-height: 1.25
-    color: var(--el-text-color-placeholder)
-    text-align: center
-    overflow: hidden
-    .download-preview-page
-      display: block
-      font-size: 13px
-      font-weight: 600
-      line-height: 1.25
-      font-variant-numeric: tabular-nums
-      color: var(--el-text-color-secondary)
-    .download-preview-state
-      display: block
-      font-size: 10px
-      line-height: 1.2
-      font-variant-numeric: tabular-nums
-      opacity: .9
-    .is-failed &
-      color: var(--el-color-danger)
-      .download-preview-page
-        color: var(--el-color-danger)
-    // 下好了但加载失败:可点的重试占位
-    &.is-imgfailed
-      cursor: pointer
-      color: var(--el-color-warning)
-      .download-preview-page
-        color: var(--el-color-warning)
-      &:hover
-        border-color: var(--el-color-warning)
-  // 任务列表:整体是列表模式(一行一条:左封面 + 右信息);
-  // 封面照 JHenTai 网格模式显示进度/状态(没下完:模糊+压暗+圆环+页码+中央状态按钮)
-  .download-list
-    display: flex
-    flex-direction: column
-    gap: 10px
-  .download-hint
-    padding: 6px 8px
-    border-radius: 6px
-    font-size: 12px
-    color: var(--el-color-warning)
-    background: var(--el-color-warning-light-9)
-  .download-empty
-    padding: 24px 0
-    text-align: center
-    font-size: 13px
-    color: var(--el-text-color-secondary)
-  // 一行一条(列表模式);右侧空白带留着放 X(右上角)和垃圾桶(右侧中间)
-  .download-item
-    position: relative
-    display: flex
-    align-items: flex-start
-    gap: 10px
-    // 右侧留出 X / 移动 / 垃圾桶那一条竖轴
-    padding: 8px 34px 8px 8px
-    border-radius: 8px
-    background: var(--el-fill-color-light)
-  // 右上角 X = 删除记录
-  .download-item-close
-    position: absolute
-    top: 4px
-    right: 4px
-    z-index: 6
-    padding: 4px
-    margin: 0
-    color: var(--el-text-color-secondary)
-    &:hover
-      color: var(--el-color-danger)
-  // 移动(垃圾桶上方):把这一本移到本地库文件夹
-  .download-item-move
-    position: absolute
-    right: 4px
-    top: 32px
-    z-index: 6
-    padding: 4px
-    margin: 0
-  // 红色垃圾桶 = 删除记录和文件:和 X/移动同一个 right;竖直方向贴底,
-  // 和行底那条进度条在同一水平线上
-  .download-item-trash
-    position: absolute
-    right: 4px
-    bottom: 8px
-    z-index: 6
-    padding: 4px
-    margin: 0
-  // 列表里的封面:字号小一圈,圆环/页码/状态按钮都按小封面排
-  .download-card-cover
-    position: relative
-    flex: none
-    width: 84px
-    // ⚠ 必须 align-self: flex-start —— 行里内容(标题/标签/时间/进度条)变高时,
-    //    flex 默认 stretch 会把封面竖着拉长,3:4 的比例就废了(封面变成一根长条灰块)
-    align-self: flex-start
-    aspect-ratio: 3 / 4
-    // 兜底:个别 Chromium 不认 aspect-ratio 时高度也不会塌成 0
-    min-height: 100px
-    border-radius: 6px
-    overflow: hidden
-    background: var(--el-fill-color-light)
-    cursor: pointer
-    transition: box-shadow .15s ease
-    &:hover
-      box-shadow: 0 0 0 2px var(--el-color-primary-light-5, var(--el-color-primary))
-    > img
-      position: absolute
-      inset: 0
-      width: 100%
-      height: 100%
-      object-fit: cover
-      display: block
-    // 还没下完:封面照 JHenTai 网格模式做模糊(配下面的压暗遮罩,「没下好」一眼能看出)
-    &.is-pending > img
-      filter: blur(1px) brightness(.95)
-    .download-card-cover-empty
-      position: absolute
-      inset: 0
-      background: var(--el-fill-color-dark)
-    // 没下完:压暗遮罩
-    .download-card-mask
-      position: absolute
-      inset: 0
-      z-index: 2
-      // 别压太黑:45% 的时候封面几乎看不出内容,用户会以为「封面没显示」
-      background: rgba(0, 0, 0, .26)
-    // 中央:圆环进度(居中)+ 状态按钮(嵌在圆环中间)+ 圆环下页码
-    .download-card-overlay
-      position: absolute
-      inset: 0
-      z-index: 3
-      display: flex
-      flex-direction: column
-      align-items: center
-      justify-content: center
-      gap: 2px
-      .download-card-ringwrap
-        position: relative
-        width: 40px
-        height: 40px
-        display: flex
-        align-items: center
-        justify-content: center
-        .el-progress
-          width: 40px
-          height: 40px
-          line-height: 0
-          // 轨道淡一点、进度弧用白色:压暗的封面上白圈最干净(和 JHenTai 一致)
-          .el-progress-circle__track
-            stroke: rgba(255, 255, 255, .22)
-          .el-progress-circle__path
-            stroke: #fff
-        // 状态按钮:plain span(不是 el-button,避免它自带的圆形 chrome 和圆环叠成两个圈)。
-        // 用 inset:0 + margin:auto 居中(比 50%/translate 稳,不受字体行高影响)
-        .download-card-action
-          position: absolute
-          inset: 0
-          margin: auto
-          width: 30px
-          height: 30px
-          display: inline-flex
-          align-items: center
-          justify-content: center
-          border-radius: 50%
-          color: #fff
-          cursor: pointer
-          &:hover
-            background: rgba(0, 0, 0, .35)
-      .download-card-count
-        font-size: 10px
-        line-height: 1.2
-        color: #fff
-        text-shadow: 0 1px 2px rgba(0, 0, 0, .85)
-        font-variant-numeric: tabular-nums
-  // 右侧信息:标题 / 中间标签行 / 底部(时间 + 细进度条)
-  .download-body
-    flex: 1
-    min-width: 0
-    display: flex
-    flex-direction: column
-    gap: 4px
-    // 和封面一样高(84*4/3=112):foot 贴底后,进度条正好和封面底边在同一条水平线上
-    height: 112px
-    overflow: hidden
-  // 标题:靠左,最多两行;可点击(与主界面点标题一样开详情)
-  .download-title
-    font-size: 13px
-    line-height: 1.3
-    text-align: left
-    overflow: hidden
-    white-space: nowrap
-    text-overflow: ellipsis
-    cursor: pointer
-    flex: none
-    &:hover
-      color: var(--el-color-primary)
-  // 中间标签行:原图标签 · 状态 · 尺寸
-  .download-size
-    font-size: 11px
-    color: var(--el-text-color-secondary)
-    font-variant-numeric: tabular-nums
-  .download-meta
-    display: flex
-    align-items: center
-    gap: 6px
-    font-size: 12px
-    color: var(--el-text-color-secondary)
-    min-width: 0
-    overflow: hidden
-    .download-pill
-      padding: 0 4px
-      border-radius: 3px
-      background: var(--el-color-primary-light-9)
-      color: var(--el-color-primary)
-      flex: none
-    // 失败页数:从封面上挪过来的,红色小徽标
-    .download-fail-chip
-      padding: 0 4px
-      border-radius: 3px
-      background: var(--el-color-danger-light-9)
-      color: var(--el-color-danger)
-      flex: none
-      font-variant-numeric: tabular-nums
-    // 进度:done/total(收链接阶段是「正在收集页链接:N 页…」)
-    .download-count
-      flex: none
-      font-variant-numeric: tabular-nums
-    // 已移走:替代状态文字(绿字)
-    .download-moved
-      flex: none
-      color: var(--el-color-success)
-  // 漫画标签:照 JHenTai 列表 —— 浅底小方块,自动换行,全部显示
-  .download-tags
-    display: flex
-    flex-wrap: wrap
-    gap: 4px
-    min-width: 0
-    margin-top: 1px
-    // 最多显示两行,剩下的裁掉(行高由封面定住)
-    max-height: 40px
-    overflow: hidden
-    .download-tag
-      padding: 0 5px
-      border-radius: 4px
-      font-size: 11px
-      line-height: 18px
-      color: var(--el-text-color-regular)
-      background: var(--el-fill-color-light)
-      white-space: nowrap
-      cursor: pointer
-      transition: background .12s ease, color .12s ease
-      &:hover
-        background: var(--el-color-primary-light-9, var(--el-fill-color))
-        color: var(--el-color-primary)
-      // 分类标签(JHenTai 里那个 Misc)用灰底深色字
-      &.is-cat
-        background: var(--el-fill-color-dark)
-        color: var(--el-text-color-secondary)
-    .download-status
-      flex: none
-      &.is-done
-        color: var(--el-color-success)
-      &.is-failed
-        color: var(--el-color-danger)
-  // 底部:右下角时间(进度条上方)+ 细进度条(失败不变红;done 才用 success 绿)
-  .download-foot
-    margin-top: auto
-    display: flex
-    flex-direction: column
-    gap: 2px
-    .download-card-time
-      align-self: flex-end
-      font-size: 11px
-      line-height: 1.2
-      color: var(--el-text-color-secondary)
-      font-variant-numeric: tabular-nums
-  .download-bar-row
-    display: flex
-    align-items: center
-    gap: 6px
-    .download-thin-bar
-      flex: 1
-      min-width: 0
-    // 感叹号:错误信息只从这里出 —— 悬浮显示,点击钉住;弹层绝对定位在图标上方
-    .download-warn-wrap
-      position: relative
-      flex: none
-      display: inline-flex
-      line-height: 0
-      .download-card-warn
-        color: var(--el-color-warning)
-        cursor: pointer
-        font-size: 15px
-        line-height: 1
-      .download-warn-pop
-        position: absolute
-        bottom: calc(100% + 6px)
-        right: 0
-        width: 240px
-        box-sizing: border-box
-        padding: 8px 10px
-        border-radius: 6px
-        font-size: 12px
-        line-height: 1.5
-        color: var(--el-text-color-primary)
-        background: var(--el-bg-color-overlay, #fff)
-        border: 1px solid var(--el-border-color)
-        box-shadow: var(--el-box-shadow-light, 0 2px 12px rgba(0, 0, 0, .12))
-        white-space: normal
-        word-break: break-all
-        z-index: 30
 
 // 「移动到本地库」弹窗里选中路径的提示
 .move-dialog-hint

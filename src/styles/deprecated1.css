@@ -1,0 +1,384 @@
+/* =============================================================================
+ * 废弃主题1（deprecated1）—— 皮肤级主题
+ *
+ * 用户否决了重构的**布局与组件结构**，但认可它的**视觉语言**（配色 / 字体 / 圆角 /
+ * 阴影 / 卡片观感 / 控件中性化）。所以这个主题的定位是：
+ *
+ *   把重构版的「皮肤」贴回旧版 DOM —— 不搬组件、不搬布局、不恢复 AppHeader/BookGrid。
+ *
+ * 铁律（本文件必须遵守）：
+ *   1. 所有规则都挂在 `html.deprecated1` 下，不出现裸全局选择器 —— 否则会污染
+ *      Default Light / ExHentai / 像素模式等其它主题。
+ *   2. 只改颜色 / 字体 / 圆角 / 阴影 / 描边 / 内边距级别的微调。
+ *      **不改 display / grid / flex / width / height / position**：
+ *      卡片坐标必须与旧版逐像素一致（误差 ≤1px），否则书架行高会错位。
+ *   3. 需要「加一条描边」时用 box-shadow 而不是 border —— 旧版多数元素是
+ *      content-box，改 border-width 会改变盒子尺寸、把整行挤歪。
+ *   4. `!important` 上限 3 处，且每处写明为什么非它不可。
+ *
+ * 变量值取自重构版的 tokens.css（html.light 块），保证两套界面的色值同源。
+ * ========================================================================== */
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 1. 令牌：本主题自己的 scale（--dep1-*）+ Element Plus 变量重映射
+ *    对 EP 变量下手的理由：旧版界面的按钮/输入框/下拉/分页/对话框全部走 EP 的
+ *    CSS 变量，重映射一次就能整体换肤，不用逐个组件写覆盖规则。
+ *    `html.deprecated1`(0,1,1) 比 EP 定义变量的 `:root`(0,1,0) 高一级，够用。
+ * ──────────────────────────────────────────────────────────────────────────── */
+html.deprecated1 {
+  /* 主色与中性阶（同重构版 html.light） */
+  --dep1-primary: #5E6AD2;
+  --dep1-primary-hover: #4E59C4;
+  --dep1-primary-subtle: #EEF0FC;
+  --dep1-success: #1F9D6B;
+  --dep1-success-subtle: #E8F6F0;
+  --dep1-warning: #B8760C;
+  --dep1-danger: #D0453E;
+
+  --dep1-bg-page: #FAFAFA;
+  --dep1-bg-container: #FFFFFF;
+  --dep1-bg-sunken: #F5F5F7;
+  --dep1-bg-hover: #F5F5F7;
+  --dep1-bg-selected: #EEF0FC;
+
+  --dep1-text-1: #1A1A1F;
+  --dep1-text-2: #55555E;
+  --dep1-text-3: #74747F;
+  --dep1-text-4: #9A9AA6;
+
+  --dep1-border: #EBEBEF;
+  --dep1-border-strong: #DDDDE3;
+
+  --dep1-radius-sm: 6px;
+  --dep1-radius-md: 10px;
+  --dep1-radius-lg: 14px;
+
+  --dep1-shadow-sm: 0 1px 3px rgba(16, 17, 26, .08), 0 1px 2px rgba(16, 17, 26, .04);
+  --dep1-shadow-md: 0 4px 12px rgba(16, 17, 26, .08), 0 1px 3px rgba(16, 17, 26, .04);
+  --dep1-shadow-lg: 0 12px 32px rgba(16, 17, 26, .12), 0 2px 8px rgba(16, 17, 26, .06);
+
+  --dep1-font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+    "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei",
+    "Noto Sans CJK SC", "Source Han Sans SC", system-ui, sans-serif;
+  --dep1-scrim: rgba(16, 17, 26, .32);
+  --dep1-veil: rgba(255, 255, 255, .72);
+
+  /* EP 变量重映射 —— 这一层让所有 EP 组件一次性换成新皮 */
+  --el-color-primary: var(--dep1-primary);
+  --el-color-primary-dark-2: var(--dep1-primary-hover);
+  --el-color-primary-light-3: #8B93DF;
+  --el-color-primary-light-5: #AFB4E9;
+  --el-color-primary-light-7: #D2D5F2;
+  --el-color-primary-light-8: #E1E3F6;
+  --el-color-primary-light-9: var(--dep1-primary-subtle);
+  --el-color-success: var(--dep1-success);
+  --el-color-success-light-9: var(--dep1-success-subtle);
+  --el-color-warning: var(--dep1-warning);
+  --el-color-danger: var(--dep1-danger);
+
+  --el-bg-color: var(--dep1-bg-container);
+  --el-bg-color-page: var(--dep1-bg-page);
+  --el-bg-color-overlay: var(--dep1-bg-container);
+
+  --el-text-color-primary: var(--dep1-text-1);
+  --el-text-color-regular: var(--dep1-text-2);
+  --el-text-color-secondary: var(--dep1-text-3);
+  --el-text-color-placeholder: var(--dep1-text-4);
+  --el-text-color-disabled: var(--dep1-text-4);
+
+  --el-border-color: var(--dep1-border);
+  --el-border-color-light: var(--dep1-border);
+  --el-border-color-lighter: var(--dep1-border);
+  --el-border-color-extra-light: var(--dep1-border);
+  --el-border-color-dark: var(--dep1-border-strong);
+  --el-border-color-darker: var(--dep1-border-strong);
+  --el-border-color-hover: var(--dep1-border-strong);
+
+  --el-fill-color: var(--dep1-bg-sunken);
+  --el-fill-color-light: var(--dep1-bg-sunken);
+  --el-fill-color-lighter: var(--dep1-bg-sunken);
+  --el-fill-color-extra-light: var(--dep1-bg-hover);
+  --el-fill-color-blank: var(--dep1-bg-container);
+  --el-fill-color-dark: #E8E8EE;
+
+  --el-border-radius-base: var(--dep1-radius-sm);
+  --el-border-radius-small: 4px;
+  --el-border-radius-round: 999px;
+
+  --el-box-shadow: var(--dep1-shadow-md);
+  --el-box-shadow-light: var(--dep1-shadow-sm);
+  --el-box-shadow-lighter: var(--dep1-shadow-sm);
+  --el-box-shadow-dark: var(--dep1-shadow-lg);
+
+  /* 遮罩 vs 加载纱：EP 把两者都收在 --el-mask-color 上。
+     遮罩要压暗页面（scrim），加载纱要「容器底色半透明」（veil），方向相反，
+     分开给值，否则 v-loading 会变成一条灰带。 */
+  --el-mask-color: var(--dep1-veil);
+  --el-mask-color-extra-light: rgba(255, 255, 255, .3);
+  --el-overlay-color-lighter: var(--dep1-scrim);
+
+  --el-font-family: var(--dep1-font-sans);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 2. 页面与页头
+ * ──────────────────────────────────────────────────────────────────────────── */
+html.deprecated1,
+html.deprecated1 body {
+  background-color: var(--dep1-bg-page);
+  color: var(--dep1-text-1);
+}
+
+html.deprecated1 #app,
+html.deprecated1 .app-body,
+html.deprecated1 .app-main {
+  background-color: var(--dep1-bg-page);
+}
+
+/* 字体：整站换成重构版的 sans 栈。注意没有动任何 font-size —— 字号变了会改行高，
+   卡片纵坐标就会挪。 */
+html.deprecated1 #app,
+html.deprecated1 #app button,
+html.deprecated1 #app input,
+html.deprecated1 #app textarea,
+html.deprecated1 #app select {
+  font-family: var(--dep1-font-sans);
+}
+
+/* 页头：白底 + 底部 hairline。用 inset box-shadow 画那条线 ——
+   加 border-bottom 会让页头高 32→33px，下面整排卡片跟着下移 1px。 */
+html.deprecated1 .book-search-bar {
+  background-color: var(--dep1-bg-container);
+  box-shadow: inset 0 -1px 0 var(--dep1-border);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 3. 工具栏按钮：从「实心 + 描边」改成「无边框 ghost，hover 才有浅底」
+ *    只改 border-color（不改 border-width）：宽度不变，工具栏不会因此重排。
+ * ──────────────────────────────────────────────────────────────────────────── */
+html.deprecated1 .toolbar-flex .el-button {
+  background-color: transparent;
+  border-color: transparent;
+  color: var(--dep1-text-2);
+  border-radius: var(--dep1-radius-sm);
+}
+
+html.deprecated1 .toolbar-flex .el-button:hover {
+  background-color: var(--dep1-bg-hover);
+  border-color: transparent;
+  color: var(--dep1-text-1);
+}
+
+/* 处于「激活态」的工具按钮（筛选 / 下载记录 / 侧栏）用选中底色，不再用主色实心 */
+html.deprecated1 .toolbar-flex .el-button.is-filtering {
+  background-color: var(--dep1-bg-selected);
+  border-color: transparent;
+  color: var(--dep1-primary);
+}
+
+/* 排序方向按钮与排序下拉：同样的中性观感 */
+html.deprecated1 .toolbar-flex .sort-select .el-select__wrapper,
+html.deprecated1 .toolbar-flex .sort-dir-btn {
+  background-color: transparent;
+  border-color: transparent;
+  color: var(--dep1-text-2);
+}
+
+html.deprecated1 .toolbar-flex .sort-select .el-select__wrapper:hover {
+  background-color: var(--dep1-bg-hover);
+}
+
+/* 搜索框：浅底无边框 + 聚焦时主色环 */
+html.deprecated1 .toolbar-flex .search-input .el-input__wrapper {
+  background-color: var(--dep1-bg-sunken);
+  box-shadow: none;
+}
+
+html.deprecated1 .toolbar-flex .search-input .el-input__wrapper.is-focus {
+  background-color: var(--dep1-bg-container);
+  box-shadow: 0 0 0 2px var(--dep1-primary-subtle), inset 0 0 0 1px var(--dep1-primary);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 4. 卡片
+ *    几何一律不动：border-width 保持 1px（只换颜色）、padding/margin 不动、
+ *    不改 overflow（旧版注释里记过：cover-frame 加 overflow:hidden 会裁掉收藏角标）。
+ * ──────────────────────────────────────────────────────────────────────────── */
+html.deprecated1 .book-card {
+  background-color: var(--dep1-bg-container);
+  border-color: var(--dep1-border);
+  border-radius: var(--dep1-radius-md);
+  box-shadow: var(--dep1-shadow-sm);
+  color: var(--dep1-text-1);
+}
+
+html.deprecated1 .book-card:hover {
+  border-color: var(--dep1-border-strong);
+  box-shadow: var(--dep1-shadow-md);
+}
+
+/* 封面圆角（只作用在 img 上，不动 frame 的 overflow） */
+html.deprecated1 .book-card .book-cover {
+  border-radius: var(--dep1-radius-sm);
+}
+
+/* 标题：三档文字色 + 500 字重（中文 700 会糊，重构版只用 400/500/600） */
+html.deprecated1 .book-card .book-title {
+  color: var(--dep1-text-1);
+  font-weight: 500;
+}
+
+html.deprecated1 .book-card .book-title:hover {
+  color: var(--dep1-primary);
+}
+
+/* 卡片底部的 meta / 页码 / 收藏标签：一律降一档到次要文字色，不再抢标题 */
+html.deprecated1 .book-card .book-card-footer,
+html.deprecated1 .book-card .collect-tag,
+html.deprecated1 .book-card .book-card-footer * {
+  color: var(--dep1-text-3);
+}
+
+/* 卡片上的小 tag（语言 / 页数角标）换取色，与重构版一致 */
+html.deprecated1 .book-card .el-tag {
+  border-radius: var(--dep1-radius-xs, 4px);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 5. 分页：当前页用主色实心 + 圆角；其余中性
+ * ──────────────────────────────────────────────────────────────────────────── */
+html.deprecated1 .el-pagination.is-background .el-pager li {
+  background-color: transparent;
+  color: var(--dep1-text-2);
+  border-radius: var(--dep1-radius-sm);
+}
+
+html.deprecated1 .el-pagination.is-background .el-pager li:hover {
+  background-color: var(--dep1-bg-hover);
+  color: var(--dep1-text-1);
+}
+
+html.deprecated1 .el-pagination.is-background .el-pager li.is-active {
+  background-color: var(--dep1-primary);
+  color: #FFFFFF;
+}
+
+html.deprecated1 .el-pagination .btn-prev,
+html.deprecated1 .el-pagination .btn-next {
+  background-color: transparent;
+  border-radius: var(--dep1-radius-sm);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 6. 对话框与遮罩
+ * ──────────────────────────────────────────────────────────────────────────── */
+html.deprecated1 .el-overlay {
+  background-color: var(--dep1-scrim);
+}
+
+html.deprecated1 .el-dialog {
+  border-radius: var(--dep1-radius-lg);
+  box-shadow: var(--dep1-shadow-lg);
+  background-color: var(--dep1-bg-container);
+}
+
+html.deprecated1 .el-dialog__header {
+  border-bottom: 1px solid var(--dep1-border);
+}
+
+html.deprecated1 .el-dialog__title {
+  color: var(--dep1-text-1);
+  font-weight: 600;
+}
+
+html.deprecated1 .el-drawer {
+  background-color: var(--dep1-bg-container);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 7. 通用控件：输入框无边框浅底 + 焦点环；按钮圆角统一
+ * ──────────────────────────────────────────────────────────────────────────── */
+html.deprecated1 .el-input__wrapper,
+html.deprecated1 .el-textarea__inner {
+  background-color: var(--dep1-bg-sunken);
+  box-shadow: inset 0 0 0 1px transparent;
+}
+
+html.deprecated1 .el-input__wrapper:hover,
+html.deprecated1 .el-textarea__inner:hover {
+  background-color: var(--dep1-bg-hover);
+}
+
+html.deprecated1 .el-input__wrapper.is-focus,
+html.deprecated1 .el-textarea__inner:focus {
+  background-color: var(--dep1-bg-container);
+  box-shadow: 0 0 0 2px var(--dep1-primary-subtle), inset 0 0 0 1px var(--dep1-primary);
+}
+
+html.deprecated1 .el-select__wrapper {
+  background-color: var(--dep1-bg-sunken);
+  box-shadow: inset 0 0 0 1px transparent;
+}
+
+html.deprecated1 .el-select__wrapper.is-focused {
+  background-color: var(--dep1-bg-container);
+  box-shadow: 0 0 0 2px var(--dep1-primary-subtle), inset 0 0 0 1px var(--dep1-primary);
+}
+
+html.deprecated1 .el-button {
+  border-radius: var(--dep1-radius-sm);
+  font-weight: 500;
+}
+
+/* plain 按钮：浅底 + hairline，不再是「灰底灰字」；
+   语义色（success/warning/danger）保留自己的色，只统一底色与描边。 */
+html.deprecated1 .el-button.is-plain:not(.is-link):not(.is-text) {
+  background-color: var(--dep1-bg-container);
+  border-color: var(--dep1-border-strong);
+  color: var(--dep1-text-2);
+}
+
+html.deprecated1 .el-button.is-plain:not(.is-link):not(.text):hover {
+  background-color: var(--dep1-bg-hover);
+  border-color: var(--dep1-border-strong);
+  color: var(--dep1-text-1);
+}
+
+/* 主色实心按钮的 hover 必须自己给，否则 EP 会用 light-3 的静态值 */
+html.deprecated1 .el-button--primary:not(.is-plain):not(.is-link):not(.is-text) {
+  --el-button-hover-bg-color: var(--dep1-primary-hover);
+  --el-button-active-bg-color: var(--dep1-primary-hover);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * 8. 文本与提示：title / hint 统一到三档文字色
+ * ──────────────────────────────────────────────────────────────────────────── */
+html.deprecated1 .el-message {
+  border-radius: var(--dep1-radius-md);
+  box-shadow: var(--dep1-shadow-md);
+}
+
+html.deprecated1 .el-popper.is-light {
+  border-color: var(--dep1-border);
+  box-shadow: var(--dep1-shadow-md);
+}
+
+/* 滚动条：浅色细条，与重构版一致（不影响布局） */
+html.deprecated1 ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+html.deprecated1 ::-webkit-scrollbar-thumb {
+  background-color: #C2C2CC;
+  border-radius: 999px;
+  border: 2px solid var(--dep1-bg-page);
+}
+
+html.deprecated1 ::-webkit-scrollbar-thumb:hover {
+  background-color: var(--dep1-text-4);
+}
+
+html.deprecated1 ::-webkit-scrollbar-track {
+  background-color: transparent;
+}

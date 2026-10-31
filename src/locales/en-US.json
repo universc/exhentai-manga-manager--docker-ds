@@ -1070,7 +1070,8 @@
     "autoCollectionReasonTitleSimilar": "Similar title",
     "autoCollectionReasonVolume": "Sequential volumes",
     "autoCollectionReasonCharacter": "Same character",
-    "openFailed": "Failed to open: no magnet-link handler is registered on this system"
+    "openFailed": "Failed to open: no magnet-link handler is registered on this system",
+    "deprecatedTheme1": "Deprecated Theme 1"
   },
   "cm": {
     "title": "Title menu (right-click / long-press)",
