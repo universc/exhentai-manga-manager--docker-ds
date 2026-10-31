@@ -8,12 +8,12 @@
     <div class="app-main">
     <el-row :gutter="20" class="book-search-bar">
       <el-col :span="24">
-        <div class="toolbar-flex" :style="toolbarWidth ? { width: toolbarWidth + 'px' } : {}">
+        <div class="toolbar-flex" ref="toolbarFlexRef" :style="toolbarWidth ? { width: toolbarWidth + 'px' } : {}">
           <!-- 工具栏元素:显示项与排列顺序都在 设置 → 高级 → 工具栏按钮 里调整(设置按钮始终保留) -->
           <template v-for="id in toolbarOrderIds" :key="id">
             <!-- 搜索输入框:搜索历史放在下拉弹层底部,排成**横排芯片**(见 footer 插槽 + .search-history-panel) -->
             <el-autocomplete
-              v-if="id === 'searchInput'"
+              v-if="id === 'searchInput'" v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id"
               ref="searchInputRef"
               :model-value="searchString"
               :fetch-suggestions="querySearch"
@@ -60,9 +60,9 @@
               </template>
             </el-autocomplete>
             <!-- 搜索按钮 -->
-            <el-button v-else-if="id === 'searchButton'" type="primary" :icon="Search32Filled" plain @click="searchBook" :title="$t('m.search')"></el-button>
+            <el-button v-else-if="id === 'searchButton'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" type="primary" :icon="Search32Filled" plain @click="searchBook" :title="$t('m.search')"></el-button>
             <!-- 排序/筛选:方向由箭头单独切换 -->
-            <div v-else-if="id === 'sortSelect'" class="sort-select-wrap">
+            <div v-else-if="id === 'sortSelect'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" class="sort-select-wrap">
               <el-select class="sort-select" :placeholder="$t('m.sort_filter')" clearable v-model="sortBaseValue">
                 <el-option-group :label="$t('m.filter')">
                   <el-option :label="$t('m.all')" value=""></el-option>
@@ -94,7 +94,7 @@
             <!-- 筛选(漏斗):点开就是 JHenTai 那个筛选对话框 —— 分类 / 关键词 / 语言 / 页数 / 最低评分
                  (可在 高级 → 工具栏按钮 里隐藏;有筛选在生效时按钮高亮) -->
             <el-button
-              v-else-if="id === 'filter'"
+              v-else-if="id === 'filter'" v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id"
               type="primary"
               plain
               :icon="MdOptions"
@@ -104,7 +104,7 @@
             ></el-button>
             <!-- 下载记录:右侧滑出下载列表(可在 高级 → 工具栏按钮 里隐藏);再点一次收回 -->
             <el-button
-              v-else-if="id === 'downloads'"
+              v-else-if="id === 'downloads'" v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id"
               type="primary"
               plain
               :icon="MdCloudDownload"
@@ -114,7 +114,7 @@
             ></el-button>
             <!-- 侧边详细信息:与下载记录同款右栏(封面/标题/评分/标签/操作,照 JHenTai 详情页) -->
             <el-button
-              v-else-if="id === 'detailPanel'"
+              v-else-if="id === 'detailPanel'" v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id"
               type="primary"
               plain
               :icon="InfoFilled"
@@ -123,15 +123,15 @@
               @click="detailPanelVisible = !detailPanelVisible"
             ></el-button>
             <!-- UI 模式切换:自动 → 手机 → 平板 → 电脑(桌面客户端与网页版都有) -->
-            <el-button v-else-if="id === 'uiMode'" :icon="uiModeIcon" plain @click="switchUiMode" :title="$t('m.switchUiMode') + ': ' + $t(uiModeLabelKey)"></el-button>
+            <el-button v-else-if="id === 'uiMode'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" :icon="uiModeIcon" plain @click="switchUiMode" :title="$t('m.switchUiMode') + ': ' + $t(uiModeLabelKey)"></el-button>
             <!-- 设置按钮:与界面模式按钮一套样式(纯 plain,图标不跟主色调) -->
-            <el-button v-else-if="id === 'setting'" :icon="SettingIcon" plain @click="$refs.SettingRef.dialogVisibleSetting = true" :title="$t('m.setting')"></el-button>
+            <el-button v-else-if="id === 'setting'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" :icon="SettingIcon" plain @click="$refs.SettingRef.dialogVisibleSetting = true" :title="$t('m.setting')"></el-button>
             <!-- 切换库:点一下 = 切到下一个「库切换」框(书架显示该框内所有库合并的漫画) -->
             <!-- 切换库:点一下 = 切到下一条「库切换」框(循环) -->
-            <el-button v-else-if="id === 'switchLibrary'" type="primary" plain :icon="switchLibraryIcon" :loading="buttonLoadBookListLoading" @click="switchBox()" :title="$t('m.switchLibraryCurrent') + ':' + (boxLabel || '—')"></el-button>
+            <el-button v-else-if="id === 'switchLibrary'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" type="primary" plain :icon="switchLibraryIcon" :loading="buttonLoadBookListLoading" @click="switchBox()" :title="$t('m.switchLibraryCurrent') + ':' + (boxLabel || '—')"></el-button>
             <!-- 可自定义的界面按钮 -->
             <el-button
-              v-else-if="toolbarButtonMap[id]"
+              v-else-if="toolbarButtonMap[id]" v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id"
               type="primary"
               :icon="toolbarButtonMap[id].icon"
               plain
@@ -164,6 +164,19 @@
           <!-- 设置按钮已并入上面的排序序列(常驻,不可隐藏) -->
           <!-- 上下文按钮(仅 Win 远程桌面模式) = 服务器配置 -->
           <el-button v-if="showContextButton" :icon="contextButton.icon" plain @click="contextButton.action()" :title="$t(contextButton.titleKey)"></el-button>
+          <!-- ⋯ 溢出收纳:一行放不下的按钮收进这里(显示项、顺序、行为都与工具栏上的按钮一致)
+               唤出与收纳规则见 methods.recalcToolbarOverflow -->
+          <el-dropdown v-if="toolbarCollapsedIds.length" trigger="click" @command="runToolbarAction">
+            <el-button type="primary" plain :icon="MoreFilled" :title="$t('m.more')" :aria-label="$t('m.more')"></el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="id in toolbarCollapsedIds" :key="'tb-ov-' + id" :command="id">
+                  <component :is="toolbarMenuItemIcon(id)" v-if="toolbarMenuItemIcon(id)" class="emm-overflow-icon" />
+                  <span>{{ toolbarMenuItemTitle(id) }}</span>
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
       </el-col>
     </el-row>
@@ -651,7 +664,7 @@
 <script>
 import { defineComponent } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { Setting as SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened } from '@element-plus/icons-vue'
+import { Setting as SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened, MoreFilled } from '@element-plus/icons-vue'
 import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular, Wand24Regular } from '@vicons/fluent'
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdOptions, MdTrash, MdCloudDownload, MdPlay, MdPause } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, TagGroup, Catalog } from '@vicons/carbon'
@@ -710,7 +723,7 @@ export default defineComponent({
     return {
       SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened, MdPlay, MdPause,
       Collections24Regular, Search32Filled, ArrowTrendingLines20Filled, Save16Regular, Wand24Regular,
-      MdRefresh, MdCodeDownload, MdExit, MdShuffle, MdFolderOpen, MdCloudDone,
+      MdRefresh, MdCodeDownload, MdExit, MdShuffle, MdFolderOpen, MdCloudDone, MoreFilled,
       MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdOptions, MdTrash, MdCloudDownload,
       TreeViewAlt, CicsSystemGroup, TagGroup
     }
@@ -806,6 +819,10 @@ export default defineComponent({
       actionHistory: [],
       // 工具栏宽度(与下方漫画卡片行对齐,随窗口/封面尺寸自适应)
       toolbarWidth: 0,
+      // 一行放不下时被收进 ⋯ 的工具条目 id（顺序 = toolbarOrderIds 的相对顺序）
+      toolbarCollapsedIds: [],
+      // 每个条目实测宽度缓存（图标尺寸会随主题字号/像素模式变，估不准，只能量）
+      toolbarWidthCache: {},
       // 上一次「打开下一本」的时间戳(1 秒冷却)
       lastMangaSwitchAt: 0,
       // 混合背景:上次取色用的封面地址 / 滚动节流定时器 / 像素音效解绑函数
@@ -1187,6 +1204,10 @@ export default defineComponent({
     },
   },
   watch: {
+    // 工具栏:按钮集合/顺序、编辑视图、界面语言变化都会改变按钮宽度 → 重新量一次
+    toolbarOverflowSignature () {
+      this.scheduleToolbarRecalc()
+    },
     // 切库(或进/出 EH在线):筛选是**按库独立**的 —— 先把当前筛选存回旧库,再取新库那份
     filterLibKey (key, oldKey) {
       const store = (k, v) => { try { localStorage.setItem('emmEhFilter:' + k, JSON.stringify(v)) } catch (e) { /* 忽略 */ } }
@@ -1281,6 +1302,14 @@ export default defineComponent({
     },
   },
   mounted () {
+    // 工具栏溢出收纳:窗口 resize 会派发 resize,侧栏开合不会 → 再挂一个 ResizeObserver
+    this._toolbarOnResize = () => this.scheduleToolbarRecalc()
+    window.addEventListener('resize', this._toolbarOnResize)
+    if (typeof ResizeObserver !== 'undefined' && this.$refs.toolbarFlexRef) {
+      this._toolbarObserver = new ResizeObserver(() => this.scheduleToolbarRecalc())
+      this._toolbarObserver.observe(this.$refs.toolbarFlexRef)
+    }
+    this.$nextTick(() => this.recalcToolbarOverflow())
     // UI 模式初始化(自动/手机/平板/电脑)与 body 标记
     this.uiMode = localStorage.getItem('emmUiMode') || 'auto'
     this.applyUiMode()
@@ -1460,6 +1489,10 @@ export default defineComponent({
     })
   },
   beforeUnmount () {
+    clearTimeout(this._toolbarRecalcTimer)
+    clearTimeout(this._toolbarRecalcTimer2)
+    if (this._toolbarOnResize) window.removeEventListener('resize', this._toolbarOnResize)
+    if (this._toolbarObserver) { this._toolbarObserver.disconnect(); this._toolbarObserver = null }
     window.removeEventListener('keydown', this.resolveKey)
     window.removeEventListener('wheel', this.resolveWheel)
     window.removeEventListener('mousedown', this.resolveMouseDown)
@@ -1927,6 +1960,184 @@ export default defineComponent({
     // 切换库(工具栏):点一下 = 切到下一个「库切换」框,书架显示该框内所有库合并的漫画
     // 点一下工具栏按钮 = 切到下一条「库切换」框(循环)。只有一条框时点了不会变,所以提示一下
     // 启用了「EH在线」时,循环尾部多一站:最后一个框 → EH在线 → 回到第一个框
+    // 工具栏按钮溢出收纳:
+    //   旧版页头是一行 nowrap + overflow:hidden —— 按钮一多就被裁掉且**没有任何提示**,
+    //   搜索框还会被 flex 压到 120px 底线。这里加一层「量宽度 → 末尾收进 ⋯」。
+    //   ⋯ 菜单里的项与工具栏上的按钮同顺序、同图标、同动作。
+    //
+    // 永不收纳(与重构版 AppHeader 的 PINNED 一致):设置(随时要能进)、排序复合控件(主操作)、
+    // 搜索框与搜索按钮(中段主操作)。其余按渲染顺序从末尾往前收。
+    toolbarPinnedIds () {
+      return ['setting', 'sortSelect', 'searchInput', 'searchButton']
+    },
+    // 搜索框的体验底线:低于这个宽度就把右侧按钮收起来,而不是继续压搜索框。
+    // 与 .toolbar-flex .search-input 的 min-width:120px 是同一个口径。
+    toolbarSearchMinWidth () {
+      return 120
+    },
+    // ⋯ 菜单项的 i18n 文案:与模板里各分支的 :title 一一对应
+    toolbarMenuItemTitle (id) {
+      const map = {
+        searchButton: 'm.search',
+        filter: 'm.filterButton',
+        downloads: 'm.downloads',
+        detailPanel: 'm.sideDetail',
+        uiMode: 'm.switchUiMode',
+        setting: 'm.setting',
+        switchLibrary: 'm.switchLibraryCurrent',
+        searchInput: 'm.search',
+        sortSelect: 'm.sort_filter'
+      }
+      if (map[id]) return this.$t(map[id])
+      const def = this.toolbarButtonMap[id]
+      return def ? this.$t(def.titleKey) : this.$t('m.more')
+    },
+    // ⋯ 菜单项的图标:普通按钮直接复用 toolbarButtonMap,特殊分支单独映射
+    toolbarMenuItemIcon (id) {
+      if (id === 'filter') return MdOptions
+      if (id === 'downloads') return MdCloudDownload
+      if (id === 'detailPanel') return InfoFilled
+      if (id === 'uiMode') return this.uiModeIcon
+      if (id === 'switchLibrary') return this.switchLibraryIcon
+      if (id === 'setting') return SettingIcon
+      if (id === 'searchButton') return Search32Filled
+      const def = this.toolbarButtonMap[id]
+      return def ? def.icon : null
+    },
+    // ⋯ 菜单项的动作:必须与模板里对应分支的 @click 完全一致
+    runToolbarAction (id) {
+      switch (id) {
+        case 'searchButton': return this.searchBook()
+        case 'filter': this.ehFilterVisible = true; return
+        case 'downloads': return this.toggleDownloadDrawer()
+        case 'detailPanel': this.detailPanelVisible = !this.detailPanelVisible; return
+        case 'uiMode': return this.switchUiMode()
+        case 'setting':
+          if (this.$refs.SettingRef) this.$refs.SettingRef.dialogVisibleSetting = true
+          return
+        case 'switchLibrary': return this.switchBox()
+        default: {
+          const def = this.toolbarButtonMap[id]
+          if (def && typeof def.action === 'function') def.action()
+        }
+      }
+    },
+    // resize / 侧栏开合都会改变可用宽度,统一走 80ms 防抖
+    scheduleToolbarRecalc () {
+      clearTimeout(this._toolbarRecalcTimer)
+      clearTimeout(this._toolbarRecalcTimer2)
+      this._toolbarRecalcTimer = setTimeout(() => { this.recalcToolbarOverflow() }, 80)
+      // .toolbar-flex 的 width 带 300ms 过渡（见它的 transition: width .3s ease）：
+      // 过渡途中 clientWidth 是**中间值**，只算一次会把「动画还没走完」当成真实宽度，
+      // 于是多收几个按钮、而且不会自己回来。过渡结束之后再算一次。
+      this._toolbarRecalcTimer2 = setTimeout(() => { this.recalcToolbarOverflow() }, 420)
+    },
+    /**
+     * 重新计算「末尾哪几个条目要收进 ⋯」。
+     * 宽度全部取实测值并缓存:图标尺寸会随主题字号/像素模式变,估出来的值一定不准。
+     * 1) 若有条目还没量过(刚在设置里启用),先全部展开量一遍;
+     * 2) 用缓存算「固定项 + 搜索框底线 + gap」是否超过容器宽;
+     * 3) 超了就从末尾往前收,直到「剩下的 + ⋯ 自己」放得下。
+     */
+    async recalcToolbarOverflow () {
+      if (this._toolbarMeasuring) return
+      this._toolbarMeasuring = true
+      try {
+        const row = this.$refs.toolbarFlexRef
+        if (!row) return
+        const ids = this.toolbarOrderIds || []
+        if (!ids.length) {
+          if (this.toolbarCollapsedIds.length) this.toolbarCollapsedIds = []
+          return
+        }
+        // 移动端（body.emm-mobile）工具栏是 flex-wrap: wrap 的：换行本身就不会产生横向溢出，
+        // 此时再收纳反而把整排按钮塞进 ⋯。直接跳过。
+        if (getComputedStyle(row).flexWrap === 'wrap') {
+          if (this.toolbarCollapsedIds.length) this.toolbarCollapsedIds = []
+          return
+        }
+
+        const pinned = this.toolbarPinnedIds()
+        const GAP = 8
+        const MORE_WIDTH = 40          // ⋯ 图标按钮 ≈32 + 一个 gap
+        const available = row.clientWidth
+        if (available <= 0) return
+
+        // ① 量宽度：先把已收起的全部展开，量的才是「自然宽度」而不是 0
+        if (this.toolbarCollapsedIds.length) {
+          this.toolbarCollapsedIds = []
+          await this.$nextTick()
+        }
+        const measure = () => {
+          ids.forEach((id) => {
+            const el = row.querySelector('[data-tb-id="' + id + '"]')
+            if (!el) return
+            const w = el.getBoundingClientRect().width
+            if (w) this.toolbarWidthCache[id] = w
+          })
+        }
+        measure()
+        if (ids.some((id) => !this.toolbarWidthCache[id])) {
+          await this.$nextTick()
+          measure()
+        }
+
+        // ② 附属元素（清空历史 / 编辑按钮组 / 上下文按钮）也占宽度；⋯ 自己不算
+        let extrasWidth = 0
+        let extrasCount = 0
+        Array.from(row.children).forEach((el) => {
+          if (el.dataset && el.dataset.tbId) return
+          if (el.classList && el.classList.contains('el-dropdown')) return
+          const w = el.getBoundingClientRect().width
+          if (w > 0) { extrasWidth += w; extrasCount += 1 }
+        })
+
+        // 搜索框按「体验底线」计入：它被压窄后的实测宽度没有参考价值
+        const widthOf = (id) => (id === 'searchInput'
+          ? this.toolbarSearchMinWidth()
+          : (this.toolbarWidthCache[id] || 46))
+        const needOf = (hiddenIds) => {
+          const visible = ids.filter((id) => !hiddenIds.includes(id))
+          let total = extrasWidth
+          visible.forEach((id) => { total += widthOf(id) })
+          const gaps = Math.max(0, visible.length + extrasCount - 1)
+          return total + GAP * gaps
+        }
+
+        // ③ 估算：从末尾往前收，直到「剩下的 + ⋯」放得下
+        if (needOf([]) <= available) return          // 本来就放得下
+        const hidden = []
+        let guard = 0
+        while (needOf(hidden) + MORE_WIDTH > available && guard++ <= ids.length) {
+          let picked = null
+          for (let i = ids.length - 1; i >= 0; i--) {
+            if (!pinned.includes(ids[i]) && !hidden.includes(ids[i])) { picked = ids[i]; break }
+          }
+          if (!picked) break
+          hidden.push(picked)
+        }
+        hidden.sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
+        this.toolbarCollapsedIds = hidden
+        await this.$nextTick()
+
+        // ④ 有界校验：估算有误差时以真实 scrollWidth 为准，再收一个
+        let verify = 0
+        while (row.scrollWidth > row.clientWidth + 1 && verify++ <= ids.length) {
+          let picked = null
+          for (let i = ids.length - 1; i >= 0; i--) {
+            const id = ids[i]
+            if (!pinned.includes(id) && !this.toolbarCollapsedIds.includes(id)) { picked = id; break }
+          }
+          if (!picked) break
+          const next = this.toolbarCollapsedIds.concat([picked])
+          next.sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
+          this.toolbarCollapsedIds = next
+          await this.$nextTick()
+        }
+      } finally {
+        this._toolbarMeasuring = false
+      }
+    },
     async switchBox () {
       // ⚠ 这里**不能**无条件置 loading:这个函数有好几条提前 return 的路
       //   (只有一条框 / 切到 EH在线 / 已经在 EH在线),那些路径根本不加载列表,
@@ -4734,6 +4945,13 @@ body.emm-mobile
 .function-button
   width: 100%
 // 工具栏:固定一行,搜索栏随按钮数量伸缩,宽度与卡片行对齐并居中
+// ⋯ 溢出收纳下拉里的图标:与工具栏按钮的图标同尺寸
+.emm-overflow-icon
+  width: 14px
+  height: 14px
+  margin-right: 8px
+  vertical-align: -2px
+
 .toolbar-flex
   display: flex
   align-items: center
