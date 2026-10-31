@@ -1,5 +1,6 @@
 <template>
   <el-col :span="20" v-if="editCollectionView" class="book-collect-view"
+    :style="editGridStyle"
     @mousedown="handleMouseDownForSelection" @mouseup="handleMouseUpForSelection('collect')" @mousemove="handleMouseMoveForSelection"
   >
     <div
@@ -22,7 +23,9 @@
       </transition>
     </div>
   </el-col>
-  <el-col :span="4" v-if="editCollectionView" class="book-collection">
+  <el-col :span="4" v-if="editCollectionView" class="book-collection"
+    :style="opColStyle">
+    <div class="emm-op-resizer" :title="$t('m.downloadPanelResizeHint')" @mousedown="startOpResize"></div>
     <el-select v-model="selectCollection" class="book-collection-select" filterable @change="handleSelectCollectionChange">
       <el-option v-for="collection in collectionList" :key="collection.id" :value="collection.id" :label="collection.title"></el-option>
     </el-select>
@@ -46,6 +49,7 @@
     </div>
   </el-col>
   <el-col :span="20" v-if="editTagView" class="book-tag-edit-view"
+    :style="editGridStyle"
     @mousedown="handleMouseDownForSelection" @mouseup="handleMouseUpForSelection('tag')" @mousemove="handleMouseMoveForSelection"
   >
     <div
@@ -95,7 +99,9 @@
       </transition>
     </div>
   </el-col>
-  <el-col :span="4" v-if="editTagView" class="book-tag-edit-operation" v-loading="updateTagsLoading">
+  <el-col :span="4" v-if="editTagView" class="book-tag-edit-operation" v-loading="updateTagsLoading"
+    :style="opColStyle">
+    <div class="emm-op-resizer" :title="$t('m.downloadPanelResizeHint')" @mousedown="startOpResize"></div>
     <el-space wrap class="book-tag-edit-buttons">
       <el-button type="primary" plain @click="selectAllForGroupTag">{{$t('m.selectAll')}}</el-button>
       <el-button type="primary" plain @click="unselectAllForGroupTag">{{$t('m.unselectAll')}}</el-button>
@@ -326,6 +332,18 @@ const categorySelected = ref(null)
 const statusSelected = ref('tagged')
 
 // group edit tags viewer
+const editOpWidth = ref(Number(localStorage.getItem('emmEditOpWidth')) || 360)
+const editGridStyle = computed(() => ({ width: 'calc(100% - ' + editOpWidth.value + 'px)', flex: '0 0 auto', minWidth: '0' }))
+const opColStyle = computed(() => ({ width: editOpWidth.value + 'px', maxWidth: editOpWidth.value + 'px', flex: '0 0 ' + editOpWidth.value + 'px', position: 'relative' }))
+const startOpResize = (e) => {
+  e.preventDefault()
+  const sx = e.clientX
+  const sw = editOpWidth.value
+  const mv = (ev) => { editOpWidth.value = Math.max(260, Math.min(sw + (sx - ev.clientX), 600)) }
+  const up = () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); try { localStorage.setItem('emmEditOpWidth', String(editOpWidth.value)) } catch (_) {} }
+  window.addEventListener('mousemove', mv)
+  window.addEventListener('mouseup', up)
+}
 const enterEditTagView = () => {
   visibilityMap.value = {}
   editTagView.value = true
@@ -872,4 +890,15 @@ defineExpose({
   display: none
   pointer-events: none
   user-select: none
+</style>
+<style lang="stylus">
+/* 操作列左缘拖宽手柄（T04+）：管理标签 / 管理合集两个模式的操作列同款 */
+.emm-op-resizer
+  position: absolute
+  left: 0
+  top: 0
+  bottom: 0
+  width: 8px
+  cursor: col-resize
+  z-index: 5
 </style>
