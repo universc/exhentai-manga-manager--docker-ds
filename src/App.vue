@@ -1846,21 +1846,13 @@ export default defineComponent({
     //
     // 永不收纳(与重构版 AppHeader 的 PINNED 一致):设置(随时要能进)、排序复合控件(主操作)、
     // 搜索框与搜索按钮(中段主操作)。其余按渲染顺序从末尾往前收。
-    // 永不收纳的条目:重构版页头把工具栏分成 左段/中段/右段 三区,
-    // 左段(库切换/文件夹树)和中段(搜索)结构性不参与收纳,右段里 setting/sortSelect 也固定。
-    // 旧版没有分区 DOM,用同一份「永不收」名单达到相同的优先级效果:
-    // 窗口再窄,也是先收普通按钮,库切换/文件夹树/搜索/排序/设置永远在。
     toolbarPinnedIds () {
-      return ['switchLibrary', 'folderTree', 'setting', 'sortSelect', 'searchInput', 'searchButton']
+      return ['setting', 'sortSelect', 'searchInput', 'searchButton']
     },
     // 搜索框的体验底线:低于这个宽度就把右侧按钮收起来,而不是继续压搜索框。
-    // 重构版(E-08)口径:min(320, max(96, 行宽×0.45)) —— 桌面端 320 是「够舒服看搜索词」,
-    // 窄窗口按比例收缩,底线永远不超过容器本身。
-    // 与下方 .toolbar-flex .search-input 的 min-width:min(320px,45vw) 是同一个口径,
-    // 两处必须同步改,否则「JS 算着放得下、CSS 实际溢出」会来回抖。
-    toolbarSearchMinWidth (rowWidth) {
-      const w = Number(rowWidth) || 0
-      return Math.min(320, Math.max(96, w * 0.45))
+    // 与 .toolbar-flex .search-input 的 min-width:120px 是同一个口径。
+    toolbarSearchMinWidth () {
+      return 120
     },
     // ⋯ 菜单项的 i18n 文案:与模板里各分支的 :title 一一对应
     toolbarMenuItemTitle (id) {
@@ -1979,10 +1971,9 @@ export default defineComponent({
           if (w > 0) { extrasWidth += w; extrasCount += 1 }
         })
 
-        // 搜索框按「体验底线」计入：它被压窄后的实测宽度没有参考价值；
-        // 底线 = min(320, max(96, 行宽×0.45))，与重构版页头同一口径（E-08）
+        // 搜索框按「体验底线」计入：它被压窄后的实测宽度没有参考价值
         const widthOf = (id) => (id === 'searchInput'
-          ? this.toolbarSearchMinWidth(available)
+          ? this.toolbarSearchMinWidth()
           : (this.toolbarWidthCache[id] || 46))
         const needOf = (hiddenIds) => {
           const visible = ids.filter((id) => !hiddenIds.includes(id))
@@ -4851,11 +4842,7 @@ body.emm-mobile
   overflow: hidden
   .search-input
     flex: 1 1 auto
-    /* 体验底线与 JS 的 toolbarSearchMinWidth() 同一口径（重构版 E-08）：
-       桌面 320px，窄窗口按 45vw 比例收缩、永远不超过容器。
-       ⚠️ 必须用 unquote 包住：Stylus 有同名内置 min()，裸写 min(320px,45vw)
-          会在编译期被它吃掉、输出成 45vw（1440 下 648px，把整排按钮挤进 ⋯）。 */
-    min-width: unquote('min(320px, 45vw)')
+    min-width: 120px
   .sort-select
     width: 150px
     flex: 0 0 150px
