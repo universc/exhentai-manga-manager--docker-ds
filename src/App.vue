@@ -5,6 +5,13 @@
     <el-button v-if="setting.showFullscreenButton !== false" class="fullscreen-button" circle :icon="FullScreen" size="large" @click="switchFullscreen"></el-button>
     <!-- 主界面与「下载记录」并排:左主右栏,中间那条可以拖宽度 -->
     <div class="app-body">
+    <!-- 文件夹树：左侧入坞面板（原来是左抽屉，现在可拖宽，宽度持久化） -->
+    <FolderTree
+      ref="FolderTreeRef"
+      :width="folderTreePanelWidth"
+      @update:width="onFolderTreeWidthChange"
+      @chunk-list="chunkList"
+    />
     <div class="app-main">
     <el-row :gutter="20" class="book-search-bar">
       <el-col :span="24">
@@ -332,20 +339,18 @@
         @preview-img-error="onPreviewImgError"
         @retry-img="retryPreviewImg"
       />
-    </template>
-    </div>
-    <el-drawer v-model="drawerVisibleCollection"
-      direction="btt"
-      size="calc(100vh - 60px)"
-      destroy-on-close
-      class="collection-drawer"
-    >
-      <template #header>
-        <div>
-          <span class="open-collection-title">{{openCollectionTitle}}</span>
-          <el-button type="primary" :icon="Edit" plain link class="collection-edit-button" @click="editCurrentCollection"/>
+      <!-- 管理合集：原来是底部抽屉，现在是右侧入坞面板（与任务记录同款，可拖宽）。
+           保留 .collection-drawer 类，让旧样式继续命中内部元素 -->
+      <div v-else-if="name === 'collection'" class="dock-panel collection-drawer" v-show="drawerVisibleCollection" :style="{ width: collectionPanelWidth + 'px' }">
+        <div class="dock-panel-resizer" @mousedown="startDockResize($event, 'collectionPanelWidth', 320)"></div>
+        <div class="dock-panel-header">
+          <span class="dock-panel-title">{{ openCollectionTitle }}</span>
+          <span class="dock-panel-actions">
+            <el-button type="primary" :icon="Edit" plain link class="collection-edit-button" @click="editCurrentCollection"></el-button>
+            <el-button text @click="drawerVisibleCollection = false">✕</el-button>
+          </span>
         </div>
-      </template>
+        <div class="dock-panel-body">
       <div class="collection-book-card-list">
         <div
           v-for="(book, index) in openCollectionBookList"
@@ -372,7 +377,10 @@
           />
         </div>
       </div>
-    </el-drawer>
+        </div>
+      </div>
+    </template>
+    </div>
     <!-- 下载记录(右侧滑出):进度 / 暂停 / 继续 / 删除 / 打开下载文件夹 -->
 
     <!-- 种子列表(照 JHenTai 的 EHGalleryTorrentsDialog:名称 + 做种/下载/大小 + 复制磁力) -->
@@ -500,7 +508,6 @@
       @download-page="downloadCurrentPage"
       @open-book-detail="openBookDetailAfterRead"
     />
-    <FolderTree ref="FolderTreeRef" @chunk-list="chunkList"/>
     <TagGraph ref="TagGraphRef" @search="handleSearchString"/>
     <SearchDialog ref="SearchDialogRef"/>
     <EhFilterDialog v-model:visible="ehFilterVisible" :filter="ehFilterForDialog" @apply="applyEhFilterAndRefresh"/>
@@ -611,7 +618,9 @@ export default defineComponent({
       detailPanelVisible: false,
       detailPanelWidth: Math.min(900, Math.max(240, Number(localStorage.getItem('emmDetailPanelWidth')) || 340)),
       // 两个右栏(侧边详细信息 / 下载记录)的打开顺序:先开的排左边,后开的排右边
-      panelOpenSeq: { detail: 0, download: 0 },
+      panelOpenSeq: { detail: 0, download: 0, collection: 0 },
+      collectionPanelWidth: Number((typeof localStorage !== 'undefined' && localStorage.getItem('emmCollectionPanelWidth')) || 380),
+      folderTreePanelWidth: Number((typeof localStorage !== 'undefined' && localStorage.getItem('emmFolderTreePanelWidth')) || 300),
       panelSeq: 0,
       // 下载记录里感叹号弹出的错误信息:{ id, pinned }
       downloadWarn: { id: '', pinned: false },
@@ -818,12 +827,14 @@ export default defineComponent({
     },
     // 底部加载状态:在线模式下正在取下一页(触底加载的转圈)
     // 两个右栏的左右顺序:按打开顺序排(每次打开都重新排到最右),都没开过时默认详细信息在左
+    // 两个右栏的左右顺序:按打开顺序排(每次打开都重新排到最右),都没开过时默认详细信息在左。
+    // T04+:管理合集从底部抽屉改成第三个右栏,参与同一排序;文件夹树是独立左栏不参与。
     panelOrder () {
       const s = this.panelOpenSeq
-      if (!s.detail && !s.download) return ['detail', 'download']
-      if (!s.detail) return ['download', 'detail']
-      if (!s.download) return ['detail', 'download']
-      return s.detail <= s.download ? ['detail', 'download'] : ['download', 'detail']
+      const right = ['detail', 'download', 'collection']
+      const opened = right.filter(k => s[k])
+      const rest = right.filter(k => !s[k])
+      return opened.sort((a, b) => s[a] - s[b]).concat(rest)
     },
     listLoadingMore () {
       return this.onlineActive ? this.onlineLoading : false
@@ -1983,23 +1994,27 @@ export default defineComponent({
           return total + GAP * gaps
         }
 
-        // ③ 估算：从末尾往前收，直到「剩下的 + ⋯」放得下
-        if (needOf([]) <= available) return          // 本来就放得下
+        // ③ 估算：从末尾往前收，得到候选收纳集（只是「估算」，④⑤ 必须真实校验）。
+        // ⚠️ 这里不再提前 return：估算说放得下但实际溢出时（缓存漂移/亚像素/字体差异），
+        //    旧行为会把 collapsedIds 留空直接返回 → ⋯ 按钮 v-if 不渲染 → 行尾被
+        //    overflow:hidden 裁掉，用户看到「⋯ 自己消失了、按钮被裁」。实际踩过（用户报告）。
         const hidden = []
-        let guard = 0
-        while (needOf(hidden) + MORE_WIDTH > available && guard++ <= ids.length) {
-          let picked = null
-          for (let i = ids.length - 1; i >= 0; i--) {
-            if (!pinned.includes(ids[i]) && !hidden.includes(ids[i])) { picked = ids[i]; break }
+        if (needOf([]) + MORE_WIDTH > available) {
+          let guard = 0
+          while (needOf(hidden) + MORE_WIDTH > available && guard++ <= ids.length) {
+            let picked = null
+            for (let i = ids.length - 1; i >= 0; i--) {
+              if (!pinned.includes(ids[i]) && !hidden.includes(ids[i])) { picked = ids[i]; break }
+            }
+            if (!picked) break
+            hidden.push(picked)
           }
-          if (!picked) break
-          hidden.push(picked)
         }
         hidden.sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
         this.toolbarCollapsedIds = hidden
         await this.$nextTick()
 
-        // ④ 有界校验：估算有误差时以真实 scrollWidth 为准，再收一个
+        // ④ 真实校验（膨胀）：只要实际溢出就再收一个 —— 估算永远可能偏小
         let verify = 0
         while (row.scrollWidth > row.clientWidth + 1 && verify++ <= ids.length) {
           let picked = null
@@ -2012,6 +2027,24 @@ export default defineComponent({
           next.sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
           this.toolbarCollapsedIds = next
           await this.$nextTick()
+        }
+
+        // ⑤ 真实校验（收缩）：只要还有余量就尝试放回一个按钮，防止过度收纳。
+        //    放回「最靠近末尾」的那一个（排序后列表的最后一个）；放不下就收回并停止。
+        //    这一步保证 ⋯ 菜单里只有真正放不下的按钮，也保证估算偏大时按钮能回来。
+        let restore = 0
+        while (this.toolbarCollapsedIds.length && restore++ <= ids.length) {
+          const candidate = this.toolbarCollapsedIds[this.toolbarCollapsedIds.length - 1]
+          const next = this.toolbarCollapsedIds.filter((id) => id !== candidate)
+          this.toolbarCollapsedIds = next
+          await this.$nextTick()
+          if (row.scrollWidth > row.clientWidth + 1) {
+            next.push(candidate)
+            next.sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
+            this.toolbarCollapsedIds = next
+            await this.$nextTick()
+            break
+          }
         }
       } finally {
         this._toolbarMeasuring = false
@@ -3240,6 +3273,7 @@ export default defineComponent({
     },
     openCollection (collection) {
       this.drawerVisibleCollection = true
+      this.recordPanelOpen('collection')
       this.openCollectionBookList = _.compact(_.flatten(collection.list.map(hash_id => {
         return _.filter(this.bookList, book => book.id === hash_id || book.hash === hash_id)
       })))
@@ -3373,6 +3407,30 @@ export default defineComponent({
       }
       window.addEventListener('mousemove', onMove)
       window.addEventListener('mouseup', onUp)
+    },
+    // 通用面板拖宽（T04+）：合集面板 / 文件夹树共用。key = data 里的宽度字段名。
+    // dir=1 向右拖变宽（右侧面板），dir=-1 向右拖变窄（左侧面板）。
+    startDockResize (e, key, min, dir) {
+      e.preventDefault()
+      const startX = e.clientX
+      const startW = this[key]
+      const d = dir || 1
+      const onMove = (ev) => {
+        const next = startW + d * (startX - ev.clientX)
+        this[key] = Math.max(min, Math.min(next, Math.max(min + 80, window.innerWidth - 420)))
+      }
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        try { localStorage.setItem('emm' + key.charAt(0).toUpperCase() + key.slice(1), String(this[key])) } catch (err) { /* 忽略 */ }
+        this.recomputeToolbarWidth()
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    },
+    onFolderTreeWidthChange (w) {
+      this.folderTreePanelWidth = Math.min(600, Math.max(220, Number(w) || 300))
+      try { localStorage.setItem('emmFolderTreePanelWidth', String(this.folderTreePanelWidth)) } catch (e) { /* 忽略 */ }
     },
     // ⑤ 一条命令把「已暂停 / 失败 / 等待中」的任务全部继续
     async resumeAllDownloads () {
@@ -5520,6 +5578,56 @@ html.theme-custom
   .mx-context-menu-item
     padding: 6px
     color: var(--el-text-color-regular)
+
+// ============================================================
+// 入坞面板外壳（T04+）：文件夹树 / 管理合集共用，观感与侧边详细信息一致。
+// .dock-panel--left 是左侧面板变体：描边和拖宽手柄在右缘。
+.dock-panel
+  position: relative
+  flex: none
+  display: flex
+  flex-direction: column
+  box-sizing: border-box
+  height: calc(100vh - 8px)
+  padding: 10px 10px 10px 6px
+  border-left: 1px solid var(--el-border-color)
+  background: var(--el-bg-color, #fff)
+  overflow: hidden
+  .dock-panel-resizer
+    position: absolute
+    left: -3px
+    top: 0
+    bottom: 0
+    width: 6px
+    cursor: col-resize
+    z-index: 5
+  .dock-panel-header
+    display: flex
+    align-items: center
+    justify-content: space-between
+    gap: 8px
+    padding-bottom: 8px
+    font-size: 15px
+    flex: none
+  .dock-panel-title
+    font-weight: 600
+    overflow: hidden
+    text-overflow: ellipsis
+    white-space: nowrap
+  .dock-panel-actions
+    flex: none
+    display: flex
+    align-items: center
+  .dock-panel-body
+    flex: 1 1 auto
+    min-height: 0
+    overflow: auto
+.dock-panel--left
+  border-left: none
+  border-right: 1px solid var(--el-border-color)
+  .dock-panel-resizer
+    left: auto
+    right: -3px
 
 html.light
   color-scheme: light

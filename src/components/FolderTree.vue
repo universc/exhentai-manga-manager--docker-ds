@@ -1,27 +1,34 @@
 <template>
-  <el-drawer v-model="sideVisibleFolderTree"
-    :title="$t('m.folderTree')"
-    direction="ltr"
-    :size="setting.folderTreeWidth ? setting.folderTreeWidth : '20%'"
-    modal-class="side-tree-modal"
-  >
-    <el-input
-      class="folder-search"
-      v-model="treeFilterText"
-      clearable
-    ></el-input>
-    <el-tree
-      ref="treeRef"
-      :data="folderTreeData"
-      node-key="folderPath"
-      :default-expanded-keys="expandNodes"
-      :expand-on-click-node="false"
-      :filter-node-method="filterTreeNode"
-      @node-expand="handleNodeExpand"
-      @node-collapse="handleNodeCollapse"
-      @current-change="selectFolderTreeNode"
-    ></el-tree>
-  </el-drawer>
+  <!-- 文件夹树：左侧入坞面板（T04+，原来是左抽屉）。
+       与「任务记录 / 侧边详细信息」同款交互：右缘拖宽、宽度持久化（localStorage）。
+       数据与筛选逻辑一行未改。 -->
+  <div class="dock-panel dock-panel--left" v-show="sideVisibleFolderTree" :style="{ width: (Number(width) || 300) + 'px' }">
+    <div class="dock-panel-resizer" :title="$t('m.downloadPanelResizeHint')" @mousedown="startResize"></div>
+    <div class="dock-panel-header">
+      <span class="dock-panel-title">{{ $t('m.folderTree') }}</span>
+      <span class="dock-panel-actions">
+        <el-button text @click="sideVisibleFolderTree = false">✕</el-button>
+      </span>
+    </div>
+    <div class="dock-panel-body">
+      <el-input
+        class="folder-search"
+        v-model="treeFilterText"
+        clearable
+      ></el-input>
+      <el-tree
+        ref="treeRef"
+        :data="folderTreeData"
+        node-key="folderPath"
+        :default-expanded-keys="expandNodes"
+        :expand-on-click-node="false"
+        :filter-node-method="filterTreeNode"
+        @node-expand="handleNodeExpand"
+        @node-collapse="handleNodeCollapse"
+        @current-change="selectFolderTreeNode"
+      ></el-tree>
+    </div>
+  </div>
 </template>
 
 <script setup>
@@ -32,9 +39,30 @@ import { useAppStore } from '../pinia.js'
 const appStore = useAppStore()
 const { setting, bookList, pathSep, folderTreeData } = storeToRefs(appStore)
 
-const emit = defineEmits(['chunkList'])
+const props = defineProps({
+  // 面板宽度(px)：App.vue 持有并持久化（localStorage），拖动时双向同步
+  width: { type: Number, default: 300 }
+})
+const emit = defineEmits(['chunkList', 'update:width'])
 
 const sideVisibleFolderTree = ref(false)
+
+// 左侧面板：手柄在右缘，向右拖 = 变宽
+const startResize = (e) => {
+  e.preventDefault()
+  const startX = e.clientX
+  const startW = Number(props.width) || 300
+  const onMove = (ev) => {
+    const next = startW + (ev.clientX - startX)
+    emit('update:width', Math.max(220, Math.min(next, 600)))
+  }
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
 
 const openFolderTree = () => {
   sideVisibleFolderTree.value = !sideVisibleFolderTree.value
@@ -96,10 +124,6 @@ defineExpose({
 </script>
 
 <style lang="stylus">
-.side-tree-modal
-  background-color: var(--el-mask-color-extra-light)
-  .el-drawer__body
-    padding-top: 0
-  .folder-search
-    margin-bottom: 8px
+.folder-search
+  margin-bottom: 8px
 </style>

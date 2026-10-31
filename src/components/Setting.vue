@@ -420,14 +420,13 @@
               <template v-for="g in allTagsGroups" :key="g.cat">
                 <div v-if="!selectedTagCat || selectedTagCat === g.cat" class="tag-group">
                   <div class="tag-group-title">{{ categoryLabel(g.cat) }}</div>
+                  <!-- 用户要求：长按收藏后的框去掉 ×（取消收藏用再次长按）；已收藏的填充 1.14.x 柔和色 -->
                   <el-tag
                     v-for="tag in g.tags"
                     :key="tag.id"
                     :class="['all-tag-item', { 'is-collected': !!collectedTagMap[tag.id] }]"
                     :effect="'plain'"
-                    :style="tagColorStyle(tag.cat, tag.tag)"
-                    :closable="!!collectedTagMap[tag.id]"
-                    @close="removeTag(tag.id)"
+                    :style="collectedTagMap[tag.id] ? tagChipFillStyle(tag.cat, tag.tag) : tagColorStyle(tag.cat, tag.tag)"
                     @pointerdown="startLongPressCollect(tag)"
                     @pointerup="cancelLongPressCollect"
                     @pointerleave="cancelLongPressCollect"
@@ -450,11 +449,9 @@
               @change="saveSetting"
             >
               <template #item="{element}">
+                <!-- 用户要求：去掉 ×；填充色 = 标签自己的柔和色（1.14.x 色板），深色配白字、亮色配深字 -->
                 <el-tag
-                  effect="plain"
-                  :style="tagColorStyle(element.cat, element.tag)"
-                  closable
-                  @close="removeTag(element.id)"
+                  :style="tagChipFillStyle(element.cat, element.tag)"
                 >{{ tagDisplayPrefix(setting, resolvedTranslation, element.cat, element.tag) }}:{{ getDisplayTagName(setting, resolveCatKey(element.cat), element.tag) || resolvedTranslation[resolveCatKey(element.cat)]?.[element.tag]?.name || element.tag }}</el-tag>
               </template>
             </draggable>
@@ -4015,6 +4012,20 @@ const tagColorStyle = (cat, tag) => {
   return c ? { color: c, borderColor: c } : {}
 }
 
+// 收藏标签 chip 的填充样式（用户要求回到 1.14.x 的柔和色填充观感）：
+// 背景直接填标签色；按亮度决定字色（亮黄等用深字，其余白字），保证可读。
+const tagChipFillStyle = (cat, tag) => {
+  const c = tagColorOf(setting.value, cat, tag)
+  if (!c) return {}
+  const hex = (c.match(/^#([0-9a-f]{6})$/i) || [])[1]
+  let dark = false
+  if (hex) {
+    const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16)
+    dark = (0.299 * r + 0.587 * g + 0.114 * b) > 168
+  }
+  return { backgroundColor: c, borderColor: c, color: dark ? '#3a3a3f' : '#ffffff' }
+}
+
 // 类别标签拖动排序:列表只用于拖拽,v-model 改动后写回 setting.tagCatOrder 并落盘。
 // 存的是归一化后的英文类别键(resolveCatKey 已在 allTagsGroups 里统一),避免中英混用出现两条。
 const orderedTagCats = computed({
@@ -4617,7 +4628,11 @@ const toggleCollectTag = (tag) => {
   if (idx >= 0) {
     setting.value.collectTag.splice(idx, 1)
   } else {
-    setting.value.collectTag.push({ id: tag.id, letter: tag.letter, cat: tag.cat, tag: tag.tag, color: '#42A5F5' })
+    // 长按收藏的默认色：不再硬编码 EP 蓝，从 1.14.x 的柔和色板里挑一个未占用的
+    const palette = moderateSoftColors
+    const used = new Set((setting.value.collectTag || []).map(x => x && x.color))
+    const color = palette.find(c => !used.has(c)) || palette[(setting.value.collectTag || []).length % palette.length]
+    setting.value.collectTag.push({ id: tag.id, letter: tag.letter, cat: tag.cat, tag: tag.tag, color })
   }
   saveSetting()
 }

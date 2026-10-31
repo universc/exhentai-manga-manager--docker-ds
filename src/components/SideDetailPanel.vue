@@ -680,3 +680,67 @@ const startResize = (e) => {
 }
 </script>
 
+
+<style lang="stylus">
+/* ============================================================
+ * 页预览（缩略图）样式 —— 用户要求改回旧版（1.14.x）观感。
+ * 从重构前的 SideDetailPanel.vue 原样搬回。之所以放回组件内而不是
+ * panels.css：旧样式用了 v-bind(previewCols)（列数跟随面板宽度），
+ * v-bind 只在 SFC 的 <style> 里生效；且组件样式源码顺序晚于
+ * panels.css，同特异性 (0,2,0) 下整体覆盖新版样式。
+ * ============================================================ */
+.detail-panel
+  .detail-preview
+    margin: 8px 0 4px
+  .detail-preview-grid
+    display: grid
+    // 照 e-hentai 详情页:列数随面板宽度自适应(3~6 列)
+    grid-template-columns: repeat(v-bind(previewCols), 1fr)
+    gap: 8px
+    padding-right: 2px
+  // 预览格:不要任何框/底色,只留图片本身
+  .detail-preview-item
+    width: 100%
+    aspect-ratio: 3 / 4
+    overflow: hidden
+    background: transparent
+    cursor: pointer
+    position: relative
+    border-radius: 2px
+    content-visibility: auto
+    contain-intrinsic-size: auto 140px
+    img
+      width: 100%
+      height: 100%
+      object-fit: cover
+      display: block
+      opacity: 0
+      transition: opacity .16s ease
+    &.is-ready img
+      opacity: 1
+  .detail-preview-sprite
+    position: absolute
+    top: 0
+    left: 0
+    width: var(--cell)
+    height: calc(var(--cell) * var(--th) / var(--tw))
+    background-repeat: no-repeat
+    background-size: calc(var(--sw) * var(--cell) / var(--tw)) auto
+    background-position: calc(var(--ox) * var(--cell) / var(--tw) * -1) 0
+  .detail-preview-sentinel
+    height: 1px
+  .detail-preview-more
+    display: flex
+    align-items: center
+    justify-content: center
+    height: 32px
+    color: var(--el-text-color-placeholder)
+  .detail-preview-loading
+    display: flex
+    align-items: center
+    justify-content: center
+    height: 60px
+  .detail-preview-error
+    font-size: 12px
+    color: var(--el-text-color-placeholder)
+</style>
