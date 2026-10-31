@@ -1929,116 +1929,51 @@ export default defineComponent({
      * 2) 用缓存算「固定项 + 搜索框底线 + gap」是否超过容器宽;
      * 3) 超了就从末尾往前收,直到「剩下的 + ⋯ 自己」放得下。
      */
+    // 收纳算法（v3，全真实测量）：不做任何宽度估算/缓存。
+    // 每一步都以 row.scrollWidth vs clientWidth 的真实布局为准：
+    //   ① 全展开量自然状态；② 真溢出才收（从末尾往前，每收一个确认一次）；
+    //   ③ 有余量则尝试放回（防止过度收纳）。⋯ 按钮随 collapsedIds 渲染，
+    //   收纳判断里天然包含它自己的宽度，因此「⋯ 自己被裁掉」在结构上不再可能。
     async recalcToolbarOverflow () {
-      if (this._toolbarMeasuring) return
+      if (this._toolbarMeasuring) { this._toolbarRecalcQueued = true; return }
       this._toolbarMeasuring = true
       try {
         const row = this.$refs.toolbarFlexRef
         if (!row) return
         const ids = this.toolbarOrderIds || []
-        if (!ids.length) {
-          if (this.toolbarCollapsedIds.length) this.toolbarCollapsedIds = []
-          return
-        }
-        // 移动端（body.emm-mobile）工具栏是 flex-wrap: wrap 的：换行本身就不会产生横向溢出，
-        // 此时再收纳反而把整排按钮塞进 ⋯。直接跳过。
-        if (getComputedStyle(row).flexWrap === 'wrap') {
-          if (this.toolbarCollapsedIds.length) this.toolbarCollapsedIds = []
-          return
-        }
-
+        const clear = () => { if (this.toolbarCollapsedIds.length) this.toolbarCollapsedIds = [] }
+        if (!ids.length) { clear(); return }
+        // 移动端（wrap 布局）本来就不溢出，跳过收纳
+        if (getComputedStyle(row).flexWrap === 'wrap') { clear(); return }
         const pinned = this.toolbarPinnedIds()
-        const GAP = 8
-        const MORE_WIDTH = 40          // ⋯ 图标按钮 ≈32 + 一个 gap
-        const available = row.clientWidth
-        if (available <= 0) return
-
-        // ① 量宽度：先把已收起的全部展开，量的才是「自然宽度」而不是 0
-        if (this.toolbarCollapsedIds.length) {
-          this.toolbarCollapsedIds = []
-          await this.$nextTick()
-        }
-        const measure = () => {
-          ids.forEach((id) => {
-            const el = row.querySelector('[data-tb-id="' + id + '"]')
-            if (!el) return
-            const w = el.getBoundingClientRect().width
-            if (w) this.toolbarWidthCache[id] = w
-          })
-        }
-        measure()
-        if (ids.some((id) => !this.toolbarWidthCache[id])) {
-          await this.$nextTick()
-          measure()
-        }
-
-        // ② 附属元素（清空历史 / 编辑按钮组 / 上下文按钮）也占宽度；⋯ 自己不算
-        let extrasWidth = 0
-        let extrasCount = 0
-        Array.from(row.children).forEach((el) => {
-          if (el.dataset && el.dataset.tbId) return
-          if (el.classList && el.classList.contains('el-dropdown')) return
-          const w = el.getBoundingClientRect().width
-          if (w > 0) { extrasWidth += w; extrasCount += 1 }
-        })
-
-        // 搜索框按「体验底线」计入：它被压窄后的实测宽度没有参考价值
-        const widthOf = (id) => (id === 'searchInput'
-          ? this.toolbarSearchMinWidth()
-          : (this.toolbarWidthCache[id] || 46))
-        const needOf = (hiddenIds) => {
-          const visible = ids.filter((id) => !hiddenIds.includes(id))
-          let total = extrasWidth
-          visible.forEach((id) => { total += widthOf(id) })
-          const gaps = Math.max(0, visible.length + extrasCount - 1)
-          return total + GAP * gaps
-        }
-
-        // ③ 估算：从末尾往前收，得到候选收纳集（只是「估算」，④⑤ 必须真实校验）。
-        // ⚠️ 这里不再提前 return：估算说放得下但实际溢出时（缓存漂移/亚像素/字体差异），
-        //    旧行为会把 collapsedIds 留空直接返回 → ⋯ 按钮 v-if 不渲染 → 行尾被
-        //    overflow:hidden 裁掉，用户看到「⋯ 自己消失了、按钮被裁」。实际踩过（用户报告）。
-        const hidden = []
-        if (needOf([]) + MORE_WIDTH > available) {
-          let guard = 0
-          while (needOf(hidden) + MORE_WIDTH > available && guard++ <= ids.length) {
-            let picked = null
-            for (let i = ids.length - 1; i >= 0; i--) {
-              if (!pinned.includes(ids[i]) && !hidden.includes(ids[i])) { picked = ids[i]; break }
-            }
-            if (!picked) break
-            hidden.push(picked)
-          }
-        }
-        hidden.sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
-        this.toolbarCollapsedIds = hidden
+        const overflow = () => row.scrollWidth > row.clientWidth + 1
+        // ① 全部展开，量自然宽度
+        clear()
         await this.$nextTick()
-
-        // ④ 真实校验（膨胀）：只要实际溢出就再收一个 —— 估算永远可能偏小
-        let verify = 0
-        while (row.scrollWidth > row.clientWidth + 1 && verify++ <= ids.length) {
+        // ② 没溢出就完事
+        if (!overflow()) return
+        // ③ 从末尾往前收，每收一个用真实布局确认
+        const hidden = []
+        let guard = 0
+        while (overflow() && guard++ <= ids.length) {
           let picked = null
           for (let i = ids.length - 1; i >= 0; i--) {
-            const id = ids[i]
-            if (!pinned.includes(id) && !this.toolbarCollapsedIds.includes(id)) { picked = id; break }
+            if (!pinned.includes(ids[i]) && !hidden.includes(ids[i])) { picked = ids[i]; break }
           }
           if (!picked) break
-          const next = this.toolbarCollapsedIds.concat([picked])
-          next.sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
+          hidden.push(picked)
+          const next = hidden.slice().sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
           this.toolbarCollapsedIds = next
           await this.$nextTick()
         }
-
-        // ⑤ 真实校验（收缩）：只要还有余量就尝试放回一个按钮，防止过度收纳。
-        //    放回「最靠近末尾」的那一个（排序后列表的最后一个）；放不下就收回并停止。
-        //    这一步保证 ⋯ 菜单里只有真正放不下的按钮，也保证估算偏大时按钮能回来。
+        // ④ 收缩：有余量就放回「最靠近末尾」的一个，放不下即停
         let restore = 0
         while (this.toolbarCollapsedIds.length && restore++ <= ids.length) {
           const candidate = this.toolbarCollapsedIds[this.toolbarCollapsedIds.length - 1]
-          const next = this.toolbarCollapsedIds.filter((id) => id !== candidate)
+          const next = this.toolbarCollapsedIds.filter(id => id !== candidate)
           this.toolbarCollapsedIds = next
           await this.$nextTick()
-          if (row.scrollWidth > row.clientWidth + 1) {
+          if (overflow()) {
             next.push(candidate)
             next.sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
             this.toolbarCollapsedIds = next
@@ -2048,8 +1983,14 @@ export default defineComponent({
         }
       } finally {
         this._toolbarMeasuring = false
+        // 测量期间又有新的 resize 进来 → 排队补算一次，保证最终状态正确
+        if (this._toolbarRecalcQueued) {
+          this._toolbarRecalcQueued = false
+          this.recalcToolbarOverflow()
+        }
       }
     },
+
     async switchBox () {
       // ⚠ 这里**不能**无条件置 loading:这个函数有好几条提前 return 的路
       //   (只有一条框 / 切到 EH在线 / 已经在 EH在线),那些路径根本不加载列表,
