@@ -51,7 +51,10 @@ const profileNameOf = (session) => {
 }
 
 const app = express()
-app.use(express.json({ limit: '100mb' }))
+// 登录接口单独压到 8kb:它在鉴权之前,全局放一个大 limit 等于给匿名用户开内存放大器。
+// body-parser 解析过会置 req._body,后面的全局 parser 会自动跳过,不会重复解析。
+app.use('/api/auth/login', express.json({ limit: '8kb' }))
+app.use(express.json({ limit: '16mb' }))
 app.disable('x-powered-by')
 
 // ---------- IP 访问控制:黑名单全局拒绝 / 白名单免登录 ----------
@@ -72,7 +75,15 @@ const parseCookies = (req) => {
   if (!header) return result
   for (const part of header.split(';')) {
     const idx = part.indexOf('=')
-    if (idx > 0) result[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim())
+    if (idx > 0) {
+      // 畸形 cookie(如 emm_token=%)会让 decodeURIComponent 抛 URIError。
+      // 它是同步抛在 async handler 里 → Express 4 不接 → 请求永久挂起。这里必须容错。
+      try {
+        result[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim())
+      } catch {
+        result[part.slice(0, idx).trim()] = part.slice(idx + 1).trim()
+      }
+    }
   }
   return result
 }
@@ -103,22 +114,37 @@ const clearSessionCookie = (res) => {
   res.setHeader('Set-Cookie', `${TOKEN_COOKIE}=; HttpOnly; Path=/; Max-Age=0`)
 }
 
-// 登录失败限流:每用户 5 次失败后锁定 60 秒
-const loginThrottle = new Map() // username -> { fails, lockUntil }
-const throttleCheck = (username) => {
-  const t = loginThrottle.get(username)
-  if (!t) return null
+// 登录失败限流。
+// 双维度:
+//   · 账户维度(u:)—— 阈值放宽到 20 次/60s,避免别人用 5 次错误密码就把真实用户永久锁死;
+//   · 来源 IP 维度(i:)—— 阈值 30 次/5min,挡住换用户名撞库。
+// 以前只按 username 计数且成功登录不清零,等于给了攻击者一个「定向锁死管理员」的开关。
+const loginThrottle = new Map() // key -> { fails, lockUntil }
+const userKey = (username) => 'u:' + String(username || '-')
+const ipKey = (ip) => 'i:' + String(ip || '-')
+const throttleWait = (key) => {
+  const t = loginThrottle.get(key)
+  if (!t) return 0
   if (t.lockUntil && Date.now() < t.lockUntil) return Math.ceil((t.lockUntil - Date.now()) / 1000)
-  return null
+  return 0
 }
-const throttleFail = (username) => {
-  const t = loginThrottle.get(username) || { fails: 0, lockUntil: 0 }
+const throttleBump = (key, limit, lockMs) => {
+  const t = loginThrottle.get(key) || { fails: 0, lockUntil: 0 }
   t.fails += 1
-  if (t.fails >= 5) {
-    t.lockUntil = Date.now() + 60 * 1000
+  if (t.fails >= limit) {
+    t.lockUntil = Date.now() + lockMs
     t.fails = 0
   }
-  loginThrottle.set(username, t)
+  loginThrottle.set(key, t)
+}
+const throttleFail = (username, ip) => {
+  throttleBump(userKey(username), 20, 60 * 1000)
+  throttleBump(ipKey(ip), 30, 5 * 60 * 1000)
+}
+const throttleClear = (username, ip) => {
+  // 成功登录必须无条件清空,否则失败计数会一直累加到下一次手误就锁死
+  loginThrottle.delete(userKey(username))
+  loginThrottle.delete(ipKey(ip))
 }
 
 // 只读账户(viewer)允许的 IPC 通道:浏览/阅读/搜索类;写操作一律 403
@@ -128,15 +154,29 @@ const VIEWER_ALLOWED_CHANNELS = new Set([
   'get-locale', 'get-path-sep', 'copy-text-to-clipboard', 'copy-image-to-clipboard', 'image-file-info',
   'read-text-from-clipboard', 'update-window-title', 'switch-fullscreen',
   'set-viewer-active', 'set-progress-bar', 'extract-image-text',
-  'ai-translate-text', 'ai-save-text', 'ai-colorize-image', 'ai-list-images',
+  'ai-translate-text', 'ai-list-images',
   'list-title-translation-models', 'query-character-origins', 'test-title-translation',
   'request-thumbnails',
 ])
 
-// viewer 读取设置时抹掉敏感信息(cookie / API 密钥 / 代理)
+// 账户/写操作类敏感通道:即使将来有人不小心把它们加进 viewer 白名单,也必须管理员才行。
+// 背景:index.js 的 requireAdmin() 在 WEB_MODE 直接 return null(它假设 web-server 会拦),
+// 所以服务端实际上只有这一道闸 —— 必须显式白名单化,而不是靠「没写进白名单」这种默示约定。
+const ADMIN_ONLY_CHANNELS = new Set([
+  'auth-add-user', 'auth-remove-user', 'auth-change-password', 'auth-list-users',
+  'save-setting', 'reset-setting', 'import-setting', 'save-settings',
+  'delete-local-book', 'move-local-book', 'rename-local-book', 'ai-save-text',
+  'ai-colorize-image', 'open-path', 'show-file',
+])
+
+// 只读账户读取设置时抹掉敏感信息。
+// 口径改「宁可多抹」:凡是能当凭据用的字段一律不发给 viewer。
+// 尤其 webUsername/webPassword —— 它们是桌面端远程模式用来登录这台 NAS 的管理员口令(明文)。
 const VIEWER_SETTING_BLOCKLIST = new Set([
-  'igneous', 'ipb_pass_hash', 'ipb_member_id', 'star', 'proxy',
+  'igneous', 'ipb_pass_hash', 'ipb_member_id', 'star', 'proxy', 'cookie',
   'openaiApiKey', 'titleTranslationApiKey',
+  'upscaleApiKey', 'colorizeApiKey', 'ocrApiKey', 'colorizeApiUrl', 'ocrApiUrl',
+  'aiApiProfiles', 'webUsername', 'webPassword', 'remoteUsername', 'remotePassword',
 ])
 const sanitizeSettingForViewer = (setting) => {
   const out = {}
@@ -190,14 +230,15 @@ setInterval(() => {
 app.post('/api/auth/login', async (req, res) => {
   const username = String(req.body?.username || '').trim()
   const password = String(req.body?.password || '')
-  const wait = throttleCheck(username)
+  const ip = clientIp(req)
+  const wait = Math.max(throttleWait(userKey(username)), throttleWait(ipKey(ip)))
   if (wait) return res.status(429).json({ ok: false, error: `尝试过于频繁,请 ${wait} 秒后再试` })
   const user = auth.verify(username, password)
   if (!user) {
-    throttleFail(username)
+    throttleFail(username, ip)
     return res.status(401).json({ ok: false, error: '用户名或密码错误' })
   }
-  throttleCheck(username) && loginThrottle.delete(username)
+  throttleClear(username, ip)
   const token = auth.createSession(user)
   setSessionCookie(res, token)
   // 登录即加载该账户的设置(同名账户在 Win 与 NAS 共用同一份)
@@ -248,8 +289,14 @@ app.post('/api/ipc/:channel', async (req, res) => {
     session = sessionOf(req)
     if (!session) return res.status(401).json({ ok: false, error: '未登录,请先登录' })
     if (session.role !== 'admin') {
-      // load-book-list(scan=true) 会触发扫描建库(写操作),普通账户只能加载现有列表
-      if (channel === 'load-book-list' && args[0] === true) {
+      if (ADMIN_ONLY_CHANNELS.has(channel)) {
+        return res.status(403).json({ ok: false, error: '只读账户无此权限(请使用管理员账户)' })
+      }
+      // load-book-list(scan=true) 会触发扫描建库(写操作),普通账户只能加载现有列表。
+      // 闸门必须和 handler 用同一套布尔语义:以前这里写 `=== true`、handler 写 `if (scan)`,
+      // 传 1 或 "1" 就能绕过(已实测)。
+      const wantScan = args[0] === true || args[0] === 1 || args[0] === 'true' || args[0] === '1'
+      if (channel === 'load-book-list' && wantScan) {
         return res.status(403).json({ ok: false, error: '只读账户无此权限(请使用管理员账户)' })
       }
       if (!VIEWER_ALLOWED_CHANNELS.has(channel)) {
@@ -282,9 +329,27 @@ app.post('/api/ipc/:channel', async (req, res) => {
 })
 
 // ---------- 文件服务(封面 / 阅读图片) ----------
+// 「数据目录里到底哪些子目录该发给浏览器」—— 白名单,不是黑名单。
+// 绝不整目录放行 STORE_PATH:那里同时住着 users.json / sessions.json / setting*.json /
+// *.sqlite / log.txt,一条 GET 就能把管理员 token 和 EH cookie 端走(已实测复现)。
+const STORE_SUBDIRS = ['cover', 'viewer', 'tmp', 'download-covers', 'upscaled', 'custom-assets', 'libraries']
+// 第二层:即使将来有人又把某个根目录加回来,这些文件也一律拒发。
+const DENY_BASENAME = /^(users|sessions|iprules|libraries|collectionList|bootstrap|nas-session|downloads|tag-translation|secret_key|log)\./i
+const DENY_EXT = /\.(json|jsonl|sqlite|sqlite3|db|log|env|pem|key|crt|p12|tmp|bak)$/i
+const DENY_SEGMENT = /(^|[\\/])(\.trash|node_modules|\.git)([\\/]|$)/i
+// 解析真实路径:软链一律跟到底,防止「库里放个软链指到 /etc」绕过前缀校验
+const realOrResolve = (p) => {
+  try { return fs.realpathSync(p) } catch { return path.resolve(p) }
+}
+const isUnder = (child, parent) => child === parent || child.startsWith(parent + path.sep)
+const isDeniedFile = (p) => {
+  const base = path.basename(p)
+  return DENY_BASENAME.test(base) || DENY_EXT.test(base) || DENY_SEGMENT.test(p)
+}
+
 const allowedRoots = (setting) => {
   const s = setting || getSetting() || {}
-  // 多库:数据目录 + 活动库 + 所有库的路径 + 元数据目录。
+  // 多库:活动库 + 所有库的路径 + 元数据目录。
   // ⚠️ 桌面路径(path)与网页/容器路径(pathWeb)都要放行 ——
   //    以前只放行 path,网页版读 NAS 上的书时图片一律 403,表现就是「阅读器一直白」。
   // 库数据目录(每库的 cover / viewcache / 缩放缓存)也要放行:
@@ -293,23 +358,27 @@ const allowedRoots = (setting) => {
     ? s.libraries.flatMap(l => [l.path, l.pathWeb, l.dataPath, l.dataPathWeb])
     : []
   const roots = [
-    STORE_PATH, s.library, s.metadataPath,
+    // 数据目录下只放行这几个「本来就是公开图片」的子目录(见 STORE_SUBDIRS 注释)
+    ...STORE_SUBDIRS.map(d => path.join(STORE_PATH, d)),
+    s.library,
     // 下载目录 / 移动目标目录:下载预览要读这些文件,不放开的话网页版会一律 403(预览全是「加载失败」)
     s.downloadPath, s.moveDefaultPath, s.moveSinglePath,
     ...libraryPaths,
     ...(extraAllowedRoots() || []),
   ].filter(Boolean)
-  return roots.map(p => path.resolve(p))
+  return [...new Set(roots.map(realOrResolve))]
 }
 
 app.get('/api/file', requireLogin, async (req, res) => {
   const raw = String(req.query.path || '')
   // 前端 img 标签可能自带 ?id= 缓存参数,去掉
   const clean = raw.split('?id=')[0]
-  const p = path.resolve(clean)
+  // 先解真实路径(软链跟到底),再做前缀比较
+  const p = realOrResolve(clean)
+  if (isDeniedFile(p)) return res.status(403).send('Forbidden')
   // 用「这个账户」的库列表放行(桌面路径与容器路径都算),多账户并发各读各的
   const roots = allowedRoots(await settingForAccount(profileNameOf(sessionOf(req))))
-  const ok = roots.some(root => p === root || p.startsWith(root + path.sep))
+  const ok = roots.some(root => isUnder(p, root))
   if (!ok) return res.status(403).send('Forbidden')
   if (!fs.existsSync(p) || !fs.statSync(p).isFile()) return res.status(404).send('Not found')
   // 缓存策略分三档(1.11.0):
@@ -388,8 +457,11 @@ const releaseImgSlot = () => {
 app.get('/api/ex-image', requireLogin, async (req, res) => {
   const url = String(req.query.url || '')
   if (!EX_IMAGE_HOST_RE.test(url)) return res.status(400).send('bad url')
-  // r = 图片页 URL(/s/<hash>/<gid>-<n>);EH 的 H@H 节点会校验来源,用站点根当 referer 容易被拒
-  const pageRef = String(req.query.r || 'https://e-hentai.org/')
+  // r = 图片页 URL(/s/<hash>/<gid>-<n>);EH 的 H@H 节点会校验来源,用站点根当 referer 容易被拒。
+  // ⚠️ 它会被当作 Referer 发给上游、并交给 resolvePageImageInfo 二次解析 —— 必须走同一份域名白名单,
+  //    否则 url 拦得再严也没用:r 就是一个完整的 SSRF 入口(已实测服务端会真的发出请求)。
+  const pageRefRaw = String(req.query.r || 'https://e-hentai.org/')
+  const pageRef = EX_IMAGE_HOST_RE.test(pageRefRaw) ? pageRefRaw : 'https://e-hentai.org/'
   const hit = imgCacheGet(url)
   if (hit) {
     res.set('Content-Type', hit.type)
@@ -416,7 +488,8 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
       if (attempt >= 1) {
         try {
           const fresh = await ehLogin.resolvePageImageInfo(pageRef, { proxy: prof.proxy, cookie: prof.cookie || '', reloadKey: '' })
-          if (fresh && fresh.url) target = fresh.url
+          // 上游页面里解析出来的图片地址同样要过白名单 —— 否则被投毒的页面能把请求引到内网
+          if (fresh && fresh.url && EX_IMAGE_HOST_RE.test(fresh.url)) target = fresh.url
         } catch (e) { /* 拿不到新节点就沿用原地址 */ }
       }
       try {
@@ -509,6 +582,12 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
 })
 
 app.get('/api/list-dir', requireLogin, (req, res) => {
+  // 目录选择器需要「管理员能自由浏览」,但只读账户不该有全盘枚举能力:
+  // 它能配合 /api/file 精确定位 sessions.json 之类目标(已实测 ?path=/ 返回容器全盘)。
+  const session = sessionOf(req)
+  if (auth.isEnabled() && (!session || session.role !== 'admin')) {
+    return res.status(403).json({ error: 'Forbidden: 只读账户无目录浏览权限' })
+  }
   let p = String(req.query.path || '')
   if (!p) {
     p = process.platform === 'win32' ? 'C:\\' : '/'

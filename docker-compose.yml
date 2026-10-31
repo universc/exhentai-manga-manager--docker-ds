@@ -18,6 +18,12 @@ services:
     container_name: exhentai-manga-manager
     restart: unless-stopped
 
+    # 资源与权限上限:图片缓存与解压都没有硬上限(见修复报告 B 组),
+    # 不设上限时一本解压炸弹或一段长时间在线阅读就能把宿主机内存吃光
+    mem_limit: 4g
+    security_opt:
+      - no-new-privileges:true
+
     ports:
       # 网页管理界面(电脑/手机浏览器访问)
       - "10000:10000"
@@ -45,3 +51,7 @@ services:
       - /vol3/1000/01/01-漫画/S/数据存放:/data
       # 漫画库
       - /vol3/1000/01/01-漫画:/library
+      # 下载目录与小说库:运行中的容器已有这两个挂载,
+      # 写进 compose 才能保证 `up --build` 重建容器时不丢(docker inspect 实测存在)
+      - /vol4/1000/下载:/download
+      - /vol3/1000/01/03-小说:/xiaoshuo

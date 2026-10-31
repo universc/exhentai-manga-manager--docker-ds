@@ -212,6 +212,27 @@ const replaceCurrentSetting = (obj) => {
   return obj
 }
 
+// ---------- 路径归属校验(网页版 IPC 的读写闸门) ----------
+// 网页版把 IPC 通道原样暴露成 POST /api/ipc/:channel,handler 的参数完全来自请求体。
+// 所以「这个 path 能不能碰」必须在 handler 里自己判 —— 前端校验一律不算数。
+// (曾经 ai-save-text 直接把 book.filepath + fileName 拼起来落盘,只读账户就能写任意文件。)
+const serveRootsOf = () => {
+  const s = setting || {}
+  const out = [s.library, s.downloadPath, s.moveDefaultPath, s.moveSinglePath]
+  for (const l of (Array.isArray(s.libraries) ? s.libraries : [])) {
+    out.push(l.path, l.pathWeb, l.dataPath, l.dataPathWeb)
+  }
+  return out.filter(Boolean).map((p) => {
+    try { return fs.realpathSync(p) } catch { return path.resolve(String(p)) }
+  })
+}
+const insideServeRoots = (target) => {
+  if (!target) return false
+  let real
+  try { real = fs.realpathSync(target) } catch { real = path.resolve(String(target)) }
+  return serveRootsOf().some((root) => real === root || real.startsWith(root + path.sep))
+}
+
 // 本地超分模型目录:<数据目录>/models/upscale/<模型 id>
 localModels.init(STORE_PATH)
 // 下载走用户配置的代理,或镜像前缀(国内直连 GitHub 大文件经常被重置)
@@ -541,14 +562,24 @@ const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}
 const logFile = fs.createWriteStream(path.join(STORE_PATH, 'log.txt'), { flags: 'w' })
 const logStdout = process.stdout
 const logStderr = process.stderr
+// 日志上限:以前是无上限追加,一个未鉴权的畸形请求就能把数据目录写满(bind mount 到宿主机),
+// 写满之后 sqlite 写失败,标签/书库全部存不进去。到上限就停止写文件,但控制台照常输出。
+const LOG_FILE_MAX = 10 * 1024 * 1024
+let logWritten = 0
+const writeLogFile = (text) => {
+  if (logWritten > LOG_FILE_MAX) return
+  const line = text + '\n'
+  logWritten += Buffer.byteLength(line)
+  try { logFile.write(line) } catch (e) { /* 磁盘满/句柄坏都不该影响主流程 */ }
+}
 
 console.log = (...message) => {
-  logFile.write(format(...message) + '\n')
+  writeLogFile(format(...message))
   logStdout.write(format(...message) + '\n')
 }
 
 console.error = (...message) => {
-  logFile.write(format(...message) + '\n')
+  writeLogFile(format(...message))
   logStderr.write(format(...message) + '\n')
 }
 
@@ -5065,6 +5096,10 @@ ipcMain.handle('load-novel-content', async (event, book) => {
   try {
     const filepath = translateBookPath(book && book.filepath, 'filepath', libForBook(book))
     if (!filepath) return { ok: false, error: '没有文件路径' }
+    // 只读账户也在调用本通道 → 必须限定「只能读漫画库内的小说文件」。
+    // 以前这里零校验,实测可以直接把 /etc/hostname、users.json 当"正文"读出来。
+    if (!insideServeRoots(filepath)) return { ok: false, error: '路径不在漫画库内' }
+    if (!/\.(txt|epub)$/i.test(String(filepath))) return { ok: false, error: '只允许读取 .txt / .epub' }
     if (book.type === 'novel') {
       const { blocks, chapters } = await parseTxtStructured(filepath)
       const charCount = blocks.reduce((n, b) => n + (b.kind === 'text' ? String(b.text).replace(/\s/g, '').length : 0), 0)
@@ -6645,10 +6680,15 @@ ipcMain.handle('ai-save-text', async (event, payload = {}) => {
     const mode = payload.mode || 'preview'
     if (mode !== 'folder') return { ok: true, saved: false, text: payload.text }
     const book = payload.book || {}
-    const dir = book.type === 'folder' && book.filepath ? book.filepath : path.dirname(book.filepath || '')
-    if (!dir) return { ok: false, error: '无法确定保存目录' }
-    const name = payload.fileName || 'ai_translate.txt'
+    const rawDir = book.type === 'folder' && book.filepath ? book.filepath : path.dirname(book.filepath || '')
+    if (!rawDir) return { ok: false, error: '无法确定保存目录' }
+    // 落点必须在该书所属库根之内;网页版这里的参数全部来自请求体,不能信
+    if (!insideServeRoots(rawDir)) return { ok: false, error: '保存目录不在漫画库内' }
+    const dir = fs.existsSync(rawDir) ? fs.realpathSync(rawDir) : path.resolve(rawDir)
+    // 文件名强制 basename,挡住 ../../ 穿越(曾实测可写到项目根目录)
+    const name = path.basename(String(payload.fileName || 'ai_translate.txt'))
     const out = path.join(dir, name)
+    if (!(out === dir || out.startsWith(dir + path.sep))) return { ok: false, error: '文件名非法' }
     await fs.promises.writeFile(out, String(payload.text || ''), 'utf-8')
     return { ok: true, saved: true, path: out }
   } catch (e) {

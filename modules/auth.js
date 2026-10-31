@@ -21,15 +21,28 @@ const hashPassword = (password, salt) => {
   return crypto.scryptSync(String(password), salt, 32).toString('hex')
 }
 
-const validPassword = (password) => String(password || '').length >= 4
+const validPassword = (password) => String(password || '').length >= 8
 
 // 会话持久化:写/读 <数据目录>/sessions.json,容器重启后保持登录
 // 原子写:先写临时文件再改名。直接覆盖写一旦中途失败(断电/进程被杀),
 // users.json 会变成半截 JSON —— 下次启动解析失败就等于「所有账户都没了」。
 const writeFileAtomic = (file, text) => {
-  const tmp = file + '.' + process.pid + '.tmp'
-  fs.writeFileSync(tmp, text, 'utf-8')
+  const tmp = file + '.' + process.pid + '.' + Date.now() + '.tmp'
+  const fd = fs.openSync(tmp, 'w')
+  try {
+    fs.writeFileSync(fd, text, 'utf-8')
+    // 只做 tmp+rename 是不够的:没 fsync 时断电/进程被 SIGKILL 可能留下 0 字节文件,
+    // 下次启动 JSON.parse 失败 → users 为空 → 全站免鉴权。这里把数据和目录项都刷一次。
+    try { fs.fsyncSync(fd) } catch (e) { /* 部分网络盘/overlay 不支持 fsync */ }
+  } finally {
+    fs.closeSync(fd)
+  }
   fs.renameSync(tmp, file)
+  try {
+    const dirFd = fs.openSync(path.dirname(file), 'r')
+    try { fs.fsyncSync(dirFd) } catch (e) { /* 同上 */ }
+    fs.closeSync(dirFd)
+  } catch (e) { /* 目录 fsync 在部分文件系统不可用 */ }
 }
 const persistSessions = () => {
   if (!sessionsFile) return
@@ -56,14 +69,29 @@ const loadUsers = (dataDir) => {
   // 区分两种情况:① 文件根本不存在 = 首次启动 → 建默认管理员;
   //              ② 文件存在但没有账户 = 用户主动删光了 → 不能偷偷重建一个弱密码 admin/admin。
   let fileExists = true
+  let parseFailed = false
   try {
     const parsed = JSON.parse(fs.readFileSync(usersFile, 'utf-8'))
     users = parsed.users || {}
   } catch {
     fileExists = fs.existsSync(usersFile)
+    // 文件存在但解析不出来 = 损坏。以前这里会安静地变成「零账户 → authEnabled=false」,
+    // 结果 141 个 IPC 通道对匿名全开。这个方向必须是 fail-closed。
+    parseFailed = fileExists
     users = {}
   }
   loadSessions()
+  if (parseFailed) {
+    const bad = usersFile + '.corrupt-' + Date.now()
+    try { fs.renameSync(usersFile, bad) } catch (e) { /* 改名失败也继续,至少别静默放行 */ }
+    console.error('[auth] users.json 解析失败,已改名留存:' + bad)
+    if (process.env.WEB_MODE === '1') {
+      console.error('[auth] 网页版拒绝以「无鉴权」状态启动。处理办法:')
+      console.error('  1) 有管理员口令:删掉该 .corrupt 文件,并设 WEB_ADMIN_USER / WEB_ADMIN_PASSWORD 后重启,会自动重建;')
+      console.error('  2) 有备份:把备份的 users.json 覆盖回来再重启。')
+      process.exit(1)
+    }
+  }
   if (!fileExists) {
     // 默认账户:admin / admin(用户要求 Win 与 NAS 都自带一个默认账户)。
     // 环境变量 WEB_ADMIN_USER / WEB_ADMIN_PASSWORD 仍可覆盖,便于部署时指定。

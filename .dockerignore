@@ -23,3 +23,14 @@ electron_err.txt
 electron_out.txt
 electron_run.log
 *.tmp
+
+# ---------- 本地临时目录/构建缓存(体积巨大,绝不能进构建上下文) ----------
+# .tmp 里是阅读器验证脚手架 + 解压产物,实测 7.5 GB;不排除的话构建上下文约 7.6 GB,
+# docker compose up --build 在 NAS 上会直接卡死或失败
+.tmp
+.build-tmp
+.scratch
+dist.bak-*
+
+# ---------- 本地环境变量(含管理员密码) ----------
+.env
