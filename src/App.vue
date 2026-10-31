@@ -677,6 +677,10 @@ export default defineComponent({
       actionHistory: [],
       // 工具栏宽度(与下方漫画卡片行对齐,随窗口/封面尺寸自适应)
       toolbarWidth: 0,
+      // 窗口宽度快照(data):isMobile/isTablet 这类「该不该切手机布局」的判断必须依赖它,
+      // 直接在 computed 里读 window.innerWidth 是非响应式的 —— computed 没有依赖就永不重算,
+      // 缩放窗口后 auto 模式永远停留在登录时的布局,窄窗口下工具栏跑桌面收纳直接死局。
+      windowW: typeof window !== 'undefined' ? window.innerWidth : 1280,
       // 一行放不下时被收进 ⋯ 的工具条目 id（顺序 = toolbarOrderIds 的相对顺序）
       toolbarCollapsedIds: [],
       // 每个条目实测宽度缓存（图标尺寸会随主题字号/像素模式变，估不准，只能量）
@@ -1001,8 +1005,8 @@ export default defineComponent({
     isMobile () {
       if (this.uiMode === 'phone' || this.uiMode === 'tablet') return true
       if (this.uiMode === 'desktop') return false
-      if (this.isDesktopClient) return window.innerWidth < 768
-      return window.innerWidth < 1024
+      if (this.isDesktopClient) return this.windowW < 768
+      return this.windowW < 1024
     },
     // 搜索建议弹层的样式(宽度与搜索框等宽)。
     // 内部滚动条是 2px 的细线,会吃掉一点内容宽,这里补回去,视觉上才与搜索框严丝合缝。
@@ -1018,7 +1022,7 @@ export default defineComponent({
       if (this.uiMode === 'tablet') return true
       if (this.uiMode === 'phone' || this.uiMode === 'desktop') return false
       if (this.isDesktopClient) return false
-      return window.innerWidth >= 768 && window.innerWidth < 1024
+      return this.windowW >= 768 && this.windowW < 1024
     },
     // UI 模式切换按钮图标:auto(自适应) / phone / tablet / desktop
     uiModeIcon () {
@@ -1974,9 +1978,14 @@ export default defineComponent({
           this.toolbarCollapsedIds = next
           await this.$nextTick()
           if (overflow()) {
-            next.push(candidate)
-            next.sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
-            this.toolbarCollapsedIds = next
+            // 放不下 → 收回 candidate。★ 这里必须给 Vue 一个**新的数组引用**：
+            // next 是 filter 出来的 raw 数组，在上面 push 不触发响应式，
+            // 而把它原样再赋给 toolbarCollapsedIds 是同引用赋值（hasChanged=false）同样不触发 ——
+            // 两条路都走不通时 candidate 在 DOM 里永远收不回去（幽灵按钮仍占位），
+            // 溢出就永久卡死且没有任何后续事件会来纠正它（缩放震荡后「⋯ 被裁一半」即此因）。
+            const rolled = next.concat(candidate)
+            rolled.sort((a, b) => ids.indexOf(a) - ids.indexOf(b))
+            this.toolbarCollapsedIds = rolled
             await this.$nextTick()
             break
           }
@@ -3113,6 +3122,8 @@ export default defineComponent({
       document.body.classList.toggle('emm-tablet', mobile && tablet)
     },
     onResize () {
+      // 窗口宽度进响应式系统:isMobile/isTablet 依赖它,缩放后 auto 模式才能正确翻转手机/桌面布局
+      this.windowW = window.innerWidth
       this.applyUiMode()
       // 窗口大小变了,搜索框宽度也会变 → 下拉弹层要跟着变
       this.scheduleSyncSearchPopperWidth()
