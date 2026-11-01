@@ -96,7 +96,7 @@
     <template v-else>
       <img
         class="book-cover-fill"
-        :src="book.coverPath"
+        :src="coverSrc"
         @click="onCoverClickOnce"
         @dblclick="onCoverDblClick"
         @touchstart.passive="startCoverPress($event)"

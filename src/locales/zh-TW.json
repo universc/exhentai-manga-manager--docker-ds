@@ -1097,6 +1097,7 @@
     "applyError": "套用出現錯誤",
     "copyImageToClipboard": "複製圖片到剪貼簿",
     "designateAsCover": "指定為封面",
+    "useNewCoverFail": "設定封面失敗,請換一張圖片或查看日誌",
     "deleteImage": "刪除圖片",
     "movedToTrash": "已移入資源回收筒(設定 → 常用 → 資源回收筒 可還原)",
     "imageTrashed": "已把這張圖移入資源回收筒(設定 → 常用 → 資源回收筒 可還原)",

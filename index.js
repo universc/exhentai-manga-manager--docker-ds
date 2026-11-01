@@ -52,6 +52,7 @@ const ehDownload = require('./modules/ehDownload.js')
 const collectionAuto = require('./modules/collectionAuto.js')
 const {
   ensureLibraries, libraryDataDir, libraryRuntimePaths, isLibraryActive, shouldMoveLibraryData, migrateLibraryData,
+  coverDirName, migrateCoverDir,
   runtimeLibraries, localLibraryPath, localLibraryDataPath
 } = require('./modules/libraries.js')
 
@@ -548,6 +549,11 @@ const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}
   console.log(`[libraries] 库数据库:${LIBRARY_DB_FILE};扫描快照:${SNAPSHOT_FILE};缩略图缓存:${LIBRARY_VIEWCACHE_DIR}`)
   if (movedFromOldDir.moved.length) console.log(`[libraries] 已把库数据从旧位置搬到新位置:${movedFromOldDir.moved.join('、')}`)
   if (libraryDataMigration.moved.length) console.log(`[libraries] 已把库数据搬进库数据目录:${libraryDataMigration.moved.join('、')}`)
+  // 切库后封面目录也跟着换了:先把「新活动库」的旧 cover 目录改名成 <库名>-cover
+  // (不迁的话会读到旧共享目录里其他库的封面)。这里只做「mkdir + 改名迁移」,
+  // 0 字节残留清理是逐文件 stat 的重活,只在启动时(ensureCoverDirsMigrated)做。
+  // 只处理活动库这一个:切库是高频动作,没必要把所有库都扫一遍。
+  prepareCoverDirFor(activeLibraryOf(setting))
 }
 ;(async () => {
   // 先建表再补列:全新数据库(无表)时 ALTER 会失败
@@ -1596,6 +1602,9 @@ if (!WEB_MODE) {
           console.log('远程模式本地代理启动失败:', e)
         }
       }
+      // 封面目录迁移/清理:必须在窗口创建(→ 前端开始请求封面)之前完成,
+      // 否则会先按旧目录读一次封面、再按新目录重新生成一遍
+      ensureCoverDirsMigrated()
       mainWindow = createWindow()
       registerGlobalHotkey()
       // 数据目录不可用:明确弹窗,绝不静默换目录
@@ -1881,18 +1890,42 @@ const bookCoverDir = (book) => {
   return lib ? coverDirOf(lib) : CURRENT_COVER_DIR
 }
 
+// 封面文件名清洗 + 0 字节残留自愈:
+// 强杀进程/生成中途出错会在封面目录留下 0 字节占位文件,而 isUsableCover 判它「不可用」→
+// 每次都要再建一个「书名 (2).webp」「书名 (3).webp」…… 目录里垃圾文件越滚越多。
+// 所以遇到 0 字节同名文件就地删掉重建(同名复用),不再往后加序号。
 const acquireCoverName = (filepath, coverDir) => {
   const base = sanitizeFileName(path.basename(String(filepath || '').replace(/[\\/]+$/, '')).replace(/\.[^.]+$/, ''))
+  const dir = coverDir || CURRENT_COVER_DIR
   let coverName = `${base}.webp`
   for (let i = 2; ; i++) {
+    const target = path.join(dir, coverName)
     try {
-      const fd = fs.openSync(path.join(coverDir || CURRENT_COVER_DIR, coverName), 'wx')
-      fs.closeSync(fd)
-      return coverName
+      const st = fs.statSync(target)
+      if (st.size === 0) {
+        // 0 字节残留:删掉后用同名的独占创建,把序号「还回去」
+        try { fs.rmSync(target, { force: true }) } catch (e) { /* 删不掉就让下面的 wx 抛 EEXIST */ }
+        const fd = fs.openSync(target, 'wx')
+        fs.closeSync(fd)
+        // 建了占位文件 → 目录内容变了,封面目录索引必须失效(否则别的书会以为这个名字还空着)
+        invalidateCoverDirIndex(dir)
+        return coverName
+      }
     } catch (e) {
-      if (e.code !== 'EEXIST') throw e
-      coverName = `${base} (${i}).webp`
+      if (e.code === 'ENOENT') {
+        try {
+          const fd = fs.openSync(target, 'wx')
+          fs.closeSync(fd)
+          invalidateCoverDirIndex(dir)
+          return coverName
+        } catch (e2) {
+          if (e2.code !== 'EEXIST') throw e2
+        }
+      } else if (e.code !== 'EEXIST' && e.code !== 'EBUSY' && e.code !== 'EPERM') {
+        throw e
+      }
     }
+    coverName = `${base} (${i}).webp`
   }
 }
 
@@ -1901,31 +1934,200 @@ const releaseCoverName = (coverName, coverDir) => {
   try { fs.rmSync(path.join(coverDir || CURRENT_COVER_DIR, coverName), { force: true }) } catch {}
 }
 
-// 生成封面(指定漫画名)并返回本地 coverPath;失败返回 null
+// ---------- 封面目录索引 / 封面归属索引 ----------
+// 封面目录索引:一次 readdir 换掉最多 50 次 statSync。
+// 每本「coverPath 为空」的书都要走复用判断,NAS 上 50 次同步 stat(50~500ms/次)会卡死主进程。
+const coverDirIndexCache = new Map() // dir -> { at, set }
+const COVER_DIR_INDEX_TTL = 5000
+const getCoverDirIndex = (dir) => {
+  const hit = coverDirIndexCache.get(dir)
+  const now = Date.now()
+  if (hit && now - hit.at < COVER_DIR_INDEX_TTL) return hit.set
+  const set = new Set()
+  try {
+    for (const d of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (d.isFile() && /\.webp$/i.test(d.name)) set.add(d.name)
+    }
+  } catch (e) { /* 目录不存在/读不了:当作空目录 */ }
+  coverDirIndexCache.set(dir, { at: now, set })
+  return set
+}
+const invalidateCoverDirIndex = (dir) => { if (dir) coverDirIndexCache.delete(dir) }
+
+// 封面归属索引:同一个库内「封面文件名 → book.id」。
+// 为什么必须有:封面文件名是「书名.webp」这种确定性名字,库里两本同名书
+// (Series-AAA/Vol.01.zip、Series-BBB/Vol.01.zip)会同时看上同一张 Vol.01.webp ——
+// 第二本显示第一本的封面,且任意一本「设为封面」删旧文件时会把另一本搞成破图。
+// 所以复用前必须确认「这个文件名没被别的书占用」。
+const coverOwnerCache = new Map() // libId -> { at, map }
+const COVER_OWNER_TTL = 30000
+const coverOwnerKey = (libId) => String(libId || '')
+// truncate 之后所有 id 都换新,归属索引整体作废(否则 30s 内每本都会多生成一份重复封面)
+const clearCoverOwners = () => coverOwnerCache.clear()
+const getCoverOwners = async (model, libId) => {
+  const key = coverOwnerKey(libId)
+  const hit = coverOwnerCache.get(key)
+  const now = Date.now()
+  if (hit && now - hit.at < COVER_OWNER_TTL) return hit.map
+  const map = new Map()
+  try {
+    const rows = await model.findAll({
+      attributes: ['id', 'coverPath'],
+      where: { coverPath: { [Op.ne]: null } },
+      raw: true
+    })
+    for (const r of rows) {
+      const base = coverBaseNameOf(r.coverPath)
+      // 同一个文件名被多行引用(历史脏数据)时保留先出现的那个,后面的一致性判断更保守
+      if (base && !map.has(base)) map.set(base, r.id)
+    }
+    // 只有查询成功才写缓存:失败时写空 map 会让 30s 内所有同名书重新共用封面
+    coverOwnerCache.set(key, { at: now, map })
+  } catch (e) {
+    // 查不动就不做占用校验:不写缓存,下次重试(宁可重新生成,也不能让扫描挂掉)
+    return map
+  }
+  return map
+}
+// 写库后增量更新归属索引(不整表重建):批量修补几千本时也不会变 O(n²)。
+// 旧的 basename 条目故意保留 —— 它仍然指向同一个 id,只会让别的书「少复用一次」,绝不会复用错。
+const rememberCoverOwner = (libId, coverPath, id) => {
+  const hit = coverOwnerCache.get(coverOwnerKey(libId))
+  if (!hit || !id) return
+  const base = coverBaseNameOf(coverPath)
+  if (base) hit.map.set(base, id)
+}
+
+// 在封面目录里找「按书名命名的已有封面」,供 coverPath 为空的书复用。
+// 为什么需要它:重建库时 coverPath 会被写成 null(懒加载),但封面文件名是确定性的
+// (书名.webp)——文件其实还在,不查一遍就白白重新解压一遍压缩包。
+// 只读:不创建任何文件;文件清单来自目录索引(一次 readdir),不再逐个 statSync。
+// 命中候选后还要确认没被别的书占用(见上面 coverOwnerCache 的注释)。
+const findReusableCover = async (book, coverDir, model, libId) => {
+  if (!book || !coverDir) return null
+  try {
+    const base = sanitizeFileName(path.basename(String(book.filepath || '').replace(/[\\/]+$/, '')).replace(/\.[^.]+$/, ''))
+    const files = getCoverDirIndex(coverDir)
+    const candidates = [`${base}.webp`]
+    for (let i = 2; i <= 50; i++) candidates.push(`${base} (${i}).webp`)
+    let owners = null
+    for (const name of candidates) {
+      if (!files.has(name)) continue
+      // 索引只保证「文件存在」,还要确认不是 0 字节残留(占位文件写坏了)。
+      // 只对命中的这一个候选做一次 stat,不是 50 次。
+      if (!isUsableCover(path.join(coverDir, name))) continue
+      // 归属校验才需要查库,命中候选之前一次查询都不做
+      if (!owners) owners = await getCoverOwners(model, libId)
+      const owner = owners.get(name)
+      if (owner && owner !== book.id) continue // 别人的封面:跳过,继续找下一个候选
+      return name
+    }
+    return null
+  } catch (e) {
+    return null
+  }
+}
+
+// 清理封面目录里的 0 字节残留(占位文件写坏了留下的垃圾),返回删除数量。
+// 同步实现:只在启动时跑一次,目录里通常就几百上千个文件(NAS 上可能要几秒,别放进切库路径)。
+const cleanupZeroByteCovers = (dir) => {
+  let removed = 0
+  try {
+    if (!dir || !fs.existsSync(dir)) return 0
+    for (const name of fs.readdirSync(dir)) {
+      if (!/\.webp$/i.test(name)) continue
+      const p = path.join(dir, name)
+      try {
+        const st = fs.statSync(p)
+        if (st.isFile() && st.size === 0) { fs.rmSync(p, { force: true }); removed++ }
+      } catch (e) { /* 单条失败不影响其余 */ }
+    }
+    if (removed > 0) invalidateCoverDirIndex(dir)
+  } catch (e) { /* 整个目录读不了就当作没清理 */ }
+  return removed
+}
+
+// 单独处理一个库的封面目录:旧共享 cover 目录改名。
+// 用 function 声明(而不是 const)是为了让上面 switchActiveLibraryRuntime 里也能调用,
+// 不受 TDZ 影响 —— 它可能在模块求值期间的早期调用路径上被执行。
+// ⚠ 这里只做「mkdir + migrateCoverDir」(两次 existsSync,毫秒级),**不做 0 字节清理**:
+//   cleanupZeroByteCovers 是 readdirSync + 每文件 statSync,NAS 上 1000 个封面要 5~10s,
+//   放进切库路径会直接把前端「切换库」的 5s 兜底撑爆。清理只在启动时做一次。
+function prepareCoverDirFor(lib) {
+  try {
+    if (!lib) return
+    const migrated = migrateCoverDir(STORE_PATH, lib)
+    if (migrated && migrated.moved) {
+      console.log(`[cover] 库「${lib.name || lib.id}」封面目录已迁移:${migrated.from} → ${migrated.to}`)
+      invalidateCoverDirIndex(migrated.to)
+    }
+  } catch (e) {
+    // 迁移失败只是没优化,不能让启动/切库挂掉
+    console.log('[cover] 封面目录迁移失败:', String((e && e.message) || e))
+  }
+}
+
+// 启动时把「所有已生效的库」的封面目录都准备好。
+// 必须在任何封面读写之前跑完:否则会同时在旧目录与新目录里各生成一份封面。
+const ensureCoverDirsMigrated = () => {
+  const libs = runtimeLibs().filter(l => isLibraryActive(l, IS_WEB_ENV))
+  // 迁移很快(mkdir + rename),同步做完保证一定先于封面读写
+  for (const lib of libs) prepareCoverDirFor(lib)
+  // 0 字节清理要逐文件 stat,网络盘上能到秒级 —— 丢到 setImmediate 里做,别堵住窗口创建。
+  // 延迟清也安全:0 字节文件本来就被 isUsableCover 判为不可用,acquireCoverName 也会就地自愈。
+  setImmediate(() => {
+    try {
+      for (const lib of libs) {
+        const dir = coverDirOf(lib)
+        const removed = cleanupZeroByteCovers(dir)
+        if (removed > 0) console.log(`[cover] 清理 0 字节封面 ${removed} 个:${dir}`)
+      }
+    } catch (e) { /* 清理失败只是留垃圾,不影响启动 */ }
+  })
+}
+
+// 生成封面(指定漫画名)并返回 geneCover 的完整探测结果;失败/无效返回 null。
+// 返回整个对象(而不是只 coverPath)是为了让调用方能复用同一次解压得到的 hash/页数,
+// 修掉「首次浏览时同一本书被解压两遍」。
 const generateCoverByName = async (book, coverDir) => {
   const dir = coverDir || bookCoverDir(book)
   const filepath = translateBookPath(book.filepath, 'filepath', libForBook(book))
   const type = book.type || 'archive'
   const coverName = acquireCoverName(filepath, dir)
   try {
-    const { coverPath } = await geneCover(filepath, type, coverName, dir)
+    const r = await geneCover(filepath, type, coverName, dir)
+    const coverPath = r && r.coverPath
     if (!coverPath || !fs.existsSync(coverPath)) {
       releaseCoverName(coverName, dir)
+      invalidateCoverDirIndex(dir)
       return null
     }
-    return coverPath
+    // 目录里多了一个封面文件:复用判断用的索引必须立刻失效
+    invalidateCoverDirIndex(dir)
+    return {
+      coverPath,
+      hash: r.hash || null,
+      pageCount: r.pageCount === undefined ? null : r.pageCount,
+      bundleSize: r.bundleSize,
+      mtime: r.mtime,
+      coverHash: r.coverHash || null
+    }
   } catch (e) {
     releaseCoverName(coverName, dir)
+    invalidateCoverDirIndex(dir)
     throw e
   }
 }
 
 // 把封面路径写回共享数据库(路径按当前环境转外部格式)
-const updateBookCoverPath = async (id, coverPath, coverDir) => {
+const updateBookCoverPath = async (id, coverPath, coverDir, libId) => {
   const ext = toExternalPath(coverPath, 'coverPath', null, coverDir)
   // 合并书架下必须写回这本书自己的库
   const model = await modelForBookId(id)
   await model.update({ coverPath: ext }, { where: { id } })
+  // 归属索引增量更新:这个文件名从此归这本书,别的同名书不会再复用它。
+  // libId 由调用方直接给(book.libraryId),不依赖 bookLibraryById 是否已记住 —— 漏记会让索引滞后 30s。
+  rememberCoverOwner(libId || bookLibraryById.get(id), ext, id)
   return ext
 }
 
@@ -1939,7 +2141,10 @@ const takeCoverSlot = () => new Promise(resolve => {
 const releaseCoverSlot = () => {
   coverSlots--
   const next = coverWaiters.shift()
-  if (next) { coverSlots++; next() }
+  if (!next) return
+  // 等待者出队时再确认一次名额:coverConcurrency() 是随时可改的设置,
+  // 名额被调小之后「出队即占用」会让并发数永远压不下来 —— 压不住就塞回队头等下一轮。
+  if (coverSlots < coverConcurrency()) { coverSlots++; next() } else coverWaiters.unshift(next)
 }
 
 // 每本书的生成任务锁:并发请求只生成一次
@@ -1953,42 +2158,97 @@ const isUsableCover = (p) => {
   try { return fs.statSync(p).size > 0 } catch (e) { return false }
 }
 
+// 取一个 coverPath 的「文件名」(用来和封面目录里的文件比对)。
+// ⚠ 必须自己按 / 和 \\ 切:Linux 的 path.basename() 不认反斜杠,
+//   以前直接用 path.basename('D:\\cover\\x.webp') 会得到整串,匹配不上 →
+//   把整目录的封面全当孤儿删掉(用户反馈的「全库扫描后封面全丢」就是这个)。
+const coverBaseNameOf = (p0) => String(p0 || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').split('/').pop()
+
+// 探测图片能否真正被解码。封面「文件非空但内容坏了」时,
+// 前端 img onerror → 再请求主进程 → 主进程只判 size>0 又原样返回 → 无限重试。
+// 只有前端第 2 次以后带上 verify 才走这一步(解码有开销)。
+// 这些错误码说明「读不到文件」而不是「文件内容坏」:当成可用,别把好封面删了
+const IMAGE_IO_ERROR_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'EMFILE', 'ENFILE', 'ENOENT', 'EIO', 'ETIMEDOUT', 'UNKNOWN'])
+const isDecodableImage = async (p) => {
+  try {
+    await sharp(p).metadata()
+    return true
+  } catch (e) {
+    // 只有「真的是坏图」才返回 false;占用/权限/句柄耗尽/网络抖动一律按可用放行,
+    // 否则 verify 分支会把一个能用的封面 rmSync 掉(网络盘上抽风一次就丢一张封面)
+    if (e && IMAGE_IO_ERROR_CODES.has(e.code)) return true
+    return false
+  }
+}
+
 // 按需确保封面存在:
-// 1) DB 里 coverPath 翻译成本地路径后文件存在 → 直接复用;
+// 1) DB 里 coverPath 翻译成本地路径后文件存在 → 直接复用(opts.verify 时还要能解码);
 // 2) 否则按 basename 在共享封面目录里找(另一平台生成的旧封面) → 复用并修正 DB 路径;
-// 3) 都没有 → 生成并以漫画名命名。
-const ensureBookCover = (book) => {
-  if (!book || !book.id) return Promise.resolve(null)
+// 3) 再按「书名.webp」在封面目录里找已有文件(重建库后 coverPath 为 null 但文件还在);
+// 4) 都没有 → 生成并以漫画名命名。
+// 返回 { coverPath, info }:info 是生成时顺带探测到的 hash/页数(geneCover 的完整结果),
+// 可能为 null(走了复用分支),调用方可据此免掉一次解压。
+const ensureBookCover = (book, opts = {}) => {
+  if (!book || !book.id) return Promise.resolve({ coverPath: null, info: null })
   if (coverJobs.has(book.id)) return coverJobs.get(book.id)
+  const verify = !!(opts && opts.verify)
   const job = (async () => {
     try {
       // 封面目录跟着「这本书所属的库」走,不再是全局的 CURRENT_COVER_DIR
       const coverDir = bookCoverDir(book)
       try { fs.mkdirSync(coverDir, { recursive: true }) } catch (e) { /* 稍后生成时再试 */ }
+      // 归属校验/复用判断都要用「这本书自己所属库」的模型。放在并发闸门外面,
+      // 避免一次全表查询占着名额把封面生成的并发压成 1。
+      // 优先按 book.libraryId 取(后台补全只给了 libraryId,没走 rememberBookLibrary)。
+      let ownerModel = null
+      try {
+        ownerModel = book.libraryId ? await modelForLibrary(book.libraryId) : await modelForBookId(book.id)
+      } catch (e) {
+        ownerModel = Manga
+      }
       if (book.coverPath) {
         const local = translateBookPath(book.coverPath, 'coverPath', null, coverDir)
-        if (isUsableCover(local)) return local
+        if (isUsableCover(local)) {
+          if (!verify) return { coverPath: local, info: null }
+          if (await isDecodableImage(local)) return { coverPath: local, info: null }
+          // 非空但解码不了 = 坏文件:删掉当作没有封面,继续往下走(最终会重新生成)
+          try { fs.rmSync(local, { force: true }); invalidateCoverDirIndex(coverDir) } catch (e) { /* 删不掉也继续 */ }
+        }
         // basename 兜底:文件可能被另一端生成在同一个封面目录里
         const base = String(book.coverPath).replace(/[\\/]+$/, '').split(/[\\/]/).pop()
         if (base) {
           const fallback = path.join(coverDir, base)
           if (isUsableCover(fallback)) {
-            await updateBookCoverPath(book.id, fallback, coverDir)
-            return fallback
+            await updateBookCoverPath(book.id, fallback, coverDir, book.libraryId)
+            return { coverPath: fallback, info: null }
           }
         }
       }
+      // ③ coverPath 为空(重建库后是常态)也先找同名已有封面:文件名是确定性的,不该重复解压。
+      //    ⚠ 必须带归属校验:库里两本同名书(《Vol.01.zip》在不同目录)否则会共用同一张封面,
+      //    表现是「第二本显示第一本的封面」,而且任意一本换封面时会把另一本删成破图。
+      const reused = await findReusableCover(book, coverDir, ownerModel, book.libraryId)
+      if (reused) {
+        const reusedPath = path.join(coverDir, reused)
+        const oldBase = book.coverPath ? coverBaseNameOf(book.coverPath) : ''
+        // 已指向同一个文件就不写库,省一次 UPDATE
+        if (oldBase !== reused) await updateBookCoverPath(book.id, reusedPath, coverDir, book.libraryId)
+        return { coverPath: reusedPath, info: null }
+      }
       await takeCoverSlot()
       try {
-        const coverPath = await generateCoverByName(book, coverDir)
-        if (coverPath) await updateBookCoverPath(book.id, coverPath, coverDir)
-        return coverPath
+        const info = await generateCoverByName(book, coverDir)
+        if (info && info.coverPath) {
+          await updateBookCoverPath(book.id, info.coverPath, coverDir, book.libraryId)
+          return { coverPath: info.coverPath, info }
+        }
+        return { coverPath: null, info: null }
       } finally {
         releaseCoverSlot()
       }
     } catch (e) {
       console.error(`生成封面失败 ${book.filepath}:`, e)
-      return null
+      return { coverPath: null, info: null }
     }
   })()
   coverJobs.set(book.id, job)
@@ -1996,17 +2256,38 @@ const ensureBookCover = (book) => {
   return job
 }
 
-ipcMain.handle('ensure-book-cover', async (event, id) => {
+// 把「一次探测结果」写回库(建库阶段跳过了 hash/页数,浏览时顺带补上)
+const applyCoverInfoToBook = async (model, book, info) => {
+  if (!model || !book || !book.id || !info) return false
+  try {
+    await model.update({
+      hash: info.hash || null,
+      pageCount: info.pageCount === undefined ? null : info.pageCount,
+      bundleSize: info.bundleSize,
+      mtime: info.mtime ? (info.mtime.toJSON ? info.mtime.toJSON() : info.mtime) : book.mtime,
+      coverHash: info.coverHash || null
+    }, { where: { id: book.id } })
+    return true
+  } catch (e) {
+    return false
+  }
+}
+
+ipcMain.handle('ensure-book-cover', async (event, id, opts = {}) => {
   try {
     const found = await findBookAcrossLibraries({ id })
     const book = found.row
     if (!book) return null
     book.libraryId = found.libraryId || bookLibraryById.get(id)
     if (book.libraryId) rememberBookLibrary(book)
-    const coverPath = await ensureBookCover(book)
+    const { coverPath, info } = await ensureBookCover(book, opts || {})
     // 建库阶段跳过了页数/hash 的探测(那步要打开压缩包,很贵):
     // 用户浏览到这本书时顺便补上 —— 补完它才会出现在「按页数排序」、也才能关联到标签。
-    if (!book.hash || book.pageCount === null || book.pageCount === undefined) {
+    // 生成分支已经把探测结果带回来了(info),直接写库,不用再解压一遍。
+    if (info) {
+      if (!book.hash) await applyCoverInfoToBook(found.model, book, info)
+    } else if (!book.hash) {
+      // 走了复用分支(没解压):只有这时才需要补一次探测
       try {
         const lib = (setting.libraries || []).find(l => l.id === book.libraryId)
         const fp2 = translateBookPath(book.filepath, 'filepath', lib)
@@ -2292,15 +2573,19 @@ const saveBookListToDatabase = async (data, options = {}) => {
   }
   console.log(`[guard] 显式重建书库:清空后写入 ${Array.isArray(data) ? data.length : 0} 条`)
   await Manga.destroy({ truncate: true })
+  // 整表清空 + 重新入库会换一批新 id:归属索引必须整体作废
+  clearCoverOwners()
   await Manga.bulkCreate(data)
 }
 
 const saveBookToDatabase = async (book) => {
   // 写共享数据库时路径转换为 Windows 格式,保证桌面版可读
+  // coverPath 必须按「这本书自己所属库」的封面目录翻译:用全局 CURRENT_COVER_DIR 时,
+  // 非活动库的封面会被当成"不在封面目录下"而原样写成这台机器的绝对路径(换端/换盘就失效)
   const extBook = {
     ...book,
     filepath: toExternalPath(book.filepath, 'filepath', libForBook(book)),
-    coverPath: toExternalPath(book.coverPath, 'coverPath')
+    coverPath: toExternalPath(book.coverPath, 'coverPath', null, book ? bookCoverDir(book) : undefined)
   }
   // 合并书架下每本书自带 libraryId:必须写回它自己所属的库,不然会写脏别的库
   delete extBook.libraryId
@@ -2424,8 +2709,14 @@ const broadcastBackfill = () => {
 }
 ipcMain.handle('scan-status', async () => ({ ...scanState }))
 ipcMain.handle('meta-backfill-status', async () => ({ ...metaBackfill }))
-// 启动后延迟补全:容器/客户端重启时,把上次没补完的页数/hash/封面接着补上
-setTimeout(() => { runMetaBackfill().catch(() => {}) }, 90000)
+// 启动后延迟补全:容器/客户端重启时,把上次没补完的页数/hash/封面接着补上。
+// 但补全会逐本解压 7z 取页数/hash,体感等同一次扫描:
+// 必须跟随「设置 → 高级 → 启动时扫描」,否则用户在关掉开关后仍会看到整库扫一遍
+if (setting.loadOnStart) {
+  setTimeout(() => { if (boxLibraries().length) runMetaBackfill().catch(() => {}) }, 30000)
+} else {
+  console.log('[meta] 未开启「启动时扫描」,跳过启动补全')
+}
 ipcMain.handle('meta-backfill-stop', async () => {
   metaBackfill.stop = true
   return { ok: true }
@@ -2448,6 +2739,13 @@ const runMetaBackfill = async () => {
     metaBackfill.total = pending.length
     console.log(`[meta] 待补全 ${pending.length} 本`)
     broadcastBackfill()
+    // 一本都没待补全时直接收工:否则下面的循环空转,日志还会写「结束:0/0」让人以为扫了一遍
+    if (!pending.length) {
+      console.log('[meta] 没有待补全的书')
+      metaBackfill.running = false
+      broadcastBackfill()
+      return { ok: true, done: 0, total: 0 }
+    }
     // ⚠️ 必须串行:SQLite 是单写者,两路 update 并发会把事务冲掉,
     //    连带"读书架"都会报 Transaction cannot be rolled back。
     //    探测本身不并发,但配合「有人在阅读就等」已经够温和。
@@ -2460,10 +2758,13 @@ const runMetaBackfill = async () => {
         const coverDir = coverDirOf(lib)
         // 用户要求:后台补全时把封面一并生成(以前只探测信息)。
         // 走 ensureBookCover:自带每本一次的任务锁 + 全局 4 路并发限制。
+        // 生成分支会把这次解压探测到的 hash/页数一起带回来 → 不用再解压第二遍。
+        let r = null
         try {
-          await ensureBookCover({ ...row, filepath, libraryId: lib.id })
+          const r0 = await ensureBookCover({ ...row, filepath, libraryId: lib.id })
+          r = (r0 && r0.info) || null
         } catch (e) { /* 封面失败不影响补页数/hash */ }
-        const r = await geneCover(filepath, row.type, null, coverDir)
+        if (!r) r = await geneCover(filepath, row.type, null, coverDir)
         await model.update({
           hash: r.hash || null,
           pageCount: r.pageCount || null,
@@ -2480,7 +2781,10 @@ const runMetaBackfill = async () => {
   } finally {
     metaBackfill.running = false
     broadcastBackfill()
-    console.log(`[meta] 后台补全结束:${metaBackfill.done}/${metaBackfill.total}`)
+    // 空跑(没有待补全)已经在上面单独打过日志,不再重复「结束:0/0」
+    if (metaBackfill.total > 0 || metaBackfill.done > 0) {
+      console.log(`[meta] 后台补全结束:${metaBackfill.done}/${metaBackfill.total}`)
+    }
   }
   return { ok: true, done: metaBackfill.done, total: metaBackfill.total }
 }
@@ -2810,26 +3114,30 @@ const runScan = async (ctx) => {
   try {
     // 清理孤儿封面。封面文件都存放在 scanCtx.coverDir,而数据库里的 coverPath 可能是
     // Windows 盘符 / UNC / Linux(/data/...) 任意一种格式 —— 统一取「文件名」再比较。
-    // ⚠ 必须自己按 / 和 \\ 切:Linux 的 path.basename() 不认反斜杠,
-    //   以前直接用 path.basename('D:\\cover\\x.webp') 会得到整串,匹配不上 →
-    //   把整目录的封面全当孤儿删掉(用户反馈的「全库扫描后封面全丢」就是这个)。
-    const baseNameOf = (p0) => String(p0 || '').replace(/[\\/]+$/, '').replace(/\\/g, '/').split('/').pop()
-    const coverList = await fs.promises.readdir(scanCtx.coverDir)
-    const existCoverSet = new Set(existData.map(b => baseNameOf(b.coverPath)).filter(Boolean))
+    // (取文件名用的 coverBaseNameOf 是模块级函数,按 / 和 \\ 手动切,见它的注释)
+    // 只看真正的文件 + .webp:目录里的子目录(macOS 的 ._xxx、系统缩略图缓存之类)
+    // 和数据文件不能被当成「封面」列进删除候选。
+    const entries = await fs.promises.readdir(scanCtx.coverDir, { withFileTypes: true })
+    const coverList = entries
+      .filter(d => d.isFile() && /\.webp$/i.test(d.name))
+      .map(d => d.name)
+    const existCoverSet = new Set(existData.map(b => coverBaseNameOf(b.coverPath)).filter(Boolean))
     // 安全阀:一条都没匹配上,或要删掉一大半 —— 一律不删,只提示。
     // 宁可留几个孤儿文件,也不能再把用户封面清空。
     if (!existCoverSet.size) {
       sendMessageToWebContents('封面清理已跳过:数据库里没有可匹配的封面路径(不会删除任何封面)')
     } else {
-      const removeCoverList = coverList
-        .map(p0 => path.join(scanCtx.coverDir, p0))
-        .filter(p0 => !existCoverSet.has(path.basename(p0)))
-      if (coverList.length > 20 && removeCoverList.length > coverList.length * 0.5) {
-        sendMessageToWebContents(`封面清理已跳过:本次要删 ${removeCoverList.length}/${coverList.length} 个封面,比例异常`)
+      const removeCoverList = coverList.filter(name => !existCoverSet.has(name))
+      // 要删的比例超过一半、或绝对数量超过 500,一律跳过:
+      // 前者防「库掉线/路径算错把整目录当孤儿」,后者防「目录本来就只有二三十个文件时被清空」
+      if (removeCoverList.length > coverList.length * 0.5 || removeCoverList.length > 500) {
+        sendMessageToWebContents(`封面清理已跳过:本次要删 ${removeCoverList.length}/${coverList.length} 个封面,数量/比例异常`)
       } else {
-        for (const coverPath of removeCoverList) {
-          await fs.promises.rm(coverPath)
+        for (const name of removeCoverList) {
+          // 单条删不掉(占用/权限/网络盘抖动)不能中断整轮:以前裸 rm 一抛错,后面的封面全不删了
+          await fs.promises.rm(path.join(scanCtx.coverDir, name), { force: true }).catch(() => {})
         }
+        if (removeCoverList.length) invalidateCoverDirIndex(scanCtx.coverDir)
       }
     }
   } catch (err) {
@@ -2909,31 +3217,48 @@ ipcMain.handle('load-book-list', async (event, scan) => {
 // 与全量扫描不同:依赖上次扫描保存的目录指纹快照(scan-snapshot.json),
 // 只对"目录 mtime 变化"的子树 readdir 下钻,其余目录仅做 stat,秒级完成。
 // 无有效快照 / 库路径或排除规则变化时自动退化为全量扫描(全量会重建快照)。
-const runIncrementalScan = async () => {
-  const oldSnap = await loadSnapshotFile(SNAPSHOT_FILE)
+// ★ 全程只用 ctx(模型/根目录/封面目录/快照文件),不再读全局 Manga / SNAPSHOT_FILE / setting.library。
+//   事故:增量扫描期间点了「库切换」,全局被换成别的库 → 枚举 A 库的书 bulkCreate 进 B 库、
+//   快照写进 B 库目录、删封面删到 B 库目录。ctx 把这一层钉死在本次扫描的库上。
+const runIncrementalScan = async (ctx) => {
+  if (!ctx || !ctx.lib) {
+    sendMessageToWebContents('增量扫描失败:没有可用的漫画库')
+    setProgressBar(-1)
+    sendMessageToWebContents('Scan complete')
+    return
+  }
+  const scanLib = ctx.lib
+  const Db = ctx.model
+  const scanRoot = ctx.root
+  const coverDir = ctx.coverDir
+  const snapshotFile = ctx.snapshotFile
+  const oldSnap = await loadSnapshotFile(snapshotFile)
   const excludeStr = setting.excludeFile || ''
-  const libStat = await fs.promises.stat(setting.library).catch(() => null)
+  const libStat = await fs.promises.stat(scanRoot).catch(() => null)
   if (!libStat || !libStat.isDirectory()) {
     sendMessageToWebContents('扫描结果异常:漫画库目录不可访问,请检查挂载')
     setProgressBar(-1)
     sendMessageToWebContents('Scan complete')
     return
   }
-  if (!oldSnap || oldSnap.library !== setting.library || (oldSnap.excludeFile || '') !== excludeStr) {
+  // 快照里的库路径可能是带结尾分隔符的原样值(ctx.root 去掉了结尾分隔符):
+  // 比较时统一去掉结尾分隔符,否则 Y:/漫画/ 这种库会「每轮都判无有效快照 → 全量扫描」
+  const sameLibrary = String(oldSnap && oldSnap.library || '').replace(/[\\/]+$/, '') === String(scanRoot || '').replace(/[\\/]+$/, '')
+  if (!oldSnap || !sameLibrary || (oldSnap.excludeFile || '') !== excludeStr) {
     sendMessageToWebContents('增量扫描:无有效快照(库路径或排除规则变化),转为全量扫描')
-    await runScan()
+    // 退化也走 ctx:否则又把「按哪个库扫」交回给全局状态
+    await runScan(ctx)
     return
   }
   setProgressBar(0.02)
   const excludeRe = compileExclude()
-  const diff = await diffInventory(setting.library, oldSnap, { excludeRe })
+  const diff = await diffInventory(scanRoot, oldSnap, { excludeRe })
   // 读取数据库并建立索引(与全量扫描相同的路径翻译;内存 Map 成本远低于枚举成本)
   await ensureLibraryPathsNormalized()
-  const scanLib = currentLibrary()
-  const bookList = await Manga.findAll({ raw: true })
+  const bookList = await Db.findAll({ raw: true })
   bookList.forEach(b => {
     b.filepath = translateBookPath(b.filepath, 'filepath', scanLib)
-    b.coverPath = translateBookPath(b.coverPath, 'coverPath')
+    b.coverPath = translateBookPath(b.coverPath, 'coverPath', null, coverDir)
     b.exist = false
   })
   const bookMap = new Map(bookList.map(b => [b.filepath, b]))
@@ -2978,17 +3303,17 @@ const runIncrementalScan = async () => {
       const i = start + chunkIndex
       await waitViewerIdle()
       try {
-        await processScanItem({ bookMap, bookIdMap, batchNewBooks, lib: scanLib }, filepath, type)
+        await processScanItem({ bookMap, bookIdMap, batchNewBooks, lib: scanLib, model: Db, coverDir, snapshotFile, viewcacheDir: ctx.viewcacheDir }, filepath, type)
       } catch (e) {
         sendMessageToWebContents(`加载 ${filepath} 失败:${e}(${i + 1}/${candidates.length})`)
       }
     })
     // 批量入库:一个事务写入一批,避免逐条 fsync(路径写入 Windows 格式)
     if (batchNewBooks.length) {
-      await Manga.bulkCreate(batchNewBooks.map(b => ({
+      await Db.bulkCreate(batchNewBooks.map(b => ({
         ...b,
         filepath: toExternalPath(b.filepath, 'filepath', scanLib),
-        coverPath: toExternalPath(b.coverPath, 'coverPath')
+        coverPath: toExternalPath(b.coverPath, 'coverPath', null, coverDir)
       })))
       for (const newBook of batchNewBooks) {
         bookMap.set(newBook.filepath, newBook)
@@ -3017,7 +3342,7 @@ const runIncrementalScan = async () => {
       const removeIds = removedRows.map(b => b.id)
       const removeHashes = removedRows.map(b => b.hash).filter(Boolean)
       for (let i = 0; i < removeIds.length; i += 400) {
-        await Manga.destroy({ where: { id: { [Op.in]: removeIds.slice(i, i + 400) } } })
+        await Db.destroy({ where: { id: { [Op.in]: removeIds.slice(i, i + 400) } } })
       }
       for (let i = 0; i < removeHashes.length; i += 400) {
         await Metadata.destroy({ where: { hash: { [Op.in]: removeHashes.slice(i, i + 400) } } })
@@ -3029,17 +3354,21 @@ const runIncrementalScan = async () => {
       sendMessageToWebContents(`清理不存在的漫画失败:${e}`)
     }
     if (deleted) {
+      // 删封面用「本次被扫的这个库」的封面目录(ctx.coverDir):
+      // 增量扫描是单库操作,CURRENT_COVER_DIR 只是活动库的,切过框就会删错目录
       for (const row of removedRows) {
         if (!row.coverPath) continue
-        const coverFile = path.join(CURRENT_COVER_DIR, path.basename(String(row.coverPath)))
+        const coverFile = path.join(coverDir, coverBaseNameOf(row.coverPath))
         await fs.promises.rm(coverFile, { force: true }).catch(() => {})
       }
+      // 目录内容变了:封面目录索引必须失效,否则接下来的复用判断会看到已删掉的文件
+      invalidateCoverDirIndex(coverDir)
     }
   }
   // 无变化时不重写快照(避免每轮都全量写 1MB+ 的 scan-snapshot.json)
   if (candidates.length || diff.removedBooks.length) {
     try {
-      await saveSnapshotFile(SNAPSHOT_FILE, diff.nextSnap)
+      await saveSnapshotFile(snapshotFile, diff.nextSnap)
     } catch (e) {
       console.log('save scan snapshot failed', e)
     }
@@ -3058,7 +3387,11 @@ ipcMain.handle('incremental-scan', async () => {
     // 后台执行:立即返回当前列表,不阻塞 UI,完成后通知前端刷新
     setImmediate(async () => {
       try {
-        await runIncrementalScan()
+        // ★ 先把「这次扫哪个库」钉成 ctx,再开始:扫描期间用户切库也不会串库
+        const lib = currentLibrary()
+        const ctx = await scanContextFor(lib)
+        await openLibraryForScan(lib)
+        await runIncrementalScan(ctx)
       // 增量扫描完成后同样要触发后台补全(以前只有全量扫描才触发,导致增量扫完的书一直没补) 
       setImmediate(() => { runMetaBackfill().catch(() => {}) })
         endScan(null)
@@ -3081,10 +3414,9 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
     sendMessageToWebContents('正在扫描漫画库,请等扫描结束后再重建')
     return await loadBookListFromDatabase()
   }
-  // 封面懒加载为固定行为:重建库也不生成封面,由用户浏览时按需生成
-  await Manga.destroy({ truncate: true })
-  await clearFolder(TEMP_PATH)
-  await clearFolder(CURRENT_COVER_DIR)
+  // ⚠ 先枚举、后清库:以前是先 truncate 再 getBookFilelist,
+  //   库路径不可访问(网络盘没挂上 / 文件夹被改名)时 list 为空,
+  //   结果「点一下重建,一万多本书和封面全没了」。枚举成功才允许动数据。
   sendMessageToWebContents('开始加载漫画库')
   setProgressBar(0.02)
   let list = await getBookFilelist(setting.library)
@@ -3097,6 +3429,18 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
       console.log('Illegal regular expressions')
     }
   }
+  if (!list || list.length === 0) {
+    // 一本都没枚举到 = 路径不可用或选错了库:直接取消,不碰数据库、不碰封面
+    sendMessageToWebContents('漫画库为空或不可访问,已取消重建(未改动任何数据)')
+    setProgressBar(-1)
+    return await loadBookListFromDatabase()
+  }
+  // 封面懒加载为固定行为:重建库也不生成封面,由用户浏览时按需生成
+  await Manga.destroy({ truncate: true })
+  // 整表清空 + 重新入库会换一批新 id:归属索引必须整体作废(否则 30s 内每本都会多生成一份封面)
+  clearCoverOwners()
+  await clearFolder(TEMP_PATH)
+  // 封面目录不再清空:文件名是确定性的(书名.webp),重建后按 basename 直接复用,避免「点一次重建封面全没」
   const listLength = list.length
   sendMessageToWebContents(`从漫画库找到 ${listLength} 本漫画`)
   const CONCURRENCY = scanConcurrency()
@@ -3155,7 +3499,7 @@ ipcMain.handle('patch-local-metadata', async (event, arg) => {
   const bookList = await loadBookListFromDatabase()
   const bookListLength = bookList.length
   await clearFolder(TEMP_PATH)
-  // ⚠ 这里以前是 `clearFolder(CURRENT_COVER_DIR)`:先清空整个封面目录再逐本重建。
+  // ⚠ 这里以前是先 clearFolder 清空整个封面目录、再逐本重建。
   //   一万多本重建很慢,中途退出/出错 = 全部封面消失(用户遇到的正是这个)。
   //   修补元数据不应该销毁已有封面:现在只重建缺失的,已有的一律保留。
 
@@ -3177,18 +3521,23 @@ ipcMain.handle('patch-local-metadata', async (event, arg) => {
         if (had && isUsableCover(had)) return
         let { filepath, type } = book
         if (!type) type = 'archive'
+        // 占位文件与封面都必须落在「这本书所属库」的封面目录:
+        // 合并书架下活动库 ≠ 书的库时,用 CURRENT_COVER_DIR 会把封面写进别人的目录
+        const coverDir = bookCoverDir(book)
         // 封面以漫画名命名(占位防并发)
-        const coverName = acquireCoverName(filepath)
+        const coverName = acquireCoverName(filepath, coverDir)
         try {
-          const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName, CURRENT_COVER_DIR)
+          const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName, coverDir)
           if (targetFilePath && coverPath) {
+            // 这条路不走 updateBookCoverPath,必须自己更新归属索引,否则同名书会复用它刚生成的封面
+            rememberCoverOwner(book.libraryId, coverPath, book.id)
             _.assign(book, { type, coverPath, hash, pageCount, bundleSize, mtime: mtime.toJSON(), coverHash })
             await saveBookToDatabase(book)
           } else {
-            releaseCoverName(coverName)
+            releaseCoverName(coverName, coverDir)
           }
         } catch (e) {
-          releaseCoverName(coverName)
+          releaseCoverName(coverName, coverDir)
           throw e
         }
       } catch (e) {
@@ -3207,17 +3556,22 @@ ipcMain.handle('patch-local-metadata', async (event, arg) => {
 ipcMain.handle('patch-local-metadata-by-book', async (event, book) => {
   let { filepath, type } = book
   if (!type) type = 'archive'
+  // 同 patch-local-metadata:占位文件与封面都走「这本书所属库」的封面目录
+  const coverDir = bookCoverDir(book)
   // 封面以漫画名命名(占位防并发)
-  const coverName = acquireCoverName(filepath)
+  const coverName = acquireCoverName(filepath, coverDir)
   try {
-    const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName, CURRENT_COVER_DIR)
+    const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, coverName, coverDir)
     if (targetFilePath && coverPath) {
+      // 同 patch-local-metadata:不走 updateBookCoverPath,自己登记归属
+      // (这条路径的 book 可能来自前端,没有 libraryId,用已记住的库兜底)
+      rememberCoverOwner(bookLibraryById.get(book.id) || book.libraryId, coverPath, book.id)
       await clearFolder(TEMP_PATH)
       return Promise.resolve({ coverPath, hash, pageCount, bundleSize, mtime: mtime.toJSON(), coverHash })
     }
-    releaseCoverName(coverName)
+    releaseCoverName(coverName, coverDir)
   } catch (e) {
-    releaseCoverName(coverName)
+    releaseCoverName(coverName, coverDir)
     sendMessageToWebContents(`补全 ${book.filepath} 失败:${e}`)
     await clearFolder(TEMP_PATH)
     return Promise.reject()
@@ -4646,20 +5000,51 @@ ipcMain.handle('open-path', async (event, target) => {
   }
 })
 
-ipcMain.handle('use-new-cover', async (event, filepath) => {
-  const copyTempCoverPath = path.join(TEMP_PATH, nanoid(8) + path.extname(filepath))
-  const coverPath = path.join(CURRENT_COVER_DIR, nanoid() + path.extname(filepath))
+// 用户「设为封面」:把选中的图片压成 500×707 写进【这本书所属库】的封面目录。
+// 以前固定写 CURRENT_COVER_DIR + 纯 nanoid 文件名:
+//   ① 合并书架下会把封面写进活动库的目录(别的库根本看不到);
+//   ② 旧封面文件从不删除,目录里越堆越多;
+//   ③ 纯 nanoid 名字既认不出是人工封面,也可能和懒加载的「书名.webp」抢名。
+// 现在:文件名 = 书名-<nanoid(6)>.webp,并把旧的本地封面删掉。
+ipcMain.handle('use-new-cover', async (event, filepath, bookId) => {
+  const copyTempCoverPath = path.join(TEMP_PATH, nanoid(8) + path.extname(filepath || '.img'))
+  let dir = CURRENT_COVER_DIR
+  let book = null
   try {
+    if (bookId) {
+      const found = await findBookAcrossLibraries({ id: bookId })
+      book = found.row || null
+    }
+    // 找不到书(旧调用方只传了 filepath)→ 退回活动库的封面目录,保持原行为
+    dir = book ? bookCoverDir(book) : CURRENT_COVER_DIR
+    try { fs.mkdirSync(dir, { recursive: true }) } catch (e) { /* 稍后写文件时再报错 */ }
+    // 书名去掉书籍扩展名再清洗:title 存的是「xxx.zip」这种完整文件名
+    const rawTitle = (book && (book.title_jpn || book.title)) || path.basename(String(filepath || ''), path.extname(String(filepath || '')))
+    const stem = sanitizeFileName(String(rawTitle).replace(/\.(zip|rar|7z|cbr|cbz|cb7|epub|txt|pdf)$/i, ''))
+    const newPath = path.join(dir, `${stem}-${nanoid(6)}.webp`)
     await fs.promises.copyFile(filepath, copyTempCoverPath)
+    // 与主链路(geneCover)保持一致:cover 居中裁切,不再 contain 留 #303133 边
     await sharp(copyTempCoverPath, { failOnError: false })
-    .resize(500, 707, {
-      fit: 'contain',
-      background: '#303133'
-    })
-    .toFile(coverPath)
-    return coverPath
+      .resize(500, 707, { fit: 'cover' })
+      .toFile(newPath)
+    // 删掉这本书原来的封面文件(同一文件就跳过)
+    if (book && book.coverPath) {
+      const oldLocal = translateBookPath(book.coverPath, 'coverPath', null, dir)
+      if (oldLocal && path.basename(oldLocal) !== path.basename(newPath)) {
+        try { fs.rmSync(oldLocal, { force: true }) } catch (e) { /* 删不掉就留着,不影响新封面 */ }
+      }
+    }
+    if (book && book.id) await updateBookCoverPath(book.id, newPath, dir, book.libraryId)
+    // 人工封面的文件名是随机的,不影响「书名.webp」的复用;但目录内容变了,索引仍要失效
+    invalidateCoverDirIndex(dir)
+    // 返回对象而不是字符串:网页版 web-ipc 的 rewriteResponse 只改写 coverPath 这个键,
+    // 直接返回字符串时浏览器拿到的是裸本地路径(图片 404)
+    return { coverPath: newPath }
   } catch (e) {
     sendMessageToWebContents(`从 ${filepath} 生成封面失败:${e}`)
+    return null
+  } finally {
+    try { fs.rmSync(copyTempCoverPath, { force: true }) } catch (e) { /* 临时文件删不掉无所谓 */ }
   }
 })
 
@@ -5804,9 +6189,15 @@ ipcMain.handle('set-active-library', async (event, id) => {
   }
 })
 
-// 库切换框:点工具栏按钮 = 切到下一个框(循环);书架显示该框内所有库合并的漫画
+// 库切换框:点工具栏按钮 = 切到下一个框(循环);书架显示该框内所有库合并的漫画。
+// ⚠ 切框同时也切换活动库运行时:保证 setting.library 与 Manga / CURRENT_COVER_DIR 同源
+//   (历史上两者不一致时,切完框点「重建库」会「枚举新框的书、写进旧库 DB、清旧库封面目录」)。
 ipcMain.handle('set-active-box', async (event, arg) => {
   try {
+    // 切框会连带切换活动库运行时(Manga / CURRENT_COVER_DIR / SNAPSHOT_FILE),扫描中切等于
+    // 把扫描脚下的库换掉 —— 与 set-active-library 一样直接拒绝。
+    // (扫描本身已用 ctx 隔离,但运行时切换仍会打乱扫描收尾的写库/写快照。)
+    if (isScanning) return { ok: false, error: '正在扫描漫画库,请等扫描结束后再切换' }
     const boxes = Array.isArray(setting.switchBoxes) ? setting.switchBoxes : []
     if (!boxes.length) return { ok: false, error: '还没有配置「库切换」框(设置 → 常用)' }
     const n = boxes.length
@@ -5814,12 +6205,22 @@ ipcMain.handle('set-active-box', async (event, arg) => {
     if (arg && Number.isInteger(arg.index)) idx = arg.index
     else idx += 1
     idx = ((idx % n) + n) % n
-    // 切框只改「书架显示哪几个库」:不碰扫描/写操作的运行时,所以**扫描中也可以切**。
-    // 每本书自带 libraryId 决定写回哪个库;扫描也是自带库循环逐个扫,两者互不干扰。
+    // 先记下切之前的活动库与库数据目录,供 switchActiveLibraryRuntime 判断要不要搬数据。
+    const prevLib = activeLibraryOf(setting)
+    const prevDataDir = LIBRARY_DATA_DIR
     setting.activeBoxIndex = idx
     // 兼容:还有几处(移动文件/文件夹树/局域网根目录)仍读 setting.library,同步成框里第一个库
     const firstLib = boxLibraries()[0]
-    if (firstLib) setting.library = firstLib.path
+    if (firstLib) {
+      // 活动库 id 与 library 路径必须一起改,否则 Manga / CURRENT_COVER_DIR 还指着旧库
+      setting.activeLibraryId = firstLib.id
+      setting.library = firstLib.path
+    }
+    // 先切运行时(allowMove:false —— 切框绝不能把库数据从 A 搬到 B),再落盘设置:
+    // 反过来的话 applySetting 期间就有窗口让扫描拿到「新 setting + 旧运行时」的混合状态
+    try {
+      await switchActiveLibraryRuntime(prevLib, prevDataDir, { allowMove: false })
+    } catch (e) { console.error('switchActiveLibraryRuntime after box switch failed', e) }
     // ⚠ applySetting 失败不能连带把切库回滚:设置保存问题(代理/主题之类)应该各自报错,
     //   库切换本身已经成功,回滚会让用户「点好几次都切不过去」
     try { await applySetting({}) } catch (e) { console.error('applySetting after switch failed', e) }
@@ -7883,6 +8284,9 @@ ipcMain.handle('enable-LAN-browsing', async (event, arg) => {
 
 // 网页模式:启动 HTTP 服务(前端页面 + IPC 桥 + SSE + 文件服务)
 if (WEB_MODE) {
+  // 容器里的封面目录同样要迁到「<库名>-cover」:不迁的话 Docker 升级后
+  // 旧 <库数据目录>/cover/ 里的封面全变孤儿,整库封面要重新解压一遍
+  ensureCoverDirsMigrated()
   require('./web-server.js').start({
     getSetting: () => setting,
     // 每个账户读自己那份 setting.<账户名>.json(同名账户在 Win 与 NAS 共用);

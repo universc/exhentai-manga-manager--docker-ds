@@ -172,12 +172,111 @@ const pickEpubCover = (images) => {
   // 优先名字里带 cover 的(epub 规范里常见 cover.jpg / images/cover.jpeg)
   return images.find(n => /cover/i.test(path.basename(n))) || images[0]
 }
+
+// zip 内相对路径解析:href 是相对 OPF 所在目录的,可能含 ../ 或 #fragment
+const resolveZipPath = (baseDir, href) => {
+  const clean = String(href || '').split('#')[0].split('?')[0].trim()
+  if (!clean) return ''
+  const parts = ((baseDir ? baseDir.replace(/\\/g, '/') + '/' : '') + clean).split('/')
+  const out = []
+  for (const seg of parts) {
+    if (!seg || seg === '.') continue
+    if (seg === '..') { out.pop(); continue }
+    out.push(seg)
+  }
+  return out.join('/')
+}
+
+// 读 zip 内文本(按项目既有用法走 zip.readFile)
+const readZipText = (zip, name) => {
+  try {
+    const buf = zip.readFile(name)
+    return buf ? buf.toString('utf8') : null
+  } catch (e) {
+    return null
+  }
+}
+
+// 把 OPF 里写的 href 对回真实的 zip 条目名(可能是 URL 编码过 / 大小写不一致)
+const findZipEntryName = (zip, target) => {
+  try {
+    if (!target) return null
+    const entries = zip.getEntries().map(e => e.entryName)
+    if (entries.includes(target)) return target
+    let decoded = target
+    try { decoded = decodeURIComponent(target) } catch (e) { /* 非法编码就原样用 */ }
+    if (entries.includes(decoded)) return decoded
+    const lower = decoded.toLowerCase()
+    return entries.find(n => n.toLowerCase() === lower) || null
+  } catch (e) {
+    return null
+  }
+}
+
+// epub 封面必须按 OPF 声明取,不能只靠「文件名里带 cover」猜:
+// 大量 epub 的封面是 titlepage.xhtml 里引用的 images/00001.jpeg,文件名完全不含 cover,
+// 猜名字会取到版权页/作者头像/装饰图 —— 表现就是「epub 封面全错」。
+// 优先级:① manifest 里 properties="cover-image" ② <meta name="cover" content="itemId">
+//        ③ 名字带 cover 的图 ④ 第一张图
+const readEpubCoverEntry = (zip, images) => {
+  const imgs = Array.isArray(images) ? images : []
+  try {
+    // META-INF/container.xml 指向真正的 OPF;读不到就退而找唯一的 .opf
+    const container = readZipText(zip, 'META-INF/container.xml')
+    let opfName = null
+    if (container) {
+      const m = container.match(/<rootfile[^>]*full-path="([^"]+)"/i)
+      if (m && m[1]) opfName = findZipEntryName(zip, m[1])
+    }
+    if (!opfName) {
+      const all = zip.getEntries().map(e => e.entryName)
+      opfName = all.find(n => /\.opf$/i.test(n)) || null
+    }
+    const opfDir = opfName && opfName.includes('/') ? opfName.slice(0, opfName.lastIndexOf('/')) : ''
+    const opf = opfName ? readZipText(zip, opfName) : null
+    if (opf) {
+      const items = opf.match(/<item\b[^>]*>/gi) || []
+      const attr = (tag, name) => {
+        const mm = tag.match(new RegExp('\\b' + name + '\\s*=\\s*"([^"]*)"', 'i'))
+        return mm ? mm[1] : ''
+      }
+      // ① properties="cover-image"
+      for (const tag of items) {
+        if (!/(^|\s)cover-image(\s|$)/i.test(attr(tag, 'properties'))) continue
+        const href = attr(tag, 'href')
+        if (!href) continue
+        const hit = findZipEntryName(zip, resolveZipPath(opfDir, href))
+        if (hit) return hit
+      }
+      // ② <meta name="cover" content="itemId"> → manifest 里该 id 的 href
+      let coverId = ''
+      for (const tag of (opf.match(/<meta\b[^>]*>/gi) || [])) {
+        if (!/\bname\s*=\s*"cover"/i.test(tag)) continue
+        coverId = attr(tag, 'content')
+        if (coverId) break
+      }
+      if (coverId) {
+        for (const tag of items) {
+          if (attr(tag, 'id') !== coverId) continue
+          const href = attr(tag, 'href')
+          if (!href) continue
+          const hit = findZipEntryName(zip, resolveZipPath(opfDir, href))
+          if (hit) return hit
+        }
+      }
+    }
+  } catch (e) {
+    // OPF 坏了/格式古怪:继续走名字回退,绝不因为解析失败就没封面
+  }
+  return pickEpubCover(imgs)
+}
+
 const solveBookTypeEpub = async (filepath, TEMP_PATH, COVER_PATH, coverName) => {
   const stat = await fs.promises.stat(filepath)
   const { zip, images, docs } = readEpubEntries(filepath)
   const tempFolder = path.join(TEMP_PATH, nanoid(8))
   let tempCoverPath = null
-  const coverEntry = pickEpubCover(images)
+  const coverEntry = readEpubCoverEntry(zip, images)
   if (coverEntry) {
     zip.extractEntryTo(coverEntry, tempFolder, true, true)
     tempCoverPath = path.join(tempFolder, coverEntry)
@@ -404,6 +503,7 @@ const parseTxtStructured = async (filepath) => {
 module.exports = {
   isNovelName,
   isEpubName,
+  readEpubCoverEntry,
   solveBookTypeNovel,
   solveBookTypeEpub,
   getImageListFromEpub,

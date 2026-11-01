@@ -49,6 +49,13 @@ const libraryDataDir = (storePath, lib, isWeb) => {
   return path.join(storePath, LIBRARIES_DIR, name)
 }
 
+// 库封面目录的目录名:``<库名>-cover``。
+// 为什么带库名前缀:一个库的库数据目录被用户设成「数据目录根本身」时,
+// 各库的封面目录会全部落在同一个父目录下 —— 不带前缀就互相覆盖(封面串库)。
+// 为什么要截断:库名可以很长(用户粘贴整段路径/简介),而 NTFS 单个文件名上限 255 字符,
+// 250 字的库名 + '-cover' 会直接让 mkdirSync 抛 ENOENT(报错还说是"路径不存在",很难查)。
+const coverDirName = (lib) => `${safeDirName(lib && (lib.name || lib.id) || 'library').slice(0, 180)}-cover`
+
 // 某个库在「当前环境」下的路径。
 // 老配置只有单个 path 字段 → 视作两端通用(网页端直接沿用桌面值)。
 const localLibraryPath = (lib, isWeb) => {
@@ -201,9 +208,44 @@ const libraryRuntimePaths = (storePath, lib) => {
     viewcacheDir: path.join(dataDir, 'viewcache'),
     snapshotFile: path.join(dataDir, 'scan-snapshot.json'),
     dbFile: path.join(dataDir, 'database.sqlite'),
-    // 封面缓存与删除记录也属于「那个库」,各放各的
-    coverDir: path.join(dataDir, 'cover'),
+    // 封面缓存与删除记录也属于「那个库」,各放各的 —— 目录名带库名,避免多库同名目录互相覆盖
+    coverDir: lib ? path.join(dataDir, coverDirName(lib)) : path.join(dataDir, 'cover'),
     deleteLogFile: path.join(dataDir, 'delete-log.jsonl')
+  }
+}
+
+// 把旧版共享的「<库数据目录>/cover」整体改名成「<库数据目录>/<库名>-cover」。
+// 幂等 + 同步 + 绝不抛:升级后第一次启动搬家,之后每次调用都是快速 return。
+// 注意 dataPath 可能被设成数据目录根本身,此时 oldDir 就是旧版各库共用的 <store>/cover ——
+// 同样要迁,不特判跳过(否则那个库升级后封面会「全都消失」)。
+// 返回 { moved, from, to } 或 { moved:false, reason }。
+const migrateCoverDir = (storePath, lib) => {
+  const dataDir = libraryDataDir(storePath, lib)
+  const oldDir = path.join(dataDir, 'cover')
+  const newDir = path.join(dataDir, coverDirName(lib))
+  try {
+    if (fs.existsSync(newDir)) {
+      // 关键细节:index.js 在算完路径后就会 mkdirSync 新目录(希望封面目录总是存在)。
+      // 那个空目录会让「已存在 → 不迁」永远成立,老封面就被留在旧目录里当孤儿。
+      // 所以「新目录存在但是空的」且「旧目录确实有东西」时,先把空目录删掉再迁。
+      const oldExists = fs.existsSync(oldDir)
+      let newEmpty = false
+      try { newEmpty = fs.readdirSync(newDir).length === 0 } catch { newEmpty = false }
+      if (!oldExists || !newEmpty) return { moved: false, reason: 'exists' }
+      try { fs.rmdirSync(newDir) } catch { return { moved: false, reason: 'exists' } }
+    }
+    if (!fs.existsSync(oldDir)) return { moved: false, reason: 'none' }
+    try {
+      fs.renameSync(oldDir, newDir)
+      return { moved: true, from: oldDir, to: newDir }
+    } catch {
+      // 跨盘 / 目标目录被占用:复制后再删源
+      fs.cpSync(oldDir, newDir, { recursive: true })
+      fs.rmSync(oldDir, { recursive: true, force: true })
+      return { moved: true, from: oldDir, to: newDir }
+    }
+  } catch (e2) {
+    return { moved: false, reason: String((e2 && e2.message) || e2) }
   }
 }
 
@@ -272,6 +314,8 @@ module.exports = {
   normalizePathKey,
   libraryNameFromPath,
   safeDirName,
+  coverDirName,
+  migrateCoverDir,
   libraryDataDir,
   localLibraryPath,
   localLibraryDataPath,

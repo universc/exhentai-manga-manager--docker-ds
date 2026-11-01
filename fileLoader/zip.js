@@ -50,10 +50,15 @@ const solveBookTypeZip = async (filepath, TEMP_PATH, COVER_PATH, coverName) => {
   const targetFilePath = path.join(tempFolder, targetFile)
   const tempCoverPath = path.join(tempFolder, coverFile)
 
+  // coverName 到这里已经是「绝对路径」(geneCover 会先把它拼进封面目录)。
+  // 以前无条件把 COVER_PATH 和 coverName 拼起来:Windows 上绝对路径被拼在后面,
+  // 结果是 ...\cover\D:\...\cover\x.webp 这种畸形路径 —— 封面永远写不出来(留下 0 字节)。
+  // 与 folder.js 保持同一套三态处理(相对名才拼目录)。
+  const relCoverName = coverName
   coverPath = coverName === undefined
     ? path.join(COVER_PATH, nanoid() + '.webp')
     : coverName
-      ? path.join(COVER_PATH, coverName)
+      ? (path.isAbsolute(coverName) ? coverName : path.join(COVER_PATH, relCoverName))
       : null
 
   const fileStat = await fs.promises.stat(filepath)

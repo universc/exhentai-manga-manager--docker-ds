@@ -1097,6 +1097,7 @@
     "applyError": "Apply error",
     "copyImageToClipboard": "Copy Image to Clipboard",
     "designateAsCover": "Designate as Cover",
+    "useNewCoverFail": "Failed to set the cover; try another image or check the log",
     "deleteImage": "Delete Image",
     "movedToTrash": "Moved to the recycle bin (Settings → Common → Recycle bin to restore)",
     "imageTrashed": "This image was moved to the recycle bin (Settings → Common → Recycle bin to restore it)",

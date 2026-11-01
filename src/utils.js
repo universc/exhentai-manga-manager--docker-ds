@@ -248,22 +248,44 @@ const mergeContextMenuOptions = (options) => {
 // 封面缺失(空路径)或加载失败时,请求主进程按需生成封面(以漫画名命名)并更新路径。
 // 网页版(Docker)经 web-ipc 桥转发,返回的 coverPath 会被改写为 /api/file?path=...。
 // 失败后标记 _coverFailed,避免 img onerror 死循环。
-const ensureBookCover = async (book) => {
-  if (!book || book._coverFailed || !book.id) return
+// 同一个 book.id 的并发请求合并成一个(同一份 Promise):书架重排/滚动会让同一张卡片
+// 的 watch 与 onerror 短时间内各触发一次,不去重就会对同一本重复解压压缩包。
+const coverInFlight = new Map()
+// 失败重试节奏:第 1 次 1.5s 后、第 2 次 5s 后再试,并且都带 verify(让主进程解码校验,
+// 好把「文件非空但已损坏」的封面删掉重生成);第 3 次仍失败就彻底放弃(本页不再自动试)。
+const COVER_RETRY_DELAYS = [1500, 5000]
+const ensureBookCover = (book) => {
+  if (!book || book._coverFailed || !book.id) return Promise.resolve()
   const auth = window.__AUTH__ || {}
-  if (auth.enabled && auth.role === 'viewer') return
-  try {
-    const res = await ipcRenderer.invoke('ensure-book-cover', book.id)
-    if (res && res.coverPath) {
-      book.coverPath = res.coverPath
-      // 同名文件重建后浏览器可能仍用旧缓存:换个 nonce 强制重新请求(BookCard 的 coverSrc 会用)
-      book._coverNonce = Date.now()
-      return res.coverPath
+  if (auth.enabled && auth.role === 'viewer') return Promise.resolve()
+  const running = coverInFlight.get(book.id)
+  if (running) return running
+  const job = (async () => {
+    for (let attempt = 0; attempt <= COVER_RETRY_DELAYS.length; attempt++) {
+      if (attempt > 0) await new Promise(resolve => setTimeout(resolve, COVER_RETRY_DELAYS[attempt - 1]))
+      try {
+        const res = await ipcRenderer.invoke('ensure-book-cover', book.id, attempt > 0 ? { verify: true } : {})
+        if (res && res.coverPath) {
+          book.coverPath = res.coverPath
+          // 同名文件重建后浏览器可能仍用旧缓存:换个 nonce 强制重新请求(BookCard 的 coverSrc 会用)
+          book._coverNonce = Date.now()
+          book._coverFailed = false
+          return res.coverPath
+        }
+      } catch (e) {
+        // 主进程报错(解压失败/文件被占用)按失败处理,继续下一轮重试
+      }
+      book._coverRetry = (book._coverRetry || 0) + 1
     }
     book._coverFailed = true
-  } catch (e) {
-    book._coverFailed = true
-  }
+    return undefined
+  })()
+  coverInFlight.set(book.id, job)
+  job.finally(() => {
+    // 只清自己这一份:期间可能有新的请求把 map 覆盖成新的 Promise
+    if (coverInFlight.get(book.id) === job) coverInFlight.delete(book.id)
+  }).catch(() => {})
+  return job
 }
 
 // ---------- 自定义主题 / 图标 ----------

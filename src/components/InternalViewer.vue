@@ -2964,7 +2964,14 @@ const handleJumpToReadingProgress = async (book) => {
 
 
 const useNewCover = async (filepath) => {
-  const coverPath = await ipcRenderer.invoke('use-new-cover', filepath)
+  // 带上 book.id:主进程据此把封面写进「这本书所属库」的封面目录,并删掉旧封面
+  const res = await ipcRenderer.invoke('use-new-cover', filepath, bookDetail.value && bookDetail.value.id)
+  // 主进程失败时返回 null(它自己已经弹过提示),这里直接收手,绝不把 null 写进 bookDetail
+  const coverPath = res && res.coverPath
+  if (!coverPath) {
+    ElMessage({ message: t('m.useNewCoverFail'), type: 'error', duration: 3000 })
+    return
+  }
   bookDetail.value.coverPath = coverPath
   await saveBook(bookDetail.value)
 }

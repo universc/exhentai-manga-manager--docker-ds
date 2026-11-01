@@ -1097,6 +1097,7 @@
     "applyError": "应用出现错误",
     "copyImageToClipboard": "复制图片到剪贴板",
     "designateAsCover": "指定为封面",
+    "useNewCoverFail": "设置封面失败,请换一张图片或看日志",
     "deleteImage": "删除图片",
     "movedToTrash": "已移入回收站(设置 → 常用 → 回收站 可恢复)",
     "imageTrashed": "已把这张图移入回收站(设置 → 常用 → 回收站 可恢复)",

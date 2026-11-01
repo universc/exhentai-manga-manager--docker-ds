@@ -1285,8 +1285,8 @@ export default defineComponent({
       applyFavicon(this.setting)
       this.recomputeToolbarWidth()
       if (this.setting.loadOnStart) {
-        // display exist books first then load new books
-        await this.loadBookList()
+        // 扫描内部会先返回现有列表再后台扫,不需要先调一次 loadBookList():
+        // 以前先 loadBookList() 再 loadBookList(true),同一份书架被取两遍,启动白等一轮 IPC
         this.loadBookList(true)
       } else {
         this.loadBookList()
