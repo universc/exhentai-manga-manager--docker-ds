@@ -28,7 +28,11 @@
     </div>
     <!-- 任务列表:整体是列表模式(一行一条:左封面 + 右信息) -->
     <div class="download-list" v-if="!previewTask">
-      <div v-if="pathMissing" class="download-hint">{{ $t('m.downloadNeedPath') }}</div>
+      <!-- 下载目录没设置/不可用:不只显示一句死文案,直接给个能点的入口(C2) -->
+      <div v-if="pathMissing" class="download-hint">
+        {{ $t('m.downloadNeedPath') }}
+        <el-button size="small" text type="primary" @click="$emit('open-setting')">{{ $t('m.downloadOpenSetting') }}</el-button>
+      </div>
       <EmptyState v-if="!taskViews.length" class="download-empty" :title="$t('m.downloadEmpty')" />
       <div v-for="tv in taskViews" :key="tv.id" class="download-item">
         <!-- 右侧一条竖轴:X(顶)/ 移动(中)/ 垃圾桶(底),三者 right:4 对齐 -->
@@ -219,5 +223,7 @@ defineEmits([
   'task-action', 'move-one', 'delete-with-files', 'open-preview', 'open-task-detail',
   'tag-click', 'cover-error', 'warn-hover', 'warn-leave', 'warn-toggle',
   'preview-context', 'preview-page', 'preview-img-error', 'retry-img',
+  // 下载目录缺失时的「去设置」入口(C2):由 App.vue 接住并打开设置里的下载目录
+  'open-setting',
 ])
 </script>

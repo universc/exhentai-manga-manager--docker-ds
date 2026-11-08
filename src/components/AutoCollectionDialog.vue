@@ -104,7 +104,13 @@ const scan = async () => {
   titles.value = {}
   try {
     const list = (props.books || bookList.value || []).filter(b => b && !b.isCollection)
-    const r = await ipcRenderer.invoke('suggest-collections', list)
+    // ★ 必须转成纯对象再 IPC。
+    //   bookList 来自 pinia(storeToRefs),拿到的是 **Vue 响应式 Proxy**;
+    //   Electron 的 invoke 用结构化克隆传参,克隆 Proxy 会直接抛
+    //   "An object could not be cloned." —— 这就是「智能生成合集」报错的原因。
+    //   JSON 往返是最稳的脱代理方式(也顺带丢掉函数/undefined 这类不可克隆值)。
+    const plain = JSON.parse(JSON.stringify(list))
+    const r = await ipcRenderer.invoke('suggest-collections', plain)
     if (r && r.ok) {
       suggestions.value = r.suggestions || []
       const p = {}

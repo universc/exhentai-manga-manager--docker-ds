@@ -59,12 +59,18 @@
         }"
         ref="drawerViewerBody"
         @wheel.stop="handleBodyWheel"
-        @scroll="handleBodyScroll"
+        @keydown="onUserScrollIntent"
+        @touchstart.passive="onUserScrollIntent"
+        @pointerdown="onUserScrollIntent"
+        @scroll="onViewerBodyScroll"
         @mousemove="handleViewerMouseMove"
         @mouseleave="nextMangaButtonsVisible = false"
       >
                   <!-- 文字模式:txt / 没有图片的 epub -->
+          <!-- data-no-inertia:这一块自己接管滚轮(翻页/横排滚动),全局惯性层必须让开,
+               否则两套「preventDefault + 改 scrollTop」会互相拉,表现为卡在原地跳 -->
           <div class="drawer-novel-content" v-if="!showThumbnail && isNovelMode" ref="novelScrollRef"
+            data-no-inertia
             :class="{ 'novel-paged': novelPaged, 'novel-scrollv': !novelPaged && novelDirection === 'vertical', 'novel-dir-ltr': !novelPaged && novelDirection === 'ltr', 'novel-dir-rtl': !novelPaged && novelDirection === 'rtl' }"
             :style="novelBoxStyle"
             @wheel="onNovelWheel" @keydown="onNovelKeydown" @click="onNovelClick"
@@ -74,9 +80,9 @@
             <!-- 卷轴(连续滚动):一整块流式内容,单列;方向由 writing-mode / maxWidth 控制 -->
             <div v-if="!novelPaged" class="novel-body" :style="novelStyle">
               <template v-for="(blk, i) in novelBlocks" :key="i">
-                <div v-if="blk.kind === 'chapter'" :id="'nb-' + i" class="novel-chapter">{{ blk.title }}</div>
-                <h4 v-else-if="blk.kind === 'heading'" :id="'nb-' + i" class="novel-heading">{{ blk.text }}</h4>
-                <p v-else-if="blk.kind === 'text'" :id="'nb-' + i" class="novel-para">{{ blk.text }}</p>
+                <div v-if="blk.kind === 'chapter'" :id="'nb-' + i" class="novel-chapter">{{ novelText(blk) }}</div>
+                <h4 v-else-if="blk.kind === 'heading'" :id="'nb-' + i" class="novel-heading">{{ novelText(blk) }}</h4>
+                <p v-else-if="blk.kind === 'text'" :id="'nb-' + i" class="novel-para">{{ novelText(blk) }}</p>
                 <img v-else-if="blk.kind === 'image'" :id="'nb-' + i" class="novel-image" :src="novelImageSrc(blk)" loading="lazy" />
               </template>
             </div>
@@ -93,9 +99,9 @@
                   <div class="novel-page-viewport" :style="{ height: novelPageHeight + 'px' }">
                     <div class="novel-body novel-body-paged" :style="novelBodyStyle(w - 1)">
                     <template v-for="(blk, i) in novelBlocks" :key="i">
-                      <div v-if="blk.kind === 'chapter'" :id="'nb-' + i" class="novel-chapter">{{ blk.title }}</div>
-                      <h4 v-else-if="blk.kind === 'heading'" :id="'nb-' + i" class="novel-heading">{{ blk.text }}</h4>
-                      <p v-else-if="blk.kind === 'text'" :id="'nb-' + i" class="novel-para">{{ blk.text }}</p>
+                      <div v-if="blk.kind === 'chapter'" :id="'nb-' + i" class="novel-chapter">{{ novelText(blk) }}</div>
+                      <h4 v-else-if="blk.kind === 'heading'" :id="'nb-' + i" class="novel-heading">{{ novelText(blk) }}</h4>
+                      <p v-else-if="blk.kind === 'text'" :id="'nb-' + i" class="novel-para">{{ novelText(blk) }}</p>
                       <img v-else-if="blk.kind === 'image'" :id="'nb-' + i" class="novel-image" :src="novelImageSrc(blk)" loading="lazy" />
                     </template>
                     </div>
@@ -356,13 +362,43 @@
             </span>
             <span v-else-if="id === 'novelLineHeight'" class="viewer-toolbar-group">
               <el-button class="viewer-toolbar-btn" size="small" :title="viewerToolbarTitle(id)" @click="viewerToolbarClick(id)">{{ viewerToolbarText(id) }}</el-button>
-              <el-input class="viewer-toolbar-input" size="small" :model-value="String(novelLineHeight)"
-                :title="viewerToolbarTitle(id)" @change="applyNovelLineHeight"></el-input>
+              <!-- ★ 用 el-input-number:之前是 el-input 只绑 :model-value(单向),
+                   DOM 里键进去的值下一次重渲染就被 prop 覆盖回去 —— 表现就是「打不进数字」。
+                   el-input-number 有自己的内部状态,编辑中和提交后都不会被覆盖;
+                   :controls="false" 去掉上下箭头,保持工具栏紧凑。 -->
+              <el-input-number
+                class="viewer-toolbar-input"
+                size="small"
+                :controls="false"
+                :step="0.1"
+                :min="1"
+                :max="3"
+                :precision="1"
+                :model-value="novelLineHeight"
+                :title="viewerToolbarTitle(id)"
+                @change="applyNovelLineHeight"
+              />
+            </span>
+            <span v-else-if="id === 'novelZhConvert'" class="viewer-toolbar-group">
+              <!-- 简繁转换:点亮 = 已转成繁体 -->
+              <el-button class="viewer-toolbar-btn" size="small" :class="{ 'viewer-toolbar-btn-on': novelZhTraditional }"
+                :title="viewerToolbarTitle(id)" @click="viewerToolbarClick(id)">{{ viewerToolbarText(id) }}</el-button>
             </span>
             <span v-else-if="id === 'novelLetterSpacing'" class="viewer-toolbar-group">
               <el-button class="viewer-toolbar-btn" size="small" :title="viewerToolbarTitle(id)" @click="viewerToolbarClick(id)">{{ viewerToolbarText(id) }}</el-button>
-              <el-input class="viewer-toolbar-input" size="small" :model-value="String(novelLetterSpacing)"
-                :title="viewerToolbarTitle(id)" @change="applyNovelLetterSpacing"></el-input>
+              <!-- 同上:间距 0–0.5,精度两位 -->
+              <el-input-number
+                class="viewer-toolbar-input"
+                size="small"
+                :controls="false"
+                :step="0.01"
+                :min="0"
+                :max="0.5"
+                :precision="2"
+                :model-value="novelLetterSpacing"
+                :title="viewerToolbarTitle(id)"
+                @change="applyNovelLetterSpacing"
+              />
             </span>
             <!-- 放大 / 缩小是一个整体(设置里也是一项) -->
             <span v-else-if="id === 'zoom'" class="viewer-toolbar-group">
@@ -426,6 +462,10 @@ import { attachInertiaScroll } from '../inertia-scroll.js'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 import { isContextMenuItemEnabled, sortContextMenuItems, insertLocalReadRecord, customFontStyles } from '../utils.js'
+// 简繁转换(离线内置对照表,见 src/zhConvert.js)
+// ⚠ 必须用相对路径 import:渲染层是浏览器环境,没有 node 的 require,
+//   写成 require('../../modules/...') 会被 Vite 当成外部依赖,打包后运行时报 undefined。
+import zhConvert from '../zhConvert.js'
 
 const appStore = useAppStore()
 const { keyMap, setting, bookDetail } = storeToRefs(appStore)
@@ -621,46 +661,68 @@ const readingDirectionLabel = computed(() => t({
 }[readingDirection.value] || 'm.dirVertical'))
 
 // 模式 / 方向变化后的统一收尾:记住当前页,再把视口摆到该在的位置
-const afterLayoutChange = () => {
-  getCurrentImageId()
+// ★ keepId 必须在改 imageStyleType **之前**取好(getCurrentImageId 的度量方式跟着模式走:
+//   卷轴读 scrollTop、分页读索引。旧实现先改类型再取值,等于用新尺子量旧布局 ——
+//   卷轴/分页两种度量互相读不到对方的偏移,必然拿回第 0 页,表现就是「切一次显示方式就回第 1 页」)
+const afterLayoutChange = (keepId) => {
   saveImageStyleType()
+  // 缩略图视图里切显示方式:直接回到阅读视图,不然新布局没有 DOM 可定位
+  if (showThumbnail.value) { showThumbnail.value = false; storeDrawerScrollTop = undefined }
   nextTick(() => {
-    if (isScrollHorizontal.value) {
-      const first = viewerImageList.value[0]
-      // 列表还没推入 / 还停在第一页 → 贴到「第一页」那一端
-      if (!viewerImageList.value.length || !currentImageId.value || (first && currentImageId.value === first.id)) pinHorizontal()
-      else pinHorizontalStart = false
-    } else {
-      pinHorizontalStart = false
+    // 按切换前那一页重新定位(单页=页序号 / 双页=换算成屏序号 / 卷轴=滚到那一页)
+    if (keepId) jumpToImageId(keepId)
+    // 分页:上一布局残留的滚动偏移会把新页顶出视口
+    if (imageStyleType.value !== 'scroll') {
+      const box = drawerViewerBody.value
+      if (box) { box.scrollTop = 0; box.scrollLeft = 0 }
     }
+    // 横向整排:只有确实停在第一页时才贴边(否则会把视口拽回开头)
+    const first = viewerImageList.value[0]
+    if (isScrollHorizontal.value && (!keepId || (first && keepId === first.id))) pinHorizontal()
+    else pinHorizontalStart = false
     updateImageSize()
   })
 }
+// 布局切换的统一入口:先取「现在看到哪一页」,再执行 mutate() 改模式,最后按那一页还原
+const withCurrentPage = (mutate) => {
+  let keepId = ''
+  try {
+    // 缩略图视图里图片 DOM 是卸载的,滚动度量读不到 —— 用已经算好的 currentImageId
+    keepId = showThumbnail.value
+      ? (currentImageId.value || '')
+      : (getCurrentImageId() || '')
+  } catch (e) { keepId = '' }
+  mutate()
+  afterLayoutChange(keepId)
+}
 // ① 卷轴开关:关掉卷轴 → 回到上次的单 / 双页;打开 → 沿用当前单双
 const toggleScrollMode = () => {
-  imageStyleType.value = imageStyleType.value === 'scroll'
-    ? (scrollDoubleMode.value ? 'double' : 'single')
-    : 'scroll'
-  afterLayoutChange()
+  withCurrentPage(() => {
+    imageStyleType.value = imageStyleType.value === 'scroll'
+      ? (scrollDoubleMode.value ? 'double' : 'single')
+      : 'scroll'
+  })
   showViewerTip(viewerModeTip())
 }
 // ② 单双开关:分页下一屏 1 ⇄ 2 张;卷轴下一行 1 ⇄ 2 张
 const toggleSingleDouble = () => {
-  if (imageStyleType.value === 'scroll') {
-    setting.value.scrollDoubleMode = !scrollDoubleMode.value
-    persistSetting()
-  } else {
-    imageStyleType.value = imageStyleType.value === 'double' ? 'single' : 'double'
-  }
-  afterLayoutChange()
+  withCurrentPage(() => {
+    if (imageStyleType.value === 'scroll') {
+      setting.value.scrollDoubleMode = !scrollDoubleMode.value
+      persistSetting()
+    } else {
+      imageStyleType.value = imageStyleType.value === 'double' ? 'single' : 'double'
+    }
+  })
   showViewerTip(viewerModeTip())
 }
 // ③ 方向:上下 → 左右 → 右左 循环(不改变卷轴开关)
 const cycleReadingDirection = () => {
-  const order = ['vertical', 'ltr', 'rtl']
-  setting.value.readingDirection = order[(order.indexOf(readingDirection.value) + 1) % order.length]
-  persistSetting()
-  afterLayoutChange()
+  withCurrentPage(() => {
+    const order = ['vertical', 'ltr', 'rtl']
+    setting.value.readingDirection = order[(order.indexOf(readingDirection.value) + 1) % order.length]
+    persistSetting()
+  })
   showViewerTip({
     vertical: t('m.tipDirectionVertical'),
     ltr: t('m.tipDirectionLtr'),
@@ -671,9 +733,9 @@ const cycleReadingDirection = () => {
 // ---------- 设置栏按钮:可在 设置 → 内置阅读器 里勾选 / 排序(留空=全部显示) ----------
 // 卷轴 / 单双 / 方向 / 适应 / 缩放 与 缩略图 / 侧栏 / 图钉 都可配置(设置里勾选 + 拖动排序);
 // 只有「退出」按钮固定常驻右上角,不参与配置。
-const DEFAULT_VIEWER_TOOLBAR = ['scroll', 'singleDouble', 'direction', 'fit', 'zoom', 'novelFont', 'novelLineHeight', 'novelLetterSpacing', 'thumbnail', 'sidebar', 'pin']
+const DEFAULT_VIEWER_TOOLBAR = ['scroll', 'singleDouble', 'direction', 'fit', 'zoom', 'novelFont', 'novelLineHeight', 'novelLetterSpacing', 'novelZhConvert', 'thumbnail', 'sidebar', 'pin']
 // 只在文字阅读器出现的按钮(图片模式直接过滤掉)
-const NOVEL_ONLY_TOOLBAR_ITEMS = ['novelFont', 'novelLineHeight', 'novelLetterSpacing']
+const NOVEL_ONLY_TOOLBAR_ITEMS = ['novelFont', 'novelLineHeight', 'novelLetterSpacing', 'novelZhConvert']
 // 旧配置里的 zoomIn / zoomOut 归一成一项 zoom
 const normalizeViewerToolbarId = (id) => (id === 'zoomIn' || id === 'zoomOut' ? 'zoom' : id)
 // 缩略图视图下这三项没有意义
@@ -718,6 +780,7 @@ const novelToolbarTitle = (id) => {
     novelFont: t('m.novelFontTip', { n: novelFontLabel.value }),
     novelLineHeight: t('m.novelLineHeightTip', { n: novelLineHeight.value }),
     novelLetterSpacing: t('m.novelLetterSpacingTip', { n: novelLetterSpacing.value }),
+    novelZhConvert: (novelZhTraditional.value ? t('m.novelZhOn') : t('m.novelZhOff')) + ' · ' + t('m.novelZhConvertQuick'),
     thumbnail: t('m.novelToc'),
     sidebar: showViewerSide.value ? t('m.novelHideToc') : t('m.novelShowToc'),
     pin: viewerToolbarPinned.value ? t('m.unpinToolbar') : t('m.pinToolbar'),
@@ -734,6 +797,8 @@ const novelToolbarText = (id) => {
     // 只显示名字:数值由右边的输入框显示,避免「行距 1.9」又跟一个 1.9
     novelLineHeight: t('m.novelLineHeight'),
     novelLetterSpacing: t('m.novelLetterSpacing'),
+    // 按钮上只显示一个单字:当前是简体就显示「简」,繁体显示「繁」
+    novelZhConvert: novelZhTraditional.value ? '繁' : '简',
     // 目录与图钉只要图标:状态看图标就够,按钮文字会挤占工具栏;说明留在 title 悬浮提示里
     thumbnail: '',
     sidebar: '',
@@ -773,6 +838,7 @@ const viewerToolbarClick = (id) => {
       novelFont: cycleNovelFont,
       novelLineHeight: cycleNovelLineHeight,
       novelLetterSpacing: cycleNovelLetterSpacing,
+      novelZhConvert: toggleNovelZhConvert,
       sidebar: () => { showThumbnail.value = false; toggleSidebar() },
       thumbnail: () => { showThumbnail.value = false; toggleSidebar() },
       pin: toggleToolbarPin,
@@ -1023,9 +1089,18 @@ const novelFontStack = computed(() => {
   // 手输的字体名:去掉引号/反斜杠后当字体族用
   return "'" + String(novelFont.value).replace(/['"\\]/g, '') + "', serif"
 })
-const NOVEL_LINE_HEIGHTS = [1.5, 1.8, 2.1, 2.4]
+// ★ 2026-11 改:行距 / 间距不再用「固定档位循环」,改成**每次点击按固定步长增减**。
+//   以前是 [1.5, 1.8, 2.1, 2.4] 这种跳档 —— 用户点一下从 1.9 直接跳到 2.1,
+//   想要的 1.9→2.0 根本点不出来。现在:
+//   · 行距每次 ±0.2(超过上限回到下限,构成循环)
+//   · 间距每次 ±0.01
+const NOVEL_LINE_HEIGHT_STEP = 0.2
+const NOVEL_LINE_HEIGHT_MIN = 1.0
+const NOVEL_LINE_HEIGHT_MAX = 3.0
 const novelLineHeight = ref(Number(localStorage.getItem('emm-novel-line-height')) || 1.9)
-const NOVEL_LETTER_SPACINGS = [0, 0.03, 0.08, 0.15]
+const NOVEL_LETTER_SPACING_STEP = 0.01
+const NOVEL_LETTER_SPACING_MIN = 0
+const NOVEL_LETTER_SPACING_MAX = 0.5
 const novelLetterSpacing = ref(Number(localStorage.getItem('emm-novel-letter-spacing')) || 0.02)
 const cycleNovelFont = () => {
   const i = NOVEL_FONT_OPTIONS.findIndex(f => f.id === novelFont.value)
@@ -1035,20 +1110,22 @@ const cycleNovelFont = () => {
   showViewerTip(t('m.novelFontTip', { n: t(next.labelKey) }))
   nextTick(() => { novelMeasure() })
 }
+// 行距:每次 +0.2;到上限后回到下限(循环,和以前的「点到底回第一个」手感一致)
 const cycleNovelLineHeight = () => {
-  const i = NOVEL_LINE_HEIGHTS.indexOf(Number(novelLineHeight.value.toFixed(2)))
-  const next = NOVEL_LINE_HEIGHTS[(i + 1) % NOVEL_LINE_HEIGHTS.length]
+  let next = Number((Number(novelLineHeight.value) + NOVEL_LINE_HEIGHT_STEP).toFixed(2))
+  if (next > NOVEL_LINE_HEIGHT_MAX + 1e-9) next = NOVEL_LINE_HEIGHT_MIN
   novelLineHeight.value = next
   localStorage.setItem('emm-novel-line-height', String(next))
-  showViewerTip(t('m.novelLineHeightTip', { n: next }))
+  // 不再弹气泡:数值直接显示在右侧输入框里
   nextTick(() => { novelMeasure() })
 }
+// 间距:每次 +0.01
 const cycleNovelLetterSpacing = () => {
-  const i = NOVEL_LETTER_SPACINGS.indexOf(Number(novelLetterSpacing.value.toFixed(2)))
-  const next = NOVEL_LETTER_SPACINGS[(i + 1) % NOVEL_LETTER_SPACINGS.length]
+  let next = Number((Number(novelLetterSpacing.value) + NOVEL_LETTER_SPACING_STEP).toFixed(2))
+  if (next > NOVEL_LETTER_SPACING_MAX + 1e-9) next = NOVEL_LETTER_SPACING_MIN
   novelLetterSpacing.value = next
   localStorage.setItem('emm-novel-letter-spacing', String(next))
-  showViewerTip(t('m.novelLetterSpacingTip', { n: next }))
+  // 同样不弹气泡
   nextTick(() => { novelMeasure() })
 }
 // ── 下拉/手输的直接应用(工具栏「字体 / 行距 / 间距」右侧的输入框) ──
@@ -1060,19 +1137,40 @@ const applyNovelFont = (v) => {
   nextTick(() => { novelMeasure() })
 }
 const applyNovelLineHeight = (v) => {
+  // el-input-number 在「输入框被清空」时给的是 null/undefined:
+  // 这时保持原值不动(不回退、不报错),用户继续输入还会再触发一次 change。
+  if (v == null || v === '') return
   const n = Number(v)
   if (!Number.isFinite(n)) return
-  const val = Math.min(3.5, Math.max(1, n))
+  const val = Math.min(NOVEL_LINE_HEIGHT_MAX, Math.max(NOVEL_LINE_HEIGHT_MIN, n))
   novelLineHeight.value = val
   localStorage.setItem('emm-novel-line-height', String(val))
   nextTick(() => { novelMeasure() })
 }
 const applyNovelLetterSpacing = (v) => {
+  if (v == null || v === '') return
   const n = Number(v)
   if (!Number.isFinite(n)) return
-  const val = Math.min(0.5, Math.max(0, n))
+  const val = Math.min(NOVEL_LETTER_SPACING_MAX, Math.max(NOVEL_LETTER_SPACING_MIN, n))
   novelLetterSpacing.value = val
   localStorage.setItem('emm-novel-letter-spacing', String(val))
+  nextTick(() => { novelMeasure() })
+}
+// ---------- 简繁转换(文字模式专用)----------
+// 需求:阅读器里一键把简体正文转成繁体。
+// 实现在 modules/zhConvert.js(离线内置对照表,不依赖网络/外部词典)。
+// 这里只在渲染层做转换,不改 novelBlocks 原始数据 —— 关掉转换立刻回到原文。
+const novelZhTraditional = ref(localStorage.getItem('emm-novel-zh-trad') === '1')
+// 原始文本 → 显示文本。未开启时原样返回(零开销)。
+const novelText = (blk) => {
+  const text = blk && blk.text != null ? blk.text : ''
+  if (!novelZhTraditional.value) return text
+  return zhConvert.toTraditional(text)
+}
+const toggleNovelZhConvert = () => {
+  novelZhTraditional.value = !novelZhTraditional.value
+  localStorage.setItem('emm-novel-zh-trad', novelZhTraditional.value ? '1' : '0')
+  // 不再弹提示气泡:按钮文字本身就是当前状态(简 / 繁)
   nextTick(() => { novelMeasure() })
 }
 const NOVEL_WIDTH_STEPS = [100, 90, 80, 70, 60, 50, 40, 30]
@@ -1366,12 +1464,13 @@ const adjustNovelFont = (d) => {
   nextTick(() => { novelMeasure() })
 }
 // 「适应」按钮:正文宽度占比,点一下小 10%
+// ★ 2026-11:点击时不再弹提示气泡 —— 按钮文字本身就显示「宽度 100%」,
+//   每点一次弹一个气泡纯属干扰(用户明确要求关掉)。
 const cycleNovelWidth = () => {
   const i = NOVEL_WIDTH_STEPS.indexOf(Number(novelWidthPercent.value))
   const next = NOVEL_WIDTH_STEPS[(i + 1) % NOVEL_WIDTH_STEPS.length]
   novelWidthPercent.value = next
   localStorage.setItem('emm-novel-width-percent', String(next))
-  showViewerTip(t('m.novelWidthTip', { n: next }))
   nextTick(() => { novelMeasure() })
 }
 const toggleNovelTwoCol = () => {
@@ -1647,6 +1746,57 @@ const flushPendingImages = () => {
   }
 }
 
+// 「从第 N 页开始读」的跳转:目标页一进来就跳,不再等整本书的图片全到齐。
+// 以前只在「(已到 + 待刷) === total」那一刻跳 —— 500 页的书要等几百张图片刷完,
+// 期间用户干看着第 1 页,然后才「闪」到目标页(用户反馈的「先转到第一页再移动」)。
+// 现在:目标下标 < 当前已有页数就立刻跳,后面的图片继续在后台刷,不影响已经定位好的位置
+// (图片是按顺序到的,目标页之前的页必然都已就位,所以位置是准的)。
+let pendingJumpRetryScheduled = false
+const applyPendingJumpIfReady = () => {
+  if (pendingJumpIndex == null) return false
+  const target = pendingJumpIndex
+  if (target >= viewerImageList.value.length) return false
+
+  // 非卷轴模式:viewManga 已经把 currentImageIndex 预设成目标页了,
+  // 首帧就是目标页 —— 这里只需把 currentImageId 补上(阅读进度/缩略图高亮要用),
+  // 不要再去调 handleClickThumbnail,避免多余的滚动/切换动作。
+  // ★ 双页模式下 currentImageIndex 是「屏」序号,而 target 是「页」序号:
+  //   不换算的话点第 N 页会渲染到第 2N 页那一屏去(实测点第 6 页显示 11,12)
+  if (imageStyleType.value !== 'scroll') {
+    pendingJumpIndex = null
+    const item = viewerImageList.value[target]
+    if (!item) return true
+    if (imageStyleType.value === 'double') {
+      const frameIndex = viewerImageListDouble.value.findIndex(frame => (frame.page || []).some(p => p.id === item.id))
+      if (frameIndex >= 0) _currentImageIndex.value = frameIndex
+    } else {
+      _currentImageIndex.value = target
+    }
+    currentImageId.value = item.id
+    return true
+  }
+
+  // 卷轴模式:必须**真的滚过去**才算完成。
+  // ★ 以前这里先把 pendingJumpIndex 清空再去滚 —— 而目标页的 DOM 往往还没渲染出来
+  //   (v-for 补丁是异步的),scrollToImageElement 返回 false,标记却已经没了,
+  //   于是永远停在第一页、而且再也不会重试。现在:滚成功才清标记,失败下一帧再来。
+  const item = viewerImageList.value[target]
+  if (!item) return false
+  if (scrollToImageElement(item.id)) {
+    pendingJumpIndex = null
+    handleClickThumbnail(item.id)   // 走统一的「多帧校正」,图片陆续加载时仍能对齐
+    return true
+  }
+  if (!pendingJumpRetryScheduled) {
+    pendingJumpRetryScheduled = true
+    nextTick(() => {
+      pendingJumpRetryScheduled = false
+      applyPendingJumpIfReady()
+    })
+  }
+  return false
+}
+
 const flushPendingThumbnails = () => {
   if (pendingThumbnails.length > 0) {
     receiveThumbnailList.value.push(...pendingThumbnails)
@@ -1671,19 +1821,14 @@ onMounted(() => {
           showComicReader(viewerImageFilepathList.value)
         })
       }
+      // ★ 目标页已经到了就立刻跳,不用等整本刷完(见 applyPendingJumpIfReady 注释)
+      applyPendingJumpIfReady()
     }
 
     if ((viewerImageList.value.length + pendingImages.length) === arg.total) {
       flushPendingImages()
-      // 「进入阅读(第 N 页)」的跳转:等图片全部到齐再跳 ——
-      // 提前跳会被 currentImageIndex 的 setter 夹到「当前已到的最后一页」
-      if (pendingJumpIndex != null) {
-        const target = Math.min(Math.max(0, pendingJumpIndex), viewerImageList.value.length - 1)
-        pendingJumpIndex = null
-        if (target > 0 && viewerImageList.value[target]) {
-          handleClickThumbnail(viewerImageList.value[target].id)
-        }
-      }
+      // 兜底:跳转还没发生过(极少数时序下目标页一直没轮到)就最后一次尝试
+      applyPendingJumpIfReady()
 
       if (setting.value.viewerType === 'comicread') {
         totalPage.value = arg.total
@@ -1728,6 +1873,8 @@ onUnmounted(() => {
     imageStateRaf = null
   }
   ipcRenderer.invoke('set-viewer-active', false)
+  // 延迟卸载定时器必须清:否则退出阅读器后它们还会往已销毁的组件里 setImageLoaded
+  clearImageUnloadTimers()
 if (viewerHeartbeat) { clearInterval(viewerHeartbeat); viewerHeartbeat = null }
 })
 const handleWindowResize = _.debounce(() => {
@@ -1757,6 +1904,10 @@ const viewerLoadToken = ref(0)
 // 要等全部到齐再跳(提前跳会被 currentImageIndex 的 setter 夹到当前末尾页)。
 // 在线书的列表是同步建好的,在 openOnlineBook 里直接消费,不走这里。
 let pendingJumpIndex = null
+// 本次开书「用户明确指定的目标页」(0 基);null = 没指定(交给阅读进度)。
+// 与 pendingJumpIndex 的区别:后者是「待执行的跳转任务」,跳完就清空;
+// 这个标记代表「本次开书的意图」,整个开书流程内都保持有效。
+let openedToPage = null
 const showViewerLoading = (text) => {
   viewerLoadingText.value = text || t('m.loading')
   viewerLoadingVisible.value = true
@@ -1787,6 +1938,10 @@ const onViewerImageLoad = (image) => {
   }
   // 图片真的出来了:把之前的失败标记清掉(否则占位会一直显示「加载失败」)
   clearImageFailed(image)
+  // 抖动重试次数也必须清零。
+  // ⚠ 以前 __retry 只加不清:长会话里同一页累计 4 次抖动(换节点 / 换书重开都算)之后,
+  //   第 5 次抖动就直接判死(markImageFailed),用户只能手动点「重新加载」。
+  try { delete image.__retry } catch (e) { image.__retry = 0 }
   image.failed = false
   image.resolving = false
   viewerImageReady.value = { ...viewerImageReady.value, [image.id]: true }
@@ -1851,6 +2006,21 @@ const onViewerImageError = (image) => {
 //   直接写条目字段、绕过了 viewerImageFailed,于是占位状态判断和条目状态**不同步**:
 //   条目已经 failed,map 里却没有记录,界面就出现「一会儿失败一会儿加载」的错乱。
 //   现在统一走 markImageFailed,保证两处状态一致。
+// 「整本」级别的失败(不是某一页):网络不通 / 画廊页打不开。
+// 与 markAllImagesFailed 的区别:这里只挂一个明确提示 + 一次整本重试入口,
+// 不把每一页都标成「加载失败」(那看着像软件坏了)。
+const markerWholeBookFailed = (msg) => {
+  const list = viewerImageList.value || []
+  for (const it of list) {
+    it.failed = false
+    it.resolving = false
+    it.retry = (it.retry || 0) + 1
+  }
+  viewerImageFailed.value = {}
+  hideViewerLoading()
+  if (msg) ElMessage.warning(msg)
+}
+
 const markAllImagesFailed = () => {
   for (const it of (viewerImageList.value || [])) markImageFailed(it)
 }
@@ -1886,7 +2056,7 @@ const onlinePageSize = (url) => {
 
 // 在线画廊:★立刻进阅读器★,再逐页解析图片地址(JHenTai 的做法)。
 // 以前是「先把 20 页全解析完再进阅读器」—— 实测要 8~9 秒,点一下要等很久才有反应。
-// 现在:①按卡片上已知的页数摆好占位 ②收页链接拿到真实总数 ③并发 6 逐页解析,解析好一页填一页,
+// 现在:①按卡片上已知的页数摆好占位 ②收页链接拿到真实总数 ③并发 8 逐页解析,解析好一页填一页,
 // 没解析好的那一页显示「正在解析第 N 页」的转圈(与 JHenTai 阅读器的解析占位一致);
 // 翻页时还会把离当前页近的页面提到队列前面(见 prioritizeOnlineQueue)。
 const makeOnlineItem = (index, total) => ({
@@ -1922,15 +2092,33 @@ const imageLoadProgress = (image) => {
 }
 
 // 并发解析数:每页都要回站上取一次图片地址,4 是「不太会被 EH 限速」的保守值;
-// 6 是本机实测的平衡点(再多容易触发 EH 的限速页,反而更慢)
-const ONLINE_RESOLVE_CONCURRENCY = 6
+// 6 是本机实测的平衡点(再多容易触发 EH 的限速页,反而更慢)。
+// 提到 8:解析与取图分开算 —— 「解析」只是问站上要图片地址(轻请求),「取图」是拉真实字节(重流量),
+//   两者是两条独立的通道,别互相排队。解析快了,后面的取图才能尽早开工;反之解析卡在 6 会让取图空转。
+//   若实测出现 EH 限速页(429/「Exceeded Allotted Bandwidth」),优先回退这里,而不是动取图侧。
+const ONLINE_RESOLVE_CONCURRENCY = 8
 // 预加载窗口(照 JHenTai 的 preloadPageCount / preloadDistance 口径):
 //   只解析「当前页前后 N 页」,不再整本一次性入队。
 //   JHenTai 默认在线 preloadPageCount=1、本地=3,这里放宽一点(7)兼顾连续阅读;
 //   窗口外的页在翻到附近时再补队,所以既有预读、又不会把请求堆成几百个。
 const PRELOAD_WINDOW = 7
 const onlineResolveQueue = []
-let onlineResolveRunning = 0
+// 每本在线书(每次打开 = 一个 session token)各自一份「正在解析」计数。
+// ⚠ 以前是全组件共用一个 let 数字:换书时直接归零,而上一本还在飞的 worker 收尾时会 -=1 →
+//   计数变负,闸门 `running < ONLINE_RESOLVE_CONCURRENCY` 永远成立 → 实际并发远超 6,被 EH 限速,
+//   表现就是「换书之后大面积加载失败 / 一直转圈」。
+//   现在按 session 分开计数:旧 session 的 -=1 只动它自己那一份,归零也只清当前 session。
+const onlineResolveRunningBySession = new Map()
+const resolveRunningOf = (token) => Number(onlineResolveRunningBySession.get(token)) || 0
+const resolveRunningInc = (token) => {
+  onlineResolveRunningBySession.set(token, resolveRunningOf(token) + 1)
+}
+const resolveRunningDec = (token) => {
+  const left = resolveRunningOf(token) - 1
+  // 减到 0 就把这条删掉:换过很多本书之后 Map 不会一直变长
+  if (left <= 0) onlineResolveRunningBySession.delete(token)
+  else onlineResolveRunningBySession.set(token, left)
+}
 
 // 翻页时把「离当前页近的页」提到解析队列前面 ——
 // 否则用户翻到第 30 页时,它还在队尾排着(整本按顺序解析),观感就是「一直正在解析」。
@@ -1956,15 +2144,23 @@ const resolveOnlineItem = async (image, token, attempt = 0) => {
     // 每轮都带上 reloadKey(= 上一轮页面里的 nl 值):节点被限速/挂掉时,
     // EH 会据此重新挑一个 H@H 节点 —— 与 JHenTai 的 _reParseImageUrlAndDownload 同一做法。
     // 这就是用户看到的 ?nl=42598-498016;实测「换节点重试」能把连续失败压成 0。
+    //
+    // ★ 2026-11 修:原来最多 4 轮、每轮 eh-page-image 自己最坏 60.9s(20s×3次),
+    //   合计 245 秒 —— 网络不通时用户看到的是「一直转圈」,不是快速失败。
+    //   现在:①轮数降到 3;②每轮前先看「上一次失败是不是网络层」,
+    //   网络层连续失败就**不做无谓的 nl 换节点重试**(换节点救不了断网),
+    //   只保留一次轻量重试;③退避从 250/500/750 收紧到 200/400。
     const r = await ipcRenderer.invoke('eh-page-image', {
       pageUrl: image.pageUrl,
       reloadKey: image.reloadKey || ''
     })
     if (token !== viewerLoadToken.value) return
     if (r && r.reloadKey) image.reloadKey = r.reloadKey
-    // 换节点重试:最多 4 轮(原来只重试 2 次且不带 nl),失败率会明显下降
-    if (!(r && r.ok && r.url) && attempt < 3) {
-      await new Promise(r2 => setTimeout(r2, 250 * (attempt + 1)))
+    // 换节点重试:最多 2 次重试(共 3 轮),且只对「网络层以外的原因」或首次失败才换节点
+    if (!(r && r.ok && r.url) && attempt < 2) {
+      // 连续两次都是网络层错误 → 再换节点也没意义,直接判失败,别让这一页长期占着解析槽
+      if (attempt >= 1 && image.__netFail >= 2) { markImageFailed(image); return }
+      await new Promise(r2 => setTimeout(r2, 200 * (attempt + 1)))
       if (token !== viewerLoadToken.value) return
       return resolveOnlineItem(image, token, attempt + 1)
     }
@@ -1978,6 +2174,7 @@ const resolveOnlineItem = async (image, token, attempt = 0) => {
       image.height = size.height
       image.resolving = false
       image.failed = false
+      image.__netFail = 0
       // 地址重新拿到了:之前那次的「最终失败」标记要摘掉,
       // 否则占位会一直显示「加载失败」,即使图片这次能正常加载。
       clearImageFailed(image)
@@ -1991,6 +2188,13 @@ const resolveOnlineItem = async (image, token, attempt = 0) => {
       }, 120)
       return
     }
+    // 这一轮没拿到:记一下是不是网络层错误,供上面决定要不要继续换节点重试
+    const msg = String((r && r.error) || '')
+    image.__netFail = /timeout|network|ECONNRESET|socket|TLS|aborted|ENOTFOUND|EAI_AGAIN/i.test(msg)
+      ? (image.__netFail || 0) + 1
+      : 0
+    // 还有轮次就交给上面继续重试
+    if (attempt < 2) return
     // 解析彻底失败:统一走 markImageFailed(同时写最终失败标记,界面不会再闪回「正在解析」)
     markImageFailed(image)
     return
@@ -2028,15 +2232,19 @@ const enqueuePreloadWindow = (currentIndex) => {
 }
 
 const drainOnlineQueue = (token) => {
-  while (onlineResolveRunning < ONLINE_RESOLVE_CONCURRENCY && onlineResolveQueue.length) {
+  // 旧 session 的 worker 收尾时也会走到这里:直接退出,别去抢当前这本书的队列
+  // (以前它会从共享队列里取走当前书的页,还按旧 session 的计数去跑)
+  if (token !== viewerLoadToken.value) return
+  while (resolveRunningOf(token) < ONLINE_RESOLVE_CONCURRENCY && onlineResolveQueue.length) {
     const image = onlineResolveQueue.shift()
-    onlineResolveRunning += 1
+    resolveRunningInc(token)
     resolveOnlineItem(image, token).finally(() => {
-      onlineResolveRunning -= 1
+      // 只减「自己这个 session」的计数 —— 旧 session 的收尾不会把当前书的计数减成负数
+      resolveRunningDec(token)
       if (token === viewerLoadToken.value) drainOnlineQueue(token)
     })
   }
-  if (!onlineResolveRunning && !onlineResolveQueue.length && onlineJumpTargetId) {
+  if (!resolveRunningOf(token) && !onlineResolveQueue.length && onlineJumpTargetId) {
     const targetId = onlineJumpTargetId
     onlineJumpTargetId = null
     nextTick(() => {
@@ -2070,6 +2278,85 @@ const retryOnlinePage = (image) => {
   }
 }
 
+// 后台把「剩下的页链接」补齐:首屏只用了详情页内联的前 20 条,千页画廊还有几百条没拿到。
+// 特点:①不 await、不挡首图 ②按**页窗口**增量补(每次只抓 page 20→60 这一段),不重头再扫
+//   ③切书/关阅读器时 token 变了就立刻作废,不再往后台发请求。
+// 为什么按窗口而不是再跑一次全量 sweep:全量 sweep 一次几十个请求(977 页 = 56 个),
+// 会和「用户正在看的那几页」抢带宽;窗口推进是「按需长一点」,观感更稳。
+// ⚠ 「?p=N」是**缩略图分页**,每页固定 20 条页链接;而 viewerImageList 是按**页链接序号**排的。
+//   所以位移必须分开记:pageFrom(要抓的 ?p= 页码)与 linkFrom(这一批在列表里的下标)。
+//   以前把两者当成一个数,补第 2 批就会把链接错位写到第 41 条去(已有前 20 条时明显错位)。
+const ONLINE_FILL_PER_PAGE = 20
+const ONLINE_FILL_PAGES = 2            // 每次推进 2 个 ?p= 分页 = 40 条页链接
+const backgroundFillOnlineLinks = (token, url, pageFrom, linkFrom) => {
+  if (!url) return
+  const stillMine = () => token === viewerLoadToken.value
+  let page = Math.max(1, Number(pageFrom) || 1)
+  let linkAt = Math.max(0, Number(linkFrom) || 0)
+  let guard = 0
+  const step = async () => {
+    if (!stillMine()) return
+    if (guard++ > 250) return          // 兜底:最多补 5000 条页链接,防止失控
+    let res = null
+    try {
+      // known = 当前列表里已经有的页链接:后端按它去重,保证「补回来的都是新的」
+      const knownNow = (viewerImageList.value || []).map(it => it && it.pageUrl).filter(Boolean)
+      res = await ipcRenderer.invoke('eh-gallery-page-links-fill', {
+        url,
+        from: page,
+        to: page + ONLINE_FILL_PAGES,
+        batch: 8,
+        known: knownNow
+      })
+    } catch (e) { return }
+    if (!stillMine()) return
+    const chunk = (res && res.links) || []
+    if (!chunk.length) return
+    // ⚠ 列表可能还没铺到 linkAt(详情页没给真实页数时,首屏只摆了 20 个占位):
+    //   先按需把列表延长到「这批链接能落下的位置」,否则下面的 prev[idx] 全是 undefined,
+    //   后台补全就变成空转(千页画廊只有前 20 页能翻)。
+    let prev = viewerImageList.value || []
+    const needLen = linkAt + chunk.length
+    if (prev.length < needLen) {
+      const grown = prev.slice()
+      for (let i = prev.length; i < needLen; i++) grown.push(makeOnlineItem(i, needLen))
+      prev = grown
+      viewerImageList.value = grown
+    }
+    let added = 0
+    for (let i = 0; i < chunk.length; i++) {
+      const idx = linkAt + i
+      const it = prev[idx]
+      if (!it) continue
+      if (it.pageUrl === chunk[i]) continue
+      it.pageUrl = chunk[i]
+      it.resolving = true
+      it.failed = false
+      added++
+    }
+    const presentLen = Math.max(totalPage.value, linkAt + chunk.length)
+    totalPage.value = presentLen
+    page += ONLINE_FILL_PAGES
+    linkAt += chunk.length
+    // 新补进来的页里,离当前页近的先解析(其它留给 enqueuePreloadWindow 翻到时再补)
+    const curId = currentImageId.value
+    const curIdx = Math.max(0, prev.findIndex(it => it.id === curId))
+    const near = prev
+      .filter(it => it && it.resolving && it.pageUrl && !onlineResolveQueue.some(q => q && q.id === it.id))
+      .sort((a, b) => Math.abs(a.__index - curIdx) - Math.abs(b.__index - curIdx))
+      .slice(0, PRELOAD_WINDOW * 2)
+    if (near.length) {
+      onlineResolveQueue.push(...near)
+      drainOnlineQueue(token)
+    }
+    // 还没补齐就继续推下一个窗口(给 UI 一帧喘息,别让 IPC 连成串)
+    if (stillMine() && added > 0 && linkAt < totalPage.value) {
+      setTimeout(() => { step().catch(() => {}) }, 120)
+    }
+  }
+  step().catch(() => {})
+}
+
 const openOnlineBook = async (book, startIndex = null) => {
   const token = ++viewerLoadToken.value
   bookDetail.value = book
@@ -2077,7 +2364,9 @@ const openOnlineBook = async (book, startIndex = null) => {
   isComicReadDisplay.value = false
   readyDestroyViewer.value = false
   onlineResolveQueue.length = 0
-  onlineResolveRunning = 0
+  // ★归零只作用于「这一次打开」的 session:旧 session 的 worker 收尾时只会减它自己那份计数,
+  //   不会再把当前这本书的计数减成负数(以前共享一个数字时就是这么坏的)。
+  onlineResolveRunningBySession.delete(token)
   onlineJumpTargetId = null
   receiveThumbnailList.value = []
   pendingImages.length = 0
@@ -2115,10 +2404,9 @@ const openOnlineBook = async (book, startIndex = null) => {
       if (imageStyleType.value === 'scroll') {
         return scrollToImageElement(it.id)
       }
-      // 横向/单页/双页:直接设当前页序号
-      const idx = _.findIndex(viewerImageList.value, { id: it.id })
-      if (idx >= 0) currentImageIndex.value = idx
-      return true
+      // 单页 / 双页:交给统一的换算(双页的 currentImageIndex 是「屏」序号,
+      // 不能直接写页序号 —— 以前这里写页序号,双页模式下会落在第 2N 页那一屏)
+      return jumpToImageId(it.id)
     }
     nextTick(() => {
       if (jumpToPlaceholder()) return
@@ -2129,11 +2417,43 @@ const openOnlineBook = async (book, startIndex = null) => {
   // 页数未知(少数卡片没有)时先用可关闭的遮罩撑着,拿到链接就换成占位
   if (!known) showViewerLoading(t('m.ehOnlineOpening'))
 
+  // ②首屏只抓**详情页一次**:拿到前 20 条内联页链接 + 真实总页数就开画,
+  //   全量页链接(千页画廊要几十次请求、实测 7 秒)放后台补,不再挡在首图前面。
   try {
-    // ②收页链接(几次请求就够):拿到真实总数后按它修补占位
-    const res = await ipcRenderer.invoke('eh-gallery-page-links', { url: book.url })
+    const quickRes = await ipcRenderer.invoke('eh-gallery-page-links', { url: book.url, quick: true })
     if (token !== viewerLoadToken.value) return
-    const links = (res && res.links) || []
+    const quickLinks = (quickRes && quickRes.links) || []
+    let links = quickLinks
+    // quickKnownTotal = 详情页是否给出了**真实总页数**。
+    // 给了:列表按它铺满占位,后台只需要补链接;
+    // 没给:只能先摆内联的那几条,后台要一边补链接一边延长列表。
+    const quickKnownTotal = !!(quickRes && Number(quickRes.total) > 0)
+    let total = Number((quickRes && quickRes.total) || 0) || quickLinks.length
+
+    if (!links.length) {
+      // 详情页没给出页链接 = 两种可能:
+      //   ① 旧版式/页面异常(网络是通的)→ 退回全量抓法;
+      //   ② 网络整体不通 → 全量抓法会再白等很久(几十个请求逐个超时)。
+      // 所以先看主进程报告的失败类型:网络层失败就**直接判定整本失败**,
+      // 让用户 2~3 秒内看到「网络不通」的明确提示,而不是干等几分钟。
+      let failKind = ''
+      try { failKind = String((quickRes && quickRes.error) || '') } catch (e) { failKind = '' }
+      if (/network|timeout|ECONN|socket|TLS|ENOTFOUND|EAI_AGAIN/i.test(failKind)) {
+        showViewerLoading(t('m.ehOnlineNetworkDown'))
+        setTimeout(() => hideViewerLoading(), 2500)
+        markerWholeBookFailed(t('m.ehOnlineNetworkDown'))
+        return
+      }
+      const res = await ipcRenderer.invoke('eh-gallery-page-links', { url: book.url })
+      if (token !== viewerLoadToken.value) return
+      links = (res && res.links) || []
+      total = links.length
+      // 全量抓也失败且原因是网络 → 同样快速收尾
+      if (!links.length && /network|timeout|ECONN|socket|TLS|ENOTFOUND|EAI_AGAIN/i.test(String((res && res.error) || ''))) {
+        markerWholeBookFailed(t('m.ehOnlineNetworkDown'))
+        return
+      }
+    }
     if (!links.length) {
       // 一页都收不到(画廊页打不开 / 被限速 / 网络抖动):这是**整本**的问题,
       // 不是「每一页各自失败」。所以:
@@ -2150,26 +2470,44 @@ const openOnlineBook = async (book, startIndex = null) => {
       hideViewerLoading()
       return
     }
+
     // ⚠ 增量修补,不要整体重建:以前直接 viewerImageList.value = 新数组,
     //   ① 卡片页数与真实不符时列表长度突变,已经渲染出来的页全部丢掉重来
     //     (观感就是「加载混乱:图突然全空又慢慢冒出来」);
     //   ② 当前页/滚动位置跟着丢,用户被弹回第一页。
-    const prev = viewerImageList.value
-    const sameLen = prev.length === links.length
-    const items = Array.from({ length: links.length }, (_, i) => {
-      const old = (sameLen || i < prev.length) ? prev[i] : null
-      // 已经解析好的页原样保留(URL、宽高、loaded 状态都不动)
-      if (old && old.pageUrl === links[i] && old.filepath) return old
-      const it = makeOnlineItem(i, links.length)
-      it.pageUrl = links[i]
-      return it
-    })
-    viewerImageList.value = items
-    totalPage.value = links.length
-    // 当前页保留:占位阶段的定位(第 N 页)在真列表里沿用,不回第一页
-    if (!currentImageId.value || !items.some(it => it.id === currentImageId.value)) {
-      currentImageId.value = (startIdx && items[startIdx]) ? items[startIdx].id : items[0].id
+    // ★ 首屏只拿到前 20 条时,列表长度按**详情页标的真实页数**铺好占位 ——
+    //   这样进度条/总页数从一开始就是对的,后台补全只是给后面的占位填上 pageUrl。
+    const applyLinks = (newLinks) => {
+      const prev = viewerImageList.value || []
+      const n = Math.max(newLinks.length, total, prev.length)
+      const items = Array.from({ length: n }, (_, i) => {
+        const old = prev[i]
+        const url = newLinks[i] || ''
+        // 已经解析好的页原样保留(URL、宽高、loaded 状态都不动)
+        if (old && old.pageUrl && (!url || old.pageUrl === url) && old.filepath) return old
+        if (old && url) {
+          // 占位还在:补上 pageUrl,状态继续走「待解析」
+          if (old.pageUrl !== url) {
+            old.pageUrl = url
+            old.resolving = true
+            old.failed = false
+          }
+          return old
+        }
+        const it = makeOnlineItem(i, n)
+        it.pageUrl = url
+        return it
+      })
+      viewerImageList.value = items
+      totalPage.value = n
+      // 当前页保留:占位阶段的定位(第 N 页)在真列表里沿用,不回第一页
+      if (!currentImageId.value || !items.some(it => it.id === currentImageId.value)) {
+        currentImageId.value = (startIdx && items[startIdx]) ? items[startIdx].id : items[0].id
+      }
+      return items
     }
+
+    const items = applyLinks(links)
     hideViewerLoading()
     // ③按「预加载窗口」入队(口径照 JHenTai 的 preloadPageCount / preloadDistance):
     //   以前是把**整本**一次性塞进队列 —— 一本 200 页的漫画会先生成 200 个请求,
@@ -2189,6 +2527,12 @@ const openOnlineBook = async (book, startIndex = null) => {
     if (startIndex != null && startIndex > 0 && startIndex < items.length) {
       onlineJumpTargetId = items[startIndex].id
       handleClickThumbnail(items[startIndex].id)
+    }
+    // ④后台补全剩余的页链接(不 await、不挡首图)。切书/关阅读器时按 token 自动作废。
+    //   首屏内联了 20 条 = page 0 已经到手,所以从 page 20 继续往后补。
+    // 只要「详情页没给出完整页数」或「已知页数多于当前链接数」,都继续后台补。
+    if (!quickKnownTotal || total > links.length) {
+      backgroundFillOnlineLinks(token, book.url, Math.max(1, Math.ceil(links.length / ONLINE_FILL_PER_PAGE)), links.length)
     }
   } catch (e) {
     console.error(e)
@@ -2225,8 +2569,23 @@ const viewManga = (book, viewerHeight = '100%', startIndex = null, opts = {}) =>
   receiveThumbnailList.value = []
   pendingImages.length = 0
   pendingThumbnails.length = 0
-  currentImageIndex.value = 0
+  // ★ 开书就把「当前页」设成目标页,首帧直接渲染点击的那一页。
+  //   以前这里恒为 0:第一帧必然是第 1 页,等图片到齐才跳过去 ——
+  //   用户看到的就是「先闪一下第 1 页,再滑到点击页」。
+  //   必须直接写 _currentImageIndex(绕过 setter):此刻 viewerImageList 还是空的,
+  //   setter 会按「列表长度 - 1」把下标夹回 0,目标页就丢了。
+  // ⚠ 只有在「书的页数已知」时才做上限钳制。
+  //   以前写成 Math.min(startIndex, Math.max(0, (pageCount || 0) - 1)):
+  //   书还没统计出页数时 pageCount 是 null → 算成 -1 → 钳成 0 → **点第 N 页永远回到第 1 页**。
+  const wantIdx = (startIndex != null && Number(startIndex) > 0) ? (Number(startIndex) | 0) : 0
+  const knownCount = Number(book && book.pageCount) || 0
+  const wantIdxClamped = (knownCount > 0) ? Math.min(wantIdx, knownCount - 1) : wantIdx
+  // 双页模式下 currentImageIndex 是「屏」序号:先按 每屏 2 页 估一个,
+  // 等图片到了 applyPendingJumpIfReady 会按真实分屏再校正一次
+  _currentImageIndex.value = (imageStyleType.value === 'double') ? Math.floor(wantIdxClamped / 2) : wantIdxClamped
   comicReadJumped = false
+  // 换书:上一本残留的「跳页校正」必须清掉,否则新书刚打开就被旧定时器拽一下
+  clearJumpCorrections()
   lastPageTipShown = false
   pinHorizontalStart = false
   currentImageId.value = ''
@@ -2239,6 +2598,10 @@ const viewManga = (book, viewerHeight = '100%', startIndex = null, opts = {}) =>
   if (!opts.skipHistory) insertLocalReadRecord(book.id, book)
   // 「进入阅读(第 N 页)」:等主进程把图片推全了再跳(见 manga-image 的到齐分支)
   pendingJumpIndex = (startIndex == null ? null : Math.max(0, Number(startIndex) | 0))
+  // 记下「这次开书是用户指定了页码」—— 后续所有「按阅读进度跳」的分支都要看它。
+  // ★ 必须用 startIndex != null 而不是 > 0:以前 0 被当成「没指定页码」,
+  //   点预览第 1 页会被「上次阅读进度」拉走,打开的却是第 N 页(实测命中)
+  openedToPage = (startIndex != null && Number(startIndex) >= 0) ? (Number(startIndex) | 0) : null
   ipcRenderer.invoke('load-manga-image-list', _.cloneDeep(book))
   .then((res) => {
     // txt / epub:取「内容块」(章节 / 段落 / 插图原位)。
@@ -2268,12 +2631,18 @@ const viewManga = (book, viewerHeight = '100%', startIndex = null, opts = {}) =>
       flashViewerToolbar()
       // ⚠ 显式指定了「从第 N 页打开」(点预览缩略图)时,绝不能再跳回上次读到的页 ——
       //    以前两套跳转同时生效:先到点击的页,过一会儿又被阅读进度拉走(用户报的「马上自动切换」)
-      if (setting.value.keepReadingProgress && showThumbnail.value === false && pendingJumpIndex == null) handleJumpToReadingProgress(book)
+      // ★ 用 openedToPage 而不是 pendingJumpIndex 来判断「用户指定了页码」:
+      //   pendingJumpIndex 会在目标页到达时被 applyPendingJumpIfReady() 提前清空,
+      //   而这段 .then() 可能晚于那一刻执行 —— 于是误判成「没指定页码」,
+      //   又把页面拉回上次读到的位置(表现就是「点第 N 页 → 闪回第 1 页」)。
+      //   openedToPage 只在「这次开书」时设置,整个开书过程都不会被清掉。
+      if (setting.value.keepReadingProgress && showThumbnail.value === false && openedToPage == null) handleJumpToReadingProgress(book)
       hideViewerLoading()
       // 横向整排:新开一本还没有阅读进度时,直接摆到「第一页」那一端(右左 = 最右)
-      const hasProgress = pendingJumpIndex == null && setting.value.keepReadingProgress &&
+      const hasProgress = openedToPage == null && setting.value.keepReadingProgress &&
         viewerReadingProgress.value.some(progress => progress.bookId === book.id)
-      if (!hasProgress && isScrollHorizontal.value) pinHorizontal()
+      // 用户指定了页码时也不能被「摆到第一页那一端」覆盖
+      if (openedToPage == null && !hasProgress && isScrollHorizontal.value) pinHorizontal()
       // 自动超分开着时,打开就先把当前页送去超分
       nextTick(() => triggerAutoUpscaleForCurrentPage())
     } else if (setting.value.viewerType === 'comicread') {
@@ -2520,15 +2889,12 @@ const saveReadingProgress = () => {
 
 const saveImageStyleType = () => {
   localStorage.setItem('imageStyleType', imageStyleType.value)
-  setTimeout(() => {
-    // 横向整排还贴在起点端时保持贴边(否则会被 scrollIntoView 拉离最右 / 最左)
-    if (isScrollHorizontal.value && pinHorizontalStart) {
-      applyHorizontalPin()
-    } else {
-      handleClickThumbnail(currentImageId.value)
-    }
-    document.querySelector('.viewer-exit-button')?.focus()
-  }, 500)
+  // 只记录 + 把焦点还给「退出」按钮。
+  // ★ 这里原来还有一个 500ms 后 handleClickThumbnail(currentImageId) 的「延迟校正」——
+  //   但 currentImageId 那时是按新模式量出来的(往往已经是第 1 页),
+  //   于是每切一次显示方式就被拽回第 1 页,顺带还会强制关掉缩略图视图。
+  //   真正的定位现在由 afterLayoutChange(keepId) 完成:切换前取好 id,切换后按 id 还原。
+  setTimeout(() => document.querySelector('.viewer-exit-button')?.focus(), 500)
 }
 
 const saveImageStyleFit = () => {
@@ -2664,13 +3030,31 @@ const scrollToImageElement = (id) => {
   return true
 }
 
-const handleClickThumbnail = (id) => {
-  showThumbnail.value = false
-  // 点过的缩略图闪一下,让「点到了」这件事看得见
-  clickedThumbId.value = id
-  if (clickedThumbTimer) clearTimeout(clickedThumbTimer)
-  clickedThumbTimer = setTimeout(() => { clickedThumbId.value = '' }, 600)
+// ---------- 「跳到第 N 页」的校正定时器管理 ----------
+// 背景:scroll 模式下图片高度是懒加载陆续确定的,跳一次会漂,所以要多次校正。
+// 但之前是「无条件在 120/320/700/1200ms 各校正一次」——
+//   ① 用户跳过去之后自己滚走了,后面几次校正又把他硬拽回来 → 体感「一直在那一页闪烁」
+//   ② 连续两次跳转时,上一跳的校正还在跑,和新一跳打架 → 位置来回弹
+// 现在:每次跳转先清掉上一批校正;用户一旦手动滚轮/触摸/按键,也立刻停掉剩余校正。
+let jumpCorrectTimers = []
+const clearJumpCorrections = () => {
+  if (!jumpCorrectTimers.length) return
+  for (const t of jumpCorrectTimers) clearTimeout(t)
+  jumpCorrectTimers = []
+}
+// 用户主动滚动 = 放弃剩余的自动校正(否则会被拽回去)
+const onUserScrollIntent = () => { clearJumpCorrections() }
+
+// ---------- 跳到某一页(三种排列各走各的定位方式) ----------
+// 统一入口:传「页 id」。单页 / 双页要换算索引(双页的 currentImageIndex 是「屏」序号),
+// 卷轴要真的滚到那一页并多次校正(图片陆续加载会改高度)。
+// ★ 不包含「关闭缩略图视图 / 点击闪烁」这类副作用 —— 由调用方自己决定,
+//   这样切显示方式 / 恢复进度也能复用同一套定位逻辑,不会误关缩略图视图。
+const jumpToImageId = (id) => {
+  if (!id) return false
   if (imageStyleType.value === 'scroll') {
+    // 上一次跳转的校正全部作废,避免两批定时器互相抢滚动位置
+    clearJumpCorrections()
     const scrollToTarget = () => {
       if (!scrollToImageElement(id)) return false
       nextTick(() => { getCurrentImageId() })
@@ -2678,28 +3062,44 @@ const handleClickThumbnail = (id) => {
     }
     nextTick(() => {
       scrollToTarget()
-      // 图片懒加载会让每张的高度陆续变化,多校正几次,保证最终对齐
-      for (const delay of [120, 320, 700, 1200]) setTimeout(scrollToTarget, delay)
+      // 图片懒加载会让每张的高度陆续变化,多校正几次,保证最终对齐。
+      // 每次校正前确认「还是同一次跳转」(id 没变),否则不执行 —— 用户已经跳去别处时不要再拽回来。
+      jumpCorrectTimers = [120, 320, 700, 1200].map(delay => setTimeout(() => {
+        if (currentImageId.value && currentImageId.value !== id && !scrollToImageElement(id)) return
+        scrollToTarget()
+      }, delay))
     })
-  } else if (imageStyleType.value === 'horizontal') {
-    // ⚠ 横向翻页(默认模式)原来根本没有分支:点缩略图/从第 N 页进入都不跳,
-    //   一直停在第一页 —— 用户反馈「预览还是先跳第一页」的根因
+    return true
+  }
+  if (imageStyleType.value === 'single') {
     const index = _.findIndex(viewerImageList.value, { id })
     if (index >= 0) {
       currentImageIndex.value = index
       nextTick(() => { getCurrentImageId(); scrollCurrentThumbnailIntoView() })
+      return true
     }
-  } else if (imageStyleType.value === 'single') {
-    const index = _.findIndex(viewerImageList.value, { id })
-    if (index >= 0) currentImageIndex.value = index
-  } else if (imageStyleType.value === 'double') {
-    _.forEach(viewerImageListDouble.value, (imageGroup, index) => {
-      if (_.find(imageGroup.page, { id })) {
-        currentImageIndex.value = index
-        return false
-      }
-    })
+    return false
   }
+  if (imageStyleType.value === 'double') {
+    // currentImageIndex 在双页模式里是「屏」序号:先找到这一页所在的那一屏
+    const index = viewerImageListDouble.value.findIndex(frame => (frame.page || []).some(p => p.id === id))
+    if (index >= 0) {
+      currentImageIndex.value = index
+      nextTick(() => { getCurrentImageId(); scrollCurrentThumbnailIntoView() })
+      return true
+    }
+    return false
+  }
+  return false
+}
+
+const handleClickThumbnail = (id) => {
+  showThumbnail.value = false
+  // 点过的缩略图闪一下,让「点到了」这件事看得见
+  clickedThumbId.value = id
+  if (clickedThumbTimer) clearTimeout(clickedThumbTimer)
+  clickedThumbTimer = setTimeout(() => { clickedThumbId.value = '' }, 600)
+  jumpToImageId(id)
 }
 
 // ---------- 按住图片拖动 = 平移查看 ----------
@@ -2969,7 +3369,9 @@ const useNewCover = async (filepath) => {
   // 主进程失败时返回 null(它自己已经弹过提示),这里直接收手,绝不把 null 写进 bookDetail
   const coverPath = res && res.coverPath
   if (!coverPath) {
-    ElMessage({ message: t('m.useNewCoverFail'), type: 'error', duration: 3000 })
+    // 这个 key 在 locale 里属于 c.* 命名空间(不是 m.*):写错过一次,界面会把
+    // 「m.useNewCoverFail」原文显示出来
+    ElMessage({ message: t('c.useNewCoverFail'), type: 'error', duration: 3000 })
     return
   }
   bookDetail.value.coverPath = coverPath
@@ -3369,6 +3771,8 @@ const pageScrollRemaining = (forward) => {
 //   卷轴      = 原生滚动;横向整排自己处理(右左时反向)
 //   分页      = 按「方向」翻页(图片被放大时先滚完一屏再翻)
 const handleBodyWheel = (event) => {
+  // 用户自己滚了滚轮 = 放弃「跳到第 N 页」剩下的自动校正,别把他拽回去
+  onUserScrollIntent()
   // 缩略图界面:滚轮/触控板只用来滚缩略图列表,不翻页、不缩放
   if (showThumbnail.value) return
   if (event.ctrlKey || event.metaKey) {
@@ -3411,6 +3815,8 @@ const handleBodyWheel = (event) => {
   if (el) { el.scrollTop = 0; el.scrollLeft = 0 }
 }
 
+// 滚动容器的 scroll 事件入口:拖动滚动条 / 滚轮 / 跳转都会走到这里
+const onViewerBodyScroll = (event) => { handleBodyScroll(event) }
 const handleBodyScroll = _.debounce(() => {
   if (isNovelMode.value) { scheduleNovelProgress(); return } // 文字横排卷轴滚在外层
   if (showThumbnail.value) return
@@ -3624,6 +4030,8 @@ const resetAutoUpscale = () => {
 }
 
 const handleImageEnter = (id) => {
+  // 边界上反复 enter/leave 时别真去卸载(见 handleImageLeave 的说明)
+  cancelImageUnload(id)
   setImageLoaded(id, true)
   // 横向整排:图片真正渲染后宽度才算数,贴边期间跟着修正一次
   if (pinHorizontalStart) applyHorizontalPin()
@@ -3637,8 +4045,28 @@ const handleImageEnter = (id) => {
   }
 }
 
+// ★ 2026-11 修「卷轴长按拖动进度条到顶/底时图片闪烁」:
+//   以前 leave 立刻 setImageLoaded(false) → <img> 当场卸载换成占位块,再进入又重新挂载解码。
+//   拖动滚动条/快速滚到两端时 IntersectionObserver 会在边界反复 enter/leave(预加载边距 1600px),
+//   于是同几页在「占位块 ↔ 图片」之间来回跳,看起来就是图片在闪。
+//   现在:离屏不立刻卸载,延迟 IMAGE_UNLOAD_DELAY 再卸载(期间重新进入会取消),
+//   这样边界抖动完全不产生 DOM 换代,内存也照样能在长时间浏览后回收。
+const IMAGE_UNLOAD_DELAY = 8000
+const imageUnloadTimers = new Map()
+const cancelImageUnload = (id) => {
+  const t = imageUnloadTimers.get(id)
+  if (t) { clearTimeout(t); imageUnloadTimers.delete(id) }
+}
+const clearImageUnloadTimers = () => {
+  for (const t of imageUnloadTimers.values()) clearTimeout(t)
+  imageUnloadTimers.clear()
+}
 const handleImageLeave = (id) => {
-  setImageLoaded(id, false)
+  cancelImageUnload(id)
+  imageUnloadTimers.set(id, setTimeout(() => {
+    imageUnloadTimers.delete(id)
+    setImageLoaded(id, false)
+  }, IMAGE_UNLOAD_DELAY))
 }
 
 defineExpose({
@@ -4056,7 +4484,8 @@ defineExpose({
   color: var(--el-text-color-secondary)
 // 文字排版的下拉输入框(字体 / 行距 / 间距):可下拉选,也可直接手输
 .viewer-toolbar-select
-  width: 108px
+  /* 字体下拉框:108px 太宽了,挤占工具栏;84px 够放 serif / 思源黑体 这类常见值 */
+  width: 84px
   margin-left: 2px
   .el-select__wrapper
     padding: 0 6px
@@ -4066,6 +4495,10 @@ defineExpose({
   margin-left: 2px
   .el-input__wrapper
     padding: 0 6px
+  // el-input-number 默认左右内边距很大,这里收紧到和普通输入框一致
+  .el-input__inner
+    text-align: center
+    padding: 0
 
 // ComicRead 内的面板:相对 #ComicRead(fixed 全屏)左上角定位
 .comic-read-mode-setting

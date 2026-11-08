@@ -142,7 +142,7 @@ const fetchRecentReads = () => {
 // 用户可在 设置 → 右键菜单 中勾选要显示的项,保存在 setting.contextMenuOptions。
 const contextMenuDefinitions = {
   title: ['copyTitle', 'copyLink', 'copyTitleAndLink', 'translateTitle'],
-  cover: ['getMetadata', 'resetMetadata', 'openFileLocation', 'moveFile', 'deleteFile', 'toggleHidden', 'copyTag', 'pasteTag', 'getMetadataFromLink', 'translateBook', 'upscaleBook', 'restoreBookBak', 'deleteBookBak', 'colorizeBook'],
+  cover: ['getMetadata', 'regenerateCover', 'resetMetadata', 'openFileLocation', 'moveFile', 'deleteFile', 'toggleHidden', 'copyTag', 'pasteTag', 'getMetadataFromLink', 'translateBook', 'upscaleBook', 'restoreBookBak', 'deleteBookBak', 'colorizeBook'],
   image: ['copyImage', 'setCover', 'deleteImage', 'renameImage', 'upscaleImage', 'restoreImageBak', 'ocrImage', 'translateImage', 'colorizeImage', 'imageProperties'],
   comment: ['openLink'],
 }
@@ -288,16 +288,66 @@ const ensureBookCover = (book) => {
   return job
 }
 
-// ---------- 自定义主题 / 图标 ----------
-// 本地路径 → 浏览器可访问 URL(网页版走 /api/file,桌面版走 file://)
-const toAssetUrl = (path) => {
-  if (!path) return ''
-  if (/^(https?:|data:|blob:)/.test(path)) return path
-  if (typeof window !== 'undefined' && window.__WEB_MODE__) {
-    return '/api/file?path=' + encodeURIComponent(path)
-  }
-  return 'file:///' + String(path).replace(/\\/g, '/')
+// 封面重生成仍失败时调用:这个 coverPath 已经确定是坏的(404/损坏),
+// 清掉才能让界面回落到「首字占位块」,否则 <img> 一直挂着加载不出的地址,卡片是一块空白。
+// 在线画廊没有「本地封面生成」这回事,不动它。
+const clearBookCover = (book) => {
+  if (book && !book.online) book.coverPath = ''
 }
+
+// 封面反复加载不出来:打「本会话放弃」标记 + 清掉坏地址,让书架卡片 / 详情页
+// 统一回落到首字占位块,而不是留一个转不完的圈或一张破图。
+// 用户右键「重新生成封面」成功时由 retryBookCover 清掉标记。
+const giveUpBookCover = (book) => {
+  if (!book) return
+  book._coverLoadGivenUp = true
+  clearBookCover(book)
+}
+const retryBookCover = (book) => {
+  if (!book) return
+  book._coverLoadGivenUp = false
+  book._coverFailed = false
+}
+
+// ---------- 本地路径 → 浏览器可访问地址 ----------
+// ★ 必须逐段做百分号编码,不能直接拼 `file:///` + 路径:
+//   · 文件名里有 `#`(如「… (COMIC X-EROS #50).webp」)→ 浏览器把 # 之后当成锚点,
+//     真正的请求地址被截断到 # 之前 → 文件不存在 → <img> 永远 onerror;
+//   · 文件名里有 `%`(如「… Goukon %7C …」)→ 被当成百分号转义解码成别的字符 → 同样 404。
+//   表现就是「封面文件明明在(几十 KB),却一直加载不出来 / 一直转圈」。
+//   ⚠ 不能用 encodeURI(它不动 #),也不能整串 encodeURIComponent(盘符冒号会被编成 %3A)。
+const toFileUrl = (p) => {
+  const s = String(p || '').replace(/\\/g, '/')
+  if (!s) return ''
+  if (/^(https?:|data:|blob:|file:)/i.test(s)) return s
+  // UNC(\\server\share\x.webp)→ file://server/share/x.webp
+  if (s.startsWith('//')) {
+    return 'file://' + s.slice(2).split('/').map(encodeURIComponent).join('/')
+  }
+  const drive = /^([A-Za-z]):(?=\/|$)/.exec(s)
+  const head = drive ? drive[1] + ':' : ''
+  const rest = drive ? s.slice(2) : s
+  const body = rest.split('/').map(encodeURIComponent).join('/')
+  // 有盘符:C:/x → file:///C:/x ;无盘符(容器/Linux):/data/x → file:///data/x
+  return 'file://' + (head ? '/' + head : '') + body
+}
+
+// 图片(封面 / 主题背景 / 图标)地址:网页版走 /api/file,桌面版走编码后的 file://
+const bookImgSrc = (p) => {
+  if (!p) return ''
+  const s = String(p)
+  if (/^(https?:|data:|blob:|file:)/i.test(s)) return s
+  if (typeof window !== 'undefined' && window.__WEB_MODE__) {
+    // 主进程已经把 coverPath 改写成 /api/file?path=...:别再包一层
+    if (s.startsWith('/api/')) return s
+    return '/api/file?path=' + encodeURIComponent(s)
+  }
+  return toFileUrl(s)
+}
+
+// ---------- 自定义主题 / 图标 ----------
+// 本地路径 → 浏览器可访问 URL(别名,统一走 bookImgSrc 的编码规则)
+const toAssetUrl = (path) => bookImgSrc(path)
 
 // 字体样式映射
 // 分四组:① 开源/免费商用中文字体 ② 开源日文字体 ③ 各系统通用的西文字体(web-safe,引用本机已装字体)
@@ -505,8 +555,9 @@ const toolbarButtonDefinitions = [
   { id: 'manualScan', labelKey: 'm.manualScan' },
   { id: 'batchMetadata', labelKey: 'm.batchGetMetadata' },
   { id: 'tagAnalysis', labelKey: 'm.tagAnalysis' },
-  { id: 'manageCollection', labelKey: 'm.manageCollection' },
-  { id: 'manageTag', labelKey: 'm.manageTag' },
+  // 「管理」(合集 + 标签合并成一个界面):原来是 manageCollection / manageTag 两个按钮,
+  // 两个面板长得几乎一样却要来回切,现在只剩一个入口
+  { id: 'manage', labelKey: 'm.manage' },
   { id: 'viewerSwitch', labelKey: 'm.viewerSwitch' },
   // 切换当前漫画库(多库):工具栏下拉,列出所有库
   { id: 'switchLibrary', labelKey: 'm.switchLibrary' },
@@ -528,7 +579,9 @@ const defaultToolbarButtons = () => toolbarButtonDefinitions.map(b => b.id)
 // 后来新增、老配置里不存在的工具栏元素:升级后默认仍然显示,只有用户显式关掉才隐藏
 // 「显式关掉」记在设置项 toolbarButtonsHidden 里(不是只看 toolbarButtons 缺不缺 ——
 // 老配置本来就缺这几项,分不清「没有」和「被关掉」)
-const TOOLBAR_NEW_ITEMS = ['searchInput', 'searchButton', 'sortSelect', 'uiMode', 'switchLibrary', 'filter', 'downloads', 'detailPanel']
+// ⚠ 'manage' 必须放进这里:老用户配置里只有 manageCollection / manageTag,没有 manage,
+//   不列进来就会出现「升级后管理按钮消失」。
+const TOOLBAR_NEW_ITEMS = ['searchInput', 'searchButton', 'sortSelect', 'uiMode', 'switchLibrary', 'filter', 'downloads', 'detailPanel', 'manage']
 // 常驻元素:能拖动排序,但永远显示(设置列表里点击不生效)
 const TOOLBAR_ALWAYS_ITEMS = ['setting']
 // 补齐老配置里缺失的新元素;返回值只决定「显示与否」,排列顺序另由 toolbarButtonOrder 决定
@@ -906,12 +959,10 @@ const defaultUiSettings = () => ({
   tagCatNameLangs: {},
   viewerType: 'original',
   autoNextManga: false,
-  batchTagfailedBook: false,
   showCollectTag: true,
   // 标签多语言名称:{ '分类::标签': { 'zh-CN': '', ja: '', en: '', 'zh-TW': '' } }
   tagNameLangs: {},
   tagRelations: {},
-  onlyGetMetadataOfSelectedFolder: false,
   titleTranslationMode: 'off',
   titleTranslationBaseUrl: '',
   titleTranslationModel: '',
@@ -932,6 +983,8 @@ const defaultUiSettings = () => ({
   hideNonTag: false,
   hideTitle: false,
   hideRating: false,
+  // 隐藏合集卡片右上角的「合集」标签(设置 → 高级 → 卡片样式)
+  hideCollectionTag: false,
   // 填充封面(开关):开 = 封面铺满卡片、文字/按钮透明浮层;关 = 经典卡片布局
   fillCover: false,
   coverWidth: 220,
@@ -1058,7 +1111,12 @@ export {
   sortContextMenuItems,
   mergeContextMenuOptions,
   ensureBookCover,
+  clearBookCover,
+  giveUpBookCover,
+  retryBookCover,
   toAssetUrl,
+  toFileUrl,
+  bookImgSrc,
   customFontStyles,
   applyCustomTheme,
   clearCustomTheme,

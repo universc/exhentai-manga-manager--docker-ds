@@ -12,6 +12,7 @@
 
 const fs = require('fs')
 const path = require('path')
+const { URL } = require('url')
 const { request, listGalleryPageLinks } = require('./ehLogin.js')
 
 const DEFAULT_CONCURRENCY = 4
@@ -75,6 +76,46 @@ const extOf = (url) => {
   return m ? m[1].toLowerCase() : 'jpg'
 }
 
+// ---------- 文件名补零位数(续传的关键)----------
+// ⚠ 以前位数 = String(total).length:同一本第一次收 links 只收到 218 页(3 位 → 001.jpg),
+//   后来收全成 1000 页(4 位 → 0001.jpg),续传按新名字去找 → 一个旧文件都匹配不上,
+//   于是「整本重下」还留下两套文件(用户看到的就是「继续下载还是从头下」)。
+// 现在:位数**固定**,优先级为
+//   ① 目录里已有文件的位数(已下好的就是权威,续传才认得上);
+//   ② 没有旧文件时:max(4, 总页数的位数) —— 至少 4 位,一本 999 页也写成 0001.jpg。
+// 这样换机 / 换版本 / links 收多收少都不会改文件名。
+const PAD_MIN = 4
+const existingIndexWidth = (dir) => {
+  let width = 0
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      const m = /^(\d+)\./.exec(f)
+      if (m) width = Math.max(width, m[1].length)
+    }
+  } catch (e) { /* 目录读不了 → 当没有旧文件 */ }
+  return width
+}
+// 给「单页重下」等外部调用方用:与整本下载同一套位数规则
+const indexPad = (dir, total) => {
+  const old = dir ? existingIndexWidth(dir) : 0
+  return old > 0 ? old : Math.max(PAD_MIN, String(Math.max(0, Number(total) || 0)).length)
+}
+// 目录里「序号 → 文件名」的索引。按**数值**归一,位数不同也认:
+// 老版本写过 001.jpg、新版本写 0001.jpg,续传必须两种都当「已下好」,否则就是整本重下留两套文件。
+const buildExistingIndex = (dir) => {
+  const map = new Map()
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      const m = /^(\d+)\./.exec(f)
+      if (!m) continue
+      const n = Number(m[1])
+      if (!Number.isFinite(n) || n <= 0 || map.has(n)) continue
+      map.set(n, f)
+    }
+  } catch (e) { /* 目录读不了 → 当没有旧文件 */ }
+  return map
+}
+
 // 图片页 → { url, originalUrl, reloadKey }
 // reloadKey 是页面上「重试」链接里的 nl 值:EH 每个 H@H 节点挂了的时候,重取一次会换一个节点
 // (JHenTai gallery_download_task_runner 的 _reParseImageUrlAndDownload 就是靠它换源的)
@@ -109,8 +150,27 @@ const isImageBuffer = (buffer, contentType) => {
     || (b[0] === 0x42 && b[1] === 0x4D) // BMP
 }
 const downloadFile = async (url, filePath, { proxy, cookie, referer } = {}) => {
-  const res = await request(url, { proxy, cookie, referer, raw: true, timeout: IMAGE_TIMEOUT })
-  if (res.status !== 200 || !res.buffer || !res.buffer.length) throw new Error('http ' + res.status)
+  // ⚠ 以前只认 status === 200:H@H / CDN 一跳转(302)就直接抛 "http 302" ——
+  //   整本下载里表现为「这一页永远失败」,封面链路上表现为「封面空白」。
+  //   request() 已经会跟随 301/302/303/307/308(最多 5 跳),这里再兜一层:
+  //   万一还剩 3xx(超过跳数上限等),就按 location 自己再跟两次;状态码则接受全部 2xx。
+  let target = String(url || '')
+  let res = null
+  for (let hop = 0; hop < 3; hop += 1) {
+    res = await request(target, { proxy, cookie, referer, raw: true, timeout: IMAGE_TIMEOUT })
+    const status = res && res.status
+    const location = res && res.headers && res.headers.location
+    if (status >= 200 && status < 300) break
+    if (/^3\d\d$/.test(String(status)) && location) {
+      try { target = new URL(location, target).toString() } catch (e) { break }
+      continue
+    }
+    break
+  }
+  const status = res && res.status
+  if (!res || !(status >= 200 && status < 300) || !res.buffer || !res.buffer.length) {
+    throw new Error('http ' + status)
+  }
   if (!isImageBuffer(res.buffer, res.headers && res.headers['content-type'])) {
     const hint = res.buffer.slice(0, 160).toString('utf-8').replace(/\s+/g, ' ').trim()
     throw new Error('notImage: ' + hint)
@@ -194,6 +254,16 @@ const runGalleryDownload = async ({
     } catch (e) { /* 读不了目录就当不存在 */ }
     dir = path.join(saveDir, dirName)
   }
+  // ★最后一道:最终目录必须在 saveDir 之内。
+  //   sanitizeName 只清理 `\ / : * ? " < > |`,不处理 ".." —— 一个标题正好是 ".." 时
+  //   path.join(saveDir, '..') 会指到下载目录的上级(再往上是哪就写哪了)。
+  //   多账户场景里「只读账户的写范围 = downloadPath」是硬约束,所以在真正 mkdir 之前拦一道。
+  const resolvedRoot = path.resolve(saveDir)
+  const resolvedDir = path.resolve(dir)
+  if (resolvedDir !== resolvedRoot && !resolvedDir.startsWith(resolvedRoot + path.sep)) {
+    throw new Error('outsideSaveDir: ' + resolvedDir)
+  }
+  dir = resolvedDir
   fs.mkdirSync(dir, { recursive: true })
 
   // links 可能少收(EH 限速/反爬时静默丢页):与 EH 标注页数取大,
@@ -216,7 +286,10 @@ const runGalleryDownload = async ({
   const update = { total, done: existingDone, failed: 0, bytes: existingBytes }
   onProgress({ ...update, dir })
 
-  const pad = String(total).length
+  // 补零位数固定(见 indexPad 的注释):有旧文件就沿用旧文件的位数,否则至少 4 位
+  const pad = indexPad(dir, total)
+  // 续传用:目录里已经存在的页(按序号的数值索引,位数不同也认)
+  const existingIndex = buildExistingIndex(dir)
   let cursor = 0
   const worker = async () => {
     while (cursor < total) {
@@ -230,12 +303,14 @@ const runGalleryDownload = async ({
         // 断点续传:这一页的文件已经下好了(非空)就跳过 —— 暂停后再继续不用从头再来。
         // ⚠️ 这里**不能再** update.done += 1:启动时已经预扫过一遍全部已下好的页(见 existingDone),
         //    再加一次就会重复计数,done 很快超过 total。
-        const existing = fs.existsSync(dir)
-          ? fs.readdirSync(dir).find(f => f.startsWith(name + '.') && /^0*\d+\./.test(f))
-          : null
+        // ⚠️ 用启动时建好的索引(按序号数值匹配):位数不一致(001.jpg / 0001.jpg)也认得上,
+        //    而且不用每页都 readdirSync 一次(1000 页 × 整目录扫描 = 明显卡顿)。
+        const existing = existingIndex.get(index) || null
         if (existing) {
           const st = fs.statSync(path.join(dir, existing))
           if (st.size > 0) { onProgress({ ...update, dir }); continue }
+          // 空壳文件(上次下到一半被中断):先删掉,免得这一页最后留下 001.jpg + 0001.jpg 两份
+          try { fs.rmSync(path.join(dir, existing), { force: true }) } catch (e) { /* 删不掉就让它留着 */ }
         }
         // 取图 + 下载;失败就按 JHenTai 的办法「重取一次图片页」换一个 H@H 节点重试
         // (实测:同一本里奇数页所在的节点 TLS 直接断,重取后就落到能用的节点上)
@@ -330,4 +405,9 @@ const downloadOnePage = async ({ url, originalUrl, pageUrl, original = false, sa
   throw lastErr || new Error('noUrl')
 }
 
-module.exports = { sanitizeName, extOf, resolveImagePage, downloadFile, runGalleryDownload, downloadOnePage }
+module.exports = {
+  sanitizeName, extOf, resolveImagePage, downloadFile, runGalleryDownload, downloadOnePage,
+  // 文件名位数规则对外暴露:单页重下(index.js 的 eh-download-page-by-index)必须用同一套,
+  // 否则「单页重下」会按另一个位数存成第二个文件,整本续传就永远认为这页没下好。
+  PAD_MIN, indexPad, buildExistingIndex
+}

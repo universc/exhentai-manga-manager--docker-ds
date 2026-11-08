@@ -70,8 +70,12 @@ export const useAppStore = defineStore('appStore', {
     openCollectionBookList: [],
     serviceAvailable: true,
     sortValue: undefined,
-    editCollectionView: false,
-    editTagView: false,
+    // 「管理」视图(合集 + 标签合并后只剩一个开关):
+    // 以前是 editCollectionView / editTagView 两个标志,两个网格各用一套选中态
+    // (book.collected / book.selected)。两个标志互不复位 —— 「先点管理合集、再点管理标签」
+    // 之后它们会同时为 true,同一批书被两套网格叠着渲染两遍。
+    // 现在统一成一个 manageView,选中态只用 book.selected。
+    manageView: false,
     localeFile: null,
     folderTreeData: [],
   }),
@@ -155,14 +159,17 @@ export const useAppStore = defineStore('appStore', {
           const labelTail = state.resolvedTranslation[cat]?.[tag]?.name || tag
           return {
             label: `${labelHeader}:${labelTail}`,
-            value: `"${tag}"$`
+            // 必须带 letter 前缀(如 l:"chinese"$):EditView 的 resolveGroupTagSelected
+            // 用 /^([\p{L}\d]+):"..."$/u 解析,不带前缀会 match=null 直接抛 TypeError。
+            value: `${letter}:"${tag}"$`
           }
         })
       } else {
         return state.tagListRaw.map(({letter, cat, tag}) => {
           return {
             label: `${cat}:${tag}`,
-            value: `"${tag}"$`
+            // 同上:letter 前缀不能省,否则「更改标签」提交时解析不出来
+            value: `${letter}:"${tag}"$`
           }
         })
       }
@@ -189,10 +196,10 @@ export const useAppStore = defineStore('appStore', {
     visibleChunkDisplayBookList (state) {
       return state.chunkDisplayBookList.filter(book => !book.collectionHide && (state.sortValue === 'hidden' || !book.hiddenBook) && !book.folderHide)
     },
-    visibleChunkDisplayBookListForCollectView (state) {
-      return state.chunkDisplayBookList.filter(book => !book.isCollection && !book.folderHide && !book.hiddenBook)
-    },
-    visibleChunkDisplayBookListForEditTagView (state) {
+    // 合并后的「管理」网格用这一个列表(原 visibleChunkDisplayBookListForEditTagView)。
+    // 合集视图那一份(!book.hiddenBook 过滤)已删除:合集与标签共用同一个网格,
+    // 隐藏书在这里也要能被选中/编辑(用户可以在「其他 → 显示漫画」里把它放出来)。
+    visibleManageBookList (state) {
       return state.chunkDisplayBookList.filter(book => !book.isCollection && !book.folderHide)
     },
   },

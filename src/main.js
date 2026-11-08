@@ -14,6 +14,8 @@ import App from './App.vue'
 import _ from 'lodash'
 import '@imengyu/vue3-context-menu/lib/vue3-context-menu.css'
 import ContextMenu from '@imengyu/vue3-context-menu'
+import { attachGlobalInertia } from './inertia-scroll.js'
+import { useAppStore } from './pinia.js'
 
 import { createI18n } from 'vue-i18n'
 import zhCn from './locales/zh-CN.json'
@@ -31,6 +33,23 @@ window._ = _
 
 const pinia = createPinia()
 app.use(pinia)
+
+// 惯性滚动全局兜底:文档级一个滚轮监听,鼠标落在哪个可滚动容器上就滚哪个。
+// 这样侧边详情栏 / 下载记录栏 / 文件夹树 / 各种弹窗 / 下拉 / 嵌套列表都自动有惯性,
+// 不用每加一个滚动区就回各个组件里挂一次(以前只挂了主界面、管理面板、设置页、阅读器四处)。
+// 单独挂过 attachInertiaScroll 的容器优先,全局层看到事件标记会跳过,不会滚两次。
+// 参数统一取自 pinia 里的 setting,开关与三个滑块改完立刻生效(不用重启)。
+attachGlobalInertia({
+  getParams: () => {
+    const s = useAppStore(pinia).setting || {}
+    return {
+      enabled: s.inertiaEnabled !== false,
+      friction: s.inertiaFriction,
+      maxVelocity: s.inertiaMaxVelocity,
+      follow: s.inertiaFollow,
+    }
+  }
+})
 
 app.use(ElementPlus)
 app.use(ContextMenu)
@@ -72,12 +91,29 @@ app.directive('lazy', {
     el._lazyArg = binding.arg
 
     observer.observe(el)
+    // ★ 2026-11 修:IntersectionObserver 只在「相交状态**变化**」时回调。
+    //   元素刚挂载的那一帧,祖先容器(管理界面的 .book-manage-view 是 v-if 新建的)
+    //   还没完成布局,IO 首帧会算成「未相交」= false;之后只要用户不滚动,
+    //   状态一直不变,enter 就永远不触发 —— 卡片整片空白(二次进入管理界面必现)。
+    //   实测:手动改一下 scrollTop 卡片立刻出现 20 张,证实就是这个原因。
+    //   处理:等两帧布局稳定后 unobserve+observe 强制重算一次,
+    //   让 IO 用正确的几何重新送一遍「初始相交状态」。
+    el._lazyReobserve = () => {
+      observer.unobserve(el)
+      observer.observe(el)
+    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (typeof el._lazyReobserve === 'function') el._lazyReobserve()
+      })
+    })
   },
   unmounted(el) {
     observer.unobserve(el)
     delete el._lazyEnterCallback
     delete el._lazyLeaveCallback
     delete el._lazyArg
+    delete el._lazyReobserve
   }
 })
 

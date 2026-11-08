@@ -240,6 +240,17 @@ const getBooksMetadata = async (bookList, gap, callback) => {
   if (callback) callback()
 }
 
+// get-ex-webpage 失败时主进程返回 null(B 线),具体原因在只读通道 eh-webpage-last-error 里。
+// 这里统一提示一次,避免「搜索结果为 0 条」把用户搞懵。
+const reportEhHtmlError = async () => {
+  // 顺手清掉上一次的搜索结果:否则「取页面失败」时界面上还挂着旧结果,看起来像是这次搜到的
+  ehSearchResultList.value = []
+  let why = null
+  try { why = await ipcRenderer.invoke('eh-webpage-last-error') } catch (e) { why = null }
+  const detail = String((why && why.error) || '')
+  printMessage('error', t('m.ehOnlineFailed') + (detail ? ': ' + detail : ''))
+}
+
 const getBookListFromWeb = async (bookHash, title, server = 'e-hentai', bookPath = '') => {
   let resultList = []
   searchResultLoading.value = true
@@ -250,13 +261,13 @@ const getBookListFromWeb = async (bookHash, title, server = 'e-hentai', bookPath
       return resolveEhentaiResult(res)
     })
   } else if (server === 'exhentai') {
-    resultList = await ipcRenderer.invoke('get-ex-webpage', {
+    // get-ex-webpage 失败时主进程返回 null(B 线):不提示的话界面就是「一条结果都没有」
+    const html = await ipcRenderer.invoke('get-ex-webpage', {
       url: `https://exhentai.org/?f_shash=${bookHash}&fs_similar=on&fs_exp=on&f_cats=161`,
       cookie: cookie.value
     })
-    .then(res => {
-      return resolveEhentaiResult(res)
-    })
+    if (!html) await reportEhHtmlError()
+    else resultList = resolveEhentaiResult(html)
   } else if (server === 'e-search') {
     resultList = await fetch(`https://e-hentai.org/?f_search=${encodeURI(title)}&f_cats=161`)
     .then(res => res.text())
@@ -264,13 +275,12 @@ const getBookListFromWeb = async (bookHash, title, server = 'e-hentai', bookPath
       return resolveEhentaiResult(res)
     })
   } else if (server === 'exsearch') {
-    resultList = await ipcRenderer.invoke('get-ex-webpage', {
+    const html = await ipcRenderer.invoke('get-ex-webpage', {
       url: `https://exhentai.org/?f_search=${encodeURI(title)}&f_cats=161`,
       cookie: cookie.value
     })
-    .then(res => {
-      return resolveEhentaiResult(res)
-    })
+    if (!html) await reportEhHtmlError()
+    else resultList = resolveEhentaiResult(html)
   } else if (server === 'hentag') {
     resultList = await fetch(`https://hentag.com/public/api/vault-search?t=${encodeURI(title)}`)
     .then(res => res.json())

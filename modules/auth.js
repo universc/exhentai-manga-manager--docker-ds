@@ -21,7 +21,12 @@ const hashPassword = (password, salt) => {
   return crypto.scryptSync(String(password), salt, 32).toString('hex')
 }
 
-const validPassword = (password) => String(password || '').length >= 8
+// 密码只要求「非空」:不再强制最少位数(用户要求取消长度限制)。
+// 仍然拒绝「空字符串 / 纯空白 / 非字符串」—— 空密码会让 verify() 变成「任何空输入都能通过」。
+const validPassword = (password) => {
+  if (typeof password !== 'string') return false
+  return password.trim().length > 0
+}
 
 // 会话持久化:写/读 <数据目录>/sessions.json,容器重启后保持登录
 // 原子写:先写临时文件再改名。直接覆盖写一旦中途失败(断电/进程被杀),
@@ -115,7 +120,7 @@ const addUser = (username, password, role = 'viewer') => {
   const name = String(username || '').trim()
   if (!name) return { ok: false, error: '用户名不能为空' }
   if (users[name]) return { ok: false, error: '用户已存在' }
-  if (!validPassword(password)) return { ok: false, error: '密码至少 4 位' }
+  if (!validPassword(password)) return { ok: false, error: '密码不能为空' }
   const salt = crypto.randomBytes(16).toString('hex')
   users[name] = { salt, hash: hashPassword(password, salt), role: role === 'admin' ? 'admin' : 'viewer', createdAt: Date.now() }
   persistUsers()
@@ -144,7 +149,7 @@ const removeUser = (username) => {
 
 const changePassword = (username, newPassword) => {
   if (!users[username]) return { ok: false, error: '用户不存在' }
-  if (!validPassword(newPassword)) return { ok: false, error: '密码至少 4 位' }
+  if (!validPassword(newPassword)) return { ok: false, error: '密码不能为空' }
   users[username].salt = crypto.randomBytes(16).toString('hex')
   users[username].hash = hashPassword(newPassword, users[username].salt)
   // 改密码后把该账户的旧会话全部作废(否则密码改了、旧 token 还能继续用)

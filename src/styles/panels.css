@@ -133,18 +133,59 @@
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
 }
+/* =============================================================================
+ * 侧边详细信息:评分星级
+ *
+ * 半星错位的真正根因(前几轮一直没修对):
+ *   el-rate 的半星不是「一个半星图标」,而是两层叠放 ——
+ *     <i class="el-rate__icon">(底:空心星)
+ *       <i class="el-rate__decimal">(上:实心星,靠 width 百分比 + overflow:hidden 裁出半颗)
+ *   .el-rate__decimal 是 position:absolute 定位在父图标上的,依赖父级的原始尺寸关系。
+ *   我之前给 .el-rate__item 加了 display:inline-flex + justify-content:center +
+ *   固定 15px 盒宽 —— 这会改变 decimal 的定位包含块,半星那格就被推偏/裁错。
+ *
+ * 正确做法:不要动 el-rate 的内部布局,只控制「整体居中」和「图标大小」。
+ *   容器用 text-align:center 让 5 个 item 自然居中(它们是 inline-block),
+ *   图标尺寸走 CSS 变量,其余一律交给 el-rate 自己算。
+ * ========================================================================== */
 .detail-panel .detail-rate {
-    height: 18px;
-    width: 108px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    width: 100%;
+    min-width: 0;
     text-align: center;
     padding: 0;
-    margin: 0;
-    --el-rate-icon-size: 14px;
-    --el-rate-icon-margin: 1px;
+    margin: 2px 0 0;
+    height: auto;
+    line-height: 1;
+    /* 图标大小与间距交给组件变量,别自己改 item 的盒模型 */
+    --el-rate-icon-size: 16px;
+    --el-rate-icon-margin: 2px;
 }
+/* 只锁高度,不碰 display / 定位 */
+.detail-panel .detail-rate .el-rate__item {
+    height: 20px;
+    vertical-align: middle;
+}
+/* 图标本身:去掉多余 margin,大小跟随变量 */
+.detail-panel .detail-rate .el-rate__icon {
+    margin-right: 0;
+    font-size: var(--el-rate-icon-size);
+    line-height: 1;
+    /* ★ 必须重置 text-align:上面 .detail-rate 设了 text-align:center 用来居中整排星星,
+         但这个属性会**继承下来**,而 .el-rate__decimal(半星那层)是 .el-rate__icon 的
+         inline-block 子元素 —— 结果半星被水平居中,不是从最左边开始裁切。
+         实测:icon 在 x=722、宽 16,decimal 却在 x=726、宽 8(正好右偏 (16-8)/2=4px),
+         视觉上就是「半颗星错位、露出左半边空心轮廓」。 */
+    text-align: left;
+}
+/* 半星层:绝对定位贴到图标左上角,复用组件自己的 width 百分比裁切。
+   这两条是修「评分星星错位」的关键,缺一不可。 */
+.detail-panel .detail-rate .el-rate__icon .el-rate__decimal {
+    position: absolute;
+    left: 0;
+    top: 0;
+}
+
+
 .detail-panel .detail-cat-badge {
     position: absolute;
     right: 0;
@@ -202,10 +243,12 @@
 .detail-panel .detail-tag-group {
     display: block;
     font-size: 12px;
+    /* 行高留够 + 底部间距:标签换行时上下两行也不会黏在一起 */
     line-height: 26px;
     min-width: 0;
     overflow: hidden;
     text-align: left;
+    margin-bottom: 2px;
 }
 .detail-panel .detail-tag-cat {
     display: inline;
@@ -218,6 +261,8 @@
     vertical-align: middle;
     justify-content: flex-start;
     max-width: 100%;
+    /* 标签之间留出间距:以前没有 margin,el-tag 会一个紧挨一个贴成一整块,读起来分不清边界 */
+    margin: 0 6px 4px 0;
 }
 .detail-panel .detail-tag .el-tag__content {
     overflow: hidden;
@@ -375,11 +420,7 @@
     height: 100%;
     object-fit: cover;
     display: block;
-    opacity: 0;
-    transition: opacity .16s ease;
-}
-.detail-panel .detail-preview-item.is-ready img {
-    opacity: 1;
+    /* 用户要求取消「加载时淡入淡出」:图片解码完直接显示,不做 opacity 过渡 */
 }
 .detail-panel .detail-preview-sprite {
     position: absolute;
@@ -410,6 +451,46 @@
 .detail-panel .detail-preview-error {
     font-size: 12px;
     color: var(--emm-text-4);
+}
+
+/* 窄面板（宽度 < 300px，SideDetailPanel 里 :class="{ 'is-narrow': isNarrow }"）。
+   ⚠ A 线已证实：这个 class 早就挂上了，但全仓没有任何 .is-narrow 规则，
+   所以「窄的时候隐藏次要信息、压缩字号、单列」从来没生效过。这里补齐。
+   原则：只隐藏「次要信息行」，页数/日期保留；封面缩小让右列更宽。 */
+.detail-panel.is-narrow .detail-head-left {
+    width: 84px;
+}
+.detail-panel.is-narrow .detail-cover {
+    width: 84px;
+    height: 117px;
+}
+.detail-panel.is-narrow .detail-rate {
+    width: 84px;
+    --el-rate-icon-size: 12px;
+}
+/* 分类角标贴在封面下沿：封面高度从 150 变成 117，角标要跟着上移，否则会飘在空中 */
+.detail-panel.is-narrow .detail-cat-badge {
+    top: 117px;
+}
+/* 字号压缩一档（13px → 12px 标题、12px → 11px 副标题、11px → 10px 信息行） */
+.detail-panel.is-narrow .detail-title {
+    font-size: 12px;
+    -webkit-line-clamp: 3;
+}
+.detail-panel.is-narrow .detail-subtitle {
+    font-size: 11px;
+    -webkit-line-clamp: 1;
+}
+.detail-panel.is-narrow .detail-info {
+    font-size: 10px;
+}
+/* 次要信息行（上传者 / 语言 / 大小 / 阅读次数）在窄面板里直接不显示 */
+.detail-panel.is-narrow .detail-info-row.is-minor {
+    display: none;
+}
+/* 操作按钮在窄面板里更紧凑 */
+.detail-panel.is-narrow .detail-actions {
+    gap: 4px;
 }
 
 /* =============================================================================
@@ -952,3 +1033,481 @@
     justify-content: flex-end;
 }
 
+/* =============================================================================
+ * 三、管理面板（管理合集 + 管理标签合并后的操作列）
+ *    目标：让这两个操作列与「一、侧边详细信息」同款 —— 同一套左内边距、
+ *    同一条左边界线、同一种「标题 + 右侧小按钮」的头、同一种可滚动的主体。
+ *
+ *    ⚠ 只新增 emm-manage-* 前缀的类，**不给已有类名追加规则**
+ *      （所有 SFC 的 <style> 都没有 scoped，改 `.detail-panel` 会连带改变侧边详细信息）。
+ *    ⚠ 这里的 var(--emm-border) / var(--emm-bg-container) 与「一、侧边详细信息」用的是
+ *      同一批令牌名：那边生效这边就一起生效，那边无效这边也一起无效 —— 观感始终一致。
+ * ========================================================================== */
+/* ★ 2026-11:管理标签 / 管理合集的列改成与「任务记录 / 侧边详细信息」完全同款。
+   原来它是 height:100% 的内嵌网格列(只靠一条 border-left 分隔),而任务记录/侧边详情是
+   height:calc(100vh-8px) 的整列通高浮层 —— 高度、边框观感、圆角都不同,摆在一起很别扭。
+   下面这组数值与 App.vue 里 .dock-panel 逐条对齐(改一处记得同步另一处)。 */
+.emm-manage-panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    /* 与侧边详细信息(calc(100vh - 8px))视觉等高,但管理面板外层是 el-col,
+       它在 .book-card-area(margin-top:8px)里,直接套 100vh-8px 会把底部顶出窗口。
+       这里减多加 8,让面板底边与侧边详情对齐。 */
+    height: calc(100vh - 16px);
+    min-width: 240px;
+    padding: 10px 10px 10px 6px;
+    border-left: 1px solid var(--el-border-color);
+    background: var(--el-bg-color, #fff);
+    overflow: hidden;
+}
+/* 拖宽手柄：只覆盖位置 / 宽度。
+   原 `.emm-op-resizer`（EditView.vue 里）的 position/top/bottom/cursor/z-index 全部保留。
+   ⚠ 必须 left:0 / width:8px（与 EditView 原实现一致）：父级 .emm-manage-panel 是
+   overflow:hidden 且同时是定位包含块，任何负 left 的外侧部分都会被裁掉，
+   手柄的可抓宽度会从 8px 掉到 3px 甚至更少，用户会觉得"拖不动"。
+   选择器带父级 → 权重高于单类的 .emm-op-resizer，不用 !important。 */
+.emm-manage-col,
+.book-card-area > .emm-manage-col {
+    /* 外壳自己撑满,不要 el-col 的默认内边距把边框顶开 */
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+}
+.emm-manage-panel > .emm-op-resizer {
+    position: absolute;
+    left: -3px;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: col-resize;
+    z-index: 5;
+}
+.emm-manage-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex: none;
+    padding-bottom: 8px;
+    font-size: 15px;
+}
+.emm-manage-title {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.emm-manage-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: none;
+}
+/* 主体：唯一可滚动的区域。overflow-x:hidden 是有意的 ——
+   横向滚动留给网格列（.book-manage-view，合集/标签合并后的唯一网格）。 */
+.emm-manage-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+/* (emm-manage-col 的 padding 已在上面统一处理) */
+/* 分隔线收紧：颜色/分类/状态/移动/其它 这几段的间距太大了，12px 刚好分段不散 */
+.emm-manage-body .el-divider--horizontal {
+    margin: 12px 0;
+}
+
+/* ★ 2026-11:.edit-btn-group 已移除 —— 那排「管理合集/管理标签」功能按钮
+   已经从顶部工具栏挪到右侧面板头部(.emm-manage-actions)里,见 EditView.vue。 */
+
+/* 管理面板头部的功能按钮组:按钮之间 2px,与侧边详细信息的 .detail-panel-actions 一致 */
+.emm-manage-header .emm-manage-actions .el-button {
+    margin-left: 0;
+}
+
+/* ================= 「全部评论」弹窗(照 JHenTai 的 EHComment)================= */
+.all-comments-body {
+  min-height: 120px;
+}
+.all-comments-summary {
+  font-size: 12px;
+  color: var(--emm-text-3);
+  margin-bottom: 8px;
+}
+.all-comment-item {
+  padding: 8px 4px 10px;
+  border-bottom: 1px solid var(--emm-border, rgba(128, 128, 128, 0.16));
+}
+.all-comment-item:last-child {
+  border-bottom: none;
+}
+.all-comment-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.all-comment-author {
+  font-weight: 600;
+  font-size: 13px;
+}
+.all-comment-score,
+.all-comment-votes {
+  font-size: 12px;
+  color: var(--emm-text-3);
+}
+.all-comment-content {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.all-comments-more {
+  text-align: center;
+  padding: 10px 0 4px;
+}
+.all-comments-empty {
+  padding: 28px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--emm-text-4);
+}
+
+/* ===== 文字书(txt / epub)的「页预览」区:显示正文而不是图片网格 ===== */
+.detail-panel .detail-preview-text {
+    display: block;
+    padding: 8px 10px;
+    background: var(--emm-bg-sunken);
+    border-radius: 4px;
+    /* ★ 文字书预览的「下方空白」根因(第二版修复):
+       上一版给了 max-height:420px,但**只要正文比 420px 短**,容器仍然按内容高;
+       真正的问题是 .detail-panel-body 是 flex 列,而这个盒子是它的**最后一个子元素**,
+       后面的空间(面板到底部那段)会留在它下面 —— 看起来就是「文字写完了、下面一大片空白」。
+       现在:① 不再给固定上限,让内容自己决定高度(短就短);
+             ② 给 flex:1 1 auto 让它吃掉剩余空间(长文本时自然撑满、内部滚动);
+             ③ overflow:auto 只在内容超过可用高度时才出现滚动条。
+       两条合起来 = 短文本贴顶不留白,长文本撑满可滚动。 */
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    height: auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    /* 文字末尾不要留多余空行(正文里常有连续换行) */
+    white-space: normal;
+}
+.detail-panel .detail-text-body {
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--emm-text-2);
+    text-align: left;
+    white-space: pre-wrap;
+    word-break: break-word;
+    /* 正文块自身也不要撑高:高度由外层 .detail-preview-text 决定 */
+    height: auto;
+    margin: 0;
+}
+
+/* GIF 首帧还没生成时的占位(避免挂上原始动图导致一屏几十个一起解码) */
+.detail-panel .detail-preview-pending {
+    width: 100%;
+    height: 100%;
+    min-height: 40px;
+    background: var(--emm-bg-sunken);
+    border-radius: 3px;
+}
+
+/* 管理面板的操作按钮行:与侧边详细信息的 .detail-actions 同款排布
+   (标题下面紧接一排小按钮,而不是挤在标题行右边)。
+   gap / 换行 / 按钮 margin 都逐条对齐 .detail-actions。 */
+.emm-manage-actions-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+.emm-manage-actions-row .emm-manage-act {
+    margin: 0;
+}
+/* el-space 自带的按钮间距会额外再加一层,换成 flex 后保持 6px 一致 */
+
+/* =============================================================================
+ * 管理标签 / 管理合集的操作面板:与「侧边详细信息」同级的右栏
+ *
+ * 红框(侧边详细信息)与蓝框(管理面板)以前观感不同的根因:
+ *   · 前者是 .app-body 的直接子元素 → 整列通高,height: calc(100vh - 8px);
+ *   · 后者是 .book-card-area 里 el-row 的 el-col → 只占「工具栏到分页条」之间的高度。
+ * 现在管理标签通过 <Teleport> 投送到 .app-body 下的 #emm-manage-tag-slot,
+ * 两者终于在同一层级,尺寸规则可以完全一致。
+ * ========================================================================== */
+.emm-manage-tag-slot {
+    /* 空槽不占位;有内容时按内容宽度展开(面板自己带宽度) */
+    display: contents;
+}
+.emm-manage-tag-slot > .emm-manage-col {
+    flex: none;
+    height: calc(100vh - 8px);
+    min-width: 240px;
+    max-width: 70vw;
+}
+
+/* =============================================================================
+ * 管理标签 / 管理合集的按钮行:必须靠左、占满宽度
+ *
+ * 症状:按钮被推到面板右侧(见用户截图)。
+ * 原因:按钮行用的是 <el-space>,它默认 width:auto 按内容宽度收缩;
+ *   父级 .emm-manage-body 是普通块容器,收缩后的 el-space 会被当块级元素撑满后内容居中/
+ *   或被后续 flex 规则影响而偏右。给出明确的 width:100% + flex-start 最稳。
+ * ========================================================================== */
+.emm-manage-body .book-tag-edit-buttons {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    align-items: center;
+    margin: 10px 0 0;
+}
+.emm-manage-body .book-tag-edit-buttons .el-button {
+    margin: 0 6px 6px 0;
+}
+/* 分隔线下面的第一个按钮行不要再加顶部间距(否则分段太散) */
+.emm-manage-body .el-divider--horizontal + .book-tag-edit-buttons {
+    margin-top: 0;
+}
+
+/* 管理面板头部的功能按钮组(添加合集 / 智能生成 / 编辑 / 保存 / 退出)
+   ★ 2026-11:从顶部工具栏搬进来,同时放大 —— 之前 size="small" + text 只有个小图标,
+     既不好看也不好点。现在用默认尺寸 + plain 边框,按钮之间留 6px。 */
+.emm-manage-header .emm-manage-actions {
+    gap: 6px;
+}
+.emm-manage-header .emm-manage-actions .el-button {
+    margin-left: 0;
+    /* 图标本身也放大一档,不然默认尺寸下图标显得比按钮框小一圈 */
+    font-size: 16px;
+}
+.emm-manage-header .emm-manage-actions .el-button .el-icon {
+    font-size: 17px;
+}
+/* 头部随按钮变大 → 给一点上下留白,别和下面的主体贴太紧 */
+.emm-manage-header {
+    padding-bottom: 10px;
+}
+
+/* =============================================================================
+ * 管理（合集+标签）模式的网格列:占满整行、不要左右留白
+ *
+ * 用户截图里三处红框都是空白:
+ *   ① 左侧:el-row :gutter="20" 的负边距 + el-col 默认左右 padding;
+ *   ② 右侧:以前网格是 :span="20",给操作面板留了 4/24 —— 但面板已 Teleport 出去,
+ *      这块就纯空着了(已把 span 改成 24,这里再兜一道宽度的底);
+ *   ③ 顶部:inline-block 卡片的基线空隙 + line-height(见 EditView.vue)。
+ * ★ 2026-11:合集网格(.book-collect-view)与标签网格(.book-tag-edit-view)已合并成
+ *   .book-manage-view 一个网格,选择器同步收敛。
+ * ========================================================================== */
+.book-card-area > .book-manage-view {
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+}
+
+/* =============================================================================
+ * 管理标签:标签选择框改成「可搜索的胶囊多选」
+ *
+ * 原来用 el-select-v2:选中项全挤在框里显示成一行小字,分不清选了几个、是哪些。
+ * 现在 el-select multiple 会把选中项渲染成一个个胶囊(chip),和设置页「女性」那个
+ * 搜索框的观感一致;下拉里的选项也做成胶囊样式。
+ * ========================================================================== */
+.manage-tag-select {
+    width: 100%;
+}
+.manage-tag-select .el-select__wrapper {
+    min-height: 34px;
+    border-radius: 6px;
+    /* 选中项多时自动增高换行,而不是挤成一条 */
+    flex-wrap: wrap;
+}
+/* 已选标签的胶囊 */
+.manage-tag-select .el-tag {
+    border-radius: 14px;
+    margin: 2px 4px 2px 0;
+    background: var(--el-color-primary-light-9);
+    border-color: var(--el-color-primary-light-7);
+    color: var(--el-color-primary);
+}
+/* 下拉里的每个选项也做成胶囊观感(左侧留白、圆角) */
+.manage-tag-popper .el-select-dropdown__item {
+    border-radius: 12px;
+    margin: 2px 6px;
+    height: 30px;
+    line-height: 30px;
+}
+/* 选项内容:居左、超出省略 */
+.manage-tag-option {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+
+/* =============================================================================
+ * 管理标签页底部的「标签设置」快捷区
+ * (类别顺序拖动 / 翻译语言 / 默认归入类别,镜像设置页的标签设置)
+ * ========================================================================== */
+.manage-tag-setting-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+}
+.manage-tag-setting-label {
+    flex: 0 0 auto;
+    font-size: 13px;
+    color: var(--emm-text-2);
+    min-width: 84px;
+}
+.manage-tag-setting-select {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+/* 类别标签拖动区:横向排开的胶囊,可拖动排序 */
+.manage-tag-cat-drag {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 0 8px;
+}
+.manage-tag-cat-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 12px;
+    border-radius: 14px;
+    font-size: 12px;
+    cursor: grab;
+    user-select: none;
+    background: var(--el-fill-color-light);
+    border: 1px solid var(--el-border-color-lighter);
+    color: var(--emm-text-2);
+}
+.manage-tag-cat-chip:active {
+    cursor: grabbing;
+}
+.manage-tag-cat-drag .sortable-ghost {
+    opacity: 0.4;
+}
+
+/* =============================================================================
+ * 管理（合集 + 标签合并,2026-11）
+ * 同一右栏里合集是第一个分区,标签在后面;合集区给一个浅底把两块分开。
+ * 左边网格只有一套选中态(book.selected),两块共用这批选区 —— 所以顶部先显示
+ * 「已选 N 本」,让用户知道接下来的批量操作作用在哪几本书上。
+ * ========================================================================== */
+.manage-selected-count {
+    font-size: 12px;
+    color: var(--emm-text-2, var(--el-text-color-regular));
+    margin: 2px 0 6px;
+}
+.manage-collection-block {
+    padding: 8px 10px 10px;
+    margin-bottom: 4px;
+    background: var(--el-fill-color-lighter);
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+}
+.manage-collection-block .book-collection-select {
+    width: 100%;
+    margin-bottom: 8px;
+}
+/* 合集区里的「加入选中 / 移出选中」按钮行:紧跟在合集下拉下面,不要再叠一层 10px 上边距。
+   ⚠ 这条 margin 覆盖**依赖源序**,不是靠特异性:
+     `.manage-collection-block .manage-collection-buttons`(0,2,0) 与
+     `.emm-manage-body .book-tag-edit-buttons`(0,2,0) 权重相同,谁在文件后面谁生效。
+     本条在本文件 1269 行那组 .book-tag-edit-buttons 规则之后,所以这里的 margin 赢。
+     将来若有人调整文件顺序 / 拆分本文件,请把这条一起带上(或改用更具体的选择器),
+     否则合集区的按钮行会静默退回 10px 上边距。 */
+.manage-collection-block .manage-collection-buttons {
+    margin: 0 0 6px;
+}
+.manage-collection-list {
+    max-height: 320px;
+    overflow-y: auto;
+}
+.manage-collection-empty {
+    padding: 14px 8px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--emm-text-3);
+    line-height: 1.6;
+}
+
+/* =============================================================================
+ * 预览图角标:左下角 GIF、右下角页码
+ * GIF 角标:标出这是动图(非 GIF 不显示)
+ * 页码角标:受「阅读器设置 → 隐藏页码」控制(hidePageNumber)
+ * ========================================================================== */
+.preview-gif-badge {
+    position: absolute;
+    left: 4px;
+    bottom: 4px;
+    padding: 0 5px;
+    height: 16px;
+    line-height: 16px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.62);
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 2;
+}
+.preview-page-badge {
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    line-height: 16px;
+    font-size: 10px;
+    text-align: center;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.62);
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 2;
+}
+/* 预览格必须是定位包含块(GIF/页码角标靠 absolute 定位) */
+.detail-panel .detail-preview-item,
+.book-preview-item {
+    position: relative;
+}
+
+/* =============================================================================
+ * 侧边详细信息:关闭按钮 ✕ 加大
+ * 原来用默认小号文字按钮,字形只有 12px 左右,贴在一排小图标最右边几乎看不见。
+ * 现在给固定 30px 的点击区 + 18px 字形,和旁边的刷新按钮对齐但不显小。
+ * ========================================================================== */
+.detail-panel .detail-panel-header .detail-panel-actions .detail-panel-close {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    padding: 0;
+    margin: 0;
+    font-size: 18px;
+    line-height: 1;
+    color: var(--emm-text-2);
+    border-radius: 4px;
+}
+.detail-panel .detail-panel-header .detail-panel-actions .detail-panel-close:hover {
+    color: var(--emm-text-1);
+    background: var(--el-fill-color-light);
+}

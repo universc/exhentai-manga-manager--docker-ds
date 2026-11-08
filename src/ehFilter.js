@@ -31,8 +31,9 @@ export const EH_FILTER_LANGUAGES = [
 export const EH_FILTER_STORE_KEY = 'emmEhFilter'
 
 // 默认:分类全开、不限语言/页数、最低评分 1(即「没有任何筛选」)
+// blacklistEnabled = 黑名单总开关。默认关闭:新用户填了黑名单才勾「启用」。
 export const defaultEhFilter = () => {
-  const f = { keyword: '', language: '', pageAtLeast: null, pageAtMost: null, minimumRating: 1, expunged: false, torrents: false, blacklist: '' }
+  const f = { keyword: '', language: '', pageAtLeast: null, pageAtMost: null, minimumRating: 1, expunged: false, torrents: false, blacklist: '', blacklistEnabled: false }
   for (const c of EH_FILTER_CATEGORIES) f[c.key] = true
   return f
 }
@@ -53,6 +54,11 @@ const normalize = (raw) => {
   out.torrents = !!raw.torrents
   // 黑名单标签:逗号(中英文)分隔,也可以直接空格分隔;匹配时不区分大小写
   out.blacklist = String(raw.blacklist || '').trim()
+  // 黑名单总开关。★向后兼容:老版本没有这个字段,而老用户填了黑名单本来就在生效,
+  //   所以「字段缺失」时按「黑名单非空 = 启用」推断,绝不能默认成 false 把老用户的黑名单全放出来。
+  out.blacklistEnabled = raw.blacklistEnabled === undefined || raw.blacklistEnabled === null
+    ? out.blacklist.length > 0
+    : !!raw.blacklistEnabled
   return out
 }
 
@@ -75,6 +81,32 @@ export const saveEhFilter = (f) => {
   } catch (e) { /* 隐私模式等写不了就算了,只是不记忆 */ }
 }
 
+// 把一条标签的**原始名**加进黑名单(去重,大小写不敏感)。
+// 为什么要原始名:过滤用的是 book.tags 里的原值,写翻译后的显示名永远命不中。
+// 返回 { changed, blacklist, blacklistEnabled }:调用方据此决定要不要问「是否立即启用」。
+export const addTagToBlacklist = (tag) => {
+  const name = String(tag || '').trim()
+  const cfg = loadEhFilter()
+  if (!name) return { changed: false, blacklist: cfg.blacklist, blacklistEnabled: !!cfg.blacklistEnabled }
+  // 比较用的归一化:只把连续空白压成一个空格 + 去首尾 + 小写,让 '  FULL  COLOR  ' 与 'Full Color' 视为同一条。
+  // 写入仍用 name(只 trim 首尾的原写法):大小写与内部空白都保留用户输入的样子。
+  const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase()
+  const terms = String(cfg.blacklist || '').split(/[,，、]+/).map(s => s.trim()).filter(Boolean)
+  const exists = terms.some(s => norm(s) === norm(name))
+  if (!exists) terms.push(name)
+  cfg.blacklist = terms.join(',')
+  saveEhFilter(cfg)
+  return { changed: !exists, blacklist: cfg.blacklist, blacklistEnabled: !!cfg.blacklistEnabled }
+}
+
+// 单独开关黑名单(标签右键「加入黑名单」后问「是否立即启用」用)
+export const setBlacklistEnabled = (on) => {
+  const cfg = loadEhFilter()
+  cfg.blacklistEnabled = !!on
+  saveEhFilter(cfg)
+  return cfg
+}
+
 // 有哪些条件真的在起作用(关键词不算 —— 它走搜索栏)
 export const ehFilterActive = (f) => {
   const x = normalize(f)
@@ -82,7 +114,8 @@ export const ehFilterActive = (f) => {
   if (x.language) return true
   if (x.pageAtLeast != null || x.pageAtMost != null) return true
   if (x.minimumRating > 1) return true
-  if (x.blacklist) return true
+  // 黑名单没勾「启用」就不算生效条件(填了内容但关着开关 = 不筛)
+  if (x.blacklistEnabled && x.blacklist) return true
   return false
 }
 
@@ -100,7 +133,10 @@ export const ehFilterMatch = (f, book) => {
     if (!enabled.some(c => c.name.toLowerCase() === cat)) return false
   }
   if (x.language) {
-    const langs = (book.tags && book.tags.language) || []
+    // ★ 2026-11 容错:book.tags 正常情况下是 {类别: [标签]} 对象,但被外部写坏的书
+    //   可能是字符串(直接从库里读出来没 parse)。以前这里 .some 不存在 → 抛 TypeError,
+    //   整个书架列表计算炸掉 → 白屏。现在非数组一律当作「没有语言标签」。
+    const langs = (book.tags && Array.isArray(book.tags.language)) ? book.tags.language : []
     const want = x.language.toLowerCase()
     if (!langs.some(l => String(l).toLowerCase() === want)) return false
   }
@@ -108,7 +144,8 @@ export const ehFilterMatch = (f, book) => {
   if (x.pageAtMost != null && Number(book.pageCount || 0) > x.pageAtMost) return false
   if (x.minimumRating > 1 && Number(book.rating || 0) < x.minimumRating) return false
   // 黑名单标签:命中任意一条就整本排除(标签名大小写不敏感;多词标签按「每个词都出现」匹配)
-  if (x.blacklist) {
+  // ⚠ 校验点①:总开关关掉时整段跳过 —— 黑名单里写什么都不参与过滤
+  if (x.blacklistEnabled && x.blacklist) {
     // 拆分结果缓存:列表里几千本书逐本调用,不要每次都 split
     let terms = blacklistCache.get(x)
     if (!terms) {
@@ -117,7 +154,7 @@ export const ehFilterMatch = (f, book) => {
       blacklistCache.set(x, terms)
     }
     const texts = []
-    const tags = book.tags || {}
+    const tags = (book.tags && typeof book.tags === 'object') ? book.tags : {}
     for (const k of Object.keys(tags)) {
       const arr = tags[k]
       if (Array.isArray(arr)) for (const t of arr) texts.push(String(t).toLowerCase())
@@ -148,7 +185,8 @@ export const ehFilterParams = (f) => {
   if (x.pageAtMost != null && (x.pageAtLeast == null || x.pageAtMost >= x.pageAtLeast)) out.pageAtMost = x.pageAtMost
   if (x.minimumRating > 1) out.minimumRating = x.minimumRating
   // 黑名单交给 EH 自己排(搜索语法 -tag);本地的就地过滤仍然保留(离线列表也生效)
-  if (x.blacklist) {
+  // ⚠ 校验点③:只在勾了「启用黑名单」时才把 -tag 发给 EH
+  if (x.blacklistEnabled && x.blacklist) {
     const terms = x.blacklist.split(/[,，、]+/).map(t => t.trim()).filter(Boolean)
     if (terms.length) out.blacklist = terms
   }

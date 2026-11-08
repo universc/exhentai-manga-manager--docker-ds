@@ -25,8 +25,10 @@
         <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
       </div>
       <img
+        v-if="coverSrc && !coverGaveUp && !coverBroken"
         class="book-cover"
         :src="coverSrc"
+        alt=""
         @click="onCoverClickOnce"
         @dblclick="onCoverDblClick"
         @touchstart.passive="startCoverPress($event)"
@@ -34,14 +36,26 @@
         @touchmove.passive="cancelCoverPress"
         @touchcancel="cancelCoverPress"
         @contextmenu="onCoverContextMenu($event)"
-        @load="coverLoading = false"
+        @load="onCoverLoad"
         @error="onCoverError"
       />
-      <!-- 封面加载动画:只覆盖封面区域,加载完成自动消失 -->
-      <div class="cover-loading" v-if="coverLoading">
-        <el-icon class="is-loading" :size="26"><Loading /></el-icon>
-        <span class="emm-eq pixel-only"><i></i><i></i><i></i><i></i></span>
-      </div>
+      <!-- 没有封面可显示(还没生成 / 生成失败):淡底 + 书名首字。
+           以前这里留一个空 <img> + 加载动画,封面生成失败的书会永远转圈 -->
+      <div
+        v-else
+        class="book-cover book-cover-empty"
+        :title="getDisplayTitle(book)"
+        @click="onCoverClickOnce"
+        @dblclick="onCoverDblClick"
+        @touchstart.passive="startCoverPress($event)"
+        @touchend="endCoverPress"
+        @touchmove.passive="cancelCoverPress"
+        @touchcancel="cancelCoverPress"
+        @contextmenu="onCoverContextMenu($event)"
+      ><span>{{ coverInitial }}</span></div>
+      <!-- ★ 2026-11 按用户要求取消封面加载转圈(截图 195337 那个一直转的圈):
+           封面解码完成前就显示首字占位,不再叠这层遮罩。
+           坏图仍走下面那套「失败两次就放弃」的兜底,coverLoading 只作内部状态。 -->
       <el-tag class="book-card-language" size="small" v-if="book.historyTime || !setting.hideReadCount"
         :type="isChineseTranslatedManga(book) ? 'danger' : 'info'"
         @click="onReadCountClick"
@@ -95,8 +109,10 @@
     <!-- 封面铺满整卡;阅读数/页数/阅·读按钮/状态/评分/收藏标签全部透明浮在图上(无白底) -->
     <template v-else>
       <img
+        v-if="coverSrc && !coverGaveUp && !coverBroken"
         class="book-cover-fill"
         :src="coverSrc"
+        alt=""
         @click="onCoverClickOnce"
         @dblclick="onCoverDblClick"
         @touchstart.passive="startCoverPress($event)"
@@ -104,13 +120,22 @@
         @touchmove.passive="cancelCoverPress"
         @touchcancel="cancelCoverPress"
         @contextmenu="onCoverContextMenu($event)"
-        @load="coverLoading = false"
+        @load="onCoverLoad"
         @error="onCoverError"
       />
-      <div class="cover-loading" v-if="coverLoading">
-        <el-icon class="is-loading" :size="26"><Loading /></el-icon>
-        <span class="emm-eq pixel-only"><i></i><i></i><i></i><i></i></span>
-      </div>
+      <div
+        v-else
+        class="book-cover-fill book-cover-empty"
+        :title="getDisplayTitle(book)"
+        @click="onCoverClickOnce"
+        @dblclick="onCoverDblClick"
+        @touchstart.passive="startCoverPress($event)"
+        @touchend="endCoverPress"
+        @touchmove.passive="cancelCoverPress"
+        @touchcancel="cancelCoverPress"
+        @contextmenu="onCoverContextMenu($event)"
+      ><span>{{ coverInitial }}</span></div>
+      <!-- 填充封面布局同样不再显示封面加载转圈 -->
       <!-- 任务进度遮罩:填充封面布局同样展示(旋转环 + 任务单字 + 已处理/总数) -->
       <div class="book-task-mask" v-if="bookTaskChar">
         <div class="book-task-ring"></div>
@@ -176,7 +201,7 @@
 </template>
 
 <script setup>
-import { ref, watchEffect, computed, watch } from 'vue'
+import { ref, watchEffect, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { BookmarkTwotone } from '@vicons/material'
 // 用户给的藤蔓图(白底已抠成透明):卡片右下角的「种子」按钮用它
@@ -186,7 +211,7 @@ import ContextMenu from '@imengyu/vue3-context-menu'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, getDisplayTagName, tagDisplayName, resolveCatKey, galleryCategoryName, tagDisplayPrefix } from '../utils.js'
+import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, giveUpBookCover, retryBookCover, bookImgSrc, getDisplayTagName, tagDisplayName, resolveCatKey, galleryCategoryName, tagDisplayPrefix } from '../utils.js'
 const appStore = useAppStore()
 const TASK_CHARS = { translate: '翻', colorize: '色', upscale: '分', extract: '字' }
 const bookTaskProgress = computed(() => (appStore.bookTaskProgress && appStore.bookTaskProgress[props.book && props.book.id]) || null)
@@ -309,27 +334,108 @@ watchEffect(() => {
   bookRating.value = props.book.rating
 })
 
-// 封面加载动画:封面路径变化 / 懒加载生成中保持转圈,<img> 加载完成由 @load 关闭
-const coverLoading = ref(true)
-// 封面懒加载:路径为空(扫描未生成)或加载失败时,按需生成封面
+// 封面加载动画:只有「真的有封面地址、且还没加载完」才转圈。
+// ★ 第二轮的坑(用户反馈「还是有漫画一直在转圈」):主进程「生成成功」但返回的
+//   地址依旧加载不出来时,会形成 error → ensureBookCover(换新 nonce) → 又 error 的循环;
+//   而「每次 coverLoading 变化都重置兜底定时器」让 15 秒永远到不了。
+//   现在:兜底只在一次加载会话开头启动一次,失败次数封顶 2 次,到顶就打书级放弃标记,
+//   清掉坏地址并显示首字占位(既不留转圈,也不留破图)。
+const coverLoading = ref(false)
+const coverGaveUp = ref(!!(props.book && props.book._coverLoadGivenUp))
+// 本次 <img> 加载失败:先把坏图换成首字占位,等后台生成出新的再换回来
+const coverBroken = ref(false)
+let coverFailCount = 0
+let coverWatchdog = null
+let coverTaskToken = 0
+
+const stopCoverLoading = () => {
+  coverLoading.value = false
+  if (coverWatchdog) { clearTimeout(coverWatchdog); coverWatchdog = null }
+}
+const giveUpCover = () => {
+  coverGaveUp.value = true
+  coverBroken.value = true
+  giveUpBookCover(props.book)
+  stopCoverLoading()
+}
+// 兜底定时器只在「一次加载会话」开头启动一次:后续反复 @error 绝不重置它。
+// ★ 封面加载转圈已被取消,这里超时**只收掉内部状态**,绝不能清 coverPath / 打放弃标记:
+//   NAS、在线封面这类加载慢但正常的图,8 秒后还在下载,强清路径会把正在加载的 <img>
+//   直接卸载、永远显示占位。真正的坏图由 @error(失败 2 次)走 giveUpCover 处理。
+const startCoverLoading = () => {
+  if (coverGaveUp.value) return
+  if (!coverWatchdog) coverWatchdog = setTimeout(stopCoverLoading, 8000)
+  coverLoading.value = true
+}
+const onCoverLoad = () => {
+  coverFailCount = 0
+  coverGaveUp.value = false
+  coverBroken.value = false
+  retryBookCover(props.book)
+  stopCoverLoading()
+}
+const triggerEnsureCover = () => {
+  const token = ++coverTaskToken
+  ensureBookCover(props.book)
+    .then((next) => {
+      // 内部 3 次重试全失败 → 收摊显示占位(成功时 coverPath 变化由 watcher 接管)
+      if (token === coverTaskToken && !next && !coverGaveUp.value) giveUpCover()
+    })
+    .catch(() => { if (token === coverTaskToken && !coverGaveUp.value) giveUpCover() })
+}
+const onCoverError = async () => {
+  if (coverGaveUp.value) { stopCoverLoading(); return }
+  // 在线画廊封面是远程地址:这次直接回落占位,但不打书级标记(下次刷新还有机会加载)
+  if (props.book?.online) { coverGaveUp.value = true; stopCoverLoading(); return }
+  coverFailCount += 1
+  // 同一个坏地址最多试两轮(ensureBookCover 内部还有 2 次重试),
+  // 到顶就放弃,避免「生成成功但图片依旧加载不出来」的无限循环
+  if (coverFailCount >= 2) { giveUpCover(); return }
+  const token = ++coverTaskToken
+  // 加载失败:立刻换成首字占位(不留转圈、也不留破图框),后台慢慢重试生成;
+  // 等真有新地址了再换回 <img> 并重新亮起动画,不让用户干看着转十几秒
+  coverBroken.value = true
+  stopCoverLoading()
+  const next = await ensureBookCover(props.book).catch(() => null)
+  if (token !== coverTaskToken || coverGaveUp.value) return
+  if (!next) giveUpCover()
+  else { coverBroken.value = false; startCoverLoading() }
+}
+watch(() => props.book.coverPath, (v) => {
+  const givenUpByBook = !!(props.book && props.book._coverLoadGivenUp)
+  if (!givenUpByBook && coverGaveUp.value) {
+    // 别处点了「重新生成封面」(清掉了书级标记) → 本地也解除放弃,再给一次机会
+    coverGaveUp.value = false
+    coverBroken.value = false
+    coverFailCount = 0
+  }
+  if (coverGaveUp.value) { stopCoverLoading(); return }
+  if (v) {
+    startCoverLoading()
+  } else {
+    // 没有地址:不转圈(先显示占位),后台再尝试生成
+    coverBroken.value = false
+    stopCoverLoading()
+    if (!props.book?.online) triggerEnsureCover()
+  }
+}, { immediate: true })
+
 // 封面重新生成后文件名不变,给 src 加一个时间戳,强制浏览器重新拉图
+// ★ 地址必须先经 bookImgSrc 做百分号编码:文件名里的 # / % 会让 file:// 地址失效
+//   (封面文件存在却永远加载不出来,表现就是「一直转圈 / 生成失败」)
 const coverSrc = computed(() => {
   const p0 = props.book && props.book.coverPath
   if (!p0) return ''
+  const base = bookImgSrc(p0)
   const n = props.book._coverNonce
-  if (!n) return p0
-  return p0 + (String(p0).includes('?') ? '&' : '?') + 'r=' + n
+  if (!n) return base
+  return base + (base.includes('?') ? '&' : '?') + 'r=' + n
 })
-const onCoverError = () => {
-  // 在线画廊的封面是远程地址,没有「本地封面生成」这回事
-  if (props.book?.online) { coverLoading.value = false; return }
-  coverLoading.value = true
-  ensureBookCover(props.book)
-}
-watch(() => props.book.coverPath, (v) => {
-  coverLoading.value = true
-  if (!v && !props.book?.online) ensureBookCover(props.book)
-}, { immediate: true })
+// 没有封面时占位块里显示书名首字(至少能认出是哪一本,而不是一块空白)
+const coverInitial = computed(() => {
+  const title = String(getDisplayTitle(props.book) || props.book?.title || '').trim()
+  return title.slice(0, 1).toUpperCase() || '?'
+})
 
 // ---------- 封面单击/双击分离:双击时取消单击动作 ----------
 let coverClickTimer = null
@@ -437,7 +543,9 @@ const onMangaTitleContextMenu = (e, book) => {
       onClick: async () => {
         appStore.setBookTask(book.id, 'translate')
         try {
-          const res = await ipcRenderer.invoke('translate-book-title', book)
+          // ★ 必须先脱代理:book 是 pinia 里的响应式 Proxy,
+          //   Electron IPC 用结构化克隆传参,克隆 Proxy 会抛 "An object could not be cloned."
+          const res = await ipcRenderer.invoke('translate-book-title', JSON.parse(JSON.stringify(book)))
           if (res && res.title) printMessage('success', t('m.translateTitle') + ': ' + res.title)
           else printMessage('warning', res?.error || t('c.titleTranslationFailed'))
         } catch (err) {
@@ -453,6 +561,16 @@ const onMangaTitleContextMenu = (e, book) => {
   // 顺序按「设置 → 高级 → 右键菜单」里拖动后的顺序
   ContextMenu.showContextMenu({ x: e.x, y: e.y, items: sortContextMenuItems(setting.value, 'title', items) })
 }
+
+// 卡片被移出列表(换页 / 筛掉)时把挂在 window 上的定时器清掉:
+// ① 封面兜底定时器不该在已卸载的组件上继续跑;
+// ② 否则 300ms 后那个「单击封面」还会触发一次,把一本已经不在列表里的书打开
+onUnmounted(() => {
+  if (coverWatchdog) { clearTimeout(coverWatchdog); coverWatchdog = null }
+  clearTimeout(coverClickTimer)
+  clearTimeout(coverPressTimer)
+  clearTimeout(tagPressTimer)
+})
 
 </script>
 
@@ -515,20 +633,25 @@ const onMangaTitleContextMenu = (e, book) => {
       border-width: 0
       padding-left: 4px
       padding-right: 4px
-// 封面加载动画遮罩(经典/填充布局共用)
-.cover-loading
-  position: absolute
-  top: 0
-  left: 0
-  right: 0
-  bottom: 0
+// 封面加载遮罩已取消(用户要求):coverLoading 只作内部状态,不渲染任何视觉层
+// 没有封面时的占位:淡底 + 书名首字(与封面同尺寸、同样可点)
+// ★ 用双类选择器提权:后面的 .book-cover { display: block } 同特异性会把它盖掉,
+//   占位字就会顶到左上角而不是居中
+.book-cover.book-cover-empty,
+.book-cover-fill.book-cover-empty
   display: flex
   align-items: center
   justify-content: center
-  background: var(--el-fill-color-light, rgba(0, 0, 0, .04))
-  color: var(--el-text-color-secondary, #909399)
-  border-radius: 6px
-  pointer-events: none
+  background: var(--el-fill-color-light, #f2f3f5)
+  color: var(--el-text-color-placeholder, #a8abb2)
+  font-size: 34px
+  font-weight: 700
+  line-height: 1
+  object-fit: initial
+  user-select: none
+  span
+    line-height: 1
+    opacity: .8
 .book-title
   height: 36px
   overflow-y: hidden

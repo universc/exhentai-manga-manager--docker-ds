@@ -45,3 +45,11 @@ dist.bak-*/
 
 # 交接文档只在本地维护,不推送到 GitHub
 项目交接文档-给下一个AI.md
+.tmp-esb/
+.build-tmp/
+.scratch/
+electron_out.txt
+electron_err.txt
+
+# esbuild / 打包临时目录
+.tmp-build/

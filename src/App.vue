@@ -149,25 +149,16 @@
           </template>
           <!-- 历史视图:清空历史(JHenTai 历史页标题栏那个删除按钮) -->
           <el-button
-            v-if="sortValue === 'recentRead' && !editCollectionView && !editTagView"
+            v-if="sortValue === 'recentRead' && !manageView"
             type="danger"
             plain
             :icon="MdTrash"
             :title="$t('m.historyClear')"
             @click="clearHistory"
           ></el-button>
-          <!-- 合集/标签编辑按钮(仅编辑视图显示;管理入口已并入可自定义工具栏按钮) -->
-          <div class="edit-btn-group">
-            <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.addCollection()" :icon="Collections24Regular" :title="$t('m.addCollection')"></el-button>
-            <!-- 智能生成:按名字与文件夹结构自动建议合集。
-                 按钮样式与同一排的其它按钮保持一致(primary + plain + 24 号 fluent 图标),
-                 以前用 success 绿色 + ionicons 的魔杖图标,在一排里显得突兀、图标也偏小不明显。 -->
-            <el-button type="primary" plain v-if="editCollectionView" @click="autoCollectionVisible = true" :icon="Wand24Regular" :title="$t('m.autoCollectionTitle')"></el-button>
-            <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.editCollection()" :icon="Edit" :title="$t('m.editCollection')"></el-button>
-            <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.saveCollection()" :icon="Save16Regular" :title="$t('m.save')"></el-button>
-            <el-button type="primary" plain v-if="editCollectionView" @click="$refs.EditViewRef.exitCollectionView()" :icon="MdExit" :title="$t('m.exit')"></el-button>
-            <el-button type="primary" plain v-if="editTagView" @click="$refs.EditViewRef.exitEditTagView()" :icon="MdExit" :title="$t('m.exit')"></el-button>
-          </div>
+          <!-- ★ 2026-11:原来这里有一排「管理合集/管理标签」的功能按钮
+               (添加/智能生成/编辑/保存/退出)。用户要求把它们做进右侧面板里 ——
+               现在都在 EditView.vue 的面板头部 .emm-manage-actions 中,工具栏不再占位。 -->
           <!-- 设置按钮已并入上面的排序序列(常驻,不可隐藏) -->
           <!-- 上下文按钮(仅 Win 远程桌面模式) = 服务器配置 -->
           <el-button v-if="showContextButton" :icon="contextButton.icon" plain @click="contextButton.action()" :title="$t(contextButton.titleKey)"></el-button>
@@ -189,11 +180,11 @@
     </el-row>
     <RandomTags
       ref="randomTagsRef"
-      v-if="!editTagView && !editCollectionView && (setting.randomTagsEnabled || setting.showCollectTag)"
+      v-if="!manageView && (setting.randomTagsEnabled || setting.showCollectTag)"
       @search="handleSearchString"
     />
-    <el-row :gutter="20" class="book-card-area">
-      <el-col :span="24" v-if="!editTagView && !editCollectionView" class="book-card-list" :style="{height: (setting.randomTagsEnabled || setting.showCollectTag) ? 'calc(100vh - 134px)' : 'calc(100vh - 96px)'}">
+    <el-row :gutter="20" class="book-card-area" v-if="!authBlocked">
+      <el-col :span="24" v-if="!manageView" class="book-card-list" :style="{height: (setting.randomTagsEnabled || setting.showCollectTag) ? 'calc(100vh - 134px)' : 'calc(100vh - 96px)'}">
         <!-- EH在线 重新加载/搜索/排序:立刻摆上骨架卡,而不是留着旧列表装作没事(用户说的「卡半天」) -->
         <div class="online-skeleton" v-if="onlineReloading && !visibleRenderedBookList.length">
           <div class="online-skeleton-card" v-for="n in (Number(setting.pageSize) > 24 ? 24 : Number(setting.pageSize) || 12)" :key="'sk' + n">
@@ -202,43 +193,57 @@
             <div class="online-skeleton-line short"></div>
           </div>
         </div>
-        <div
-          v-for="(book, index) in visibleRenderedBookList"
-          :key="book.id"
-          class="book-card-frame"
-          :tabindex="index + 1"
-          :style="{ '--emm-in-delay': Math.min(index, 40) * 14 + 'ms' }"
-        >
-          <transition name="pop">
-            <!-- show book card when book isn't a collection, book isn't hidden because collected,
-              and book isn't hidden by user except sorting by onlyHiddenBook
-              and book isn't hidden by folder select -->
-            <BookCard
-              :book="book"
-              v-if="!book.isCollection && !book.collectionHide && (sortValue === 'hidden' || !book.hiddenBook) && !book.folderHide"
-              @open-book-detail="$refs.BookDetailDialogRef.openBookDetail(book)"
-              @handle-click-cover="handleClickCover(book)"
-              @title-click="onTitleClick(book)"
-              @on-book-context-menu="onBookContextMenu"
-              @handle-search-string="handleSearchString"
-              @search-from-tag="searchFromTag"
-              @tag-long-press="openQuickTagEdit"
-              @cover-click="onCoverClick(book)"
-              @cover-dblclick="onCoverDblClick(book)"
-              @yue-click="onYueClick(book)"
-              @du-click="onDuClick(book)"
-              @page-count-click="onPageCountClick(book)"
-              @online-favorite="onOnlineFavorite"
-              @open-torrents="openTorrentDialog"
-              @open-local-book="$refs.BookDetailDialogRef.openLocalBook(book)"
-            />
-            <BookCardCollection
-              :book="book"
-              v-else-if="book.isCollection && !book.folderHide"
-              @open-collection="openCollection(book)"
-            />
-          </transition>
-        </div>
+        <!-- ★ 条件判断提到 <template> 上(见 methods.shouldRenderCard):
+             一个 frame 里两个分支都可能不渲染(例如已收进合集的普通书 collectionHide=true),
+             但 v-for 已经占了位 → 书架出现空白卡片位。不渲染就不占位。
+             ⚠ :key 必须放在 <template v-for> 上(放在内层 div 上 Vue 不认)。 -->
+        <template v-for="(book, index) in visibleRenderedBookList" :key="book.id">
+          <div
+            v-if="shouldRenderCard(book)"
+            class="book-card-frame"
+            :tabindex="index + 1"
+            :style="{ '--emm-in-delay': Math.min(index, 40) * 14 + 'ms' }"
+          >
+            <transition name="pop">
+              <!-- show book card when book isn't a collection, book isn't hidden because collected,
+                and book isn't hidden by user except sorting by onlyHiddenBook
+                and book isn't hidden by folder select -->
+              <BookCard
+                :book="book"
+                v-if="!book.isCollection"
+                @open-book-detail="$refs.BookDetailDialogRef.openBookDetail(book)"
+                @handle-click-cover="handleClickCover(book)"
+                @title-click="onTitleClick(book)"
+                @on-book-context-menu="onBookContextMenu"
+                @handle-search-string="handleSearchString"
+                @search-from-tag="searchFromTag"
+                @tag-long-press="openQuickTagEdit"
+                @cover-click="onCoverClick(book)"
+                @cover-dblclick="onCoverDblClick(book)"
+                @yue-click="onYueClick(book)"
+                @du-click="onDuClick(book)"
+                @page-count-click="onPageCountClick(book)"
+                @online-favorite="onOnlineFavorite"
+                @open-torrents="openTorrentDialog"
+                @open-local-book="$refs.BookDetailDialogRef.openLocalBook(book)"
+              />
+              <!-- 合集卡:按键与普通卡一致 —— 阅/读按钮打开合集,页数/状态/双击进合集详情,
+                   封面与标题都能右键出合集菜单 -->
+              <BookCardCollection
+                :book="book"
+                v-else
+                @open-collection="onCoverClick(book)"
+                @open-collection-info="openCollectionDetail"
+                @title-click="onTitleClick(book)"
+                @cover-dblclick="onCoverDblClick(book)"
+                @pagecount-click="onPageCountClick(book)"
+                @yue-click="onYueClick(book)"
+                @du-click="onDuClick(book)"
+                @edit-collection="editCollectionFromCard"
+              />
+            </transition>
+          </div>
+        </template>
         <!-- 逐排加载哨兵:滚动到这里时继续加载下一排 -->
         <div ref="renderSentinel" class="render-sentinel"></div>
         <!-- 触底加载的底部状态:加载中转圈;EH在线全部加载完写「没有更多了」 -->
@@ -250,9 +255,18 @@
         <div class="book-empty-hint" v-if="sortValue === 'recentRead' && !displayBookList.length">
           {{ onlineActive ? $t('m.historyEmptyOnline') : $t('m.historyEmptyLocal') }}
         </div>
+        <!-- ★ 2026-11 修「筛选一设置就白屏」:
+             以前漏斗筛到 0 本时,书架区整块空白 —— 没有任何文字、也回不去(用户看到的就是白屏)。
+             现在只要有过滤/搜索条件在生效且一本都不剩,就给一句说明 + 一个「清除筛选」按钮。
+             注意排除「本来就是空库」的历史/空库情况:那种要提示去扫描,不是筛选问题。 -->
+        <div class="book-empty-hint filter-empty-hint" v-if="!visibleChunkDisplayBookList.length && !listLoadingMore && (ehFilterActive || (searchString && bookList.length))">
+          <div class="filter-empty-title">{{ $t('m.filterEmptyTitle') }}</div>
+          <el-button size="small" type="primary" plain @click="clearAllFilters">{{ $t('m.filterEmptyReset') }}</el-button>
+        </div>
       </el-col>
       <EditView
         ref="EditViewRef"
+        @auto-collection="autoCollectionVisible = true"
         @preview-manga="previewManga"
         @search-from-tag="searchFromTag"
         @load-book-list="loadBookList"
@@ -290,14 +304,21 @@
         @open-torrents="openTorrentDialog"
         @favorite="onOnlineFavorite"
         @search-from-tag="searchFromTag"
-        @refresh-list="loadBookList(false)"
-        @open-book-detail="(b) => $refs.BookDetailDialogRef.openBookDetail(b)"
+        @refresh-list="refreshAfterFilterChange"
+        @open-book-detail="onSideDetailOpenDetail"
         @get-metadata="(b) => $refs.SearchDialogRef.getBookInfo(b)"
         @toggle-hidden="onSideDetailToggleHidden"
         @rescan="onSideDetailRescan"
         @delete-book="onSideDetailDelete"
         @open-gallery-url="onSideDetailOpenGalleryUrl"
+        @open-image="onSideDetailOpenImage"
+        @open-url="(u) => ipcRenderer.invoke('open-url', u)"
+        @open-path="onSideDetailOpenPath"
         @open-hh-download="openHhDownloadDialog"
+        @edit-tag="openFullTagEdit"
+        @edit-collection="editCollectionFromDetail"
+        @all-comments="onSideDetailAllComments"
+      @save-book="onSideDetailSaveBook"
       />
       <!-- 下载记录:和主界面**同层**(不是浮层);拖动左边缘可以调整这一栏的宽度。
            列表照 JHenTai 的下载网格模式:封面网格,没下完的封面上压暗 + 圆环进度 + 中央状态按钮 -->
@@ -338,48 +359,76 @@
         @preview-page="openDownloadPageInReader"
         @preview-img-error="onPreviewImgError"
         @retry-img="retryPreviewImg"
+        @open-setting="openDownloadSetting"
       />
-      <!-- 管理合集：原来是底部抽屉，现在是右侧入坞面板（与任务记录同款，可拖宽）。
-           保留 .collection-drawer 类，让旧样式继续命中内部元素 -->
-      <div v-else-if="name === 'collection'" class="dock-panel collection-drawer" v-show="drawerVisibleCollection" :style="{ width: collectionPanelWidth + 'px' }">
-        <div class="dock-panel-resizer" @mousedown="startDockResize($event, 'collectionPanelWidth', 320)"></div>
-        <div class="dock-panel-header">
-          <span class="dock-panel-title">{{ openCollectionTitle }}</span>
-          <span class="dock-panel-actions">
-            <el-button type="primary" :icon="Edit" plain link class="collection-edit-button" @click="editCurrentCollection"></el-button>
+    </template>
+    <!-- 管理合集:底部抽屉(从下往上滑出,可拖上边缘改高度)。
+         ★ P1-5:它以前是第三个右栏,用户觉得「看合集时右侧太挤」,改成底部抽屉。
+           因为不在 panelOrder 里,所以必须**放在上面那个 v-for 之外**单独渲染,
+           否则会渲染两次(见 computed.panelOrder)。 -->
+    <transition name="collection-drawer-slide">
+      <div
+        v-show="drawerVisibleCollection"
+        class="collection-bottom-drawer"
+        :style="{ height: collectionDrawerHeight + 'px' }"
+      >
+        <!-- 上边缘拖动条:往上拖变高,往下拖变矮(200 ~ 70vh) -->
+        <div class="collection-drawer-resizer" :title="$t('m.collectionDrawerResizeHint')" @mousedown="startCollectionDrawerResize"></div>
+        <div class="collection-drawer-header">
+          <span class="collection-drawer-title">{{ openCollectionTitle }}</span>
+          <span class="collection-drawer-count" v-if="collectionDrawerList.length">{{ $t('m.collectionBookCount', { n: collectionDrawerList.length }) }}</span>
+          <span class="collection-drawer-actions">
+            <el-button type="primary" :icon="Edit" plain link class="collection-edit-button" :title="$t('m.editCollection')" @click="editCurrentCollection"></el-button>
             <el-button text @click="drawerVisibleCollection = false">✕</el-button>
           </span>
         </div>
-        <div class="dock-panel-body">
-      <div class="collection-book-card-list">
-        <div
-          v-for="(book, index) in openCollectionBookList"
-          :key="book.id"
-          class="book-card-frame"
-        >
-          <BookCard
-            :book="book"
-            :tabindex="index + 1"
-            @open-book-detail="$refs.BookDetailDialogRef.openBookDetail(book)"
-            @handle-click-cover="handleClickCover(book)"
-            @on-book-context-menu="onBookContextMenu"
-            @handle-search-string="handleSearchString"
-            @search-from-tag="searchFromTag"
-            @tag-long-press="openQuickTagEdit"
-            @cover-click="onCoverClick(book)"
-            @cover-dblclick="onCoverDblClick(book)"
-            @yue-click="onYueClick(book)"
-            @du-click="onDuClick(book)"
-            @page-count-click="onPageCountClick(book)"
-            @online-favorite="onOnlineFavorite"
-            @open-torrents="openTorrentDialog"
-            @open-local-book="$refs.BookDetailDialogRef.openLocalBook(book)"
-          />
+        <div class="collection-drawer-body">
+          <!-- P2-8:合集内拖拽排序(vuedraggable,与 EditView 里同款)。
+               只有拖手柄能拖,避免点封面/标题时误拖 -->
+          <draggable
+            v-if="collectionDrawerList.length"
+            v-model="collectionDrawerList"
+            item-key="id"
+            class="collection-book-card-list"
+            :animation="180"
+            handle=".collection-drag-handle"
+            @end="saveCollectionDrawerOrder"
+          >
+            <template #item="{ element: book, index }">
+              <div class="book-card-frame">
+                <span class="collection-drag-handle" :title="$t('m.collectionDragHint')">
+                  <el-icon :size="16"><DragIndicatorRound /></el-icon>
+                </span>
+                <BookCard
+                  :book="book"
+                  :tabindex="index + 1"
+                  @open-book-detail="$refs.BookDetailDialogRef.openBookDetail(book)"
+                  @handle-click-cover="handleClickCover(book)"
+                  @on-book-context-menu="onBookContextMenu"
+                  @handle-search-string="handleSearchString"
+                  @search-from-tag="searchFromTag"
+                  @tag-long-press="openQuickTagEdit"
+                  @cover-click="onCoverClick(book)"
+                  @cover-dblclick="onCoverDblClick(book)"
+                  @yue-click="onYueClick(book)"
+                  @du-click="onDuClick(book)"
+                  @page-count-click="onPageCountClick(book)"
+                  @online-favorite="onOnlineFavorite"
+                  @open-torrents="openTorrentDialog"
+                  @open-local-book="$refs.BookDetailDialogRef.openLocalBook(book)"
+                />
+              </div>
+            </template>
+          </draggable>
+          <div v-else class="collection-drawer-empty">{{ $t('m.collectionEmptyBooks') }}</div>
         </div>
       </div>
-        </div>
-      </div>
-    </template>
+    </transition>
+    <!-- 管理标签的右侧操作面板:由 EditView.vue 用 <Teleport> 投送到这里。
+         ★ 为什么不在 EditView 里直接当 el-col:那样它会嵌在 .book-card-area 的 el-row 里,
+           被工具栏和分页条夹住(高度只有中间一段),和「侧边详细信息」那种整列通高的右栏观感完全不同。
+           投送到 .app-body 这一层之后,它就和 detail / download / collection 三个右栏平级。 -->
+    <div id="emm-manage-tag-slot" class="emm-manage-tag-slot"></div>
     </div>
     <!-- 下载记录(右侧滑出):进度 / 暂停 / 继续 / 删除 / 打开下载文件夹 -->
 
@@ -464,7 +513,7 @@
       </template>
     </el-dialog>
     <!-- 下载弹窗:所有「下载」入口(侧边详细 / 详细界面 / 右键)统一走它:位置 / 名称 / 原图 -->
-    <DownloadDialog ref="DownloadDialogRef" @start="startGalleryDownloadFromDialog" />
+    <DownloadDialog ref="DownloadDialogRef" @start="startGalleryDownloadFromDialog" @open-setting="openDownloadSetting" />
     <!-- 移动弹窗:只能在**已有库的文件夹及其子文件夹**里选(设置里填了默认路径就不弹这个) -->
     <el-dialog v-model="moveDialog.visible" :title="$t('m.downloadMovePickTitle')" width="440px" append-to-body>
       <LibraryFolderPicker v-model="moveDialog.target" :placeholder="$t('m.downloadMovePick')" />
@@ -488,6 +537,10 @@
       @jump-mange-detail="jumpMangeDetail"
       @add-to-history="addBookToHistory"
       @open-hh-download="openHhDownloadDialog"
+      @edit-tag="openFullTagEdit"
+      @refresh-list="refreshAfterFilterChange"
+      @edit-collection="editCollectionFromDetail"
+      @delete-collection="deleteCollectionFromDetail"
     />
     <!-- H@H 归档下载(EH 服务端打包):照 JHenTai 的 EHDownloadHHDialog -->
     <HhDownloadDialog
@@ -495,9 +548,15 @@
       :archive-page-url="hhDialogUrl"
     />
     <!-- 自动生成合集:按名字与文件夹结构给出建议,用户勾选后才写盘 -->
+    <!-- ★ 「智能生成」保存后**不要**退出管理面板(用户常常一次生成多个合集,需要留在面板里核对结果)。
+         实现上不是去调 EditView 的 saveCollection({ keepOpen:true }) ——
+         · AutoCollectionDialog 自己已经 invoke('save-collection-list') 写盘,并把新列表写回 pinia 的
+           collectionList,管理面板由 store 驱动,天然就是最新的,再存一次是重复写盘;
+         · saveCollection() 内部还有 emit('loadBookList') —— 那会把整库重新读一遍 + 重建文件夹树 +
+           清空当前选中的合集,等于刚生成完就把用户眼前的结果抹掉。
+         所以这里只留一条注释,不挂 @applied 处理器(原来的空表达式 `... && null` 已删除)。 -->
     <AutoCollectionDialog
       v-model="autoCollectionVisible"
-      @applied="$refs.EditViewRef && $refs.EditViewRef.saveCollection && null"
     />
     <InternalViewer
       ref="InternalViewerRef"
@@ -510,7 +569,7 @@
     />
     <TagGraph ref="TagGraphRef" @search="handleSearchString"/>
     <SearchDialog ref="SearchDialogRef"/>
-    <EhFilterDialog v-model:visible="ehFilterVisible" :filter="ehFilterForDialog" @apply="applyEhFilterAndRefresh"/>
+    <EhFilterDialog v-model:visible="ehFilterVisible" :filter="ehFilterForDialog" :online="onlineActive" @apply="applyEhFilterAndRefresh"/>
     <Setting ref="SettingRef" @load-book-list="loadBookList" @load-collection-list="loadCollectionList"/>
   </el-config-provider>
 </template>
@@ -520,10 +579,11 @@ import { defineComponent } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { Setting as SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened, MoreFilled } from '@element-plus/icons-vue'
 import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular, Wand24Regular } from '@vicons/fluent'
+import { DragIndicatorRound } from '@vicons/material'
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdOptions, MdTrash, MdCloudDownload, MdPlay, MdPause } from '@vicons/ionicons4'
-import { TreeViewAlt, CicsSystemGroup, TagGroup, Catalog } from '@vicons/carbon'
+import { TreeViewAlt, CicsSystemGroup, Catalog } from '@vicons/carbon'
 
-import { getWidth, fetchRecentReadRecords, removeReadRecord, clearReadRecords, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes, tagDisplayName, tagColorOf, galleryCategoryName as galleryCategoryNameOf, tagDisplayPrefix as tagDisplayPrefixOf } from './utils.js'
+import { getWidth, fetchRecentReadRecords, removeReadRecord, clearReadRecords, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes, tagDisplayName, tagColorOf, galleryCategoryName as galleryCategoryNameOf, tagDisplayPrefix as tagDisplayPrefixOf, retryBookCover } from './utils.js'
 import { extractCoverColors, pixelateToDataUrl } from './cover-color.js'
 // 内置的默认像素底图(构建后会变成带 hash 的资源 URL)
 import pixelDefaultBg from './assets/pixel-default-bg.png'
@@ -548,11 +608,28 @@ import SideDetailPanel from './components/SideDetailPanel.vue'
 import DownloadPanel from './components/DownloadPanel.vue'
 import DownloadDialog from './components/DownloadDialog.vue'
 import LibraryFolderPicker from './components/LibraryFolderPicker.vue'
+import draggable from 'vuedraggable'
 import { EH_ONLINE_ID, hasEhCookies, ehHost, ehListUrl, parseGalleryList, parseGalleryDetail, galleryToBook, ehImageSrc, EX_HOST, EH_HOST } from './ehOnline.js'
-import { loadEhFilter, saveEhFilter, ehFilterActive as ehFilterIsActive, ehFilterMatch, ehFilterParams, normalizeEhFilter } from './ehFilter.js'
+import { loadEhFilter, saveEhFilter, ehFilterActive as ehFilterIsActive, ehFilterMatch, ehFilterParams, normalizeEhFilter, defaultEhFilter as defaultEhFilterForUi } from './ehFilter.js'
 
 import { mapWritableState, mapActions } from 'pinia'
 import { useAppStore } from './pinia.js'
+
+// 只读账户(viewerRole)在「书卡右键菜单」里看不到的项(A6):
+// 这些都是会写盘 / 写库的动作,服务端本来就会 403 —— 与其让用户点了报错,不如不显示。
+// 在线画廊分支只用到前两个(下载);其余是本地分支的写操作。
+const ONLINE_VIEWER_WRITE_IDS = new Set(['downloadGallery', 'downloadGalleryOriginal'])
+const LOCAL_VIEWER_WRITE_IDS = new Set([
+  'getMetadata', 'resetMetadata', 'moveFile', 'deleteFile', 'toggleHidden',
+  'pasteTag', 'getMetadataFromLink',
+  // 重新生成封面:要解压取帧 + 写封面文件(写盘),只读账户点了必然 403
+  'regenerateCover',
+  // 任务类(翻译/超分/上色 都要写库,暂停/继续/中止 会改任务状态)
+  'translateBook', 'upscaleBook', 'colorizeBook',
+  'pauseTask', 'resumeTask', 'abortTask',
+  // .bak 备份的批量删除/还原:直接动盘上的文件
+  'deleteBookBak', 'restoreBookBak'
+])
 
 export default defineComponent({
   components: {
@@ -574,14 +651,18 @@ export default defineComponent({
     DownloadPanel,
     DownloadDialog,
     LibraryFolderPicker,
+    // P2-8:合集底部抽屉里的拖拽排序(与 EditView 里同款组件)
+    draggable,
   },
   setup () {
     return {
       SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened, MdPlay, MdPause,
       Collections24Regular, Search32Filled, ArrowTrendingLines20Filled, Save16Regular, Wand24Regular,
+      DragIndicatorRound,
       MdRefresh, MdCodeDownload, MdExit, MdShuffle, MdFolderOpen, MdCloudDone, MoreFilled,
       MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdOptions, MdTrash, MdCloudDownload,
-      TreeViewAlt, CicsSystemGroup, TagGroup
+      // TagGroup 已随「管理标签」按钮合并进「管理」而不再使用(图标统一用 CicsSystemGroup)
+      TreeViewAlt, CicsSystemGroup
     }
   },
   data () {
@@ -614,6 +695,13 @@ export default defineComponent({
       downloadPanelVisible: false,
       downloadPanelWidth: Math.min(900, Math.max(240, Number(localStorage.getItem('emmDownloadPanelWidth')) || 380)),
       downloadRecords: [],
+      // 下载记录的「墓碑」:主进程是唯一真源,但它的进度事件是异步的 ——
+      // 用户点了删除,几秒前发出来的 eh-download-progress 仍会随后到达,
+      // 前端 unshift 一下就把已删的记录塞回来了(用户反馈的「删了又出现」)。
+      // 这里记下「已删除 / 已清空」的痕迹,所有插入路径先过一遍过滤。
+      downloadTombstones: {},
+      // 最近一次「清空记录」的时间:重新拉记录时,createdAt 比它早的一律丢掉(防服务端残留)
+      downloadClearedAt: 0,
       // 侧边详细信息(与下载记录同款右栏,内容照 JHenTai 详情页;数据是「最近点开的那本」)
       detailPanelVisible: false,
       detailPanelWidth: Math.min(900, Math.max(240, Number(localStorage.getItem('emmDetailPanelWidth')) || 340)),
@@ -662,6 +750,12 @@ export default defineComponent({
       // 「筛选」(JHenTai 那个筛选对话框):分类 / 关键词 / 语言 / 页数 / 最低评分 / 两个 EH 开关
       ehFilterVisible: false,
       ehFilter: loadEhFilter(),
+      // 网页版账户系统:未登录时整页门禁。mounted 里判定,true 时既不读设置也不读书架,
+      // 模板里书架区域整块不渲染 —— 登录框后面看不到任何书。
+      authBlocked: false,
+      // 上次「筛选」写进搜索栏的关键词。用它区分「筛选写的词」与「用户手打的词」:
+      // 只有前者会在筛选里把关键词清空后被一起清掉,手打的搜索不会被误删。
+      filterAppliedKeyword: '',
       currentPage_: 1,
       progress: 0,
       // 后台扫描是否进行中(用于扫描按钮 loading 与进度条动画)
@@ -699,6 +793,12 @@ export default defineComponent({
       // collection
       drawerVisibleCollection: false,
       openCollectionTitle: undefined,
+      // 当前打开的合集 id(P2-8 拖拽排序要写回 collectionList 里对应的那一个)
+      openCollectionId: undefined,
+      // 底部抽屉里的本地列表:拖拽时只动它,松手才写回 collectionList
+      collectionDrawerList: [],
+      // 底部抽屉高度(px):范围 200 ~ 70vh,拖动后存 localStorage
+      collectionDrawerHeight: Math.max(200, Number((typeof localStorage !== 'undefined' && localStorage.getItem('emmCollectionDrawerHeight')) || 360)),
       // move file
       moveFileDialogVisible: false,
       moveFileTargetBook: null,
@@ -737,8 +837,7 @@ export default defineComponent({
       'openCollectionBookList',
       'serviceAvailable',
       'sortValue',
-      'editCollectionView',
-      'editTagView',
+      'manageView',
       'folderTreeData',
       'localeFile',
       'displayBookCount',
@@ -830,12 +929,13 @@ export default defineComponent({
       }))
     },
     // 底部加载状态:在线模式下正在取下一页(触底加载的转圈)
-    // 两个右栏的左右顺序:按打开顺序排(每次打开都重新排到最右),都没开过时默认详细信息在左
     // 两个右栏的左右顺序:按打开顺序排(每次打开都重新排到最右),都没开过时默认详细信息在左。
-    // T04+:管理合集从底部抽屉改成第三个右栏,参与同一排序;文件夹树是独立左栏不参与。
+    // ★ 管理合集已从第三个右栏改成**底部抽屉**(P1-5),所以这里只剩 detail / download。
+    //   'collection' 仍会出现在 panelOpenSeq 里(recordPanelOpen('collection') 依旧被调用,
+    //   只是不再参与右栏排序),这里必须把它排除,否则抽屉会被渲染两次。
     panelOrder () {
       const s = this.panelOpenSeq
-      const right = ['detail', 'download', 'collection']
+      const right = ['detail', 'download']
       const opened = right.filter(k => s[k])
       const rest = right.filter(k => !s[k])
       return opened.sort((a, b) => s[a] - s[b]).concat(rest)
@@ -885,8 +985,9 @@ export default defineComponent({
         },
         batchMetadata: { icon: MdCodeDownload, titleKey: 'm.batchGetMetadata', loading: this.buttonGetMetadatasLoading, action: () => this.getBookListMetadata() },
         tagAnalysis: { icon: ArrowTrendingLines20Filled, titleKey: 'm.tagAnalysis', loading: false, action: () => this.$refs.TagGraphRef.displayTagGraph() },
-        manageCollection: { icon: CicsSystemGroup, titleKey: 'm.manageCollection', loading: false, action: () => this.$refs.EditViewRef.enterEditCollectionView() },
-        manageTag: { icon: TagGroup, titleKey: 'm.manageTag', loading: false, action: () => this.$refs.EditViewRef.enterEditTagView() },
+        // 「管理」(合集 + 标签合并):原来 manageCollection / manageTag 两个按钮,
+        // 两个面板长得几乎一样却要来回切,现在合成一个入口
+        manage: { icon: CicsSystemGroup, titleKey: 'm.manage', loading: false, action: () => this.$refs.EditViewRef.enterManageView() },
         viewerSwitch: { icon: MdBook, titleKey: 'm.viewerSwitch', loading: false, action: () => this.switchViewerType() },
         themeSwitch: { icon: MdColorPalette, titleKey: 'm.themeSwitch', loading: false, action: () => this.switchTheme() },
         fullscreen: { icon: FullScreen, titleKey: 'm.fullscreenButton', loading: false, action: () => this.switchFullscreen() },
@@ -912,7 +1013,7 @@ export default defineComponent({
       // 新增元素插到定义顺序里前一个元素之后(与设置页共用 utils.js 的同一个函数)
       const fullOrder = insertMissingToolbarItems(composed)
       // 只读账户:隐藏写操作类按钮(扫描/批量元数据/合集编辑/标签编辑),服务端同样会拦截
-      const viewerBlock = new Set(['manualScan', 'incrementalScan', 'batchMetadata', 'manageCollection', 'manageTag'])
+      const viewerBlock = new Set(['manualScan', 'incrementalScan', 'batchMetadata', 'manage'])
       // ⚠️ 搜索框/搜索按钮/排序框不是 toolbarButtonMap 里的普通按钮(模板里各有一段 v-if 分支),
       //    不能被 map[id] 判空挡掉,必须单独放行
       // ⚠️ 模板分支类按钮(不在 toolbarButtonMap 里)必须在这里放行,否则会被 map[id] 判空挡掉 ——
@@ -1195,6 +1296,17 @@ export default defineComponent({
     },
   },
   mounted () {
+    // ★未登录门禁(网页版账户系统):必须在读设置/读书架之前。
+    //   以前 mounted 无条件 load-setting → load-book-list,而 LoginDialog 只是半透明遮罩,
+    //   于是登录框后面把整库的书都露出来了(隐私问题)。
+    const auth = window.__AUTH__ || {}
+    if (auth.enabled && !auth.role) {
+      // 未登录:不读设置、不读书架、不读收藏夹 —— 只让登录框显示(登录成功后整页 reload)
+      this.authBlocked = true
+      this.bookList = []
+      this.chunkDisplayBookList = []
+      return
+    }
     // 工具栏溢出收纳:窗口 resize 会派发 resize,侧栏开合不会 → 再挂一个 ResizeObserver
     this._toolbarOnResize = () => this.scheduleToolbarRecalc()
     window.addEventListener('resize', this._toolbarOnResize)
@@ -1221,9 +1333,8 @@ export default defineComponent({
     // 下载进度 / 完成 / 删除:主进程推过来,右栏就地更新(JHenTai 的下载页也是实时刷)
     ipcRenderer.on('eh-download-progress', (event, task) => this.upsertDownloadRecord(task))
     ipcRenderer.on('eh-download-done', (event, task) => this.upsertDownloadRecord(task))
-    ipcRenderer.on('eh-download-removed', (event, arg) => {
-      this.downloadRecords = this.downloadRecords.filter(t => t.id !== (arg && arg.id))
-    })
+    ipcRenderer.on('eh-download-removed', (event, arg) => this.removeDownloadRecord(arg && arg.id))
+    ipcRenderer.on('eh-download-cleared', () => this.clearDownloadRecordsLocal())
     this.refreshDownloadRecords()
     ipcRenderer.on('send-message', (event, arg) => {
       if (arg === 'Scan complete') {
@@ -1469,11 +1580,8 @@ export default defineComponent({
       if (this.$refs.FolderTreeRef.sideVisibleFolderTree) {
         return 'folder-tree'
       }
-      if (this.$refs.EditViewRef.editCollectionView) {
-        return 'edit-collection'
-      }
-      if (this.$refs.EditViewRef.editTagView) {
-        return 'edit-group-tag'
+      if (this.$refs.EditViewRef.manageView) {
+        return 'edit-manage'
       }
       if (this.drawerVisibleCollection) {
         return 'collection'
@@ -1949,13 +2057,26 @@ export default defineComponent({
         if (!ids.length) { clear(); return }
         // 移动端（wrap 布局）本来就不溢出，跳过收纳
         if (getComputedStyle(row).flexWrap === 'wrap') { clear(); return }
+        // ★ 性能快路径：容器宽度 + 按钮集合 + 影响图标宽度的主题类都没变时，直接跳过。
+        //   这条函数是「全真实测量」，每收/放一个按钮都要 await $nextTick() 再读一次
+        //   scrollWidth/clientWidth（强制同步布局），最坏要跑几十轮。
+        //   窗口横向拖动时 resize 每帧都来一次，每次都跑满整轮 → 拖窗口明显掉帧。
+        //   只要宽度和按钮集合没变，上一轮算出来的 collapsedIds 就仍然正确，重算没有意义。
+        const fitSig = row.clientWidth + '|' + ids.join(',') + '|' +
+          String(document.documentElement.className || '') + '|' +
+          String(this.setting && this.setting.theme || '')
+        if (this._toolbarFitSig === fitSig) return
+        // ⚠ 先清空再跑：万一这一轮中途抛异常/提前失败，签名不能留在「已完成」状态，
+        //   否则后续所有 recalc 都会被跳过，工具栏收纳永久卡错。
+        this._toolbarFitSig = ''
         const pinned = this.toolbarPinnedIds()
         const overflow = () => row.scrollWidth > row.clientWidth + 1
         // ① 全部展开，量自然宽度
         clear()
         await this.$nextTick()
-        // ② 没溢出就完事
-        if (!overflow()) return
+        // ② 没溢出就完事（这里也要记签名：否则「窗口够宽、不溢出」的常态下
+        //    每次 resize 还是会重新 clear + nextTick + 强制读一次布局）
+        if (!overflow()) { this._toolbarFitSig = fitSig; return }
         // ③ 从末尾往前收，每收一个用真实布局确认
         const hidden = []
         let guard = 0
@@ -1990,6 +2111,8 @@ export default defineComponent({
             break
           }
         }
+        // 走到这里说明整轮测量顺利完成 → 记下签名，下次同样的环境直接跳过
+        this._toolbarFitSig = fitSig
       } finally {
         this._toolbarMeasuring = false
         // 测量期间又有新的 resize 进来 → 排队补算一次，保证最终状态正确
@@ -2019,24 +2142,32 @@ export default defineComponent({
         const prevBoxIndex = this.activeBoxIndex
         this.setting.activeBoxIndex = next1
         try {
-          // ★ 5 秒兜底:后端在 NAS 上卡住时不能让界面永远不动 ——
-          //   超时也照样刷新列表(后端 setting 已改,列表会按新库读)。
+          // ★ 12 秒兜底:后端切库前要先把正在跑的扫描停下来,那个等待窗口最长 8 秒 ——
+          //   以前 5 秒兜底会先「成功」返回,于是标题栏切了、列表还是旧库(验收抓到的错位)。
+          //   超时也不再当成功:回滚 + 提示稍候。
           const res = await Promise.race([
             ipcRenderer.invoke('set-active-box', { index: next1 }),
-            new Promise((resolve) => setTimeout(() => resolve({ ok: true, activeChanged: true, timeout: true }), 5000)),
+            new Promise((resolve) => setTimeout(() => resolve({ ok: true, activeChanged: true, timeout: true }), 12000)),
           ])
-          if (res && res.ok) {
+          if (res && res.timeout) {
+            // 超时不能当成功:把框回滚回去,提示稍候(后端可能还在停扫描)
+            this.setting.activeBoxIndex = prevBoxIndex
+            this.$message.warning(this.$t('m.switchLibrarySlow'))
+          } else if (res && res.ok) {
             this.setting.activeBoxIndex = res.activeBoxIndex
             this.setting.activeLibraryId = res.activeLibraryId
             this.setting.library = res.library
             if (res.activeChanged) {
-            // ★ 先清空旧列表再拉新库:以前直接 loadBookList() 但不清空,
-            //   用户看到的一直是**上一个库的书**,以为"切了但还是本界面"。
-            //   ⚠ loading 不在这里置:交给 loadBookList 自己管,它每条路径都会收尾。
-            this.bookList = []
-            this.chunkDisplayBookList = []
-            this.loadBookList()   // 不 await:界面先切好,列表随后填
-          }
+              // 换库了:先退出「编辑信息」模式(编辑态是 BookDetailDialog 的内部 ref,
+              // 以前切库从不复位 —— 切过去还停在编辑态,一保存就写进新库)
+              this.exitBookEditMode()
+              // ★ 先清空旧列表再拉新库:以前直接 loadBookList() 但不清空,
+              //   用户看到的一直是**上一个库的书**,以为"切了但还是本界面"。
+              //   ⚠ loading 不在这里置:交给 loadBookList 自己管,它每条路径都会收尾。
+              this.bookList = []
+              this.chunkDisplayBookList = []
+              this.loadBookList()   // 不 await:界面先切好,列表随后填
+            }
           } else {
             this.setting.activeBoxIndex = prevBoxIndex   // 失败回滚
             this.$message.error((res && res.error) || this.$t('m.librarySaveFailed'))
@@ -2070,6 +2201,7 @@ export default defineComponent({
       if (this.ehOnlineAvailable && (n === 0 || this.activeBoxIndex + 1 >= n)) {
         // 最后一个框的下一个就是 EH在线:只切前端状态,后端仍停在原来的框(回来时不用重建运行时)
         // ⚠ 这条路**不加载列表**:必须显式收掉 loading,否则按钮一直转圈
+        this.exitBookEditMode()   // 切到在线同理:退出编辑信息模式
         this.onlineStopActive = true
         this.buttonLoadBookListLoading = false
         return
@@ -2089,6 +2221,7 @@ export default defineComponent({
           this.setting.activeLibraryId = res.activeLibraryId
           this.setting.library = res.library
           if (res.activeChanged) {
+            this.exitBookEditMode()   // 同上:换库就退出编辑信息模式
             // 同上一处:切库先清空;loading 交给 loadBookList 自己管
             this.bookList = []
             this.chunkDisplayBookList = []
@@ -2164,6 +2297,12 @@ export default defineComponent({
           const res = await ipcRenderer.invoke('load-book-list', false)
           if (!this.scanning || !res) return
           const list = this.prepareBookList(res)
+          // ★ 这批新书是「裸」的:没有合集聚合条目、成员书上也没有 collectionHide。
+          //   直接 this.bookList = list 的话,watch 重排后合集卡整批消失、被收进合集的
+          //   成员书又跑回书架 —— 扫描中每 900ms 闪一次,扫完也一样(用户截图)。
+          //   套一次聚合再上交:collectionList 是内存里现成的,不额外 IPC;
+          //   重排/重分页交给下面这次赋值的 watch 去做(和整库加载同一条路)。
+          this.applyCollectionAggregates(list)
           // bookList 变更会触发 watch → 自动重排序/重绘
           this.bookList = list
           if (Number.isFinite(this.renderedCount) && list.length < this.renderedCount) {
@@ -2190,7 +2329,15 @@ export default defineComponent({
       // 扫描已后台化:扫描完成由 'Scan complete' 消息触发刷新与提示
     },
     prepareBookList (bookList) {
+      // ★ 2026-11:主进程在离线 / 报错路径上可能返回非数组(以前这里直接 .forEach 会抛 TypeError,
+      //   异常被 loadBookList 的 catch 吞掉 → 书架永远是上一次的内容,看起来像「白屏/卡住」)。
+      //   这里按「不是数组就当空书架」处理,保证界面总能落到一个确定状态。
+      if (!Array.isArray(bookList)) {
+        console.warn('[booklist] load-book-list 返回的不是数组,按空书架处理:', bookList)
+        return []
+      }
       bookList.forEach(book => {
+        if (!book) return
         if (Number.isInteger(book.filecount) && Number.isInteger(book.pageCount) && Math.abs(book.filecount - book.pageCount) > 5) book.pageDiff = true
       })
       return bookList
@@ -2204,15 +2351,10 @@ export default defineComponent({
     async getBookListMetadata () {
       try {
         this.buttonGetMetadatasLoading = true
-        let bookList
-        if (this.setting.batchTagfailedBook) {
-          bookList = this.bookList.filter(book => book.status === 'tag-failed' || book.status === 'non-tag')
-        } else {
-          bookList = this.bookList.filter(book => book.status === 'non-tag')
-        }
-        if (this.setting.onlyGetMetadataOfSelectedFolder) {
-          bookList = bookList.filter(book => !book.folderHide)
-        }
+        // 2026-11:设置里那两个开关(「同时批量获取 tag-failed 漫画的元数据」/「仅获取选中文件夹的元数据」)
+        // 已按用户要求删除。工具栏「批量元数据」的语义回到最简单的一种:只处理还没拿到元数据的书
+        // (status = non-tag)。要重试失败的那批,走详细界面的单本「重新获取」即可。
+        const bookList = this.bookList.filter(book => book.status === 'non-tag')
         await this.$refs.SearchDialogRef.getBooksMetadata(bookList, this.setting.requireGap || 10000)
         this.buttonGetMetadatasLoading = false
       } catch (error) {
@@ -2251,6 +2393,18 @@ export default defineComponent({
     },
     handleSortChange (val, bookList) {
       if (!bookList) bookList = this.displayBookList
+      // ★ 2026-11 兜底:排序/筛选期间任何一个分支抛错(Vue 的 watch/computed 里也会把异常
+      //   变成「渲染失败 → 整块区域空白」),这里统一兜住并回落到「完整书架」,
+      //   不再让一次筛选把界面搞成白屏。
+      try {
+        this.handleSortChangeInner(val, bookList)
+      } catch (e) {
+        console.error('[sort/filter] 重排失败,回落到完整书架:', e)
+        this.displayBookList = Array.isArray(this.bookList) ? this.bookList.slice() : []
+        try { this.chunkList(true) } catch (_) { /* 已经尽力 */ }
+      }
+    },
+    handleSortChangeInner (val, bookList) {
       // 「筛选」生效时,所有列表路径都在这里被就地过滤一次(没设筛选时等于原样返回)
       bookList = this.applyEhFilter(bookList)
       const allBooks = this.applyEhFilter(this.bookList)
@@ -2627,9 +2781,11 @@ export default defineComponent({
       })
       if (!this.sortValue || ['mark', 'hidden', 'collection'].includes(this.sortValue)) this.sortValue = 'addDescend'
       this.handleSortChange(this.sortValue, this.displayBookList)
-      if (this.currentUI() === 'edit-group-tag') {
+      if (this.currentUI() === 'edit-manage') {
         this.$refs.EditViewRef.selectBookList = []
-        this.displayBookList.forEach(book => book.selected = false)
+        // 清「全量」bookList:被搜索条件挡在 visible 之外的书如果留着 selected=true,
+        // 卡片会显示 ✓ 但不在 selectBookList 里,计数偏小且批量操作漏书、还取消不掉。
+        this.bookList.forEach(book => book.selected = false)
       } else if (addToHistory) {
         this.actionHistory.push({type: 'search', value: this.searchString})
       }
@@ -2772,6 +2928,26 @@ export default defineComponent({
         else this.openContentView(book)
         return
       }
+      // 合集:既不是磁盘文件、也没有缩略图 ——
+      //   内容/缩略图 → 打开合集抽屉(看里面的书);详细界面 → 合集详情;侧栏 → 侧边详细信息。
+      // 以前合集卡片把 @open-collection 写死成 openCollection(),根本不走这里,
+      // 于是「点击封面 = 侧边详细信息」对合集恒等于没反应(用户报的就是这个)。
+      if (book.isCollection) {
+        switch (action) {
+          case 'none':
+            return
+          case 'sideDetail':
+            this.openSideDetail(book)
+            break
+          case 'detail':
+            this.$refs.BookDetailDialogRef.openBookDetail(book, false)
+            break
+          default:
+            this.openCollection(book)
+            break
+        }
+        return
+      }
       switch (action) {
         case 'none':
           // 「无效果」:点了什么都不做
@@ -2795,6 +2971,12 @@ export default defineComponent({
       if (!book) return
       this.bookDetail = book
       this.detailPanelVisible = true
+    },
+    // 侧边详情里的「查看详情」:合集走合集详情(不写阅读历史),普通书照旧
+    onSideDetailOpenDetail (b) {
+      if (!b) return
+      if (b.isCollection) return this.openCollectionDetail(b)
+      this.$refs.BookDetailDialogRef.openBookDetail(b)
     },
     onCoverClick (book) { this.runClickAction(this.setting.clickCoverAction || 'content', book) },
     onTitleClick (book) { this.runClickAction(this.setting.clickTitleAction || 'detail', book) },
@@ -2979,6 +3161,7 @@ export default defineComponent({
       // EH在线 卡片:菜单跟本地「一样弹出来」,但只放对在线画廊有意义的项 ——
       // 移动文件/删除文件/打开所在目录/超分/上色/翻译/粘贴标签/获取元数据 这些是本地文件与本地库操作,
       // 对一个在线画廊要么没意义、要么会写坏本地元数据(在线书没有 hash,写 Metadata 表会炸)。
+      // ★只读账户(viewerRole):下载=写盘 + 写库,服务端会 403,所以直接不给看。
       if (book.online) {
         this.$contextmenu({
           x: e.x,
@@ -2990,12 +3173,13 @@ export default defineComponent({
             { id: 'copyTag', label: this.$t('m.copyTagClipboard'), onClick: () => this.copyTagClipboard(book) },
             { id: 'copyLink', label: this.$t('c.copyLinkToClipboard'), onClick: () => ipcRenderer.invoke('copy-text-to-clipboard', book.url) },
             { id: 'openInBrowser', label: this.$t('m.openInBrowser'), onClick: () => ipcRenderer.invoke('open-url', book.url) }
-          ]
+          ].filter(item => !(this.viewerRole && ONLINE_VIEWER_WRITE_IDS.has(item.id)))
         })
         return
       }
-      // 只读账户:隐藏封面右键菜单中的写操作(获取/重置元数据、移动、删除、隐藏、粘贴标签等)
-      const viewerWriteIds = new Set(['getMetadata', 'resetMetadata', 'moveFile', 'deleteFile', 'toggleHidden', 'pasteTag', 'getMetadataFromLink'])
+      // 只读账户:隐藏封面右键菜单中的写操作(获取/重置元数据、移动、删除、隐藏、粘贴标签、
+      // 翻译/超分/上色、任务暂停继续中止、.bak 删除还原等,见文件顶部 LOCAL_VIEWER_WRITE_IDS)
+      const viewerWriteIds = LOCAL_VIEWER_WRITE_IDS
       const items = [
         {
           id: 'getMetadata',
@@ -3003,6 +3187,11 @@ export default defineComponent({
           onClick: () => {
             this.$refs.SearchDialogRef.openSearchDialog(book)
           }
+        },
+        {
+          id: 'regenerateCover',
+          label: this.$t('m.regenerateCover'),
+          onClick: () => { this.regenerateBookCover(book) }
         },
         {
           id: 'resetMetadata',
@@ -3101,11 +3290,14 @@ export default defineComponent({
           onClick: () => { this.runBookTask(book, 'colorize') }
         },
       ].filter(item => {
+        // ★只读账户:写操作一律不显示(点了服务端也会 403,不如不给看)。
+        //   放在最前面,才能连 pause/resume/abort 这些「按任务状态判断」的项一起挡掉。
+        if (this.viewerRole && viewerWriteIds.has(item.id)) return false
         const taskRunning = !!(this.bookTasks && this.bookTasks[book.id])
         if (item.id === 'pauseTask') return taskRunning && !this.isBookTaskPaused(book.id)
         if (item.id === 'resumeTask') return taskRunning && this.isBookTaskPaused(book.id)
         if (item.id === 'abortTask') return taskRunning
-        return isContextMenuItemEnabled(this.setting, 'cover', item.id) && !(this.viewerRole && viewerWriteIds.has(item.id))
+        return isContextMenuItemEnabled(this.setting, 'cover', item.id)
       })
       // 全部项都被取消勾选时不弹出空白菜单
       if (items.length === 0) return
@@ -3177,25 +3369,64 @@ export default defineComponent({
         bookList = this.bookList
       }
       this.collectionList = await ipcRenderer.invoke('load-collection-list')
-
+      this.applyCollectionAggregates(bookList)
+      // 聚合条目是异步补进来的,补完必须让书架与新数据对齐(见下面那个方法)
+      this.syncShelfAfterCollectionAggregate(bookList)
+    },
+    // 把内存里的 collectionList(磁盘原件)套到当前 bookList 上:
+    //   · 成员书打 collectionHide(从书架上收进合集卡里)
+    //   · 生成 isCollection 聚合条目(评分/阅读数/页数等按**可见成员**算)
+    // 初始加载(loadBookList 的 $nextTick)与扫描批次刷新(queueScanBatchLoad)都走这里。
+    // 幂等:对同一份 bookList 重复调用不会攒出重复合集卡(先摘旧条目再重建)。
+    applyCollectionAggregates (bookList) {
+      // ⚠ 增删必须**就地**做:无筛选时 applyEhFilter 原样返回,displayBookList 与
+      //    bookList 是同一个数组引用 —— 用 filter 重建一份会让两边彻底分家,
+      //   书架这边永远看不到合集卡(本轮要修的核心 bug 之一)。
+      for (let i = bookList.length - 1; i >= 0; i--) {
+        const book = bookList[i]
+        if (book && book.isCollection) {
+          bookList.splice(i, 1)        // 撤掉上一次的聚合条目,下面按现状重建
+        } else if (book) {
+          book.collectionHide = false  // 成员隐藏标记一并复位:上次的合集可能已删/已改
+        }
+      }
       // 创建查找映射表，避免重复遍历
       const bookMap = new Map(bookList.flatMap(book => [[book.hash, book], [book.id, book]]))
 
       _.forEach(this.collectionList, collection => {
-        let collectBook = _.compact(collection.list.map(hash_id => {
+        // ⚠ 老数据 / 被外部写坏的合集可能没有 list 字段:直接 .map 会抛错,
+        //   而调用方那个 catch 是「后台任务失败不打扰」的静默 catch —— 一崩就等于
+        //   所有合集的聚合条目都生成不出来,「仅合集」视图整片空白。
+        const memberKeys = Array.isArray(collection.list) ? collection.list : []
+        // 同一本书可能同时以 hash 和 id 两种键留在 list 里(老数据):按书去重,
+        // 否则阅读数/页数被双算,ids 也重复。
+        const collectBook = _.uniqBy(_.compact(_.flatten(memberKeys.map(hash_id => {
           return bookMap.get(hash_id)
-        }))
-        collectBook = _.flatten(collectBook)
-        collection.list = [...new Set(collectBook.map(book => book.hash))]
+        }))), book => book.id || book.hash)
+        // ★ 不再就地重写 collection.list。后端 collectionList 是全局一份、不按库隔离,
+        //   多库/书被移走时按当前库找不到的成员会被从 list 里删掉,而保存是整份写盘 ——
+        //   截断一次,成员就永久丢失(用户反馈「合集里的书莫名其妙少了」)。
+        //   磁盘原件留在 collection.list 里只作保存用;展示/抽屉/统计一律用可见成员。
         collectBook.forEach(book => book.collectionHide = true)
-        const date = _.last(_.compact(_.sortBy(collectBook.map(book => book.date))))
-        const posted = _.last(_.compact(_.sortBy(collectBook.map(book => book.posted))))
-        const rating = _.last(_.compact(_.sortBy(collectBook.map(book => book.rating))))
-        const mtime = _.last(_.compact(_.sortBy(collectBook.map(book => book.mtime))))
+        // 当前库一本成员都没有:不出聚合卡(出了也是一张空白角标的空卡)
+        if (_.isEmpty(collectBook)) return
+        // 以下聚合字段全部按「可见成员」算,并对空集合/缺字段兜底:
+        // _.last([]) 是 undefined,直接写进卡片就是空白角标(用户截图里的空小方块)。
+        const date = _.last(_.compact(_.sortBy(collectBook.map(book => book.date)))) || ''
+        const posted = _.last(_.compact(_.sortBy(collectBook.map(book => book.posted)))) || ''
+        const mtime = _.last(_.compact(_.sortBy(collectBook.map(book => book.mtime)))) || ''
+        // 评分 = 只统计**真的评过分**的成员(rating>0)的均值,与详情页
+        // collectionAvgRating 同一口径(以前取最大值,卡片和详情页两个数对不上)。
+        const rated = collectBook.filter(book => Number(book.rating) > 0)
+        const rating = rated.length
+          ? Math.round(rated.reduce((sum, book) => sum + Number(book.rating), 0) / rated.length * 10) / 10
+          : 0
         const mark = _.some(collectBook, 'mark')
         const pageDiff = _.some(collectBook, 'pageDiff') ? true : undefined
-        const readCount = _.max(collectBook.map(book => book.readCount))
-        const pageCount = _.sum(collectBook.map(book => book.pageCount))
+        // 阅读次数 / 页数 = 成员**合计**。卡片与详情页都直接读这两个字段,
+        // 所以口径只在这里定义一次(详情页 collectionTotalReads 也是求和)。
+        const readCount = _.sum(collectBook.map(book => Number(book.readCount) || 0))
+        const pageCount = _.sum(collectBook.map(book => Number(book.pageCount) || 0))
         const tags = _.mergeWith({}, ...collectBook.map(book => book.tags), (obj, src) => {
           if (_.isArray(obj) && _.isArray(src)) {
             return [...new Set(obj.concat(src))]
@@ -3208,34 +3439,154 @@ export default defineComponent({
         const filepath = collectBook.map(book => book.filepath).join(',')
         const category = [...new Set(collectBook.map(book => book.category))].join(',')
         const status = [...new Set(collectBook.map(book => book.status))].join(',')
-        if (!_.isEmpty(collectBook)) {
-          bookList.push({
-            title: collection.title,
-            id: collection.id,
-            coverPath: collectBook?.[0]?.coverPath,
-            date, posted, rating, mtime, mark, tags, title_jpn, category, status, pageDiff, readCount, pageCount,
-            list: collection.list,
-            filepath,
-            isCollection: true,
-            chapterCount: collection?.list?.length,
-            ids,
-          })
-        }
+        bookList.push({
+          title: collection.title,
+          id: collection.id,
+          // 合集封面:取**第一本有封面的**,而不是死取第一本 ——
+          // 第一本没封面时整张合集卡就是空白(用户截图里的「合集没有封面」)。
+          coverPath: (collectBook.find(b => b && b.coverPath) || {}).coverPath || '',
+          date, posted, rating, mtime, mark, tags, title_jpn, category, status, pageDiff, readCount, pageCount,
+          // 卡片查成员用的键:可见成员的 hash(id 走 ids;老数据只有 id 时两边都能解析)
+          list: collectBook.map(book => book.hash),
+          filepath,
+          isCollection: true,
+          // 合集大小(角标上的 n)= **可见成员数**:以前取磁盘 list 长度,
+          // 成员被移走时角标还显示老数字,点开却是空的。
+          chapterCount: collectBook.length,
+          ids,
+          // 卡片查成员用的**实时成员数组**:元素就是上面 bookMap 里那些书的引用,
+          // 成员重新生成封面/改元数据后卡片立刻能看到(每次聚合都会重建,不会陈旧)。
+          // ★ 为什么挂数组而不是让卡片自己按 ids 扫 bookList:一屏几十张合集卡
+          //   × 上万个成员 = 每次渲染千万级 find,滚动/重排时主线程被拖死。
+          //   BookCardCollection 优先用它,拿不到才回退扫描(老数据兼容)。
+          _members: collectBook,
+        })
       })
     },
+    // 聚合条目补完之后,让书架(chunkDisplayBookList)与新数据对齐。
+    // ★ 为什么必须做:聚合条目是**异步**补进 bookList 的 —— loadBookList 在 $nextTick 里
+    //   才调 loadCollectionList,而 bookList 的 watch 那次排序早就跑完了,算
+    //   chunkDisplayBookList 时 bookList 里还没有 isCollection 条目。补完不重算,
+    //   合集卡永远不出现,而成员的 collectionHide 已经生效 → 书架上的卡凭空少一截
+    //   (实测:4 本书 + 1 个两人合集 → DOM 只剩 2 张卡,要手动重排才恢复)。
+    //   重启后时好时坏,就是这个先后顺序的抖动。
+    syncShelfAfterCollectionAggregate (bookList) {
+      if (this.sortValue === 'shuffle') {
+        // shuffle 的 displayBookList 是洗牌副本:整表重洗一遍,用户会看到顺序乱跳。
+        // 增量对齐:① 上一轮的聚合条目按 id 找到本轮的新对象**原位替换**
+        //   (合集卡不跳位置,数据却是最新的);② bookList 里没有对应对象的过期条目直接丢掉;
+        //   ③ 真正新进来的合集条目按现有顺序追加到末尾。最后 keepPage 重算当前页,不回顶。
+        //   ⚠ 用 Map 按 id 找新对象:库里上万本书时不能用 find 逐个捞(O(n²))。
+        const freshById = new Map()
+        for (const book of bookList) {
+          if (book && book.isCollection) freshById.set(book.id, book)
+        }
+        const current = new Set(bookList)
+        const rebuilt = []
+        for (const book of this.displayBookList) {
+          if (current.has(book)) {
+            rebuilt.push(book)
+          } else if (book && book.isCollection) {
+            const fresh = freshById.get(book.id)
+            if (fresh) rebuilt.push(fresh)
+          }
+        }
+        const shown = new Set(rebuilt)
+        const added = bookList.filter(book => !shown.has(book))
+        this.displayBookList = rebuilt.concat(added)
+        this.chunkList(true)
+        return
+      }
+      // 其余排序:按完整 bookList 重排一次。合集条目带着 date/rating 等聚合字段,
+      // 会插在它该在的位置;各分支末尾的 chunkList(true) 保证不回顶、不跳页。
+      // 「仅合集」视图的行为不变(以前就是在这里重排的)。
+      this.handleSortChange(this.sortValue, bookList)
+    },
+    // 一个 frame 里两个分支都可能不渲染(例如已收进合集的普通书 collectionHide=true),
+    // 但 v-for 已经占了位 → 书架出现空白卡片位。把条件提到 frame 上,不渲染就不占位。
+    shouldRenderCard (book) {
+      if (!book) return false
+      if (book.isCollection) return !book.folderHide
+      return !book.collectionHide && (this.sortValue === 'hidden' || !book.hiddenBook) && !book.folderHide
+    },
     openCollection (collection) {
+      if (!collection) return
       this.drawerVisibleCollection = true
       this.recordPanelOpen('collection')
-      this.openCollectionBookList = _.compact(_.flatten(collection.list.map(hash_id => {
+      // 老数据 / 被外部写坏的合集可能没有 list 字段:直接 .map 会抛错,
+      // 与 loadCollectionList 里的防御口径保持一致(那边也是 (collection.list || []))
+      const memberKeys = Array.isArray(collection.list) ? collection.list : []
+      this.openCollectionBookList = _.compact(_.flatten(memberKeys.map(hash_id => {
         return _.filter(this.bookList, book => book.id === hash_id || book.hash === hash_id)
       })))
       this.openCollectionTitle = collection.title
+      this.openCollectionId = collection.id
+      // 底部抽屉的拖拽副本:浅拷贝数组即可 —— 拖拽只调顺序,不改书对象本身
+      this.collectionDrawerList = [...this.openCollectionBookList]
       this.$refs.EditViewRef.selectCollection = collection.id
+    },
+    // 合集详情:直接复用普通漫画那套 fullscreen 详情界面(BookDetailDialog 里有 isCollection 分支),
+    // 不再维护一个只给合集用的专用弹窗。合集不写阅读历史(第二参 false)。
+    openCollectionDetail (collection) {
+      if (!collection) return
+      this.$refs.BookDetailDialogRef.openBookDetail(collection, false)
+    },
+    // 合集详情里的「删除合集 / 删除文件」:
+    //   withFiles=false → 只把合集从 collectionList 摘掉,成员书全部留在库里;
+    //   withFiles=true  → 先把成员文件逐个移入回收站,再摘掉合集。
+    // 两件事都做完才刷新,避免「书删了、合集还在」这种中间态。
+    async deleteCollectionFromDetail ({ collection, withFiles } = {}) {
+      const c = collection || this.bookDetail
+      if (!c || !c.id) return
+      const keys = Array.isArray(c.ids) && c.ids.length ? c.ids : (Array.isArray(c.list) ? c.list : [])
+      const members = _.compact(keys.map(k => this.bookList.find(b => b && (b.id === k || b.hash === k))))
+      if (withFiles) {
+        let ok = 0
+        for (const b of members) {
+          if (!b || !b.filepath) continue
+          try {
+            const r = await ipcRenderer.invoke('delete-local-book', b.filepath)
+            if (r && r.ok) ok += 1
+          } catch (e) { /* 单本失败不影响其余,最后按成功数提示 */ }
+        }
+        this.printMessage('success', this.$t('c.movedToTrash') + ' (' + ok + '/' + members.length + ')')
+      }
+      this.collectionList = _.filter(this.collectionList, x => x && x.id !== c.id)
+      try {
+        await ipcRenderer.invoke('save-collection-list', _.cloneDeep(this.collectionList))
+      } catch (e) { /* 写盘失败不影响界面,下次保存会再写 */ }
+      if (this.$refs.BookDetailDialogRef) this.$refs.BookDetailDialogRef.dialogVisibleBookDetail = false
+      // 侧边详情正显示着这个合集时一起收起,否则会留一个「已经不存在」的合集在右栏
+      if (this.detailPanelVisible && this.bookDetail && this.bookDetail.id === c.id) this.detailPanelVisible = false
+      // 重读书库:成员上的 collectionHide 会跟着复位,合集聚合条目也会重建
+      // (loadBookList 自己会在 $nextTick 里调 loadCollectionList,这里不要再调一次,否则聚合条目会重复入队)
+      this.loadBookList(false)
+    },
+    // 合集详情里的「编辑合集」:关掉详情 → 在管理面板里选中这个合集并停在合集分区。
+    // 与抽屉里的「编辑」走同一条入口(selectCollection 由 EditView 暴露)。
+    editCollectionFromDetail (collection) {
+      const c = collection || this.bookDetail
+      if (this.$refs.BookDetailDialogRef) this.$refs.BookDetailDialogRef.dialogVisibleBookDetail = false
+      if (c && c.id) this.$refs.EditViewRef.selectCollection = c.id
+      this.$refs.EditViewRef.enterManageView('collection')
+    },
+    // 合集卡右键「编辑合集」:先把这个合集选进管理界面,再进去 ——
+    // 不然 enterManageView 会停在「上次选中的合集」上,用户点了 A 却编辑到 B。
+    editCollectionFromCard (collection) {
+      if (!collection || !collection.id) return
+      const ref = this.$refs.EditViewRef
+      if (!ref) return
+      this.drawerVisibleCollection = false
+      ref.selectCollection = collection.id
+      if (typeof ref.handleSelectCollectionChange === 'function') ref.handleSelectCollectionChange(collection.id)
+      ref.enterManageView('collection')
     },
     editCurrentCollection () {
       this.drawerVisibleCollection = false
-      this.$refs.EditViewRef.editCollectionView = true
-      this.$refs.EditViewRef.handleSelectCollectionChange(this.$refs.EditViewRef.selectCollection)
+      // 合并后只有一个「管理」视图:传 'collection' 让它进来就停在合集分区,
+      // 并把已选合集的成员列表填好(handleSelectCollectionChange 已在 enterManageView 内部调过,
+      // 这里不要再调一次,否则 selectCollectionObject 会被重复重置)
+      this.$refs.EditViewRef.enterManageView('collection')
     },
     openBookDetailAfterRead () {
       // 「阅读完成后 → 打开详情」:先关阅读器,再打开这本书的详情
@@ -3273,35 +3624,154 @@ export default defineComponent({
     applyEhFilter (list) {
       if (!Array.isArray(list) || !list.length) return list
       if (!ehFilterIsActive(this.ehFilter)) return list
-      return list.filter(book => ehFilterMatch(this.ehFilter, book))
+      // ★ 合集条目不能拿自身去匹配分类:它的 category 是成员分类拼出来的串
+      //   (如 "Doujinshi,Manga"),而 ehFilterMatch 在「有分类被关掉」时要求
+      //   book.category 精确等于某个 enabled 分类 —— 拼接串永远不中。
+      //   结果就是筛选一开:合集卡被过滤掉、成员书又因 collectionHide 被 shouldRenderCard 跳过,
+      //   这批书在筛选视图里彻底不可达。改成按「成员里有没有一本满足全部筛选条件」判定:
+      //   命中任意一本就保留合集卡,全不命中才隐藏(不能无条件保留,否则筛选里会出空壳合集卡)。
+      //   语言/页数/最低评分/黑名单等条件一律沿用 ehFilterMatch,不做特殊处理。
+      //   成员优先取聚合条目挂的 _members(实时书对象);老数据/异常时按 ids(优先)或 list(hash)
+      //   回退到 this.bookList 查。Map 懒建且一次调用内复用:普通书架(没有合集条目)不付这份成本,
+      //   也不会每张卡都线性扫全库。
+      let memberMap = null
+      const resolveMembers = (book) => {
+        const own = Array.isArray(book._members) ? book._members : null
+        if (own && own.length) return own
+        const keys = Array.isArray(book.ids) && book.ids.length ? book.ids : (Array.isArray(book.list) ? book.list : [])
+        if (!keys.length) return null
+        if (!memberMap) {
+          memberMap = new Map()
+          for (const b of this.bookList) {
+            if (!b || b.isCollection) continue
+            if (b.hash) memberMap.set(b.hash, b)
+            if (b.id) memberMap.set(b.id, b)
+          }
+        }
+        return _.compact(keys.map(key => memberMap.get(key)))
+      }
+      // ★ 2026-11 防空:ehFilterMatch 会读 book.tags / pageCount / rating 等字段,
+      //   被外部写坏的书(如 tags 是字符串)会让它抛错;以前这个异常冲出 filter 回调,
+      //   整个列表计算炸掉 → 书架整块白屏。现在逐本兜住:单本判定失败就当成「不匹配」,
+      //   其它书正常显示,并且只在控制台留一条警告。
+      return list.filter(book => {
+        try {
+          if (!book || !book.isCollection) return ehFilterMatch(this.ehFilter, book)
+          const members = resolveMembers(book)
+          // 一个成员都解析不出来(老数据/外部写坏的条目):退回按条目自身判定,别无条件放行
+          if (!members || !members.length) return ehFilterMatch(this.ehFilter, book)
+          return members.some(member => ehFilterMatch(this.ehFilter, member))
+        } catch (e) {
+          console.warn('[filter] 跳过一本无法判定的书:', (book && (book.id || book.title)) || book, e)
+          return false
+        }
+      })
     },
     // 筛选对话框点「确定」:存下来 → 就地过滤 → EH在线 时把条件也交给 EH 重新取一遍
+    // 标签右键「加入黑名单」之后:ehFilter 是启动时的快照,必须重读 localStorage 再刷,
+    // 否则新加的黑名单对当前列表/当前 EH 查询都不生效(用户看到的"点了没反应")。
+    refreshAfterFilterChange () {
+      this.ehFilter = loadEhFilter()
+      this.currentPage = 1
+      this.handleSortChange(this.sortValue, this.bookList)
+      if (this.onlineActive) this.loadOnlineList(true)
+    },
     applyEhFilterAndRefresh (filter) {
       this.ehFilter = normalizeEhFilter(filter)
       saveEhFilter(this.ehFilter)
       // 按库保存:换库回来还是这一套筛选
       try { if (this.filterLibKey) localStorage.setItem('emmEhFilter:' + this.filterLibKey, JSON.stringify(this.ehFilter)) } catch (e) { /* 忽略 */ }
-      // 关键词走软件原本的搜索栏(本地按本地语法解析,EH在线 就是 EH 的 f_search)
+      // 关键词走软件原本的搜索栏(本地按本地语法解析,EH在线 就是 EH 的 f_search)。
+      // ⚠ 联动必须是**双向**的:以前只有「填了词」才同步搜索栏,于是在筛选里把关键词清空后
+      //   主界面搜索框还挂着旧词,列表继续被它过滤 —— 用户看到的就是「重置没生效」。
       const kw = String(this.ehFilter.keyword || '').trim()
-      if (kw && kw !== this.searchString) {
-        this.searchString = kw
-        this.searchBook(false)   // searchBook 结尾会走 handleSortChange → 就地过滤
-      } else if (this.onlineActive) {
-        // 先在当前列表上就地过滤(点确定立刻见效),再去 EH 重新取一遍
-        this.handleSortChange(this.sortValue, this.bookList)
-        this.loadOnlineList(true)
+      const lastKw = String(this.filterAppliedKeyword || '')
+      if (kw) {
+        // ① 有词:搜索栏是唯一的搜索入口,写进去再搜;词没变就只重排一次
+        if (kw !== this.searchString) {
+          this.searchString = kw
+          this.searchBook(false)   // 收尾自己会 chunkList,不用再补
+        } else {
+          this.currentPage = 1
+          this.handleSortChange(this.sortValue, this.bookList)
+        }
+        this.filterAppliedKeyword = kw
+      } else if (lastKw && this.searchString === lastKw) {
+        // ② 词被清空,而且搜索框里挂的正是上次筛选写进去的那个词 → 一起清掉并重搜
+        this.searchString = ''
+        this.filterAppliedKeyword = ''
+        this.searchBook(false)
       } else {
-        this.handleSortChange(this.sortValue, this.displayBookList)
+        // ③ 搜索框里是用户自己手打的词(不是筛选写进去的)→ 不动它,只按新筛选重排
+        this.filterAppliedKeyword = ''
+        if (this.onlineActive) {
+          // EH在线:回到第 1 页 → 先在当前列表上就地过滤(点确定立刻见效)→ 再去 EH 重新取一遍
+          this.currentPage = 1
+          this.handleSortChange(this.sortValue, this.bookList)
+          this.loadOnlineList(true)
+        } else {
+          // 本地:回到第 1 页 + 用**完整** bookList 重算 displayBookList。
+          // ⚠ 不传 this.displayBookList:那会把「已过滤过的子集」当成全集再排一次。
+          // ⚠ 不再单独调 chunkList:handleSortChange 的每个分支末尾都会 chunkList(true)。
+          this.currentPage = 1
+          this.handleSortChange(this.sortValue, this.bookList)
+        }
       }
       this.printMessage('success', this.$t('m.filterApplied'))
     },
+    // 「筛选/搜索把所有书都过滤掉了」时,空态里那个「清除筛选」按钮:
+    // 一次把漏斗条件与搜索词都清掉,回到完整书架(以前筛空了只能自己去猜哪里设了条件)。
+    clearAllFilters () {
+      this.searchString = ''
+      this.filterAppliedKeyword = ''
+      this.applyEhFilterAndRefresh(defaultEhFilterForUi())
+    },
     // ---------- 下载(第 13 轮)----------
+    // 记一下「这条记录已经删了」:之后任何迟到的 progress / done / 记录拉取都不许把它塞回来。
+    // 只保留最近 500 条痕迹(按删除时间),避免长时间挂着应用把对象撑大。
+    markDownloadRemoved (id) {
+      if (!id) return
+      const next = { ...(this.downloadTombstones || {}), [id]: Date.now() }
+      const keys = Object.keys(next)
+      if (keys.length > 500) {
+        keys.sort((a, b) => (next[a] || 0) - (next[b] || 0))
+        for (const k of keys.slice(0, keys.length - 500)) delete next[k]
+      }
+      this.downloadTombstones = next
+    },
+    isDownloadRemoved (id) {
+      if (!id) return false
+      return !!(this.downloadTombstones && this.downloadTombstones[id])
+    },
+    // 一条记录能不能显示:没被删过,并且不是「清空记录」之前就存在的旧记录
+    isDownloadRecordVisible (task) {
+      if (!task || !task.id) return false
+      if (this.isDownloadRemoved(task.id)) return false
+      const createdAt = Number(task.createdAt) || 0
+      if (this.downloadClearedAt && createdAt && createdAt <= this.downloadClearedAt) return false
+      return true
+    },
+    // 主进程广播「这条记录已删除」:打墓碑 + 从列表里摘掉
+    removeDownloadRecord (id) {
+      if (!id) return
+      this.markDownloadRemoved(id)
+      this.downloadRecords = (this.downloadRecords || []).filter(t => t && t.id !== id)
+      if (this.previewTask && this.previewTask.id === id) this.closeDownloadPreview()
+    },
+    // 主进程广播「记录已整体清空」:清列表 + 记时间戳(之后的拉取按 createdAt 过滤)
+    clearDownloadRecordsLocal () {
+      this.downloadClearedAt = Date.now()
+      this.downloadRecords = []
+      if (this.previewTask) this.closeDownloadPreview()
+    },
     // 记录列表:主进程是唯一真源(内存 + downloads.json),前端只做展示
     async refreshDownloadRecords () {
       try {
         const r = await ipcRenderer.invoke('eh-download-records')
         if (r && r.ok) {
-          this.downloadRecords = r.tasks || []
+          // 拉回来的记录也过一遍墓碑 / 清空时间过滤:主进程可能还没来得及收尾,
+          // 或者它的 downloads.json 里还留着被删掉的旧记录。
+          this.downloadRecords = (r.tasks || []).filter(t => this.isDownloadRecordVisible(t))
           // 记录里已有标签的,顺手把词库里的中文名写进「标签名称」(只写缺的那些)
           for (const t of this.downloadRecords) if (t && t.tags) this.writeTagTranslations(t.tags)
           // 重新拉记录(打开面板/移动作完)时把「封面失败」标记清掉:网络恢复了就该重新出图
@@ -3326,7 +3796,8 @@ export default defineComponent({
             if (detail && detail.ok) {
               const r = await ipcRenderer.invoke('eh-download-set-tags', {
                 id: task.id,
-                tags: detail.tags || {},
+                // 同上:detail.tags 也可能带 Proxy,先转纯对象再跨进程传
+                tags: JSON.parse(JSON.stringify(detail.tags || {})),
                 category: detail.category || '',
                 titleJpn: detail.titleJpn || '',
                 rating: Number(detail.rating) || 0
@@ -3343,8 +3814,7 @@ export default defineComponent({
       }
     },
     // 拖右栏左边缘调宽度(拖完记在本机;书架宽度变了工具栏会自己重算)
-    startDownloadPanelResize (e) {
-      e.preventDefault()
+    startDownloadPanelResize (e) {      e.preventDefault()
       const startX = e.clientX
       const startW = this.downloadPanelWidth
       const onMove = (ev) => {
@@ -3379,6 +3849,58 @@ export default defineComponent({
       }
       window.addEventListener('mousemove', onMove)
       window.addEventListener('mouseup', onUp)
+    },
+    // 拖底部抽屉的上边缘调高度(往上拖变高)。范围 200 ~ 70vh,拖完记在本机。
+    startCollectionDrawerResize (e) {
+      e.preventDefault()
+      const startY = e.clientY
+      const startH = this.collectionDrawerHeight
+      const maxH = () => Math.max(200, Math.round(window.innerHeight * 0.7))
+      const onMove = (ev) => {
+        const next = startH + (startY - ev.clientY)
+        this.collectionDrawerHeight = Math.max(200, Math.min(next, maxH()))
+      }
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        try { localStorage.setItem('emmCollectionDrawerHeight', String(Math.round(this.collectionDrawerHeight))) } catch (err) { /* 忽略 */ }
+        this.recomputeToolbarWidth()
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    },
+    // P2-8 合集内拖拽排序落盘:
+    // 把抽屉里的新顺序写回 collectionList(和 collection.list 同一种键,老数据可能只有 id),
+    // 再整份 invoke('save-collection-list')。界面立刻用新顺序刷新(不等磁盘)。
+    async saveCollectionDrawerOrder () {
+      const id = this.openCollectionId
+      if (id === undefined || id === null) return
+      const keys = this.collectionDrawerList.map(book => book && (book.hash || book.id)).filter(Boolean)
+      const target = (this.collectionList || []).find(c => c && c.id === id)
+      if (!target) return
+      // ★ 只写顺序,不回写成员。collectionList 是全局一份、不按库隔离,以前这里拿
+      //   抽屉里的**可见成员**整份替换 list,当前库找不到的成员就被静默删掉,
+      //   一次保存永久丢失(书挪去别的库/暂时移走时就中招)。
+      //   原始 list 里当前库看不见的成员保留下来(排在可见成员之后),书回来了合集还是完整的。
+      //   老数据可能用 id 存键、新操作用 hash:先把键解析成当前书的规范键再比对,
+      //   否则同一本书会以两种键各存一份,下次聚合时阅读数/页数被双算。
+      const bookMap = new Map(this.bookList.flatMap(book => [[book.hash, book], [book.id, book]]))
+      const canonical = (key) => {
+        const book = bookMap.get(key)
+        return book ? (book.hash || book.id) : key
+      }
+      const visibleKeys = keys.map(canonical)
+      const visibleSet = new Set(visibleKeys)
+      const rawKeys = Array.isArray(target.list) ? target.list : []
+      target.list = [...visibleKeys, ...rawKeys.map(canonical).filter(key => !visibleSet.has(key))]
+      // 抽屉打开时主界面用的就是 openCollectionBookList,同步过去才算「界面立即反映」
+      this.openCollectionBookList = [...this.collectionDrawerList]
+      try {
+        await ipcRenderer.invoke('save-collection-list', _.cloneDeep(this.collectionList))
+        this.printMessage('success', this.$t('m.collectionOrderSaved'))
+      } catch (e) {
+        this.printMessage('error', String((e && e.message) || e))
+      }
     },
     onFolderTreeWidthChange (w) {
       this.folderTreePanelWidth = Math.min(600, Math.max(220, Number(w) || 300))
@@ -3508,6 +4030,8 @@ export default defineComponent({
     },
     upsertDownloadRecord (task) {
       if (!task || !task.id) return
+      // 墓碑过滤:这条记录已经被删了(删除事件先到、进度事件后到),直接丢弃,不许 unshift 回来
+      if (!this.isDownloadRecordVisible(task)) return
       if (task.tags) this.writeTagTranslations(task.tags)
       // 封面文件后到(抓取是后台异步的):清掉失败标记,让 img 重新加载
       const prev = this.downloadRecords.find(t => t.id === task.id)
@@ -3655,14 +4179,17 @@ export default defineComponent({
     // 真正执行移动(后端:搬文件 + 在目标库登记书 + 生成封面)
     async runMoveDownloads (ids, target) {
       try {
-        const r = await ipcRenderer.invoke('move-downloads', { ids, target })
+        // ids 来自 this.moveDialog(reactive 数组):直接传会 structural-clone 失败
+        // 「An object could not be cloned」,展开成普通数组再跨进程
+        const r = await ipcRenderer.invoke('move-downloads', { ids: [...(ids || [])], target: String(target || '') })
         if (!r || !r.ok) { this.printMessage('error', (r && r.error) || this.$t('m.downloadMoveFailed')); return }
         const okList = (r.results || []).filter(x => x.ok)
         const badList = (r.results || []).filter(x => !x.ok)
         for (const x of okList) {
           if (x.removed) {
             // 「移动完成后移除记录」:后端已经把记录摘掉了,这里同步去掉(否则要等下一次刷新)
-            this.downloadRecords = this.downloadRecords.filter(t => t.id !== x.id)
+            // 同时打墓碑,防止它之前发出来的进度事件又把它加回来
+            this.removeDownloadRecord(x.id)
             continue
           }
           const rec = this.downloadRecords.find(t => t.id === x.id)
@@ -3679,7 +4206,7 @@ export default defineComponent({
         }
         this.refreshDownloadRecords()
       } catch (e) {
-        this.printMessage('error', this.$t('m.downloadMoveFailed') + ': ' + ((e && e.message) || e))
+        this.printMessage('error', this.$t('m.downloadMoveFailed') + ': ' + this.ipcErrorText(e))
       }
     },
     // 记录上的时间(开始下载的时间;已完成的显示完成时间)。用户要年月日时分秒
@@ -3781,10 +4308,10 @@ export default defineComponent({
           this.previewImgFailed = { ...this.previewImgFailed, [index]: false }
           this.refreshDownloadPreview()
         } else {
-          this.printMessage('error', (r && r.error) || this.$t('m.downloadFailed'))
+          this.handleDownloadError(r)
         }
       } catch (e) {
-        this.printMessage('error', (e && e.message) || this.$t('m.downloadFailed'))
+        this.printMessage('error', this.ipcErrorText(e))
       }
     },
     // 整本重新下载:先确认(会删掉已经下好的文件从头下),再走 eh-download-action 的 restart
@@ -3792,14 +4319,20 @@ export default defineComponent({
       try {
         await ElMessageBox.confirm(this.$t('m.downloadRestartConfirm'), this.$t('m.previewRedownload'), { type: 'warning' })
       } catch (err) { return }
-      const r = await ipcRenderer.invoke('eh-download-action', { id: task.id, action: 'restart' })
+      let r = null
+      try {
+        r = await ipcRenderer.invoke('eh-download-action', { id: task.id, action: 'restart' })
+      } catch (e) {
+        this.printMessage('error', this.$t('m.downloadFailed') + ': ' + this.ipcErrorText(e))
+        return
+      }
       if (r && r.ok) {
         this.printMessage('success', this.$t('m.downloadRestarted'))
         this.refreshDownloadRecords()
         // 预览还停在这条任务上:进度归零了,就地重刷一次
         if (this.previewTask && this.previewTask.id === task.id) this.refreshDownloadPreview()
       } else {
-        this.printMessage('error', (r && r.error) || this.$t('m.downloadFailed'))
+        this.handleDownloadError(r)
       }
     },
     // 把这条任务已经下好的页当一本书翻开,第 pageIndex 页就是当前页。
@@ -3844,6 +4377,20 @@ export default defineComponent({
       this.hhDialogVisible = true
     },
     // 评论里的 EH 画廊链接:用软件内部流程打开(先拉详情,再决定进详情/阅读器)
+    // 预览图右键:在本机默认看图程序里打开这一页
+    onSideDetailOpenImage (raw) {
+      if (!raw) return
+      // 走现有的 open-local-book(它会交给系统默认程序);失败退回到「打开所在目录」
+      ipcRenderer.invoke('open-local-book', raw).catch(() => {
+        const dir = String(raw).replace(/[\\/][^\\/]*$/, '')
+        ipcRenderer.invoke('open-path', dir)
+      })
+    },
+    // 预览图右键:打开这一页所在的文件夹
+    onSideDetailOpenPath (dir) {
+      if (!dir) return
+      ipcRenderer.invoke('open-path', String(dir))
+    },
     async onSideDetailOpenGalleryUrl (url) {
       const u = String(url || '')
       if (!u) return
@@ -3875,10 +4422,75 @@ export default defineComponent({
       this.bookDetail = book
       return book
     },
+    // 右键「重新生成封面」:让主进程按当前文件重新解一帧封面(不动元数据)。
+    // 成功后换掉 coverPath 并刷新 nonce,让 <img> 立刻重新加载(否则浏览器还在用旧图)。
+    async regenerateBookCover (book) {
+      if (!book || !book.id) return
+      try {
+        const r = await ipcRenderer.invoke('regenerate-cover', book.id)
+        if (r && r.ok) {
+          // 解除「封面加载不出来」的放弃标记,让卡片/详情重新显示新封面
+          retryBookCover(book)
+          book.coverPath = r.coverPath
+          book._coverNonce = Date.now()
+          this.printMessage('success', this.$t('m.regenerateCoverDone'))
+        } else {
+          this.printMessage('error', this.$t('m.regenerateCoverFail'))
+        }
+      } catch (e) {
+        this.printMessage('error', this.$t('m.regenerateCoverFail') + ':' + this.ipcErrorText(e))
+      }
+    },
+    // 切库 / 切到 EH 在线:退出「编辑信息」模式。
+    // 编辑态是 BookDetailDialog 内部的一个 ref,以前切库从不复位 —— 用户切过去还停在编辑态,
+    // 一保存就把 A 库的改动写进 B 库。方法由 BookDetailDialog 提供,不存在就跳过(不报错)。
+    exitBookEditMode () {
+      const ref = this.$refs.BookDetailDialogRef
+      if (ref && typeof ref.exitEditMode === 'function') {
+        try { ref.exitEditMode() } catch (e) { /* 弹窗没挂载也不影响切库 */ }
+      }
+    },
+    // 右键「编辑标签」:走设置页那个完整编辑器(带配色/分类/关联/删除)。
+    // 卡片与 EditView 里的长按仍然走 openQuickTagEdit(快速改名),只有菜单里这项换。
+    openFullTagEdit ({ tag } = {}) {
+      if (!tag) return
+      if (this.viewerRole) return
+      const r = this.$refs.SettingRef
+      if (r && typeof r.openTagNameEditor === 'function') r.openTagNameEditor(tag)
+    },
     onSideDetailRead (book, startIndex = null) {
       if (!book) return
-      if (startIndex != null) { this.openContentView(book, startIndex); return }
-      this.runClickAction(this.setting.clickCoverAction || 'content', book)
+      // ★「阅读」是明确动作,不参与「点击封面策略」:
+      //   以前这里走 runClickAction(setting.clickCoverAction),策略选 detail 且侧栏开着时
+      //   会被改写成 sideDetail(再点一次侧栏 = 什么都不发生),选 none 直接 return ——
+      //   用户点了「阅读」却打不开,是已证实的缺陷。这里强制开内容界面。
+      //   点封面/点标题那些入口仍然按策略走,不受影响。
+      this.openContentView(book, startIndex)
+    },
+    // 侧边详情「全部评论」:以前 emit 的是空标签,App 拼成 ""$ 精确搜索 → 必然 0 结果。
+    // 现在打开详细界面并把这一本的评论拉出来(大弹窗里那块就是「本书全部评论」)。
+    // 侧边详情改了评分:直接沿用 App 现有的 saveBook(会写库 + 刷新列表状态)
+    onSideDetailSaveBook (book) {
+      if (!book || !book.id) return
+      try { this.saveBook(book) } catch (e) { /* 写库失败不影响界面上的即时反馈 */ }
+    },
+    onSideDetailAllComments (book) {
+      const b = book || this.bookDetail
+      if (!b || !b.id) return
+      const ref = this.$refs.BookDetailDialogRef
+      if (!ref) return
+      // ★ 2026-11 修:以前这里只 openBookDetail + getComments,
+      //   而大弹窗里的评论栏是 v-if="setting.showComment" ——
+      //   用户关过「显示评论」的话,点「全部评论」就是「什么也没发生」。
+      //   现在直接打开独立的「全部评论」弹窗(照 JHenTai 的 EHComment 页):
+      //   完整列表 + 总数 + 分页加载,不受 showComment 开关影响。
+      if (typeof ref.openAllComments === 'function') {
+        try { ref.openAllComments(b); return } catch (e) { /* 退化到旧路径 */ }
+      }
+      if (typeof ref.openBookDetail === 'function') ref.openBookDetail(b)
+      if (typeof ref.getComments === 'function') {
+        try { ref.getComments(b) } catch (e) { /* 拉评论失败不影响打开详情 */ }
+      }
     },
     // 侧边详情的「本地库」操作:与详细界面完全同一套（直接复用大弹窗里的实现，
     // 避免两处各写一遍、行为慢慢跑偏）
@@ -3905,6 +4517,19 @@ export default defineComponent({
     // 失败原因说人话(noPages 这种内部代号用户看不懂)。
     // ⚠️ 下载记录界面以前把原始错误(英文的网络报错)直接铺在界面上,用户看不懂 ——
     //    现在所有提示统一走中文映射(见 networkErrorText),原始的只留在悬浮 title 里。
+    // IPC / 运行时异常 → 中文提示。
+    // 为什么必须全映射:Electron 抛的是英文原文(典型:「An object could not be cloned」),
+    // 以前直接拼进 printMessage 弹给中文用户,等于把内部报错糊到脸上。
+    // 任何分支都不返回英文原文。
+    ipcErrorText (errOrCode) {
+      const s = String((errOrCode && errOrCode.message) || errOrCode || '')
+      if (!s) return this.$t('m.errUnknown')
+      if (/could not be cloned|not cloneable|could not be cloned\./i.test(s)) return this.$t('m.errIpcClone')
+      if (/ENOENT|no such file|not exist/i.test(s)) return this.$t('m.errFileNotFound')
+      if (/EPERM|EACCES|permission denied|operation not permitted/i.test(s)) return this.$t('m.errPermission')
+      if (/ETIMEDOUT|timed?\s?out|timeout/i.test(s)) return this.$t('m.errTimeout')
+      return this.$t('m.errUnknown')
+    },
     downloadErrorText (err) {
       const e = String(err || '')
       if (!e) return ''
@@ -3913,11 +4538,34 @@ export default defineComponent({
       // 取页链接一条都没收到:EH 限速 / 网络不通 —— 先说清原因,别让用户以为画廊没了
       if (e.startsWith('linksFailed')) return this.$t('m.downloadErrLinksFailed') + ' ' + e.replace(/^linksFailed:\s*/, '').slice(0, 100)
       if (e.startsWith('notImage')) return this.$t('m.downloadErrNotImage') + ' ' + e.replace(/^notImage:\s*/, '').slice(0, 120)
+      // 后端返回的都是「代码」,这里必须一个不漏地翻成中文,绝不能把代码原样透出去。
+      // 代码清单来自 index.js 的 eh-download-* 处理分支(见报告)。
       const map = {
         noPages: 'm.downloadErrNoPages',
+        noPage: 'm.downloadErrNoPages',
         noUrl: 'm.downloadErrNoUrl',
+        noImageUrl: 'm.downloadErrNoUrl',
         noPath: 'm.downloadNeedPath',
-        notLoggedIn: 'm.favoriteLoginNeeded'
+        noDir: 'm.downloadNeedPath',
+        notLoggedIn: 'm.favoriteLoginNeeded',
+        needLogin: 'm.favoriteLoginNeeded',
+        alreadyMoved: 'm.downloadAlreadyMoved',
+        timeout: 'm.downloadErrTimeout',
+        network: 'm.errNetwork',
+        notFound: 'm.errDownloadNotFound',
+        foreignPath: 'm.errForeignPath',
+        outsideDownloadPath: 'm.errForeignPath',
+        libraryOffline: 'm.errLibraryOffline',
+        badAction: 'm.errBadArgs',
+        badArgs: 'm.errBadArgs',
+        noIds: 'm.errBadArgs',
+        noTarget: 'm.errBadArgs',
+        badUrl: 'm.errBadUrl',
+        busy: 'm.errBusy',
+        downloading: 'm.errBusy',
+        canceled: 'm.errCanceled',
+        empty: 'm.errEmpty',
+        webMode: 'm.errWebMode'
       }
       const key = map[e]
       if (key) return this.$t(key)
@@ -3970,19 +4618,26 @@ export default defineComponent({
       this.downloadAction(task, 'deleteWithFiles')
     },
     async downloadAction (task, action) {
-      const r = await ipcRenderer.invoke('eh-download-action', { id: task.id, action })
+      let r = null
+      try {
+        r = await ipcRenderer.invoke('eh-download-action', { id: task.id, action })
+      } catch (e) {
+        // IPC 层抛的是英文原文(如 could not be cloned),统一翻成中文再提示
+        this.printMessage('error', this.$t('m.downloadFailed') + ': ' + this.ipcErrorText(e))
+        return
+      }
       if (!r || !r.ok) {
         if (r && r.error === 'notFound') this.refreshDownloadRecords()
         // 已移到库里的记录不能续传:说清楚,并刷新列表(它的按钮状态也该变了)
         else if (r && r.error === 'alreadyMoved') {
           this.printMessage('warning', this.$t('m.downloadAlreadyMoved'))
           this.refreshDownloadRecords()
-        } else this.printMessage('error', (r && r.error) || this.$t('m.downloadFailed'))
+        } else this.handleDownloadError(r)
         return
       }
       if (action === 'delete' || action === 'deleteWithFiles') {
-        this.downloadRecords = this.downloadRecords.filter(t => t.id !== task.id)
-        if (this.previewTask && this.previewTask.id === task.id) this.closeDownloadPreview()
+        // 打墓碑 + 摘记录:主进程随后还会广播 eh-download-removed(同一个方法,幂等)
+        this.removeDownloadRecord(task.id)
       } else {
         this.refreshDownloadRecords()
       }
@@ -3992,12 +4647,46 @@ export default defineComponent({
         await ElMessageBox.confirm(this.$t('m.downloadClearConfirm'), this.$t('m.downloadClear'), { type: 'warning' })
       } catch (e) { return }
       await ipcRenderer.invoke('eh-download-clear')
-      this.downloadRecords = []
+      // 本地清空也要记时间戳(主进程的 eh-download-cleared 会再来一次,幂等)
+      this.clearDownloadRecordsLocal()
       this.printMessage('success', this.$t('m.downloadCleared'))
+    },
+    // 下载通道失败的统一处理(主进程 B 线新增了 { hint, action, settingKey }):
+    //   · hint   —— 已经翻成中文、说清「该干什么」的一句话,优先显示它
+    //   · action —— 'open-setting' 时顺手把用户带到设置里的下载目录(noPath / foreignPath)
+    handleDownloadError (r, fallbackKey = 'm.downloadFailed') {
+      if (!r) { this.printMessage('error', this.$t(fallbackKey)); return }
+      const text = r.hint
+        || this.downloadErrorText(r.error)
+        || (r.error ? this.$t(fallbackKey) + ': ' + r.error : this.$t(fallbackKey))
+      this.printMessage('error', text)
+      if (r.action === 'open-setting') this.openDownloadSetting(r.settingKey || 'downloadPath')
+    },
+    // 打开设置面板并定位到「下载目录」。
+    // 下载设置的实际位置:设置 → 功能设置(tab name = 'translation') → 左侧「下载」子页。
+    // 子页由 Setting.vue 的 activeFeature 控制,已随本次改动一起 defineExpose 出来,
+    // 这里赋值 'download' 就能直接落到「下载」子页(不用再让用户自己点)。
+    openDownloadSetting (settingKey = 'downloadPath') {
+      const ref = this.$refs.SettingRef
+      if (!ref) return
+      try {
+        ref.dialogVisibleSetting = true
+        ref.activeSettingPanel = 'translation'
+        // activeFeature 是 ref,经 expose proxy 赋值会被 proxyRefs 解包 → 等价于 .value = 'download'
+        ref.activeFeature = 'download'
+      } catch (e) { /* 只读账户没有这个面板时忽略 */ }
+      if (settingKey !== 'downloadPath') {
+        // 目前只有下载目录一个落点,留个显式分支方便以后扩展
+        console.warn('[download] 未知的设置落点:' + String(settingKey))
+      }
     },
     async openDownloadFolder () {
       const dir = String(this.setting.downloadPath || '').trim()
-      if (!dir) { this.printMessage('warning', this.$t('m.downloadNeedPath')); return }
+      if (!dir) {
+        this.printMessage('warning', this.$t('m.downloadNeedPath'))
+        this.openDownloadSetting('downloadPath')
+        return
+      }
       try {
         const r = await ipcRenderer.invoke('open-path', dir)
         if (!r || !r.ok) this.printMessage('info', this.$t('m.downloadOpenFolderManual') + ': ' + dir)
@@ -4032,6 +4721,7 @@ export default defineComponent({
       const wantDir = String(opts.saveDir || '').trim() || String(this.setting.downloadPath || '').trim()
       if (!wantDir) {
         this.printMessage('warning', this.$t('m.downloadNeedPath'))
+        this.openDownloadSetting('downloadPath')
         return
       }
       try {
@@ -4059,30 +4749,33 @@ export default defineComponent({
           title: String((opts && opts.title) || '').trim() || book.title || book.title_jpn || '',
           cover: book.coverPath || '', original: !!original,
           saveDir: String((opts && opts.saveDir) || '').trim(),
-          tags: tags || {}, category, titleJpn, rating,
+          // ⚠ 必须转成纯对象:tags 来自 book.tags(Vue 响应式 Proxy)/ detail.tags,
+          //   直接传给 ipcRenderer.invoke 会 structural-clone 失败 →「An object could not be cloned」
+          tags: JSON.parse(JSON.stringify(tags || {})), category, titleJpn, rating,
           // EH 标注的页数:links 收集不全时后端用它兜底 total(否则封面会显示 235/218)
           pageCount: Number(book && book.pageCount) || Number(book && book.filecount) || 0
         })
-        if (!r || !r.ok) { this.printMessage('error', (r && r.error) || this.$t('m.downloadFailed')); return }
+        if (!r || !r.ok) { this.handleDownloadError(r); return }
         this.upsertDownloadRecord(r.task)
         this.printMessage('success', this.$t('m.downloadStarted'))
         // 用户要求:添加下载后**不要**自动弹出任务记录面板,任务在记录里看得到
       } catch (e) {
-        this.printMessage('error', this.$t('m.downloadFailed') + ': ' + ((e && e.message) || e))
+        this.printMessage('error', this.$t('m.downloadFailed') + ':' + this.ipcErrorText(e))
       }
     },
     // 阅读器里「下载本页 / 本页原图」:地址由阅读器传过来(它已经解析过这一页)
     async downloadCurrentPage ({ url, originalUrl, pageUrl, original, name }) {
       if (!String(this.setting.downloadPath || '').trim()) {
         this.printMessage('warning', this.$t('m.downloadNeedPath'))
+        this.openDownloadSetting('downloadPath')
         return
       }
       try {
         const r = await ipcRenderer.invoke('eh-download-page', { url, originalUrl, pageUrl, original: !!original, name })
         if (r && r.ok) this.printMessage('success', this.$t('m.downloadSaved') + ': ' + r.path)
-        else this.printMessage('error', (r && r.error) || this.$t('m.downloadFailed'))
+        else this.handleDownloadError(r)
       } catch (e) {
-        this.printMessage('error', this.$t('m.downloadFailed') + ': ' + ((e && e.message) || e))
+        this.printMessage('error', this.$t('m.downloadFailed') + ': ' + this.ipcErrorText(e))
       }
     },
 
@@ -4311,13 +5004,39 @@ export default defineComponent({
         .map(k => k + '=' + (this.setting[k] == null ? '' : this.setting[k]))
         .join('; ')
       const invoke = ipcRenderer.invoke('get-ex-webpage', { url, cookie })
-      return await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('timeout')), 20000)
-        invoke.then(
-          (v) => { clearTimeout(timer); resolve(v) },
-          (e) => { clearTimeout(timer); reject(e) }
-        )
-      })
+      let html = null
+      let thrown = ''
+      try {
+        html = await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('timeout')), 20000)
+          invoke.then(
+            (v) => { clearTimeout(timer); resolve(v) },
+            (e) => { clearTimeout(timer); reject(e) }
+          )
+        })
+      } catch (e) {
+        thrown = String((e && e.message) || e)
+        html = null
+      }
+      // ★主进程的 get-ex-webpage 失败时**不再抛**,而是返回 null(原因记在 eh-webpage-last-error)。
+      //   以前拿到 null 会一路静默往下走:在线列表空、详情空、评论空,用户完全不知道发生了什么。
+      //   这里统一提示一次(带具体原因),调用方照旧按「空 html」走自己的失败分支。
+      if (!html) await this.reportEhHtmlError(thrown)
+      return html
+    },
+    // 取 EH 页面失败的统一提示:原因来自 B 线新增的只读通道 eh-webpage-last-error。
+    // 4 秒内同一条原因只提示一次 —— 列表加载会连着试 EX 主机和 EH 兜底主机,不该弹两个 toast。
+    async reportEhHtmlError (thrown) {
+      let why = null
+      try { why = await ipcRenderer.invoke('eh-webpage-last-error') } catch (e) { why = null }
+      const detail = String((why && why.error) || thrown || '')
+      const msg = this.$t('m.ehOnlineFailed') + (detail ? ': ' + detail : '')
+      const now = Date.now()
+      if (this._lastEhHtmlMsg === msg && now - (this._lastEhHtmlAt || 0) < 4000) return msg
+      this._lastEhHtmlMsg = msg
+      this._lastEhHtmlAt = now
+      this.printMessage('error', msg)
+      return msg
     },
     // EH在线:把已取到的画廊映射成「书」塞进书架原本的数据流
     applyOnlineList () {
@@ -4510,6 +5229,9 @@ export default defineComponent({
     },
     // startIndex:从第几页开始翻(0 基);点预览缩略图时传页面序号
     openContentView (book, startIndex = null) {
+      // 合集没有文件可读:直接打开合集抽屉(看里面有哪些书)。
+      // 侧边详情的封面点击 / 「阅读」按钮 / 点击策略都汇到这里,不拦就会把合集丢给阅读器,什么都打不开。
+      if (book && book.isCollection) { this.openCollection(book); return }
       const viewer = this.$refs.InternalViewerRef
       if (!viewer || typeof viewer.viewManga !== 'function') {
         // 阅读器未就绪(或纯网页模式)时兜底:打开详细界面,避免"双击没反应"
@@ -4866,10 +5588,8 @@ body.emm-mobile
       padding: 0
       margin: 0
       font-size: 13px
-  .edit-btn-group
-    display: inline-flex
-    gap: 8px
-    flex: 0 0 auto
+  // ★ 2026-11:.edit-btn-group 已删 —— 那排功能按钮挪进了右侧面板头部
+  //   (EditView.vue 的 .emm-manage-actions),工具栏上不再需要这组样式。
 
 // 像素风格自带字体:缝合像素字体 Fusion Pixel 12px(OFL-1.1,许可证见 src/assets/fonts/OFL-fusion-pixel.txt)
 // 自带字体文件,不依赖用户本机安装。方舟像素(Ark Pixel)对中文/日文覆盖不全,改用缝合像素:
@@ -5163,8 +5883,13 @@ html.theme-pixel .book-task-ring
   position: relative
   margin: 0 auto
   flex: 0 0 auto
-  i
-    background-color: #ffffff
+// 任务遮罩是深色底 → 白柱子
+.book-task-mask .emm-eq i
+  background-color: #ffffff
+// 封面加载遮罩是浅色底(和卡片底色几乎一样)→ 必须用主色,
+// 以前两处共用一个「白色」,像素主题下封面加载动画等于完全看不见
+.cover-loading .emm-eq i
+  background-color: var(--el-color-primary, #409EFF)
 
 @keyframes emm-eq
   0%, 100%
@@ -5242,7 +5967,8 @@ html.theme-custom
   flex-direction: column
   // 不留上下空白:历史紧贴搜索建议区/弹层底边
   gap: 0
-  padding: 6px 8px
+  // padding-top 必须为 0:上面已经没有内容了,留 6px 会让芯片悬空(见 .emm-search-suggest 的注释)
+  padding: 0 8px 6px
   background: var(--el-bg-color-overlay)
   font-size: 12px
   line-height: 1
@@ -5324,10 +6050,15 @@ html.theme-custom
     margin: 0
     overflow: hidden
   // 弹层底部那块历史:贴着底边,去掉 Element 默认的内边距让芯片区自己撑开
+  // 历史芯片上方那条 ~17px 纯空白 = 三层叠加:wrap 的 padding-bottom(10px)
+  //   + footer 的 border-top(1px) + 历史面板的 padding-top(6px)。
+  // 这里把前两层清掉(第三层见 .search-history-panel),芯片就紧贴建议列表。
   .el-autocomplete-suggestion__footer
     padding: 0
+    border-top: none
   .el-autocomplete-suggestion__wrap
     max-height: 300px !important
+    padding-bottom: 0
   // 弹层里的建议区/历史区都按弹层宽度布局,不允许撑宽。
   // ⚠️ Element 会给 suggestion 写内联 min-width(缓存了弹出那一刻的输入框宽度),
   //    窗口缩小后它还留着旧值,把弹层撑回去 —— 这里必须 !important 覆盖掉。
@@ -5356,6 +6087,16 @@ html.theme-custom
   text-align: center
   font-size: 13px
   color: var(--el-text-color-secondary)
+// ★ 筛选/搜索把所有书都过滤掉时的空态:以前这里是一整块纯白(用户说的「白屏」),
+//   现在给一句说明 + 「清除筛选」按钮,保证用户永远有路回到完整书架
+.filter-empty-hint
+  display: flex
+  flex-direction: column
+  align-items: center
+  gap: 12px
+  padding: 56px 0
+  .filter-empty-title
+    font-size: 14px
 
 // 主界面 + 下载记录右栏:flex 并排,右栏可以拖宽
 .app-body
@@ -5508,11 +6249,117 @@ html.theme-custom
   height: 0
   flex-basis: 100%
 
+// 合集底部抽屉里的书列表:一行**横向滚动**(抽屉高度有限,纵向也允许滚一点,
+// 免得卡片比抽屉高时被裁掉一半)
 .collection-book-card-list
   display: flex
-  flex-wrap: wrap
-  justify-content: center
+  flex-wrap: nowrap
+  justify-content: flex-start
+  // 卡片**不拉伸**到容器高度:高度由卡片自己决定,超出抽屉就由本容器纵向滚动
+  align-items: flex-start
   align-content: flex-start
+  box-sizing: border-box
+  width: 100%
+  height: 100%
+  min-height: 0
+  padding: 2px 2px 8px
+  overflow-x: auto
+  overflow-y: auto
+  .book-card-frame
+    position: relative
+    flex: none
+  // 拖拽手柄默认半透明,鼠标进到列表里才完全显示(不干扰看封面)
+  .collection-drag-handle
+    opacity: .5
+  &:hover .collection-drag-handle
+    opacity: 1
+
+// ============================================================
+// 合集底部抽屉(P1-5):原来是右侧第三个入坞面板,改成从下方弹出。
+// 贴底 fixed + 上边缘可拖动改高度;内容一行横向滚动。z-index 压过右栏(500/1000 级)。
+.collection-bottom-drawer
+  position: fixed
+  left: 0
+  right: 0
+  bottom: 0
+  z-index: 2000
+  display: flex
+  flex-direction: column
+  box-sizing: border-box
+  background: var(--el-bg-color, #fff)
+  border-top: 1px solid var(--el-border-color)
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, .12)
+  // ⚠ 这里**不要**覆盖 --emm-cover-size / --emm-cover-height:
+  //   抽屉里的卡片必须和主界面完全同款(尺寸/边框/圆角/评分行一致)。
+  //   卡片比抽屉高时由 .collection-book-card-list 的 overflow 内部滚动解决,不压缩卡片。
+  .collection-drawer-resizer
+    position: absolute
+    left: 0
+    right: 0
+    top: -4px
+    height: 8px
+    cursor: row-resize
+    z-index: 5
+  .collection-drawer-header
+    flex: none
+    display: flex
+    align-items: center
+    gap: 8px
+    padding: 8px 12px 6px
+    font-size: 15px
+  .collection-drawer-title
+    font-weight: 600
+    overflow: hidden
+    text-overflow: ellipsis
+    white-space: nowrap
+  .collection-drawer-count
+    flex: none
+    font-size: 12px
+    color: var(--el-text-color-secondary)
+  .collection-drawer-actions
+    flex: none
+    margin-left: auto
+    display: flex
+    align-items: center
+  .collection-drawer-body
+    flex: 1 1 auto
+    min-height: 0
+    display: flex
+    overflow: hidden
+    padding: 0 8px 8px
+  .collection-drawer-empty
+    margin: auto
+    font-size: 13px
+    color: var(--el-text-color-secondary)
+
+// 从底部滑入 / 滑出
+.collection-drawer-slide-enter-active, .collection-drawer-slide-leave-active
+  transition: transform .22s ease, opacity .22s ease
+.collection-drawer-slide-enter-from, .collection-drawer-slide-leave-to
+  transform: translateY(100%)
+  opacity: .4
+
+// 拖拽手柄:贴在卡片左上角,只有它能拖动(避免想点封面却拖走整张卡)
+.collection-drag-handle
+  position: absolute
+  left: 3px
+  top: 3px
+  z-index: 4
+  display: flex
+  align-items: center
+  justify-content: center
+  width: 22px
+  height: 22px
+  border-radius: 4px
+  border: 1px solid var(--el-border-color)
+  background: var(--el-bg-color-overlay, rgba(255, 255, 255, .86))
+  color: var(--el-text-color-secondary)
+  cursor: grab
+  transition: opacity .18s ease, color .18s ease
+  &:hover
+    color: var(--el-color-primary)
+  &:active
+    cursor: grabbing
 
 .open-collection-title
   margin: 0 4px

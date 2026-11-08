@@ -116,8 +116,9 @@ export default {
   display: flex
   align-items: center
   justify-content: center
-  background: rgba(0, 0, 0, 0.45)
-  backdrop-filter: blur(2px)
+  // 不透明遮罩:未登录时绝不能从登录框后面看到书架(以前是 rgba(0,0,0,.45) 的半透明,
+  // 配合「mounted 无条件读书架」等于把整库的书露给未登录访客)
+  background: var(--el-bg-color, #fff)
   .login-box
     width: 340px
     padding: 28px 30px 24px

@@ -331,6 +331,13 @@ const prepareSetting = () => {
       ehOnlineUser: '',
       ehOnlineEnabled: false,
       ehOnlineSource: 'front',
+      // ehWebpTranscode = 在线读图时是否把 WebP 原图转成 progressive JPEG 再显示。
+      //   默认 false(2026-11 改):实测转码每张多 62–94ms、体积涨 32%–95%,
+      //   而它换来的「先糊后清晰」在阅读器里收益不稳定;默认直通 WebP,整包到就显示。
+      //   想恢复老行为(渐进显示)可以打开。
+      ehWebpTranscode: false,
+      // 转码质量(50–100),默认 82:实测 q82 只要 23ms,而 q90+mozjpeg 要 62ms 且体积 +95%
+      ehWebpTranscodeQuality: 82,
       // 下载(设置 → 高级 → 下载设置):
       // downloadPath        = 下载到哪个文件夹(空 = 没设置,点下载时提示先去设置)
       // downloadConcurrency = 同时下载几张图(1-10)

@@ -24,6 +24,25 @@
             <div class="setting-line toolbar-tip">{{$t('m.dataPathHint')}}</div>
           </el-col>
         </el-row>
+        <!-- 元数据存放位置(只影响 metadata.sqlite 一个文件):和数据存放目录一样是「路径类」设置,
+             所以从「高级」搬回「常用」,紧跟在数据存放目录后面 -->
+        <el-row :gutter="8" v-if="showDesktopUI && runMode === 'local'">
+          <el-col :span="24">
+            <div class="setting-line">
+              <el-input v-model="setting.metadataPath" :placeholder="$t('m.metadataPathDefault')" @change="saveSetting">
+                <template #prepend><span class="setting-label">{{$t('m.metadataPath')}}</span></template>
+                <template #append>
+                  <el-button-group>
+                    <el-button @click="selectMetadataPath">{{$t('m.select')}}</el-button>
+                    <el-button v-if="setting.metadataPath" @click="followDataPath">{{$t('m.metadataPathFollow')}}</el-button>
+                  </el-button-group>
+                </template>
+              </el-input>
+            </div>
+            <div class="setting-line toolbar-tip">{{$t('m.metadataPathHint')}}</div>
+          </el-col>
+        </el-row>
+
         <!-- 漫画库 / 图片查看器 / 主题(应用名称已移到「高级 → 自定义主题」;远程模式的服务器设置已移到「账户」页) -->
         <el-row :gutter="8">
           <el-col :span="24">
@@ -54,7 +73,16 @@
               <span class="toolbar-tip">{{$t('m.libraryHint')}}</span>
             </div>
             <!-- 库切换:一个框 = 一组库;工具栏「切换库」按钮点一下切到下一个框,书架显示该框内所有库合并 -->
-            <div class="setting-line library-boxes-title">{{$t('m.switchBoxes')}}</div>
+            <!-- 说明统一收进右边的感叹号(多行 popover),下面不再重复小字 -->
+            <div class="setting-line library-boxes-title">
+              <span class="label-with-hint">
+                {{$t('m.switchBoxes')}}
+                <SettingHint
+                  :title="$t('m.switchBoxes')"
+                  :lines="[$t('m.hintSwitchBox'), $t('m.switchBoxHint'), $t('m.ehOnlineBoxHint')]"
+                />
+              </span>
+            </div>
             <div v-for="(box, bi) in switchBoxes" :key="box.id" class="setting-line library-box-row">
               <span class="library-box-index">{{ bi + 1 }}</span>
               <el-select v-model="box.libraryIds" multiple class="library-box-select" :placeholder="$t('m.switchBoxLibraries')" @change="onBoxesChange">
@@ -65,9 +93,7 @@
             </div>
             <div class="setting-line library-actions">
               <el-button @click="addSwitchBox">{{$t('m.switchBoxAdd')}}</el-button>
-              <span class="toolbar-tip">{{$t('m.switchBoxHint')}}</span>
             </div>
-            <div class="setting-line toolbar-tip">{{$t('m.ehOnlineBoxHint')}}</div>
           </el-col>
           <el-col :span="24">
             <div class="setting-line">
@@ -131,10 +157,9 @@
         <el-row :gutter="8">
           <!-- 回收站:删除的漫画先移到这里,可随时恢复 -->
           <el-col :span="24">
-            <el-divider content-position="left">{{$t('m.trashSection')}}</el-divider>
-          </el-col>
-          <el-col :span="24">
-            <div class="setting-line toolbar-tip">{{$t('m.trashHint')}}</div>
+            <el-divider content-position="left">
+              <span class="emm-divider-label label-with-hint">{{$t('m.trashSection')}}<SettingHint :title="$t('m.trashSection')" :lines="[$t('m.hintTrash'), $t('m.trashHint')]" /></span>
+            </el-divider>
           </el-col>
           <el-col :span="24" v-if="trashList.length">
             <el-table :data="trashList" size="small" max-height="240" style="width:100%">
@@ -162,7 +187,7 @@
             <el-button size="small" @click="loadTrashList">{{$t('m.trashRefresh')}}</el-button>
             <el-button size="small" type="danger" plain :disabled="!trashList.length" @click="purgeAllTrash">{{$t('m.trashPurgeAll')}}</el-button>
             <el-button size="small" plain @click="loadTrashLog">{{$t('m.trashLog')}}</el-button>
-            <span class="setting-hint" style="margin-left:10px">{{ trashDir }}</span>
+            <span class="setting-hint-value" style="margin-left:10px">{{ trashDir }}</span>
           </el-col>
         </el-row>
         <!-- 删除记录(delete-log.jsonl):记录每一次删除/还原/彻底删除,删错了能查是谁、什么时候、从哪删的 -->
@@ -346,7 +371,12 @@
           <!-- 阅读时设置栏里显示哪些按钮:点击切换显示、按住拖动排序(退出按钮固定常驻,不在这里) -->
           <el-col :span="24">
             <div class="setting-line">
-              <div class="context-menu-title">{{$t('m.viewerToolbarButtons')}}</div>
+              <div class="context-menu-title">
+                <span class="label-with-hint">
+                  {{$t('m.viewerToolbarButtons')}}
+                  <SettingHint :title="$t('m.viewerToolbarButtons')" :lines="[$t('m.hintSettingBar'), $t('m.viewerToolbarButtonsHint')]" />
+                </span>
+              </div>
               <draggable
                 :model-value="orderedViewerToolbarItems"
                 @update:model-value="onViewerToolbarReorder"
@@ -365,7 +395,6 @@
                 </template>
               </draggable>
             </div>
-            <div class="setting-hint">{{$t('m.viewerToolbarButtonsHint')}}</div>
           </el-col>
         </el-row>
       </el-tab-pane>
@@ -374,20 +403,16 @@
           <!-- 当前库中的全部标签:分类在上,标签在下;点击收藏、色点改色、双击重命名 -->
           <el-col :span="24" class="setting-line collect-tag">
             <div class="tag-cat-header">
-              <span class="context-menu-title">{{$t('m.tagCatSet')}}</span>
-              <!-- 用法说明:挪过去(悬停)或点一下都会弹出 -->
-              <el-popover placement="right-start" :width="380" trigger="hover" :show-after="120">
-                <template #reference>
-                  <span class="tag-help-dot" :title="$t('m.tagHelpTitle')">!</span>
-                </template>
-                <div class="tag-help-body">
-                  <div class="tag-help-title">{{ $t('m.tagHelpTitle') }}</div>
-                  <div class="tag-help-line">{{ $t('m.tagHelp1') }}</div>
-                  <div class="tag-help-line">{{ $t('m.tagHelp2') }}</div>
-                  <div class="tag-help-line">{{ $t('m.tagHelp3') }}</div>
-                  <div class="tag-help-line">{{ $t('m.tagHelp4') }}</div>
-                </div>
-              </el-popover>
+              <!-- 只有两个子元素:左边「标题 + 感叹号」包在一个 inline-flex 里(图标才会紧跟文字,
+                   不会被 space-between 的中间空档推开),右边按钮组仍然靠右 -->
+              <span class="label-with-hint">
+                <span class="context-menu-title">{{$t('m.tagCatSet')}}</span>
+                <SettingHint
+                  placement="right-start"
+                  :title="$t('m.tagHelpTitle')"
+                  :lines="[$t('m.tagHelp1'), $t('m.tagHelp2'), $t('m.tagHelp3'), $t('m.tagHelp4')]"
+                />
+              </span>
               <el-space>
                 <el-button size="small" type="success" plain @click="openAddTagDialog()">{{$t('m.addNewTag')}}</el-button>
                 <el-button size="small" plain @click="openAddCategoryDialog">{{$t('m.tagCatAdd')}}</el-button>
@@ -430,6 +455,7 @@
                     @pointerdown="startLongPressCollect(tag)"
                     @pointerup="cancelLongPressCollect"
                     @pointerleave="cancelLongPressCollect"
+                    @pointercancel="cancelLongPressCollect"
                     @dblclick="openTagNameEditor(tag)"
                     :title="$t('m.editTagNames')"
                   >
@@ -439,9 +465,14 @@
               </template>
             </div>
           </el-col>
-          <!-- 已收藏标签:拖动排序 -->
+          <!-- 已收藏标签:拖动排序;长按(或右键)= 取消收藏 -->
           <el-col :span="24" class="setting-line collect-tag">
-            <div class="context-menu-title">{{$t('m.collectedTags')}}</div>
+            <div class="context-menu-title">
+              <span class="label-with-hint">
+                {{$t('m.collectedTags')}}
+                <SettingHint :text="$t('m.hintCollectedTags')" />
+              </span>
+            </div>
             <draggable
               v-model="setting.collectTag"
               item-key="id"
@@ -449,9 +480,17 @@
               @change="saveSetting"
             >
               <template #item="{element}">
-                <!-- 用户要求：去掉 ×；填充色 = 标签自己的柔和色（1.14.x 色板），深色配白字、亮色配深字 -->
+                <!-- 用户要求：去掉 ×；填充色 = 标签自己的柔和色（1.14.x 色板），深色配白字、亮色配深字。
+                     长按 600ms 取消收藏（与拖动排序区分：位移超过 8px 就当作拖动） -->
                 <el-tag
+                  class="collected-tag-item"
                   :style="tagChipFillStyle(element.cat, element.tag)"
+                  @pointerdown="startLongPressUncollect(element, $event)"
+                  @pointermove="onLongPressUncollectMove($event)"
+                  @pointerup="cancelLongPressUncollect"
+                  @pointerleave="cancelLongPressUncollect"
+                  @pointercancel="cancelLongPressUncollect"
+                  @contextmenu.prevent="uncollectTag(element)"
                 >{{ tagDisplayPrefix(setting, resolvedTranslation, element.cat, element.tag) }}:{{ getDisplayTagName(setting, resolveCatKey(element.cat), element.tag) || resolvedTranslation[resolveCatKey(element.cat)]?.[element.tag]?.name || element.tag }}</el-tag>
               </template>
             </draggable>
@@ -521,74 +560,6 @@
           </template>
         </el-dialog>
         <!-- 双击标签/类别:编辑多语言名称,按「语言」下拉选定的语言显示 -->
-        <el-dialog v-model="tagEditVisible" :title="tagEditIsCategory ? $t('m.tagCatEditNames') : $t('m.editTag')" width="380px" append-to-body>
-          <div class="tag-name-editor">
-            <p class="tag-edit-raw">{{ tagEditTitle }}</p>
-            <!-- 类别:标签可以换类别(保存时会把全库这条标签一起搬过去) -->
-            <div class="tag-cat-editor" v-if="!tagEditIsCategory">
-              <span class="tag-color-label">{{ $t('m.category') }}</span>
-              <el-select v-model="tagEditCat" size="small" style="width: 150px;">
-                <el-option v-for="g in allTagsGroups" :key="g.cat" :label="categoryLabel(g.cat)" :value="g.cat" />
-              </el-select>
-            </div>
-            <div class="tag-name-hint">{{ $t('m.tagMultiNameHint') }}</div>
-            <!-- 默认名称排在最上面:显示时「选了语言但该语言没填」就回退到这个名称 -->
-            <el-input v-model="tagEditLangs['default']" size="small" :placeholder="$t('m.tagNameDefault')" />
-            <el-input v-model="tagEditLangs['zh-CN']" size="small" :placeholder="$t('m.tagNameZh')" />
-            <el-input v-model="tagEditLangs['zh-TW']" size="small" :placeholder="$t('m.tagNameZhTw')" />
-            <el-input v-model="tagEditLangs.ja" size="small" :placeholder="$t('m.tagNameJa')" />
-            <el-input v-model="tagEditLangs.en" size="small" :placeholder="$t('m.tagNameEn')" />
-          </div>
-          <!-- 标签颜色:以前放在下方表单里,现在合并到「编辑标签」弹窗(关联标签上方) -->
-          <div class="tag-color-editor" v-if="!tagEditIsCategory">
-            <span class="tag-color-label">{{ $t('m.tagColor') }}</span>
-            <el-color-picker v-model="tagEditColor" show-alpha :predefine="moderateSoftColors" />
-            <el-button v-if="tagEditColor" size="small" text @click="tagEditColor = ''">{{ $t('m.reset') }}</el-button>
-          </div>
-          <!-- 关联标签:包含 / 被包含。类别是最大的分类,不参与包含关系,所以只在编辑标签时显示 -->
-          <div class="tag-relation-editor" v-if="!tagEditIsCategory">
-            <div class="tag-relation-title">{{ $t('m.tagRelations') }}</div>
-            <div class="tag-relation-add">
-              <el-select v-model="tagRelationCat" size="small" :placeholder="$t('m.pickCategory')" style="width: 104px;">
-                <el-option v-for="c in tagRelationCats" :key="c.value" :label="c.label" :value="c.value" />
-              </el-select>
-              <!-- 「选择标签」:点击才弹出下拉;下拉里的标签横排铺开(与详细信息里标签的排版一致) -->
-              <el-select
-                v-model="tagRelationPick"
-                size="small"
-                clearable
-                style="width: 156px;"
-                popper-class="tag-relation-dropdown"
-                :placeholder="$t('m.pickTag')"
-              >
-                <el-option v-for="o in tagRelationOptions" :key="o.value" :label="o.label" :value="o.value" />
-              </el-select>
-              <el-select v-model="tagRelationKind" size="small" style="width: 104px;">
-                <el-option :label="$t('m.relationContains')" value="contains"></el-option>
-                <el-option :label="$t('m.relationContainedBy')" value="containedBy"></el-option>
-              </el-select>
-              <el-button size="small" type="primary" plain :disabled="!tagRelationPick" @click="addTagRelation">{{ $t('m.addRelation') }}</el-button>
-            </div>
-            <div class="tag-relation-list">
-              <el-tag v-for="r in tagRelationList" :key="r.kind + r.key" size="small" closable class="tag-relation-item" @close="removeTagRelation(r)">
-                {{ r.kind === 'contains' ? $t('m.relationContains') : $t('m.relationContainedBy') }} · {{ r.label }}
-              </el-tag>
-              <span v-if="!tagRelationList.length" class="tag-relation-empty">—</span>
-            </div>
-          </div>
-          <template #footer>
-            <!-- 删除放在最下方:类别删类别,标签删标签 -->
-            <el-button
-              size="small"
-              type="danger"
-              plain
-              class="tag-edit-delete"
-              @click="tagEditIsCategory ? deleteTagCategory() : deleteEditingTag()"
-            >{{ tagEditIsCategory ? $t('m.deleteCategory') : $t('m.deleteTag') }}</el-button>
-            <el-button size="small" @click="tagEditVisible = false">{{ $t('m.cancel') }}</el-button>
-            <el-button size="small" type="primary" @click="saveTagNames">{{ $t('m.saveTagNames') }}</el-button>
-          </template>
-        </el-dialog>
       </el-tab-pane>
       <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.advanced')" name="advanced">
         <el-row :gutter="8">
@@ -668,18 +639,18 @@
             </div>
             <div class="setting-line toolbar-tip">{{$t('m.excludeFileAuto')}}</div>
           </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input v-model="setting.folderTreeWidth" :placeholder="$t('m.folderTreeWidthInfo')" @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.folderTreeWidth')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
+          <!-- ★ 2026-11 移除:「文件夹树宽度」这个设置项已经无效 ——
+               文件夹树改成入坞面板后,宽度由面板右缘拖动决定并存在 localStorage
+               ('emmFolderTreePanelWidth'),不再读 setting.folderTreeWidth。
+               留着一个调了没反应的输入框只会误导用户,直接删掉。 -->
           <!-- 每页数量 + 惯性滑动(放在自定义CSS上方,只保留设置框) -->
           <el-col :span="24">
             <div class="setting-line">
               <el-input v-model="setting.customPageSizes" :placeholder="$t('m.pageSizeCustomPlaceholder')" @change="handlePageSizesChange">
-                <template #prepend><span class="setting-label">{{$t('m.pageSizeCustom')}}</span></template>
+                <!-- 这一行不再放感叹号(用户要求:行内/控件旁一律不放,只保留分区标题右侧的) -->
+                <template #prepend>
+                  <span class="setting-label">{{$t('m.pageSizeCustom')}}</span>
+                </template>
                 <template #append>
                   <el-button @click="appendPageSizeComma">,</el-button>
                 </template>
@@ -720,11 +691,11 @@
         </el-row>
         <el-row :gutter="8">
           <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.loadOnStart"
-              :active-text="$t('m.onStartScan')"
-              @change="saveSetting"
-            />
+            <!-- 不用 active-text:它的文字会溢出 el-switch 的盒子,和后面的文字叠在一起(用户截图 204)。
+                 改成显式的 .switch-label 让开关与文字各占各的位置;
+                 这一行不放感叹号(用户要求:行内一律不放,只保留分区标题右侧的) -->
+            <el-switch v-model="setting.loadOnStart" @change="saveSetting" />
+            <span class="switch-label">{{$t('m.onStartScan')}}</span>
           </el-col>
           <el-col :span="6" class="setting-switch">
             <el-switch
@@ -788,70 +759,55 @@
             />
           </el-col>
         </el-row>
-        <el-row :gutter="8">
-          <el-col :span="12" class="setting-switch">
-            <el-switch
-              v-model="setting.batchTagfailedBook"
-              :active-text="$t('m.batchTagfailedBook')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="12" class="setting-switch">
-            <el-switch
-              v-model="setting.onlyGetMetadataOfSelectedFolder"
-              :active-text="$t('m.onlyGetMetadataOfSelectedFolder')"
-              @change="saveSetting"
-            />
-          </el-col>
-        </el-row>
 
 
         <!-- ================= 卡片样式 ================= -->
         <!-- 扫描与性能 -->
-        <div class="advanced-section-title">{{$t('m.scanPerfSection')}}</div>
+        <div class="advanced-section-title"><span class="label-with-hint">{{$t('m.scanPerfSection')}}<SettingHint :title="$t('m.scanPerfSection')" :lines="[
+          $t('m.hintScanPerf'),
+          $t('m.hintScanConcurrency'), $t('m.scanConcurrencyHint'),
+          $t('m.hintCoverConcurrency'), $t('m.coverConcurrencyHint'),
+          $t('m.hintInertia'), $t('m.scrollInertiaTip'), $t('m.inertiaParamsTip')
+        ]" /></span></div>
         <el-row :gutter="8">
           <el-col :span="24">
             <div class="setting-line" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
               <span class="setting-label">{{$t('m.scanConcurrency')}}</span>
               <el-input-number v-model="setting.scanConcurrency" :min="1" :max="16" :step="1" @change="saveSetting" />
-              <span class="setting-line toolbar-tip" style="display: inline-block;">{{$t('m.scanConcurrencyHint')}}</span>
             </div>
           </el-col>
           <el-col :span="24">
             <div class="setting-line" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
               <span class="setting-label">{{$t('m.coverConcurrency')}}</span>
               <el-input-number v-model="setting.coverConcurrency" :min="1" :max="16" :step="1" @change="saveSetting" />
-              <span class="setting-line toolbar-tip" style="display: inline-block;">{{$t('m.coverConcurrencyHint')}}</span>
             </div>
           </el-col>
           <el-col :span="24">
             <div class="setting-line" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
               <span class="setting-label">{{$t('m.scrollInertia')}}</span>
               <el-switch v-model="setting.inertiaEnabled" @change="saveSetting"></el-switch>
-              <span class="setting-line toolbar-tip" style="display: inline-block;">{{$t('m.scrollInertiaTip')}}</span>
             </div>
           </el-col>
           <el-col :span="24" v-if="setting.inertiaEnabled">
             <div class="setting-line" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
               <span class="setting-label">{{$t('m.inertiaFriction')}}</span>
-              <el-slider style="flex: 1 1 220px; max-width: 380px;" v-model="setting.inertiaFriction" :min="0.8" :max="0.99" :step="0.01" :show-input="true" :show-input-controls="false" @change="saveSetting"></el-slider>
+              <el-slider style="flex: 1 1 220px; max-width: 380px;" v-model="setting.inertiaFriction" :min="0.5" :max="1" :step="0.01" :show-input="true" :show-input-controls="false" @change="saveSetting"></el-slider>
             </div>
           </el-col>
           <el-col :span="24" v-if="setting.inertiaEnabled">
             <div class="setting-line" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
               <span class="setting-label">{{$t('m.inertiaMaxVelocity')}}</span>
-              <el-slider style="flex: 1 1 220px; max-width: 380px;" v-model="setting.inertiaMaxVelocity" :min="300" :max="4000" :step="100" :show-input="true" :show-input-controls="false" @change="saveSetting"></el-slider>
+              <el-slider style="flex: 1 1 220px; max-width: 380px;" v-model="setting.inertiaMaxVelocity" :min="100" :max="12000" :step="100" :show-input="true" :show-input-controls="false" @change="saveSetting"></el-slider>
             </div>
           </el-col>
           <el-col :span="24" v-if="setting.inertiaEnabled">
             <div class="setting-line" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
               <span class="setting-label">{{$t('m.inertiaFollow')}}</span>
-              <el-slider style="flex: 1 1 220px; max-width: 380px;" v-model="setting.inertiaFollow" :min="0.05" :max="0.9" :step="0.05" :show-input="true" :show-input-controls="false" @change="saveSetting"></el-slider>
-              <span class="setting-line toolbar-tip" style="display: inline-block;">{{$t('m.inertiaParamsTip')}}</span>
+              <el-slider style="flex: 1 1 220px; max-width: 380px;" v-model="setting.inertiaFollow" :min="0.05" :max="1" :step="0.01" :show-input="true" :show-input-controls="false" @change="saveSetting"></el-slider>
             </div>
           </el-col>
         </el-row>
-        <div class="advanced-section-title">{{$t('m.cardStyle')}}</div>
+        <div class="advanced-section-title"><span class="label-with-hint">{{$t('m.cardStyle')}}<SettingHint :title="$t('m.cardStyle')" :lines="[$t('m.hintCardStyle')]" /></span></div>
         <!-- 卡片相关开关(自其它分区归并到此):各元素显隐独立 + 填充封面 -->
         <el-row :gutter="8">
           <el-col :span="6" class="setting-switch">
@@ -910,6 +866,13 @@
               @change="saveSetting"
             />
           </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.hideCollectionTag"
+              :active-text="$t('m.hideCollectionTag')"
+              @change="saveSetting"
+            />
+          </el-col>
         </el-row>
         <!-- 封面大小(整体百分比,宽高等比)/ 封面宽度 / 封面高度 -->
         <el-row :gutter="8">
@@ -959,7 +922,7 @@
         </el-row>
 
         <!-- 工具栏按钮自定义(设置按钮始终保留) -->
-        <div class="advanced-section-title">{{$t('m.toolbarButtons')}}</div>
+        <div class="advanced-section-title"><span class="label-with-hint">{{$t('m.toolbarButtons')}}<SettingHint :title="$t('m.toolbarButtons')" :lines="[$t('m.hintToolbarButtons'), $t('m.toolbarButtonsHint')]" /></span></div>
         <el-row :gutter="8">
           <el-col :span="24">
             <div class="setting-line">
@@ -985,16 +948,14 @@
                 </template>
               </draggable>
             </div>
-            <div class="setting-hint">{{$t('m.toolbarButtonsHint')}}</div>
           </el-col>
         </el-row>
 
         <!-- 自定义主题 -->
-        <div class="advanced-section-title">{{$t('m.customTheme')}}</div>
+        <div class="advanced-section-title"><span class="label-with-hint">{{$t('m.customTheme')}}<SettingHint :title="$t('m.customTheme')" :lines="[$t('m.hintCustomTheme'), $t('m.themeAlphaHint'), $t('m.pixelSettingsHint')]" /></span></div>
         <el-row :gutter="8">
           <el-col :span="24">
             <div class="custom-theme-panel">
-              <div class="setting-hint theme-hint-full">{{$t('m.themeAlphaHint')}}</div>
               <!-- 颜色设置:单独一排 -->
               <div class="theme-group">
               <div class="theme-row">
@@ -1073,7 +1034,6 @@
               </div>
               <div class="theme-row theme-row-wide">
                 <el-button size="small" :disabled="!setting.pixelTheme" @click="pixelSettingVisible = true">{{$t('m.pixelSettings')}}</el-button>
-                <span class="setting-hint" style="margin-left:10px">{{$t('m.pixelSettingsHint')}}</span>
               </div>
               <div class="theme-row theme-row-wide">
                 <span class="theme-label">{{$t('m.customIcon')}}</span>
@@ -1085,6 +1045,7 @@
               </div>
               <!-- 应用名称(浏览器标签页 / 窗口标题显示的名字):原来在「常用」,按用户要求移到这里 -->
               <div class="theme-row theme-row-wide">
+                <!-- 本分区标题(自定义主题)右侧已经有一个感叹号,这里不再重复放 -->
                 <span class="theme-label">{{$t('m.appNameSetting')}}</span>
                 <div class="theme-value">
                   <el-input v-model="setting.appName" size="small" :placeholder="$t('m.appNamePlaceholder')" @change="handleAppNameChange" />
@@ -1095,8 +1056,7 @@
         </el-row>
 
 <!-- 右键菜单自定义:拖动排序 + 点击 ✕ 取消 / 点击标签加回 -->
-        <div class="advanced-section-title">{{$t('m.contextMenu')}}</div>
-        <div class="setting-hint">{{$t('m.contextMenuSortHint')}}</div>
+        <div class="advanced-section-title"><span class="label-with-hint">{{$t('m.contextMenu')}}<SettingHint :title="$t('m.contextMenu')" :lines="[$t('m.hintContextMenu'), $t('m.contextMenuSortHint')]" /></span></div>
         <el-row :gutter="8">
           <el-col :span="24" v-for="group in contextMenuGroups" :key="group.id">
             <div class="setting-line context-menu-group">
@@ -1123,7 +1083,7 @@
         </el-row>
 
         <!-- 点击策略:单击封面 / 阅 / 读 / 页数 分别进入哪个界面 -->
-        <div class="advanced-section-title">{{$t('m.clickPolicy')}}</div>
+        <div class="advanced-section-title"><span class="label-with-hint">{{$t('m.clickPolicy')}}<SettingHint :title="$t('m.clickPolicy')" :lines="[$t('m.hintClickPolicy'), $t('m.clickPolicyHint')]" /></span></div>
         <el-row :gutter="8">
           <el-col :span="12">
             <div class="setting-line">
@@ -1209,27 +1169,6 @@
               </NameFormItem>
             </div>
           </el-col>
-          <el-col :span="24">
-            <div class="setting-hint">{{$t('m.clickPolicyHint')}}</div>
-          </el-col>
-        </el-row>
-
-        <!-- 方案 A:元数据单独存放从「常用」降级到这里(只影响 metadata.sqlite 一个文件) -->
-        <el-row :gutter="8" v-if="showDesktopUI && runMode === 'local'">
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input v-model="setting.metadataPath" :placeholder="$t('m.metadataPathDefault')" @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.metadataPath')}}</span></template>
-                <template #append>
-                  <el-button-group>
-                    <el-button @click="selectMetadataPath">{{$t('m.select')}}</el-button>
-                    <el-button v-if="setting.metadataPath" @click="followDataPath">{{$t('m.metadataPathFollow')}}</el-button>
-                  </el-button-group>
-                </template>
-              </el-input>
-            </div>
-            <div class="setting-line toolbar-tip">{{$t('m.metadataPathHint')}}</div>
-          </el-col>
         </el-row>
 
         <!-- 恢复全部默认(放在最下方) -->
@@ -1259,7 +1198,11 @@
             <el-row :gutter="8">
                         <el-col :span="24">
                           <div class="setting-line">
-                            <el-divider content-position="left">{{$t('m.imageUpscale')}}</el-divider>
+                            <el-divider content-position="left">
+                              <span class="emm-divider-label label-with-hint">{{$t('m.imageUpscale')}}<SettingHint :title="$t('m.imageUpscale')" :lines="[
+                                $t('m.hintUpscale'), $t('m.localModelComicReadHint'), $t('m.upscaleFilterHint'), $t('m.autoUpscaleHint')
+                              ]" /></span>
+                            </el-divider>
                           </div>
                         </el-col>
                         <el-col :span="24">
@@ -1282,7 +1225,6 @@
                             </NameFormItem>
                           </div>
                         </el-col>
-                          <div class="setting-hint">{{$t('m.localModelComicReadHint')}}</div>
                         <el-col :span="24">
                           <div class="setting-line">
                             <NameFormItem class="label-input" prependWidth="110px">
@@ -1314,7 +1256,6 @@
                               </div>
                             </NameFormItem>
                           </div>
-                          <div class="setting-hint">{{$t('m.upscaleFilterHint')}}</div>
                         </el-col>
                         <!-- 两个开关并排:启用过滤 / 自动超分(阅读) -->
                         <el-col :span="12" class="setting-switch">
@@ -1322,9 +1263,6 @@
                         </el-col>
                         <el-col :span="12" class="setting-switch">
                           <el-switch v-model="setting.autoUpscale" :active-text="$t('m.autoUpscaleSection')" @change="saveSetting" />
-                        </el-col>
-                        <el-col :span="24">
-                          <div class="setting-hint">{{$t('m.autoUpscaleHint')}}</div>
                         </el-col>
                         <!-- 清理超分替换原文件时留下的 .bak 备份 -->
                         <el-col :span="24">
@@ -1335,7 +1273,9 @@
           
               <el-col :span="24">
                           <div class="setting-line">
-                            <el-divider content-position="left">{{$t('m.apiProfiles')}}</el-divider>
+                            <el-divider content-position="left">
+                              <span class="emm-divider-label label-with-hint">{{$t('m.apiProfiles')}}<SettingHint :title="$t('m.apiProfiles')" :lines="[$t('m.hintApiProfile')]" /></span>
+                            </el-divider>
                           </div>
                         </el-col>
                         <el-col :span="24" v-for="p in (setting.aiApiProfiles || [])" :key="p.id">
@@ -1369,11 +1309,10 @@
           
               <el-col :span="24">
                           <div class="setting-line">
-                            <el-divider content-position="left">本地模型</el-divider>
+                            <el-divider content-position="left">
+                              <span class="emm-divider-label label-with-hint">本地模型<SettingHint title="本地模型" :lines="[$t('m.hintLocalModel'), $t('m.hintLocalModelOffline')]" /></span>
+                            </el-divider>
                           </div>
-                        </el-col>
-                        <el-col :span="24">
-                          <div class="setting-line toolbar-tip">本地模型直接在本机运行,下载后离线可用。下载完成后,在<div style="display:inline;color:#409eff;margin:0 4px;">图片超分 → 使用的模型</div>里选择即可。</div>
                         </el-col>
                         <el-col :span="24">
                           <div class="setting-line">
@@ -1384,7 +1323,7 @@
                           </div>
                         </el-col>
                         <el-col :span="24">
-                          <div class="setting-line toolbar-tip">下载失败时:可在 设置 → 常用 → 代理 里填本机代理(会用于模型下载),或在上面填镜像前缀。当前代理:{{ setting.proxy || "未设置" }}</div>
+                          <div class="setting-line toolbar-tip">当前代理:{{ setting.proxy || "未设置" }}</div>
                         </el-col>
                         <el-col :span="24" v-for="m in localModels" :key="m.id">
                           <div class="setting-line api-profile-row local-model-row">
@@ -1446,7 +1385,9 @@
             <el-row :gutter="8">
               <el-col :span="24">
                           <div class="setting-line">
-                            <el-divider content-position="left">{{$t('m.imageColorize')}}</el-divider>
+                            <el-divider content-position="left">
+                              <span class="emm-divider-label label-with-hint">{{$t('m.imageColorize')}}<SettingHint :title="$t('m.imageColorize')" :lines="[$t('m.hintColorize')]" /></span>
+                            </el-divider>
                           </div>
                         </el-col>
                         <el-col :span="24">
@@ -1478,7 +1419,9 @@
             <el-row :gutter="8">
               <el-col :span="24">
                           <div class="setting-line">
-                            <el-divider content-position="left">{{$t('m.aiInfoProcessing')}}</el-divider>
+                            <el-divider content-position="left">
+                              <span class="emm-divider-label label-with-hint">{{$t('m.aiInfoProcessing')}}<SettingHint :title="$t('m.aiInfoProcessing')" :lines="[$t('m.hintAiInfo'), $t('m.aiProcessTip'), $t('m.imageApiTip')]" /></span>
+                            </el-divider>
                           </div>
                         </el-col>
                         <el-col :span="24">
@@ -1557,12 +1500,6 @@
                               </el-select>
                             </NameFormItem>
                           </div>
-                        </el-col>
-                        <el-col :span="24">
-                          <div class="setting-line toolbar-tip">{{$t('m.aiProcessTip')}}</div>
-                        </el-col>
-                        <el-col :span="24">
-                          <div class="setting-line toolbar-tip">{{$t('m.imageApiTip')}}</div>
                         </el-col>
           
             </el-row>
@@ -1847,6 +1784,12 @@
               <span class="setting-label" style="margin-left:10px">{{$t('m.ehOnlineEnable')}}</span>
             </div>
             <div class="setting-line toolbar-tip">{{ ehLoggedIn ? $t('m.ehOnlineEnableHint') : $t('m.ehOnlineNeedLogin') }}</div>
+            <!-- WebP 转码开关:默认关(直通更快);打开 = 老行为「先糊后清晰」 -->
+            <div class="setting-line">
+              <el-switch v-model="setting.ehWebpTranscode" @change="saveSetting" />
+              <span class="setting-label" style="margin-left:10px">{{$t('m.ehWebpTranscode')}}</span>
+            </div>
+            <div class="setting-line toolbar-tip">{{$t('m.ehWebpTranscodeHint')}}</div>
             <!-- ③ 远程模式(桌面版):连接 NAS 上的网页版/Docker,像网页一样取 NAS 上的漫画。
                  本地模式与远程模式用一条分割线分开。 -->
             <template v-if="showDesktopUI">
@@ -1979,6 +1922,77 @@
       </el-tab-pane>
     </el-tabs>
   </el-dialog>
+  <!-- 「编辑标签」名称编辑器:放在模板根层级(不再嵌在设置弹窗里)。
+       它是 append-to-body 的独立弹窗,嵌在设置弹窗内部时,设置弹窗只要没打开过就整个不会被创建,
+       于是 App.vue 右键「编辑标签」调 openTagNameEditor 会「什么都没发生」。 -->
+  <el-dialog v-model="tagEditVisible" :title="tagEditIsCategory ? $t('m.tagCatEditNames') : $t('m.editTag')" width="380px" append-to-body>
+    <div class="tag-name-editor">
+      <p class="tag-edit-raw">{{ tagEditTitle }}</p>
+      <!-- 类别:标签可以换类别(保存时会把全库这条标签一起搬过去) -->
+      <div class="tag-cat-editor" v-if="!tagEditIsCategory">
+        <span class="tag-color-label">{{ $t('m.category') }}</span>
+        <el-select v-model="tagEditCat" size="small" style="width: 150px;">
+          <el-option v-for="g in allTagsGroups" :key="g.cat" :label="categoryLabel(g.cat)" :value="g.cat" />
+        </el-select>
+      </div>
+      <div class="tag-name-hint">{{ $t('m.tagMultiNameHint') }}</div>
+      <!-- 默认名称排在最上面:显示时「选了语言但该语言没填」就回退到这个名称 -->
+      <el-input v-model="tagEditLangs['default']" size="small" :placeholder="$t('m.tagNameDefault')" />
+      <el-input v-model="tagEditLangs['zh-CN']" size="small" :placeholder="$t('m.tagNameZh')" />
+      <el-input v-model="tagEditLangs['zh-TW']" size="small" :placeholder="$t('m.tagNameZhTw')" />
+      <el-input v-model="tagEditLangs.ja" size="small" :placeholder="$t('m.tagNameJa')" />
+      <el-input v-model="tagEditLangs.en" size="small" :placeholder="$t('m.tagNameEn')" />
+    </div>
+    <!-- 标签颜色:以前放在下方表单里,现在合并到「编辑标签」弹窗(关联标签上方) -->
+    <div class="tag-color-editor" v-if="!tagEditIsCategory">
+      <span class="tag-color-label">{{ $t('m.tagColor') }}</span>
+      <el-color-picker v-model="tagEditColor" show-alpha :predefine="moderateSoftColors" />
+      <el-button v-if="tagEditColor" size="small" text @click="tagEditColor = ''">{{ $t('m.reset') }}</el-button>
+    </div>
+    <!-- 关联标签:包含 / 被包含。类别是最大的分类,不参与包含关系,所以只在编辑标签时显示 -->
+    <div class="tag-relation-editor" v-if="!tagEditIsCategory">
+      <div class="tag-relation-title">{{ $t('m.tagRelations') }}</div>
+      <div class="tag-relation-add">
+        <el-select v-model="tagRelationCat" size="small" :placeholder="$t('m.pickCategory')" style="width: 104px;">
+          <el-option v-for="c in tagRelationCats" :key="c.value" :label="c.label" :value="c.value" />
+        </el-select>
+        <!-- 「选择标签」:点击才弹出下拉;下拉里的标签横排铺开(与详细信息里标签的排版一致) -->
+        <el-select
+          v-model="tagRelationPick"
+          size="small"
+          clearable
+          style="width: 156px;"
+          popper-class="tag-relation-dropdown"
+          :placeholder="$t('m.pickTag')"
+        >
+          <el-option v-for="o in tagRelationOptions" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
+        <el-select v-model="tagRelationKind" size="small" style="width: 104px;">
+          <el-option :label="$t('m.relationContains')" value="contains"></el-option>
+          <el-option :label="$t('m.relationContainedBy')" value="containedBy"></el-option>
+        </el-select>
+        <el-button size="small" type="primary" plain :disabled="!tagRelationPick" @click="addTagRelation">{{ $t('m.addRelation') }}</el-button>
+      </div>
+      <div class="tag-relation-list">
+        <el-tag v-for="r in tagRelationList" :key="r.kind + r.key" size="small" closable class="tag-relation-item" @close="removeTagRelation(r)">
+          {{ r.kind === 'contains' ? $t('m.relationContains') : $t('m.relationContainedBy') }} · {{ r.label }}
+        </el-tag>
+        <span v-if="!tagRelationList.length" class="tag-relation-empty">—</span>
+      </div>
+    </div>
+    <template #footer>
+      <!-- 删除放在最下方:类别删类别,标签删标签 -->
+      <el-button
+        size="small"
+        type="danger"
+        plain
+        class="tag-edit-delete"
+        @click="tagEditIsCategory ? deleteTagCategory() : deleteEditingTag()"
+      >{{ tagEditIsCategory ? $t('m.deleteCategory') : $t('m.deleteTag') }}</el-button>
+      <el-button size="small" @click="tagEditVisible = false">{{ $t('m.cancel') }}</el-button>
+      <el-button size="small" type="primary" @click="saveTagNames">{{ $t('m.saveTagNames') }}</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup>
@@ -1992,7 +2006,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import draggable from 'vuedraggable'
 import { MdRefresh, MdSync, MdShuffle, MdCodeDownload, MdBook, MdColorPalette, MdPhonePortrait, MdFunnel, MdOptions, MdCloudDownload, MdSettings } from '@vicons/ionicons4'
 import { Delete, InfoFilled } from '@element-plus/icons-vue'
-import { TreeViewAlt, CicsSystemGroup, TagGroup, Maximize, Catalog } from '@vicons/carbon'
+import { TreeViewAlt, CicsSystemGroup, Maximize, Catalog } from '@vicons/carbon'
 import { sortCatsByOrder, tagCatRank, getDisplayTagName, tagColorOf, tagDisplayPrefix, tagNameVariants, categoryDisplayName, FALLBACK_CAT, isBuiltinCat } from '../utils.js'
 import { Search32Filled, ArrowTrendingLines20Filled } from '@vicons/fluent'
 
@@ -2005,6 +2019,7 @@ import { gh_token } from '../../secret_key.json'
 import { acceleratorInfo, defaultContextMenuOptions, mergeContextMenuOptions, applyCustomTheme, clearCustomTheme, applyPixelTheme, applyFavicon, applyCoverStyle, applyAppName, customFontStyles, toolbarButtonDefinitions, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, defaultUiSettings, parsePageSizes , catDisplayName, contextMenuDefinitions, resolveCatKey , markContextMenuItemDisabled } from '../utils.js'
 import { attachInertiaScroll } from '../inertia-scroll.js'
 import NameFormItem from './NameFormItem.vue'
+import SettingHint from './SettingHint.vue'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
@@ -2060,8 +2075,8 @@ const toolbarIconMap = {
   incrementalScan: MdSync,
   batchMetadata: MdCodeDownload,
   tagAnalysis: ArrowTrendingLines20Filled,
-  manageCollection: CicsSystemGroup,
-  manageTag: TagGroup,
+  // 管理合集 / 管理标签已合并成一个「管理」按钮,图标沿用原来的合集图标
+  manage: CicsSystemGroup,
   viewerSwitch: MdBook,
   themeSwitch: MdColorPalette,
   fullscreen: Maximize,
@@ -2771,6 +2786,8 @@ const contextMenuGroups = computed(() => [
     title: t('cm.cover'),
     items: [
       { id: 'getMetadata', label: t('m.getMetadata') },
+      // 「重新生成封面」:紧跟在获取元数据之后(都是「按现有信息重建」类的操作)
+      { id: 'regenerateCover', label: t('m.regenerateCover') },
       { id: 'resetMetadata', label: t('m.resetMetadata') },
       { id: 'openFileLocation', label: t('m.openMangaFileLocation') },
       { id: 'moveFile', label: t('m.moveFile') },
@@ -2954,6 +2971,8 @@ onMounted(() => {
       if (res.hideNonTag === undefined) setting.value.hideNonTag = false
       if (res.hideTitle === undefined) setting.value.hideTitle = false
       if (res.hideRating === undefined) setting.value.hideRating = false
+      // 新增开关:老配置没有这个字段 → 默认关闭(继续显示「合集」标签,行为不变)
+      if (res.hideCollectionTag === undefined) setting.value.hideCollectionTag = false
       if (res.coverWidth === undefined) setting.value.coverWidth = 220
       if (res.coverHeight === undefined) setting.value.coverHeight = 360
       // 卡片间距:旧版单值 cardGap → 拆分为 上下/左右 两个方向
@@ -3731,6 +3750,16 @@ const loadAccountList = async () => {
   }
 }
 const addAccount = async () => {
+  // 原来这里完全没有校验:密码随便填(甚至是空)就直接发 IPC,失败原因只从后端回显。
+  // 现在与「重置密码」保持同一口径:用户名 / 密码都只要求非空,不限制位数。
+  if (!String(newAccountUsername.value || '').trim()) {
+    printMessage('error', t('m.usernameRequired'))
+    return
+  }
+  if (!String(newAccountPassword.value || '').trim()) {
+    printMessage('error', t('m.passwordRequired'))
+    return
+  }
   const res = await ipcRenderer.invoke('auth-add-user', {
     username: newAccountUsername.value,
     password: newAccountPassword.value,
@@ -3764,7 +3793,8 @@ const resetAccountPassword = async (username) => {
   try {
     const { value } = await ElMessageBox.prompt(t('m.newPasswordFor').replace('{name}', username), t('m.resetPassword'), {
       inputType: 'password',
-      inputValidator: (v) => (v && v.length >= 4) ? true : t('m.passwordTooShort')
+      // 只校验非空:密码不再限制最少位数(与后端 modules/auth.js 的 validPassword 一致)
+      inputValidator: (v) => (typeof v === 'string' && v.trim().length > 0) ? true : t('m.passwordRequired')
     })
     newPassword = value
   } catch {
@@ -3817,8 +3847,9 @@ const removeIpRule = (kind, ip) => {
 }
 const saveIpRules = async () => {
   const res = await ipcRenderer.invoke('auth-set-ip-rules', {
-    whitelist: ipWhitelist.value,
-    blacklist: ipBlacklist.value
+    // ref 里的数组是 reactive 的,直接传会 structural-clone 失败,展开成普通数组
+    whitelist: [...(ipWhitelist.value || [])],
+    blacklist: [...(ipBlacklist.value || [])]
   })
   if (res?.ok) {
     printMessage('success', t('m.ipRulesSaved'))
@@ -4408,8 +4439,15 @@ const saveTagNames = async () => {
   if (empty) delete setting.value.tagNameLangs[key]
   else setting.value.tagNameLangs[key] = { ...(setting.value.tagNameLangs[key] || {}), ...lang }
   if (!setting.value.tagColors) setting.value.tagColors = {}
-  if (tagEditColor.value) setting.value.tagColors[key] = tagEditColor.value
-  else delete setting.value.tagColors[key]
+  if (tagEditColor.value) {
+    setting.value.tagColors[key] = tagEditColor.value
+    // 记住「上一次手动设置的颜色」:以后长按收藏别的标签时优先沿用它(用户要求)。
+    // ⚠ 只有这里(用户在弹窗里手选/手填了颜色)才回写;自动取色(色板轮转)绝不回写,
+    //    否则自动挑出来的颜色会污染「上次设置的颜色」。
+    setting.value.lastTagColor = tagEditColor.value
+  } else {
+    delete setting.value.tagColors[key]
+  }
   // 记住「这个名字属于哪个类别」,以后同名标签自动归到这里
   if (!setting.value.tagNameCategoryMap) setting.value.tagNameCategoryMap = {}
   for (const n of myNames) setting.value.tagNameCategoryMap[n] = movedToCat
@@ -4628,10 +4666,17 @@ const toggleCollectTag = (tag) => {
   if (idx >= 0) {
     setting.value.collectTag.splice(idx, 1)
   } else {
-    // 长按收藏的默认色：不再硬编码 EP 蓝，从 1.14.x 的柔和色板里挑一个未占用的
+    // 长按收藏的默认色,优先级:
+    //   ① 这个标签自己在「编辑标签」里配过的颜色(tagColorOf)
+    //   ② 上一次在「编辑标签」里手动设置的颜色(lastTagColor) —— 用户希望沿用上次的配色
+    //   ③ 1.14.x 柔和色板里第一个没被占用的
+    //   ④ 按已收藏数量轮转取色(色板被占满时)
     const palette = moderateSoftColors
     const used = new Set((setting.value.collectTag || []).map(x => x && x.color))
-    const color = palette.find(c => !used.has(c)) || palette[(setting.value.collectTag || []).length % palette.length]
+    const color = tagColorOf(setting.value, tag.cat, tag.tag) ||
+      setting.value.lastTagColor ||
+      palette.find(c => !used.has(c)) ||
+      palette[(setting.value.collectTag || []).length % palette.length]
     setting.value.collectTag.push({ id: tag.id, letter: tag.letter, cat: tag.cat, tag: tag.tag, color })
   }
   saveSetting()
@@ -4649,6 +4694,42 @@ const cancelLongPressCollect = () => {
   if (longPressCollectTimer) {
     clearTimeout(longPressCollectTimer)
     longPressCollectTimer = null
+  }
+}
+// ---------- 已收藏标签:长按 / 右键 取消收藏 ----------
+// 计时器与坐标都独立于「库中全部标签」那一套(两处可能同时按住,不能共用一个变量)
+const UNCOLLECT_LONG_PRESS_MS = 600
+let longPressUncollectTimer = null
+let longPressUncollectStart = { x: 0, y: 0 }
+const uncollectTag = (element) => {
+  if (!element || !element.id) return
+  cancelLongPressUncollect()
+  setting.value.collectTag = (setting.value.collectTag || []).filter(t => t.id !== element.id)
+  // 删除类操作必须立即落盘:saveSetting 是 500ms 防抖,关窗口太快会丢掉这次修改
+  saveSettingNow()
+}
+const startLongPressUncollect = (element, e) => {
+  cancelLongPressUncollect()
+  longPressUncollectStart = {
+    x: (e && e.clientX) || 0,
+    y: (e && e.clientY) || 0
+  }
+  longPressUncollectTimer = setTimeout(() => {
+    longPressUncollectTimer = null
+    uncollectTag(element)
+  }, UNCOLLECT_LONG_PRESS_MS)
+}
+// 手指/鼠标移动超过 8px = 用户在拖动排序(vuedraggable),取消长按
+const onLongPressUncollectMove = (e) => {
+  if (!longPressUncollectTimer) return
+  const dx = Math.abs(((e && e.clientX) || 0) - longPressUncollectStart.x)
+  const dy = Math.abs(((e && e.clientY) || 0) - longPressUncollectStart.y)
+  if (dx > 8 || dy > 8) cancelLongPressUncollect()
+}
+const cancelLongPressUncollect = () => {
+  if (longPressUncollectTimer) {
+    clearTimeout(longPressUncollectTimer)
+    longPressUncollectTimer = null
   }
 }
 const applyTagColor = (tag, color) => {
@@ -5124,11 +5205,21 @@ watch([dialogVisibleSetting, activeSettingPanel], ([open, panel]) => {
 })
 
 // 设置页内容区惯性滚动(对话框打开/挂载后各尝试一次)
+// ⚠ 必须传 getParams:以前这里是 attachInertiaScroll(el) 裸调,走的是 getLevel() 默认档
+//   medium —— 于是「惯性滑动」开关关掉,设置弹窗自己照样滑;摩擦系数/最大速度/跟手灵敏度
+//   改多少,这一页也全是 medium 的手感,和主界面完全对不上。
 let settingInertiaDetach = null
 const attachSettingInertiaScroll = () => {
   const el = document.querySelector('.setting-tabs .el-tabs__content')
   if (el && !settingInertiaDetach) {
-    settingInertiaDetach = attachInertiaScroll(el)
+    settingInertiaDetach = attachInertiaScroll(el, {
+      getParams: () => ({
+        enabled: setting.value.inertiaEnabled !== false,
+        friction: setting.value.inertiaFriction,
+        maxVelocity: setting.value.inertiaMaxVelocity,
+        follow: setting.value.inertiaFollow,
+      })
+    })
   }
   // 网页版只读账户 / 未登录:强制停留在「账户」页(仅此页可见,含登录或退出登录)
   if (viewerRole.value || (isWebMode.value && !isWebLoggedIn.value)) {
@@ -5145,6 +5236,13 @@ const attachSettingInertiaScroll = () => {
 defineExpose({
   dialogVisibleSetting,
   activeSettingPanel,
+  // 「功能设置」tab 里左侧选中的子页(upscale/colorize/metadata/download/fileMove)。
+  // 导出它是为了让外部能「一键跳到下载目录」:App.vue 的 openDownloadSetting 会赋值 'download'。
+  // 它是 ref,外部通过 expose proxy 赋值时会被 proxyRefs 解包(等价于 activeFeature.value = ...)。
+  activeFeature,
+  // 「标签设置」里的完整标签编辑器(配色/分类/关联/删除)。
+  // App.vue 的右键「编辑标签」直接调它 —— 以前那里只能快速改个名。
+  openTagNameEditor,
   saveSetting
 })
 
@@ -5253,34 +5351,27 @@ defineExpose({
   justify-content: space-between
   gap: 8px
   margin-bottom: 8px
-  // 标题 + 感叹号贴在一起,按钮组仍然靠右(感叹号吃掉中间空档)
+  // 左边那坨是「标题 + 感叹号」的 .label-with-hint(一个整体),
+  // 右边是 el-space 按钮组 —— 两组之间由 space-between 拉开,图标不会再被推到中间
   .context-menu-title
     margin-right: 0
-.tag-help-dot
-  flex: none
-  // 和标题字一样高、灰色、紧贴标题(不留大空隙)
-  width: 13px
-  height: 13px
-  line-height: 12px
-  text-align: center
-  border-radius: 50%
-  border: 1px solid var(--el-text-color-secondary)
-  color: var(--el-text-color-secondary)
-  font-size: 10px
-  font-weight: 700
-  cursor: help
+// 「已收藏标签」的胶囊:长按取消收藏时不要选中文字
+// ⚠ 不加 touch-action:none —— 那会把整个设置页的滚动一起禁掉
+.collected-tag-item
   user-select: none
-  // 父级 flex 还有 8px gap,这里补 -4px 让感叹号真正贴住标题
-  margin-left: -4px
-  margin-right: auto
-.tag-help-body
-  font-size: 12px
-  line-height: 1.7
-  .tag-help-title
-    font-weight: 600
-    margin-bottom: 4px
-  .tag-help-line
-    color: var(--el-text-color-regular)
+// 分区标题 + 感叹号说明:el-divider 的默认插槽里放一段 span 包住文字与 ! ,
+// 让感叹号紧贴标题文字(直接放 div/block 会掉到下一行)。
+// gap 4px:与 .tag-help-dot 自带的 margin-left:4px 拉开一点,图标不会压到文字上
+// 文字 + 感叹号:必须用它包住,图标才会跟着文字走,不会掉行、不会被挤到中间
+.label-with-hint
+  display: inline-flex
+  align-items: center
+  gap: 4px
+  min-width: 0
+.emm-divider-label
+  display: inline-flex
+  align-items: center
+  gap: 4px
 .tag-cat-list
   display: flex
   flex-wrap: wrap
@@ -5339,6 +5430,13 @@ defineExpose({
       border-color: var(--el-color-primary)
       font-weight: 600
       background-color: var(--el-color-primary-light-9)
+      // 与 BookDetailDialog 的 .tag-select-dropdown 同一个组件写法:Element 的选中勾
+      // 绝对定位 right:20px 会压在 chip 文字上,这里去掉(边框+颜色+浅底已经够辨识)。
+      // 同样要 display:none —— 只写 content:none 会被 Element 的 4 类选择器压掉;
+      // 这句 select 现在不是 multiple、本就不画勾,保持一致以防以后改成多选又冒出来。
+      &::after
+        content: none
+        display: none
 .all-tags-list
   max-height: 260px
   overflow-y: auto
@@ -5394,6 +5492,19 @@ defineExpose({
 .setting-switch
   text-align: left
   margin-top: 6px
+  // 必须是 flex:el-switch 的 active-text 会溢出自己的盒子,
+  // 后面的感叹号就会压在开关文字上(用户截图里的那一处)。
+  // flex + .el-switch{flex:none} 之后两者各占各的位置;带说明的开关统一用 .switch-label。
+  display: flex
+  align-items: center
+  gap: 8px
+  .el-switch
+    flex: none
+  .switch-label
+    display: inline-flex
+    align-items: center
+    gap: 4px
+    min-width: 0
 .translation-tip
   color: var(--el-text-color-secondary)
   font-size: 12px
@@ -5614,6 +5725,12 @@ defineExpose({
     color: var(--el-text-color-secondary)
     margin: 2px 0 6px
     text-align: left
+  // 「当前值」用小字显示(如回收站目录路径)。和 .setting-hint 长得一样,
+  // 但语义不同:它是值不是说明 —— 既然说明都收进了感叹号,这里刻意不用 .setting-hint 类
+  .setting-hint-value
+    font-size: 12px
+    line-height: 1.6
+    color: var(--el-text-color-secondary)
   // 高级页里的行:统一左右对齐与间距
   .el-tab-pane > .el-row
     .el-col

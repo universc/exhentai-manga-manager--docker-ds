@@ -264,6 +264,14 @@ const isLibraryActive = (lib, isWeb) => !!(
   lib && localLibraryPath(lib, isWeb) && localLibraryDataPath(lib, isWeb)
 )
 
+// 库根 / 库数据目录是否「现在就能用」:网络盘未挂载时 existsSync 返回 false(不会抛)。
+// 注意只判存在,不判可写 —— 可写性留给真正落盘时兜底,避免启动时对慢速网络盘做两次探测。
+const isPathReachable = (p) => {
+  const s = String(p || '').trim()
+  if (!s) return false
+  try { return fs.existsSync(s) } catch (e) { return false }
+}
+
 // 属于「某个库」的数据文件名(第二十八轮起从「数据存放目录」根部搬进库数据目录)
 const LIBRARY_DATA_FILES = ['scan-snapshot.json', 'viewcache', 'database.sqlite', 'bookList.json', 'bookList.json.br']
 const SQLITE_SIDECAR_RE = /^database\.sqlite-(journal|wal|shm)$/
@@ -272,13 +280,22 @@ const SQLITE_SIDECAR_RE = /^database\.sqlite-(journal|wal|shm)$/
 //   scan-snapshot.json(扫描快照)/ viewcache(缩略图缓存)/ database.sqlite(库数据库)及 SQLite 附属文件。
 // 原则:只在「目标不存在」时搬,绝不覆盖已有数据;库数据目录与数据存放目录相同时什么都不做。
 // 返回 { moved, kept },供启动日志说明发生了什么。
+// ⚠ 库盘离线时这里会失败(目标目录建不出来),调用方负责提示;**本函数绝不抛** ——
+//   它在 index.js 里是模块级同步调用,一旦抛异常主进程会在创建窗口前就终止
+//   (线上事故:EINVAL/ENOENT mkdir 'Y:\01-漫画\S\数据存放' → 应用起不来)。
 const migrateLibraryData = (storePath, libDataDir) => {
   const result = { moved: [], kept: [] }
   if (!storePath || !libDataDir) return result
   const src = path.resolve(storePath)
   const dst = path.resolve(libDataDir)
   if (src === dst) return result
-  fs.mkdirSync(dst, { recursive: true })
+  try {
+    fs.mkdirSync(dst, { recursive: true })
+  } catch (e) {
+    // 目标不可达(NAS/移动盘未挂载、盘符变了、权限不足):不搬,直接返回空结果 + 错误信息
+    result.error = String((e && e.message) || e)
+    return result
+  }
   const move = (name) => {
     const from = path.join(src, name)
     const to = path.join(dst, name)
@@ -322,6 +339,7 @@ module.exports = {
   runtimeLibraries,
   libraryRuntimePaths,
   isLibraryActive,
+  isPathReachable,
   shouldMoveLibraryData,
   ensureLibraries,
   migrateLibraryData

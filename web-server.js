@@ -7,15 +7,17 @@
 const express = require('express')
 const path = require('path')
 const fs = require('fs')
-// 让图片能「一段一段显示」:WebP 浏览器是整张解码的(不逐段画),
-// 而 progressive JPEG 会先出模糊整页再逐层清晰。所以 WebP 原图先转码再下发。
 const sharp = require('sharp')
 const TRANSCODE_MAX_BYTES = 24 * 1024 * 1024
-const transcodeToProgressiveJpeg = async (buffer) => {
+// ★ 2026-11:WebP→progressive JPEG 默认**关闭**(与桌面版同一套设置项)。
+//   实测每张多 62–94ms CPU、体积涨 95%(q90)/32%(q80);阅读器里收益不稳定,
+//   默认直通原始 WebP 更快。设置里打开 ehWebpTranscode 才转。
+const transcodeToProgressiveJpeg = async (buffer, quality) => {
   if (!buffer || buffer.length > TRANSCODE_MAX_BYTES) return null
   try {
+    const q = Number.isFinite(Number(quality)) ? Math.round(Number(quality)) : 82
     const out = await sharp(buffer, { animated: false })
-      .jpeg({ quality: 90, progressive: true, mozjpeg: true })
+      .jpeg({ quality: Math.min(100, Math.max(50, q)), progressive: true, mozjpeg: false })
       .toBuffer()
     return (out && out.length) ? out : null
   } catch (e) {
@@ -28,6 +30,9 @@ const { STORE_PATH } = require('./modules/init_folder_setting.js')
 const auth = require('./modules/auth.js')
 const iprules = require('./modules/iprules.js')
 const ehLogin = require('./modules/ehLogin.js')
+// 出网分流(图片直连 / 站点走代理)由 modules/ehLogin.js 的 request() 统一负责
+// 在线图片磁盘缓存(与桌面版 index.js 共用同一份实现)
+const { createCache: createEhImageCache } = require('./modules/ehImageCache.js')
 auth.loadUsers(STORE_PATH)
 iprules.loadRules(STORE_PATH)
 
@@ -157,6 +162,29 @@ const VIEWER_ALLOWED_CHANNELS = new Set([
   'ai-translate-text', 'ai-list-images',
   'list-title-translation-models', 'query-character-origins', 'test-title-translation',
   'request-thumbnails',
+  // ---------- EH 在线阅读(只读) ----------
+  // 这几个是网页版看 EH 在线画廊的必经通道;以前漏在白名单外,只读账户下:
+  //   · 在线列表/详情/评论全空(get-ex-webpage 403 → DOMParser 拿到空文档)
+  //   · 阅读器一直转圈(eh-gallery-page-links / eh-page-image 403 → 页链接和图片地址都拿不到)
+  //   · 详情页预览条全空(book-preview-images 403)
+  // 它们都只「读远端页面/读本地文件」,不写任何东西,所以对只读账户开放是安全的。
+  'get-ex-webpage', 'eh-gallery-page-links', 'eh-gallery-page-links-fill', 'eh-page-image', 'eh-gallery-pages', 'book-preview-images',
+  // 与 book-preview-images 同族:只读本地图片文件算出 GIF 首帧缓存,不泄露书名/不写任何东西。
+  // 不加这条的话,网页版只读账户每次开详情/侧栏都会被 403 → 静默降级成动图(GIF 首帧能力对 viewer 失效)。
+  'preview-thumbs',
+  // 取「上一次 get-ex-webpage 失败的原因」,只读内存里的一个对象
+  'eh-webpage-last-error',
+  // ---------- EH 下载 ----------
+  // ⚠ 下载是会**写文件**的操作(往下载目录写图片、写 downloads.json),
+  //   按「读放行 / 写限管理员」的既有语义本不该放给只读账户;
+  //   但用户明确要求「只读账户也要能下载」,所以这里显式放开,并且只放开 eh-download-* 这一组,
+  //   其它写操作(删除书、改设置、移动文件……)仍然只在 ADMIN_ONLY_CHANNELS / 不在本表里。
+  // ★这里放开通道不等于放开目录:只读账户的「写哪儿 / 读哪儿」由 index.js 收口在
+  //   setting.downloadPath 之内 —— eh-download-gallery 忽略 saveDir、eh-download-files 越界回空、
+  //   eh-download-action 的 resume/restart 要求记录落在下载目录内(restart 会 rmSync,最危险)。
+  //   判定依据是下面分发时塞进 event 的 _emmRole,所以**不要**再在这里做路径特判,保持单一出口。
+  'eh-download-gallery', 'eh-download-page', 'eh-download-records', 'eh-download-files',
+  'eh-download-action', 'eh-download-clear', 'eh-download-set-tags', 'eh-download-page-by-index',
 ])
 
 // 账户/写操作类敏感通道:即使将来有人不小心把它们加进 viewer 白名单,也必须管理员才行。
@@ -167,6 +195,8 @@ const ADMIN_ONLY_CHANNELS = new Set([
   'save-setting', 'reset-setting', 'import-setting', 'save-settings',
   'delete-local-book', 'move-local-book', 'rename-local-book', 'ai-save-text',
   'ai-colorize-image', 'open-path', 'show-file',
+  // 重新生成封面 = 删旧封面文件 + 写库(coverPath/hash/页数),属于写操作,只给管理员
+  'regenerate-cover',
 ])
 
 // 只读账户读取设置时抹掉敏感信息。
@@ -267,7 +297,11 @@ app.get('/api/info', (req, res) => {
   res.json({
     webMode: true,
     pathSep: path.sep,
-    version: require('./package.json').version,
+    // 与主进程同一口径:版本号 + 构建时间戳(见 index.js 的 appVersion)
+    version: (() => {
+      const pkg = require('./package.json')
+      return pkg.buildTime ? (pkg.version + '+' + pkg.buildTime) : pkg.version
+    })(),
     port: PORT,
     auth: auth.isEnabled(),
     role: session ? session.role : null,
@@ -282,12 +316,18 @@ app.post('/api/ipc/:channel', async (req, res) => {
   const fakeEvent = {
     sender: { send: broadcast },
     returnValue: undefined,
+    // 把「这次请求是谁」带进 index.js:index.js 的 requireAdmin() 在 WEB_MODE 下恒返回 null
+    // (它假设角色校验在 web-server 做),所以 handler 里拿不到角色。凡是「必须按角色收紧」的
+    // 逻辑(例如 eh-download-* 对只读账户只许读写 downloadPath 内),都要靠这个字段判断。
+    // 桌面版走的是真实 IpcMainInvokeEvent,没有这个字段 → index.js 视为管理员,行为不变。
+    _emmRole: '',
   }
   // 账户权限:未登录 401;普通账户(viewer)只允许浏览类通道,写操作 403
   let session = null
   if (auth.isEnabled()) {
     session = sessionOf(req)
     if (!session) return res.status(401).json({ ok: false, error: '未登录,请先登录' })
+    fakeEvent._emmRole = String(session.role || '')
     if (session.role !== 'admin') {
       if (ADMIN_ONLY_CHANNELS.has(channel)) {
         return res.status(403).json({ ok: false, error: '只读账户无此权限(请使用管理员账户)' })
@@ -349,6 +389,13 @@ const isDeniedFile = (p) => {
 
 const allowedRoots = (setting) => {
   const s = setting || getSetting() || {}
+  // 相对路径按「用户数据目录」解析,必须和 index.js 的 resolveDownloadRoot 保持同一规则:
+  // 否则「相对下载目录」实际被写到 STORE_PATH 下,而白名单按进程 cwd 解析 → 网页版一律 403。
+  const localRoot = (p) => {
+    const t = String(p == null ? '' : p).trim()
+    if (!t) return ''
+    return path.isAbsolute(t) ? t : path.join(STORE_PATH, t)
+  }
   // 多库:活动库 + 所有库的路径 + 元数据目录。
   // ⚠️ 桌面路径(path)与网页/容器路径(pathWeb)都要放行 ——
   //    以前只放行 path,网页版读 NAS 上的书时图片一律 403,表现就是「阅读器一直白」。
@@ -360,9 +407,9 @@ const allowedRoots = (setting) => {
   const roots = [
     // 数据目录下只放行这几个「本来就是公开图片」的子目录(见 STORE_SUBDIRS 注释)
     ...STORE_SUBDIRS.map(d => path.join(STORE_PATH, d)),
-    s.library,
+    localRoot(s.library),
     // 下载目录 / 移动目标目录:下载预览要读这些文件,不放开的话网页版会一律 403(预览全是「加载失败」)
-    s.downloadPath, s.moveDefaultPath, s.moveSinglePath,
+    localRoot(s.downloadPath), localRoot(s.moveDefaultPath), localRoot(s.moveSinglePath),
     ...libraryPaths,
     ...(extraAllowedRoots() || []),
   ].filter(Boolean)
@@ -416,7 +463,9 @@ const EX_IMAGE_HOST_RE = /^https:\/\/([^/]+\.)?(hath\.network|ehgt\.org|e-hentai
 // 这里补齐:LRU 内存缓存(TTL)、同时最多 N 个取图、失败快速重试一次、超时下调。
 const IMG_CACHE_MAX_BYTES = 600 * 1024 * 1024
 const IMG_CACHE_TTL = 30 * 60 * 1000
-const IMG_MAX_CONCURRENCY = 6
+// 提到 12:实测「直连优先 + 代理兜底」时并发 6/12/20 的成功率都是 20/20,
+// 而并发 12 的墙钟比 6 快(2 572ms vs 3 115ms)。之前卡 6 是「只走代理」时代的经验值。
+const IMG_MAX_CONCURRENCY = 12
 const imgCache = new Map()
 let imgCacheBytes = 0
 const imgCacheGet = (url) => {
@@ -439,9 +488,14 @@ const imgCachePut = (url, buffer, type) => {
   imgCache.set(url, { buffer, type, at: Date.now() })
 }
 
-// 取图并发闸门:EH 的 H@H 节点对同一 IP 的并发很敏感,开太多会被 509。
-// ⚠ 之前只定义了 IMG_MAX_CONCURRENCY 却没实现闸门(handler 里调用的 acquireImgSlot
-//   根本不存在),等于并发完全没限制 —— 这也是「一页接一页地失败」的原因之一。
+// ---------- 在线图片磁盘缓存(与桌面版 emm-eh:// 共用 modules/ehImageCache.js) ----------
+// key 规则、淘汰策略、魔数嗅探只有一份实现,两边行为一致。
+// 摘要:EH 图片 URL 里的 keystamp 实测 5–6 分钟失效,但 /h/<sha1>-<bytes>-<w>-<h>/ 是内容寻址的,
+//      抹掉 keystamp/fileindex/xres 再哈希 → key 长期有效,重启后依然命中。
+const ehImgDisk = createEhImageCache({ dir: () => path.join(STORE_PATH, 'ehimgcache') })
+const ehImgDiskGet = (url) => ehImgDisk.get(url)
+const ehImgDiskPut = (url, buffer) => ehImgDisk.put(url, buffer)
+const trimEhImgCache = (maxFiles) => ehImgDisk.trim(maxFiles)
 let imgRunning = 0
 const imgWaiters = []
 const acquireImgSlot = () => new Promise((resolve) => {
@@ -462,18 +516,41 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
   //    否则 url 拦得再严也没用:r 就是一个完整的 SSRF 入口(已实测服务端会真的发出请求)。
   const pageRefRaw = String(req.query.r || 'https://e-hentai.org/')
   const pageRef = EX_IMAGE_HOST_RE.test(pageRefRaw) ? pageRefRaw : 'https://e-hentai.org/'
+  // 缓存命中:①内存(同会话)②磁盘(跨重启/跨会话,key 抹掉了 keystamp)
+  // max-age=3600 让浏览器自己也留一份;private 是因为这些图属于账号内容。
   const hit = imgCacheGet(url)
   if (hit) {
     res.set('Content-Type', hit.type)
     res.set('Cache-Control', 'private, max-age=3600')
-    res.set('X-Img-Cache', 'hit')
+    res.set('X-Img-Cache', 'mem')
     return res.send(hit.buffer)
+  }
+  const diskHit = ehImgDiskGet(url)
+  if (diskHit) {
+    imgCachePut(url, diskHit.buffer, diskHit.type)
+    res.set('Content-Type', diskHit.type)
+    res.set('Cache-Control', 'private, max-age=3600')
+    res.set('X-Img-Cache', 'disk')
+    return res.send(diskHit.buffer)
+  }
+  // ★ 并发槽的归还:整个请求只还一次。
+  //   以前是在 finally 里还 —— 而 finally 在 `upstream.pipe(res); return` 的**那一刻**就执行了
+  //   (图片才刚开始往浏览器传),等于 IMG_MAX_CONCURRENCY 完全没生效:几十张图同时打 EH,必被限速。
+  //   现在:把归还挂到响应的生命周期上(finish = 正常传完 / close = 客户端断开 / error),
+  //   并用 released 标志保证只减一次;只有「没走到流式返回」的分支才由 finally 兜底归还。
+  let released = false
+  const releaseSlot = () => {
+    if (released) return
+    released = true
+    try { releaseImgSlot() } catch (e) { /* 忽略 */ }
   }
   let release = null
   let slotHeld = false
+  // 槽是否已经「交给响应」:交给响应后由上面的 close/finish/error 归还,finally 不再插手
+  let slotHandedToResponse = false
   try {
     await acquireImgSlot()
-    release = releaseImgSlot
+    release = releaseSlot
     slotHeld = true
     // 该账户的设置(含 proxy);拿不到就退回全局设置
     let prof = {}
@@ -483,7 +560,33 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
       prof = (typeof getSetting === 'function' ? getSetting() : {}) || {}
     }
     let lastErr = null
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    // ---------- 取上游(JHenTai 口径:图片节点直连,站点走代理)----------
+    // 分流由 modules/ehLogin.js 的 request() 按目标域名统一负责:
+    //   · *.hath.network → 忽略这里的 proxy,强制直连(实测代理对非标端口几乎全 ECONNRESET)
+    //   · 其余站点页 → 用该账户配置的代理(实测直连必超时)
+    // 所以这里只负责「拿 200 或者带 status 抛错」,不再做腿健康判断。
+    const fetchUpstream = (target) => ehLogin.request(target, {
+      proxy: prof.proxy,
+      raw: true,
+      stream: true,
+      referer: pageRef,
+      timeout: 15000,
+      retries: 1
+    })
+    const dropStream = (r) => {
+      try { if (r && r.stream && typeof r.stream.resume === 'function') r.stream.resume() } catch (e) { /* 忽略 */ }
+    }
+    // 返回 200 的响应;拿不到就抛(带 .status 供上层判断值不值得换节点)
+    const openUpstream = async (target) => {
+      const r = await fetchUpstream(target)
+      if (r && r.status === 200) return r
+      const st = Number((r && r.status) || 0)
+      dropStream(r)
+      const err = new Error('upstream ' + (st || 'error'))
+      err.status = st
+      throw err
+    }
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       let target = url
       if (attempt >= 1) {
         try {
@@ -492,30 +595,28 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
           if (fresh && fresh.url && EX_IMAGE_HOST_RE.test(fresh.url)) target = fresh.url
         } catch (e) { /* 拿不到新节点就沿用原地址 */ }
       }
+      let r = null
       try {
-        const r = await ehLogin.request(target, {
-          proxy: prof.proxy,
-          raw: true,
-          stream: true,
-          referer: pageRef,
-          timeout: 30000
-        })
-        if (!r || r.status !== 200) {
-          lastErr = new Error('upstream ' + (r && r.status))
-          if (r && r.stream && r.stream.resume) r.stream.resume()
-          if (attempt < 2) await new Promise((cb) => setTimeout(cb, 400 * (attempt + 1)))
-          continue
-        }
+        r = await openUpstream(target)
+      } catch (e) {
+        lastErr = e
+        const st = Number((e && e.status) || 0)
+        if (attempt === 0 && (st === 403 || st === 429 || st === 509)) continue
+        break
+      }
+      try {
         const type = String((r.headers && r.headers['content-type']) || '')
         if (!/^image\//i.test(type)) {
           lastErr = new Error('not-image:' + type.slice(0, 30))
-          if (r.stream && r.stream.resume) r.stream.resume()
-          if (attempt < 2) await new Promise((cb) => setTimeout(cb, 400 * (attempt + 1)))
-          continue
+          dropStream(r)
+          // 200 但回 HTML = 限速页/删图页:换一个节点再试一轮
+          if (attempt === 0) continue
+          break
         }
         // ★ WebP 先整张取回并转成 progressive JPEG:浏览器对 WebP 是整张解码的,
         //   流式喂进去也不会逐段显示;progressive JPEG 才会先糊后清晰。
-        if (/^image\/webp/i.test(type)) {
+        // ★ 2026-11:默认关闭(见文件头说明),只有设置里打开 ehWebpTranscode 才转码。
+        if (prof.ehWebpTranscode === true && /^image\/webp/i.test(type)) {
           try {
             const full = await new Promise((resolve, reject) => {
               const bufs = []
@@ -528,9 +629,10 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
               r.stream.on('end', () => resolve(Buffer.concat(bufs)))
               r.stream.on('error', reject)
             })
-            const jpg = await transcodeToProgressiveJpeg(full)
+            const jpg = await transcodeToProgressiveJpeg(full, prof.ehWebpTranscodeQuality)
             if (jpg) {
               imgCachePut(url, jpg, 'image/jpeg')
+              ehImgDiskPut(url, jpg)
               res.set('Content-Type', 'image/jpeg')
               res.set('Cache-Control', 'private, max-age=3600')
               res.set('X-Img-Cache', 'miss')
@@ -538,6 +640,7 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
               return
             }
             imgCachePut(url, full, type)
+            ehImgDiskPut(url, full)
             res.set('Content-Type', type)
             res.set('Cache-Control', 'private, max-age=3600')
             res.set('X-Img-Cache', 'miss')
@@ -550,6 +653,12 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
         res.set('Cache-Control', 'private, max-age=3600')
         res.set('X-Img-Cache', 'miss')
         if (total) res.set('Content-Length', String(total))
+        // 槽的归还交给响应:图片传完(finish)/ 浏览器断开(close)/ 出错(error)时各触发一次,
+        // releaseSlot 内部有 released 标志,只会真正归还一次。
+        slotHandedToResponse = true
+        res.on('close', releaseSlot)
+        res.on('finish', releaseSlot)
+        res.on('error', releaseSlot)
         res.flushHeaders()
         const CACHE_LIMIT = IMG_CACHE_MAX_BYTES / 8
         const collect = []
@@ -562,22 +671,27 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
         upstream.on('error', () => { try { res.destroy() } catch (e) { /* 忽略 */ } })
         upstream.on('end', () => {
           if (received <= CACHE_LIMIT && collect.length) {
-            try { imgCachePut(url, Buffer.concat(collect), type) } catch (e) { /* 忽略 */ }
+            const whole = Buffer.concat(collect)
+            try { imgCachePut(url, whole, type) } catch (e) { /* 忽略 */ }
+            try { ehImgDiskPut(url, whole) } catch (e) { /* 忽略 */ }
           }
         })
         res.on('close', () => { if (!upstream.destroyed) upstream.destroy() })
         upstream.pipe(res)
         return
       } catch (e) {
+        // 处理阶段出错(已经不是网络层):换节点也没用,交给浏览器自己重试
         lastErr = e
-        if (attempt < 2) await new Promise((cb) => setTimeout(cb, 400 * (attempt + 1)))
+        break
       }
     }
     return res.status(502).send(String((lastErr && lastErr.message) || 'upstream error'))
   } catch (e) {
     res.status(502).send(String((e && e.message) || e))
   } finally {
-    if (slotHeld && release) release()
+    // 只有「没把槽交给响应」的分支(缓冲返回 / 502 / 早期异常)才需要在这里兜底归还;
+    // 流式分支由 res 的 close/finish/error 归还,这里再还就变成负数了。
+    if (slotHeld && release && !slotHandedToResponse) release()
   }
 })
 

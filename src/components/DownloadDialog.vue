@@ -56,8 +56,10 @@
           <el-checkbox v-model="original" />
         </div>
       </div>
+      <!-- 没设默认下载目录:给一句说明 + 直接跳到设置的入口(C2) -->
       <div class="dl-hint" v-if="location === '__default__' && !defaultDownloadPath">
         {{ $t('m.downloadNeedPath') }}
+        <el-button size="small" text type="primary" @click="goDownloadSetting">{{ $t('m.downloadOpenSetting') }}</el-button>
       </div>
     </div>
 
@@ -74,7 +76,7 @@ import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 
-const emit = defineEmits(['start'])
+const emit = defineEmits(['start', 'open-setting'])
 const appStore = useAppStore()
 const { setting } = storeToRefs(appStore)
 const { t } = useI18n()
@@ -89,6 +91,12 @@ const nameTouched = ref(false)
 const starting = ref(false)
 
 const defaultDownloadPath = computed(() => String(setting.value.downloadPath || '').trim())
+
+// 下载目录没设时的「去设置」:先关掉本弹窗再冒泡,否则设置面板会被这个弹窗压在下面
+const goDownloadSetting = () => {
+  visible.value = false
+  emit('open-setting')
+}
 
 // 库列表(一个库一项)
 const libraries = computed(() => {

@@ -7,12 +7,12 @@ const { Op } = require('sequelize')
 const _ = require('lodash')
 const { nanoid } = require('nanoid')
 const sharp = require('sharp')
+// 代理 agent 统一走 ehLogin.agentFor()(按代理地址缓存 + keep-alive),所以这里不再引 https-proxy-agent
 const { exec } = require('child_process')
 const { createHash } = require('crypto')
 const sqlite3 = require('sqlite3')
 const { open } = require('sqlite')
 const fetch = require('node-fetch')
-const { HttpsProxyAgent } = require('https-proxy-agent')
 const windowStateKeeper = require('electron-window-state')
 const express = require('express')
 const { glob } = require('glob')
@@ -48,15 +48,32 @@ const { findSameFile } = require('./fileLoader/folder.js')
 const { inventoryLibrary, diffInventory, snapshotFromInventory, loadSnapshotFile, saveSnapshotFile, archiveTypeOf } = require('./fileLoader/incremental.js')
 const localModels = require('./modules/localModels.js')
 const ehLogin = require('./modules/ehLogin.js')
+// 出网分流(图片直连 / 站点走代理)由 modules/ehLogin.js 的 request() 统一负责,
+// 与 JHenTai 同一口径,这里不再单独做「腿健康度」判断。
+// 在线图片磁盘缓存:桌面版(本文件)与网页版(web-server.js)共用同一份实现
+const { createCache: createEhImageCache } = require('./modules/ehImageCache.js')
 const ehDownload = require('./modules/ehDownload.js')
 const collectionAuto = require('./modules/collectionAuto.js')
 const {
   ensureLibraries, libraryDataDir, libraryRuntimePaths, isLibraryActive, shouldMoveLibraryData, migrateLibraryData,
   coverDirName, migrateCoverDir,
-  runtimeLibraries, localLibraryPath, localLibraryDataPath
+  runtimeLibraries, localLibraryPath, localLibraryDataPath,
+  // 库盘离线(NAS/USB 掉线)时用:safeDirName 拼离线兜底目录名,isPathReachable 判可达性
+  safeDirName, isPathReachable
 } = require('./modules/libraries.js')
 
 const WEB_MODE = process.env.WEB_MODE === '1'
+
+// ---------- 版本号显示 ----------
+// 需求:版本号不再一路 +1,而是「当前版本号 + 构建时间戳」,例如 1.17.9+20261107-0024。
+// 为什么 package.json 里仍是纯数字(1.17.9):
+//   electron-builder / NSIS / Windows 文件版本号都不接受 "+xxx"(semver 的 build metadata
+//   会被剥掉,而且 NSIS 的 VIProductVersion 只认四段数字)。
+// 所以时间戳单独放 build-info.json,由这里拼出来给界面/窗口标题用。
+const pkgJson = require('./package.json')
+const pkgVersion = pkgJson.version
+// 构建时间戳由 scripts/stamp-version.js 写进 package.json 的 buildTime 字段
+const appVersion = pkgJson.buildTime ? (pkgVersion + '+' + pkgJson.buildTime) : pkgVersion
 
 // 在线图片专用协议:EH 的原图主机(*.hath.network)浏览器直连基本不可达,
 // 所以渲染进程只发 emm-eh://img/?u=<原图地址>,由主进程带 Cookie 与代理取回再交给它。
@@ -68,7 +85,10 @@ const EH_IMG_HOST_RE = /^https:\/\/([^/]+\.)?(hath\.network|ehgt\.org|e-hentai\.
 // 与网页版 /api/ex-image 同一套策略:翻回上一页不再重新下载,并发过多不会被 EH 限速打死。
 const EH_IMG_CACHE_MAX_BYTES = 600 * 1024 * 1024
 const EH_IMG_CACHE_TTL = 30 * 60 * 1000
-const EH_IMG_MAX_CONCURRENCY = 6
+// 提到 12:实测「直连优先 + 代理兜底」时,并发 12 的墙钟比 6 更快且成功率不降
+// (20 张图:并发6 3 115ms → 并发12 2 572ms,都是 20/20)。
+// 旧值 6 是「只走代理、失败还要重试」时代的经验值,那条路已经不在了。
+const EH_IMG_MAX_CONCURRENCY = 12
 const ehImgCache = new Map()
 let ehImgCacheBytes = 0
 const ehImgCacheGet = (url) => {
@@ -97,6 +117,16 @@ const ehImgCachePut = (url, buffer, type) => {
     if (v) ehImgCacheBytes -= v.buffer.length
   }
 }
+// ---------- 在线图片磁盘缓存(跨会话、跨重启有效) ----------
+// 实现在 modules/ehImageCache.js:网页版(web-server.js)用的是同一个模块,
+// 所以 key 规则、淘汰策略、魔数嗅探只有一份,不会出现「桌面版和网页版缓存行为不一致」。
+// 摘要:EH 图片 URL 里的 keystamp 实测 5–6 分钟就失效,但 /h/<sha1>-<bytes>-<w>-<h>/ 是内容寻址的,
+//      抹掉 keystamp / fileindex / xres 再哈希 → key 长期有效;翻回上一页/重进/重试全走本地读盘。
+const ehImgDisk = createEhImageCache({ dir: () => path.join(STORE_PATH, 'ehimgcache') })
+const ehImgDiskGet = (url) => ehImgDisk.get(url)
+const ehImgDiskPut = (url, buffer) => ehImgDisk.put(url, buffer)
+const trimEhImgCache = (maxFiles) => ehImgDisk.trim(maxFiles)
+
 let ehImgRunning = 0
 const ehImgWaiters = []
 const ehImgAcquire = () => new Promise((resolve) => {
@@ -119,6 +149,16 @@ const ehImgRelease = () => {
 // 所以:对 WebP 原图,在服务端用 sharp 转成 **progressive JPEG** 再下发,
 // 视觉上就是「先糊一片、再逐段清晰」,和浏览器里看 e-hentai 一致。
 const TRANSCODE_MAX_BYTES = 24 * 1024 * 1024   // 超过这个体积不转(太占内存)
+// ★ 2026-11:WebP→progressive JPEG 默认**关闭**,改成设置项 ehWebpTranscode(默认 false)。
+//   实测代价:每张多 62–94ms CPU,输出体积涨 95%(q90)/32%(q80);
+//   而它换来的「渐进显示」收益在实测里并不稳定 —— 用户更常见的抱怨是「慢」。
+//   现在默认直通原始 WebP(浏览器整张解码但要等整包,总比多等一次转码+多传一倍字节快)。
+//   想要「先糊后清晰」的老行为,可以在设置里打开。
+const webpTranscodeEnabled = () => setting.ehWebpTranscode === true
+const TRANSCODE_QUALITY = () => {
+  const q = Number(setting.ehWebpTranscodeQuality)
+  return Number.isFinite(q) && q >= 50 && q <= 100 ? Math.round(q) : 82
+}
 const isWebpType = (type, buffer) => {
   if (/^image\/webp/i.test(String(type || ''))) return true
   // 兜底看魔数:RIFF....WEBP
@@ -130,7 +170,9 @@ const transcodeToProgressiveJpeg = async (buffer) => {
   if (!buffer || buffer.length > TRANSCODE_MAX_BYTES) return null
   try {
     const out = await sharp(buffer, { animated: false })
-      .jpeg({ quality: 90, progressive: true, mozjpeg: true })
+      // 默认 q82 + 不开 mozjpeg:实测 q85+mozjpeg 是 62ms/+54%,q82 普通编码只要 23ms,
+      // 视觉上两者在阅读器里几乎看不出差别。
+      .jpeg({ quality: TRANSCODE_QUALITY(), progressive: true, mozjpeg: false })
       .toBuffer()
     return (out && out.length) ? out : null
   } catch (e) {
@@ -353,6 +395,12 @@ const modelForLibrary = async (libraryId) => {
   }
   const cached = mangaModels.get(lib.id)
   if (cached) return cached
+  // 库盘离线:不要在这里创建 sqlite(会在不可达路径上失败,或建出一个空库)。
+  // 放在 cached 之后:本会话里已经打开过的模型继续可用,只有「新开连接」才需要探测磁盘
+  // (避免每次查找都对慢速网络盘做一次 existsSync)。
+  if (!isPathReachable(localLibraryPath(lib, IS_WEB_ENV))) {
+    throw new Error('[libraries] 库路径不可用(磁盘未挂载):' + String(lib.name || lib.id))
+  }
   const paths = libraryRuntimePaths(STORE_PATH, lib)
   // ⚠️ 先按「文件路径」找:同一个数据库文件(例如库数据目录就是数据目录时)
   //    必须复用同一个 sequelize 实例,否则两个连接会互相锁死(SQLITE_IOERR)。
@@ -391,15 +439,50 @@ const findBookAcrossLibraries = async (where) => {
 }
 const libraryState = ensureLibraries(setting, { nameHint: setting.externalLibraryRoot })
 const activeLibrary = libraryState.active
+// 库盘可能没挂载(NAS/USB 掉线):此时绝不能让模块级初始化抛异常,也不能把库数据建到错误位置。
+// 判定两处:库根本身 + 库数据目录的盘符/UNC 根(用户可能把 dataPath 指到另一个盘)。
+const activeLibraryRoot = activeLibrary ? localLibraryPath(activeLibrary, IS_WEB_ENV) : ''
+const startupPathsProbe = libraryRuntimePaths(STORE_PATH, activeLibrary)
+const startupDataDirProbe = startupPathsProbe.dataDir
+const libraryOffline = !!(activeLibrary && (
+  (activeLibraryRoot && !isPathReachable(activeLibraryRoot)) ||
+  (startupDataDirProbe && !isPathReachable(path.dirname(startupDataDirProbe)))
+))
+const offlineFallbackDir = activeLibrary
+  ? path.join(STORE_PATH, '.offline', safeDirName(activeLibrary.name || activeLibrary.id))
+  : ''
+// 离线时把「本进程用到的所有库路径」全部指向数据存放目录下的 .offline/<库名>/:
+// 这样即便有漏网的写操作,也只会落到本机数据目录里,绝不会去碰 Y: 上的半截路径。
+const startupLibraryPaths = libraryOffline
+  ? {
+      dataDir: offlineFallbackDir,
+      viewcacheDir: path.join(offlineFallbackDir, 'viewcache'),
+      snapshotFile: path.join(offlineFallbackDir, 'scan-snapshot.json'),
+      dbFile: path.join(offlineFallbackDir, 'database.sqlite'),
+      // 封面目录名沿用 coverDirName(lib)(与 libraryRuntimePaths 完全同构),
+      // 这样离线期间产生的封面路径形状与正常运行一致,盘回来后不会出现"两种目录名"
+      coverDir: path.join(offlineFallbackDir, coverDirName(activeLibrary)),
+      deleteLogFile: path.join(offlineFallbackDir, 'delete-log.jsonl')
+    }
+  : libraryRuntimePaths(STORE_PATH, activeLibrary)
+// 给「启动后弹一次提示」+「拒绝写库操作」用的一次性快照
+let libraryOfflineInfo = libraryOffline
+  ? { name: activeLibrary.name, id: activeLibrary.id, path: activeLibraryRoot, dataDir: startupDataDirProbe }
+  : null
 // 活动库的运行时路径:切换活动库时由 switchActiveLibraryRuntime() 重新计算,所以都是 let
-const startupLibraryPaths = libraryRuntimePaths(STORE_PATH, activeLibrary)
 let LIBRARY_DATA_DIR = startupLibraryPaths.dataDir
 let LIBRARY_VIEWCACHE_DIR = startupLibraryPaths.viewcacheDir
 // 封面缓存也属于「那个库」(用户要求:每个库独自生成封面)—— 用可变变量,随运行时切库走
 let CURRENT_COVER_DIR = startupLibraryPaths.coverDir
 try { fs.mkdirSync(CURRENT_COVER_DIR, { recursive: true }) } catch (e) { /* 稍后生成封面时再试 */ }
 // 首次升级:把旧版放在数据存放目录根部的库数据搬进库数据目录(绝不覆盖已有文件)
-let libraryDataMigration = (activeLibrary && !dataPathFallback) ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR) : { moved: [], kept: [] }
+// 库盘离线时不做任何迁移(源和目标都可能不可用),也不碰 Y: 上的任何文件
+let libraryDataMigration = (activeLibrary && !dataPathFallback && !libraryOffline)
+  ? migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR)
+  : { moved: [], kept: [] }
+if (libraryOffline) {
+  console.warn('[libraries] 库盘不可达,已进入离线模式:' + String(libraryOfflineInfo.path || '') + ' / 数据目录:' + String(libraryOfflineInfo.dataDir || ''))
+}
 let SNAPSHOT_FILE = startupLibraryPaths.snapshotFile
 let LIBRARY_DB_FILE = startupLibraryPaths.dbFile
 
@@ -589,6 +672,44 @@ console.error = (...message) => {
   logStderr.write(format(...message) + '\n')
 }
 
+// ---------- 崩溃日志采集 ----------
+// 用户反馈闪退两次但完全无日志可查:Electron 默认不落盘任何崩溃信息,
+// 而上面那个 log.txt 是 flags:'w'(每次启动清空),重启一次现场就没了。
+// 这里把主进程未捕获异常、渲染进程崩溃、子进程崩溃统一**追加**写到
+// userData/logs/crash-YYYY-MM-DD.log,按天分文件 + 单文件 2MB 轮转。
+const crashLogDir = path.join(app.getPath('userData'), 'logs')
+const crashLogFile = () => {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return path.join(crashLogDir, `crash-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.log`)
+}
+const writeCrashLog = (tag, detail) => {
+  try {
+    if (!fs.existsSync(crashLogDir)) fs.mkdirSync(crashLogDir, { recursive: true })
+    const file = crashLogFile()
+    // 单文件超过 2MB 就换一个后缀,避免无限增长
+    if (fs.existsSync(file) && fs.statSync(file).size > 2 * 1024 * 1024) {
+      fs.renameSync(file, file.replace(/\.log$/, `-${Date.now()}.log`))
+    }
+    const line = `[${new Date().toISOString()}] [${tag}] ${detail}\n`
+    fs.appendFileSync(file, line, 'utf8')
+  } catch (e) { /* 日志失败不能影响主流程 */ }
+}
+process.on('uncaughtException', (err) => {
+  // 只记录不退出:退出会让日志刚写完进程就没了,用户还是什么都看不到。
+  // (退出策略由下面那段带「时间窗 + 网络噪音」判断的老处理器负责,这里纯采集)
+  writeCrashLog('uncaughtException', (err && err.stack) || String(err))
+})
+process.on('unhandledRejection', (reason) => {
+  writeCrashLog('unhandledRejection', (reason && reason.stack) || String(reason))
+})
+app.on('render-process-gone', (e, wc, details) => {
+  writeCrashLog('render-process-gone', `reason=${details && details.reason} exitCode=${details && details.exitCode}`)
+})
+app.on('child-process-gone', (e, details) => {
+  writeCrashLog('child-process-gone', `type=${details && details.type} reason=${details && details.reason} exitCode=${details && details.exitCode}`)
+})
+
 process
   .on('unhandledRejection', (reason, promise) => {
     console.log('Unhandled Rejection at:', promise, 'reason:', reason)
@@ -599,10 +720,25 @@ process
     //    (用户点「测试代理」闪退就是这么来的:IPC 回调里一处 ReferenceError)。
     //    现在:记日志 + 通知界面,进程继续跑。只有「连弹错误 20 次」才判定为不可恢复并退出,
     //    避免真的进入死循环时一直空转。
+    // ★ 「连续」必须真的是连续:以前这个计数器从不清零,只要累计到 21 次就退出进程。
+    //   而 ECONNRESET 这类网络抖动在弱网/代理不稳时会短时间刷出几十条,
+    //   于是程序在几分钟内自己退出(用户日志末尾的「连续未捕获异常过多,退出」就是这么来的)。
+    //   现在用「时间窗」判定:距上一次异常超过 60 秒就重新计数,
+    //   只有**短时间内连续**爆 20 次才认为真的进入了死循环。
+    const now = Date.now()
+    const lastAt = Number(globalThis.__emmUncaughtLastAt) || 0
+    if (now - lastAt > 60 * 1000) globalThis.__emmUncaughtCount = 0
+    globalThis.__emmUncaughtLastAt = now
     globalThis.__emmUncaughtCount = (globalThis.__emmUncaughtCount || 0) + 1
-    try { sendMessageToWebContents('后台出错(已记录日志,程序继续运行):' + String((err && err.message) || err).slice(0, 120)) } catch (e) { /* 界面可能还没好 */ }
+    // 网络抖动是「预期内」的异常:只记日志、不打扰用户(否则一次断网弹一串提示)。
+    // 真正需要用户知道的(代码 bug 类)才弹消息。
+    const msg = String((err && (err.message || err.code)) || err || '')
+    const isNetworkNoise = /aborted|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|Client network socket disconnected/i.test(msg)
+    if (!isNetworkNoise) {
+      try { sendMessageToWebContents('后台出错(已记录日志,程序继续运行):' + msg.slice(0, 120)) } catch (e) { /* 界面可能还没好 */ }
+    }
     if (globalThis.__emmUncaughtCount > 20) {
-      console.log('连续未捕获异常过多,退出')
+      console.log('短时间内连续未捕获异常过多,退出')
       process.exit(1)
     }
   })
@@ -635,6 +771,10 @@ if (activeLibrary) {
   if (libraryDataMigration.kept.length) console.log(`[libraries] 目标已存在、保留原地数据(未覆盖):${libraryDataMigration.kept.join('、')}`)
   if (libraryDataMigration.error) console.error(`[libraries] 迁移库数据出错:${libraryDataMigration.error}`)
 }
+
+// 网页版(WEB_MODE)没有 app.on('ready'):磁盘缓存的容量修剪在这里单独挂一次。
+// setTimeout 是为了让它落在「服务已经起来、首屏请求发出去之后」,别和首屏抢磁盘。
+if (WEB_MODE) setTimeout(() => { trimEhImgCache().catch(() => {}) }, 5000)
 
 const sendMessageToWebContents = (message) => {
   console.log(message)
@@ -975,7 +1115,7 @@ const startRemoteProxy = (remoteServer) => new Promise((resolve) => {
         webMode: true,
         remoteDesktop: true,
         pathSep: '\\',
-        version: require('./package.json').version,
+        version: appVersion,
         port: remoteProxyPort,
         auth: true,
         role: null,
@@ -990,7 +1130,7 @@ const startRemoteProxy = (remoteServer) => new Promise((resolve) => {
     const args = Array.isArray(req.body?.args) ? req.body.args : []
     // 本地拦截的通道(不转发 NAS)
     if (channel === 'update-window-title') {
-      const version = require('./package.json').version
+      const version = appVersion
       const title = args[0] ? `exhentai-manga-manager ${version} | ${args[0]}` : `exhentai-manga-manager ${version}`
       if (mainWindow) mainWindow.setTitle(title)
       return res.json({ ok: true, result: null })
@@ -1122,7 +1262,7 @@ const startRemoteProxy = (remoteServer) => new Promise((resolve) => {
       }
     }
     if (channel === 'test-remote-server') {
-      return res.json({ ok: true, result: { ok: true, version: require('./package.json').version, remote: true } })
+      return res.json({ ok: true, result: { ok: true, version: appVersion, remote: true } })
     }
     if (channel === 'relaunch-app') {
       app.relaunch()
@@ -1344,7 +1484,7 @@ const createWindow = () => {
   Menu.setApplicationMenu(menu)
   win.webContents.on('did-finish-load', () => {
     const name = require('./package.json').name
-    const version = require('./package.json').version
+    const version = appVersion
     win.setTitle(remoteServer ? `${name} ${version} | NAS: ${remoteServer}` : name + ' ' + version)
     // 远程模式的自动登录已由本地代理(startRemoteProxy)完成
   })
@@ -1416,54 +1556,106 @@ if (!WEB_MODE) {
             // EH 的 H@H 节点会校验收图来源;用站点根当 referer 更容易被拒。
             const pageRef = reqUrl.searchParams.get('r') || 'https://e-hentai.org/'
             if (!EH_IMG_HOST_RE.test(raw)) return new Response('bad url', { status: 400 })
+            // 缓存命中:①内存(同一会话最快)②磁盘(跨重启/跨会话,key 已抹掉 keystamp)
+            // ★ Cache-Control 从 no-store 改成 private,max-age:让 Chromium 自己也能留住,
+            //   来回滚动/翻回上一页时连协议处理都不用进(no-store 等于把浏览器缓存整个扔掉)。
+            //   用 private 而不是 public:这些图属于账号内容,只让本机缓存持有。
             const cached = ehImgCacheGet(raw)
             if (cached) {
               return new Response(cached.buffer, {
                 status: 200,
-                headers: { 'Content-Type': cached.type, 'X-Img-Cache': 'hit', 'Cache-Control': 'no-store' }
+                headers: { 'Content-Type': cached.type, 'X-Img-Cache': 'mem', 'Cache-Control': 'private, max-age=86400' }
+              })
+            }
+            const diskHit = ehImgDiskGet(raw)
+            if (diskHit) {
+              ehImgCachePut(raw, diskHit.buffer, diskHit.type)
+              return new Response(diskHit.buffer, {
+                status: 200,
+                headers: { 'Content-Type': diskHit.type, 'X-Img-Cache': 'disk', 'Cache-Control': 'private, max-age=86400' }
               })
             }
             await ehImgAcquire()
-            // 并发槽只释放一次:正常由 finally 释放;若流被 cancel(用户滑走),
-            // cancel 里提前释放并置位,finally 就不再重复放。
+            // ★ 并发槽只归一次。
+            //   以前把归还写在 finally 里,而 finally 在 `return new Response(imgStream)` 的**那一刻**
+            //   就执行了 —— 图片才刚开始往渲染进程传,槽已经还掉,于是 EH_IMG_MAX_CONCURRENCY=6
+            //   形同虚设(实测同时几十张在飞,EH 直接限速)。
+            //   现在:正常交付出流时把「归还」交给流自己(收完/出错/cancel 时各触发一次),
+            //   finally 只在「没交付出流」的分支(缓存命中、转码返回、502…)兜底归还。
             let slotReleased = false
+            let slotHandedToStream = false
+            const releaseSlot = () => {
+              if (slotReleased) return
+              slotReleased = true
+              try { ehImgRelease() } catch (e) { /* 忽略 */ }
+            }
             try {
               let lastErr = null
-              // 重试链:① 同 URL 再试(网络抖动) → ② 回图片页重新解析拿新 nl 换 H@H 节点
-              //   注意:以前是把 ?nl=xxx 直接拼到**图片 URL** 上 —— 那是无效的,
-              //   必须回到「图片页」读 return nl('...') 才能真正换节点。
-              for (let attempt = 0; attempt < 3; attempt++) {
+              // ---------- 取上游响应(JHenTai 口径:图片节点直连,不挂代理)----------
+              //
+              // JHenTai 的图片栈就是直连 H@H 节点(不带 cookie / 不带代理):
+              //   lib/src/widget/eh_image.dart:205-258
+              // 本机实测同样成立(2026-11-06):
+              //   · *.hath.network 直连 8/8 成功(334ms–2.7s)
+              //   · 同一批图片经代理 7/8 失败(ECONNRESET,非标端口隧道被打断)
+              // 而站点页反过来:直连必超时、代理可用。
+              // 这个分流已经在 modules/ehLogin.js 的 request() 里按目标域名硬分,
+              // 所以这里**不需要**再判断走哪条腿 —— 交给 request() 统一处理。
+              //
+              // 只在 403/429/509 或「200 但回 HTML(限速页)」时才回图片页换节点(最多再来一轮);
+              // 纯网络错误不空转,直接失败交给渲染进程重试。
+              const fetchUpstream = (target) => ehLogin.request(target, {
+                // proxy 传进去也没关系:request() 会认出 *.hath.network 并忽略它
+                proxy: setting.proxy,
+                raw: true,
+                stream: true,
+                referer: pageRef,
+                timeout: 15000,
+                retries: 1
+              })
+              const dropStream = (r) => {
+                try { if (r && r.stream && typeof r.stream.resume === 'function') r.stream.resume() } catch (e) { /* 忽略 */ }
+              }
+              // 返回 200 的响应;拿不到就抛(带 .status,供上层判断值不值得换节点)
+              const openUpstream = async (target) => {
+                const r = await fetchUpstream(target)
+                if (r && r.status === 200) return r
+                const st = Number((r && r.status) || 0)
+                dropStream(r)
+                const err = new Error('upstream ' + (st || 'error'))
+                err.status = st
+                throw err
+              }
+              // 两轮:第一轮原地址;第二轮(仅 403/429/509/限速页)回图片页换节点
+              for (let attempt = 0; attempt < 2; attempt++) {
                 let target = raw
                 if (attempt >= 1) {
+                  // 必须回到「图片页」读 return nl('...') 才能真正换节点(?nl 拼到图片 URL 上无效)
                   try {
                     const fresh = await ehLogin.resolvePageImageInfo(pageRef, {
                       proxy: setting.proxy, cookie: ehCookieHeader(), reloadKey: ''
                     })
                     if (fresh && fresh.url && fresh.url !== raw) target = fresh.url
-                  } catch (e) { /* 拿不到新节点就沿用原地址再试 */ }
+                  } catch (e) { /* 拿不到新节点就沿用原地址 */ }
+                }
+                let r = null
+                try {
+                  r = await openUpstream(target)
+                } catch (e) {
+                  lastErr = e
+                  const st = Number((e && e.status) || 0)
+                  // 只有「被 EH 挡住」(403/429/509)才值得换节点;网络层全挂就到此为止
+                  if (attempt === 0 && (st === 403 || st === 429 || st === 509)) continue
+                  break
                 }
                 try {
-                  const r = await ehLogin.request(target, {
-                    proxy: setting.proxy,
-                    raw: true,
-                    stream: true,
-                    referer: pageRef,
-                    timeout: 30000
-                  })
-                  if (!r || r.status !== 200) {
-                    lastErr = new Error('upstream ' + (r && r.status))
-                    if (r && r.stream && r.stream.resume) r.stream.resume()
-                    await new Promise(cb => setTimeout(cb, 400 * (attempt + 1)))
-                    continue
-                  }
                   // 限速页 / 删图页返回的是 HTML:不能当图片交出去,更不能写进缓存
                   const ctype = String((r.headers && r.headers['content-type']) || '')
-                  // ★ WebP 原图先整张取回、转成 progressive JPEG 再返回。
-                  //   原因:实测浏览器对 WebP 是「整张解码」的,流式喂进去也不会逐段显示;
-                  //   progressive JPEG 才会「先出模糊整页、再逐层清晰」——
-                  //   这就是用户要的「像 e-hentai 那样一点点加载出来」。
-                  //   代价:WebP 这一支要等整张收完才能转码(但换来的是视觉上的渐进)。
-                  if (/^image\/webp/i.test(ctype)) {
+                  // WebP 转 progressive JPEG(默认关闭,见 webpTranscodeEnabled):
+                  //   老行为是「整张收完 → sharp 转码 → 才返回」,换来「先糊后清晰」;
+                  //   代价是每张多 60–90ms 且体积翻倍。默认直通原始 WebP 更快,
+                  //   想渐进显示的用户可在设置里打开 ehWebpTranscode。
+                  if (webpTranscodeEnabled() && /^image\/webp/i.test(ctype)) {
                     try {
                       const full = await new Promise((resolve, reject) => {
                         const bufs = []
@@ -1494,18 +1686,19 @@ if (!WEB_MODE) {
                       const jpg = await transcodeToProgressiveJpeg(full)
                       if (jpg) {
                         ehImgCachePut(raw, jpg, 'image/jpeg')
+                        ehImgDiskPut(raw, jpg)
                         if (progressTag) {
                           try { emitToRenderer('eh-image-progress', { t: progressTag, ratio: 1 }) } catch (e) { /* 忽略 */ }
                         }
                         return new Response(jpg, {
                           status: 200,
-                          headers: { 'Content-Type': 'image/jpeg', 'X-Img-Cache': 'miss', 'Cache-Control': 'no-store' }
+                          headers: { 'Content-Type': 'image/jpeg', 'X-Img-Cache': 'miss', 'Cache-Control': 'private, max-age=86400' }
                         })
                       }
                       // 转码失败:退回把原始 WebP 直接给(至少能显示)
                       return new Response(full, {
                         status: 200,
-                        headers: { 'Content-Type': ctype, 'X-Img-Cache': 'miss', 'Cache-Control': 'no-store' }
+                        headers: { 'Content-Type': ctype, 'X-Img-Cache': 'miss', 'Cache-Control': 'private, max-age=86400' }
                       })
                     } catch (e) {
                       // 太大或取流出错:继续走下面的通用流式路径
@@ -1513,9 +1706,10 @@ if (!WEB_MODE) {
                   }
                   if (!/^image\//i.test(ctype)) {
                     lastErr = new Error('not-image:' + ctype.slice(0, 30))
-                    if (r.stream && r.stream.resume) r.stream.resume()
-                    await new Promise(cb => setTimeout(cb, 400 * (attempt + 1)))
-                    continue
+                    dropStream(r)
+                    // 200 但回 HTML = 限速页 / 删图页:换一个 H@H 节点再试一轮
+                    if (attempt === 0) continue
+                    break
                   }
                   // ★ 关键改造:边收边转,而不是等整包收完再回 Response。
                   //   浏览器直接看 EH 之所以「从不失败」,很大一部分原因是首块到达就开始画;
@@ -1531,10 +1725,15 @@ if (!WEB_MODE) {
                     start (controller) {
                       const endWith = (err) => {
                         if (!err && received <= EH_IMG_CACHE_MAX_BYTES / 8 && collect.length) {
-                          try { ehImgCachePut(raw, Buffer.concat(collect), ctype) } catch (e) { /* 忽略 */ }
+                          const whole = Buffer.concat(collect)
+                          try { ehImgCachePut(raw, whole, ctype) } catch (e) { /* 忽略 */ }
+                          // 同一份字节落磁盘:下次重进/重启直接命中,不再打 H@H
+                          try { ehImgDiskPut(raw, whole) } catch (e) { /* 忽略 */ }
                         }
                         if (err) { lastErr = err; try { controller.error(err) } catch (e) { /* 已关闭 */ } }
                         else { try { controller.close() } catch (e) { /* 已关闭 */ } }
+                        // 这一页真的收完了(或出错):到这里才归还并发槽
+                        releaseSlot()
                       }
                       sink.on('data', (chunk) => {
                         received += chunk.length
@@ -1556,29 +1755,35 @@ if (!WEB_MODE) {
                       })
                       sink.on('end', () => endWith(null))
                       sink.on('error', (e) => endWith(e))
+                      // 兜底:上游既没 end 也没 error 就被销毁(节点断开)时,'close' 一定会来
+                      sink.on('close', () => releaseSlot())
                     },
                     pull () {
                       if (typeof sink.isPaused === 'function' && sink.isPaused()) sink.resume()
                     },
                     // 用户滑走/关阅读器时 Chromium 会 cancel:断开上游并立刻归还并发槽,
                     // 否则「没人看的页」会把槽占死,后面的页只能排队。
+                    // releaseSlot 内部有 slotReleased 标志 —— 和 endWith / 'close' 里那几次释放互不重复。
                     cancel () {
                       try { if (sink.destroy) sink.destroy() } catch (e) { /* 忽略 */ }
-                      if (!slotReleased) { slotReleased = true; try { ehImgRelease() } catch (e) { /* 忽略 */ } }
+                      releaseSlot()
                     }
                   })
-                  const hdrs = { 'Content-Type': ctype, 'X-Img-Cache': 'miss', 'Cache-Control': 'no-store' }
+                  const hdrs = { 'Content-Type': ctype, 'X-Img-Cache': 'miss', 'Cache-Control': 'private, max-age=86400' }
                   if (total) hdrs['Content-Length'] = String(total)
+                  // ★从这里开始,槽由 imgStream 负责归还(收完 / 出错 / cancel / close)
+                  slotHandedToStream = true
                   return new Response(imgStream, { status: 200, headers: hdrs })
                 } catch (e) {
+                  // 处理/转码阶段出错(已经不是网络层):换节点也没用,交给渲染进程自己重试
                   lastErr = e
-                  await new Promise(cb => setTimeout(cb, 400 * (attempt + 1)))
+                  break
                 }
               }
               return new Response(String((lastErr && lastErr.message) || 'upstream error'), { status: 502 })
             } finally {
-              // cancel 已提前释放过就不再放,否则计数会变成负数
-              if (!slotReleased) ehImgRelease()
+              // 只有「没把流交出去」的分支(WebP 转码整包返回 / 502 / 缓存异常)才需要在这里归还
+              if (!slotHandedToStream) releaseSlot()
             }
           } catch (e) {
             return new Response(String((e && e.message) || e), { status: 502 })
@@ -1603,8 +1808,9 @@ if (!WEB_MODE) {
         }
       }
       // 封面目录迁移/清理:必须在窗口创建(→ 前端开始请求封面)之前完成,
-      // 否则会先按旧目录读一次封面、再按新目录重新生成一遍
-      ensureCoverDirsMigrated()
+      // 否则会先按旧目录读一次封面、再按新目录重新生成一遍。
+      // 库盘离线时跳过:它会对不可达的库路径做 mkdir/rename,只会刷一堆失败日志。
+      if (!libraryOfflineInfo) ensureCoverDirsMigrated()
       mainWindow = createWindow()
       registerGlobalHotkey()
       // 数据目录不可用:明确弹窗,绝不静默换目录
@@ -1619,6 +1825,25 @@ if (!WEB_MODE) {
               + '\n本次实际使用:' + dataPathFallback.actual
               + '\n\n为避免弄乱默认目录里的旧数据,本次启动不会搬迁、也不会写入任何设置与库数据。'
               + '\n请检查该目录(例如网络盘/NAS 是否已挂载)后重启客户端。',
+            buttons: ['知道了'],
+            noLink: true
+          }).catch(() => {})
+        }, 1500)
+      }
+      // 库盘不可用(NAS/移动盘未挂载、盘符变了):同样明确弹窗说明「本次是离线模式」,
+      // 不能让用户看到一个空书架却不知道为什么。
+      // ⚠ 网页版(Docker)不弹原生对话框:容器里没有可点击的窗口,模态框会把启动卡死;
+      //   网页版只写日志(界面本来就是空的,提示走书架空态)。
+      if (libraryOfflineInfo && !IS_WEB_ENV) {
+        setTimeout(() => {
+          dialog.showMessageBox({
+            type: 'warning',
+            title: '漫画库暂不可用',
+            message: '漫画库「' + (libraryOfflineInfo.name || '未命名') + '」所在的磁盘现在打不开。',
+            detail: '库路径:' + libraryOfflineInfo.path
+              + '\n库数据目录:' + libraryOfflineInfo.dataDir
+              + '\n\n本次启动已进入「离线模式」:书架为空、不会扫描、也不会写入任何库数据。'
+              + '\n请检查该磁盘(NAS/移动盘是否挂载、盘符是否变化)后重启客户端。',
             buttons: ['知道了'],
             noLink: true
           }).catch(() => {})
@@ -1639,6 +1864,10 @@ if (!WEB_MODE) {
         proxyRules: setting.proxy
       })
     }
+    // 在线图片磁盘缓存:启动后用空闲时间做一次容量修剪(文件数超限就按 mtime 删最旧 25%)。
+    // 放 setTimeout 是为了不跟窗口创建/首屏抢 IO;网页版在下面单独挂(没有这个 app 事件)。
+    // 启动清理:按 7 天 TTL 删过期图片 + 超上限按 mtime 删最旧 25%(JHenTai 同策略)
+    setTimeout(() => { trimEhImgCache().catch(() => {}) }, 3000)
     // session.defaultSession.loadExtension(path.join(__dirname, './devtools'))
   })
 
@@ -1706,7 +1935,10 @@ const libForBook = (book) => {
   }
   return activeLibraryOf(setting) || null
 }
-// 当前「正在写库 / 正在扫描」的那个库:openLibraryForScan() 会把 setting.library 换成它的本端路径
+// 当前「活动 / 正在写库」的那个库(按 setting.library 匹配,匹配不上回退 activeLibraryOf)。
+// ⚠ 只给「切库 / 扫描收尾 / 重建库 / 增量扫描选目标」这类入口用;
+//   扫描过程本身**不读它**(全程用 ctx)。openLibraryForScan() 也只在切库与扫描收尾时调用,
+//   用来把 setting.library 与 Manga / CURRENT_COVER_DIR 等运行时重新对齐到活动库。
 const currentLibrary = () => {
   const cur = String(setting.library || '').trim()
   if (cur) {
@@ -1736,10 +1968,14 @@ const translateBookPath = (p, kind, lib, coverDir) => {
     const localized = localizeBookPath(p)
     if (localized !== p) return localized
     // ② 旧版单库兜底:externalLibraryRoot(容器模式按 WEB_LIBRARY 设置)
+    //   ★基准库根优先用**传进来的库**(scan 全程都在传),只有没传时才退回全局 setting.library —
+    //     「扫描 A 库时用户切到 B 库」会让 setting.library 变成 B,拿它拼路径就等于把 A 的书
+    //     拼到 B 库根下面(事故根因之一)。
     const root = setting.externalLibraryRoot || setting.windowsLibraryRoot
-    if (root && p.startsWith(root)) {
+    const rootBase = String((lib && lib.path) || setting.library || '')
+    if (root && rootBase && p.startsWith(root)) {
       const rel = p.slice(root.length).replace(/\\/g, '/').replace(/^\/+/, '')
-      return rel ? path.join(setting.library, rel) : setting.library
+      return rel ? path.join(rootBase, rel) : rootBase
     }
     return p
   }
@@ -1777,9 +2013,10 @@ const toExternalPath = (p, kind, lib, coverDir) => {
     // ① 老规矩:本端路径 → 桌面(规范)形式
     const externalized = externalizeBookPath(p)
     if (externalized !== p) return externalized
-    // ② 旧版单库兜底
-    if (setting.externalLibraryRoot && p.startsWith(setting.library)) {
-      const rel = p.slice(setting.library.length).replace(/[/\\]+/g, '\\')
+    // ② 旧版单库兜底(基准同样优先用传进来的库,别读会被切库改掉的 setting.library)
+    const libRoot = String((lib && lib.path) || setting.library || '')
+    if (setting.externalLibraryRoot && libRoot && p.startsWith(libRoot)) {
+      const rel = p.slice(libRoot.length).replace(/[/\\]+/g, '\\')
       return setting.externalLibraryRoot + rel
     }
     return p
@@ -1844,9 +2081,16 @@ const normalizeLibraryPaths = async (lib) => {
 // 每个库只规范化一次(库数据目录变了/新加的库会各自再算一次)
 const normalizedLibraryKeys = new Set()
 const pathNormalizeJobs = new Map()
-const ensureLibraryPathsNormalized = async () => {
+// opts.skipIds:Set<string> —— 这些库这一次先不做(调用方保证「它们正在被扫描」,别跟扫描抢写锁)
+// opts.onlyIds:Set<string> —— 只做这些库(扫描自己调用时用:只规范化**本次扫描的那个库**,
+//   绝不顺手去 UPDATE 用户正在操作的别的库 —— 用户侧的写操作没有 BUSY 重试,撞锁就是「保存失败」)
+const ensureLibraryPathsNormalized = async (opts = {}) => {
+  const skipIds = (opts && opts.skipIds instanceof Set) ? opts.skipIds : null
+  const onlyIds = (opts && opts.onlyIds instanceof Set) ? opts.onlyIds : null
   const libs = runtimeLibs().filter(l => isLibraryActive(l, IS_WEB_ENV))
   for (const lib of libs) {
+    if (skipIds && lib.id && skipIds.has(lib.id)) continue
+    if (onlyIds && !(lib.id && onlyIds.has(lib.id))) continue
     const key = lib.id + '|' + (libraryRuntimePaths(STORE_PATH, lib).dbFile || '')
     if (normalizedLibraryKeys.has(key)) continue
     let job = pathNormalizeJobs.get(key)
@@ -2308,6 +2552,100 @@ ipcMain.handle('ensure-book-cover', async (event, id, opts = {}) => {
   }
 })
 
+// 重新生成封面(前端「重新生成封面」入口)。
+// 与 ensure-book-cover 的差别:**不复用**旧封面 —— 老封面可能不是当前算法生成的(比如不是居中裁切),
+// 或者文件非空但内容是坏的;ensure-book-cover 只要看到「文件存在且非空」就直接复用,用户永远修不好。
+// ⚠ 实现上必须「先生成、后替换」:以前是「先删旧封面 → geneCover」,一旦生成失败
+//   (压缩包被占用 / 图片损坏 / sharp 报错),旧封面已经没了,卡片直接变空白 ——
+//   用户点一下「重新生成」反而把能用的封面弄丢了。
+//   现在:写到**同目录**的隐藏临时文件 → 成功后 fs.renameSync 原子覆盖 → 失败删临时文件、旧封面原样保留。
+ipcMain.handle('regenerate-cover', async (event, id) => {
+  // 会写库 + 删文件:未登录(桌面)一律不给(网页版只读账户由 ADMIN_ONLY_CHANNELS 拦)
+  if (!isDesktopAuthed()) return { ok: false, error: 'needLogin' }
+  try {
+    const found = await findBookAcrossLibraries({ id })
+    const book = found && found.row
+    if (!book) return { ok: false, error: 'notFound' }
+    book.libraryId = found.libraryId || bookLibraryById.get(id)
+    if (book.libraryId) rememberBookLibrary(book)
+    // 封面目录必须是「这本书自己所属库」的封面目录(用全局 CURRENT_COVER_DIR 会写错/删错库的封面)
+    const lib = (setting.libraries || []).find(l => l.id === book.libraryId)
+    const coverDir = lib ? coverDirOf(lib) : bookCoverDir(book)
+    try { fs.mkdirSync(coverDir, { recursive: true }) } catch (e) { /* 稍后生成时再报 */ }
+    const localFile = translateBookPath(book.filepath, 'filepath', libForBook(book))
+    const type = book.type || 'archive'
+
+    // ① 决定最终文件名:
+    //    沿用这本书现在的封面名(这样目录里不会多出第二份、DB 里的路径也不用改),
+    //    但必须先校验它确实在封面目录内(历史脏数据可能是别的盘的绝对路径,甚至是漫画文件本身)。
+    const oldName = coverBaseNameOf(book.coverPath)
+    const oldFile = oldName ? path.join(coverDir, oldName) : ''
+    const keepOld = !!(oldName && isUnder(oldFile, coverDir))
+    // 没有可复用的旧名字时现取一个(acquireCoverName 会建 0 字节占位文件,失败分支要负责清掉)
+    const finalName = keepOld ? oldName : acquireCoverName(localFile, coverDir)
+    const finalPath = path.join(coverDir, finalName)
+
+    // ② 先写到同目录的隐藏临时文件:
+    //    · 同目录 → rename 才可能是原子的(跨盘 rename 会 EXDEV);
+    //    · `.tmp-` 前缀 + nanoid → 不会和任何真封面撞名,也不会被 acquireCoverName 的「书名.webp」规则命中;
+    //    · 后缀仍是 .webp → sharp 才知道该按 webp 编码。
+    const tempName = '.tmp-' + nanoid(8) + '-' + finalName
+    const tempPath = path.join(coverDir, tempName)
+    let info = null
+    try {
+      const r = await geneCover(localFile, type, tempName, coverDir)
+      const produced = r && r.coverPath ? path.resolve(r.coverPath) : ''
+      if (!produced || !fs.existsSync(produced) || fs.statSync(produced).size === 0) throw new Error('noCover')
+      info = {
+        tempPath: produced,
+        hash: r.hash || null,
+        pageCount: r.pageCount === undefined ? null : r.pageCount,
+        bundleSize: r.bundleSize,
+        mtime: r.mtime,
+        coverHash: r.coverHash || null
+      }
+    } catch (e) {
+      // ★失败:删掉临时文件 + 释放这次新建的占位名,旧封面**一动不动**
+      try { fs.rmSync(tempPath, { force: true }) } catch (e2) { /* 忽略 */ }
+      if (!keepOld) releaseCoverName(finalName, coverDir)
+      invalidateCoverDirIndex(coverDir)
+      return { ok: false, error: String((e && e.message) || e) || 'noCover' }
+    }
+
+    // ③ 原子替换:同目录 rename(Windows 上 Node 的 rename 也是覆盖语义)。
+    //    覆盖失败(旧封面被别的进程占用)时同样保留旧封面,只清临时文件。
+    try {
+      fs.renameSync(info.tempPath, finalPath)
+    } catch (e) {
+      try { fs.rmSync(info.tempPath, { force: true }) } catch (e2) { /* 忽略 */ }
+      if (!keepOld) releaseCoverName(finalName, coverDir)
+      invalidateCoverDirIndex(coverDir)
+      return { ok: false, error: 'replaceFailed: ' + String((e && e.message) || e) }
+    }
+    // 目录内容变了:复用判断用的索引必须立刻失效
+    invalidateCoverDirIndex(coverDir)
+
+    // ④ 写回 coverPath,顺带把这次探测到的 hash/页数/体积/封面指纹一起补上
+    //    (以前这里只写 coverPath,导致「重新生成后按页数排序还是错的」)
+    const ext = await updateBookCoverPath(book.id, finalPath, coverDir, book.libraryId)
+    try {
+      await found.model.update({
+        hash: info.hash,
+        pageCount: info.pageCount,
+        bundleSize: info.bundleSize,
+        mtime: info.mtime ? (info.mtime.toJSON ? info.mtime.toJSON() : info.mtime) : book.mtime,
+        coverHash: info.coverHash
+      }, { where: { id: book.id } })
+    } catch (e) {
+      // 封面文件已经好了:写库失败只影响「按页数排序 / 标签关联」,不该让整个操作报错
+      console.warn('[cover] 重新生成后写库失败:' + String((e && e.message) || e))
+    }
+    return { ok: true, coverPath: ext }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
 let noLibraryNotified = false
 // ---------- 旧版书架迁移:metadata.sqlite 里的 Mangas → 当前「每库一个 database.sqlite」 ----------
 // 背景:老版本把书架行存在 metadata.sqlite 的 Mangas 表里;升级到多库后书架改到每库的 database.sqlite,
@@ -2451,18 +2789,71 @@ const metadataSignature = async () => {
     return ''   // 查询失败 → 不命中缓存,走完整读(宁可慢也不出错)
   }
 }
+// ★「正在被后台扫描的库 id」。
+// 扫描现在不阻塞切库(用户要求「点了就切、扫描继续跑」),于是「扫描在写 A 库」和
+// 「读书架时顺手给 A 库做路径规范化」可能同时发生 —— 两者都要写同一个 sqlite 文件,
+// SQLite 单写者会直接报 SQLITE_BUSY / database is locked。
+// 这里记下被扫描的库,读书架时**跳过它的路径规范化**(扫描结束后由 runScanAll 补跑)。
+let scanningLibraryId = ''
+// 扫描期间被跳过规范化的库(扫描结束后补跑;一个 Set,多库依次扫描也能全部记下)
+let normalizeDeferred = new Set()
+let normalizeSkippedWarned = false
+// 扫描结束后补跑「扫描期间被跳过的路径规范化」。
+// 不补的话:老格式绝对路径要等到「下次读书架」才转换 —— 而下次读书架可能又撞上新的扫描,
+// 于是一直流着绝对路径(换盘/换端后那些书会找不到)。
+// 只补被跳过的库(不重跑全部);失败只 warn:规范化只是优化,不该让扫描/切库报错。
+const flushDeferredPathNormalization = async () => {
+  if (!normalizeDeferred.size) return
+  const pending = [...normalizeDeferred]
+  normalizeDeferred = new Set()
+  for (const id of pending) {
+    const lib = runtimeLibs().find(l => l && l.id === id)
+    if (!lib) continue
+    try {
+      const r = await normalizeLibraryPaths(lib)
+      // 写进缓存:下次 ensureLibraryPathsNormalized() 不会为同一个库再扫一遍全表
+      normalizedLibraryKeys.add(id + '|' + (libraryRuntimePaths(STORE_PATH, lib).dbFile || ''))
+      if (r && (r.changed || r.unknown)) {
+        console.log(`[paths] 扫描后补规范化「${lib.name}」:${r.changed} 条绝对路径 → 相对路径,无法识别保留 ${r.unknown} 条`)
+      }
+    } catch (e) {
+      console.warn(`[paths] 扫描后补规范化失败「${lib.name || id}」:${String((e && e.message) || e)}`)
+    }
+  }
+}
+
 const loadBookListFromDatabase = async () => {
   // 先把旧版书架搬过来(只在书架为空时做一次),再走原来的合并逻辑
   try { await migrateLegacyMangaTable() } catch (e) { /* 迁移失败不影响书架 */ }
   try { warnMissingLibraryPaths() } catch (e) { /* 忽略 */ }
   // 库数据库里的老格式绝对路径先转成相对路径(每个库只做一次;之后新写入的都是相对路径)
-  await ensureLibraryPathsNormalized()
+  // ★扫描中的库跳过:它正在被批量写入,这里再开一个 UPDATE 事务只会抢锁。
+  //   (被跳过的库记进 normalizeDeferred,扫描结束后 runScanAll 补跑一次)
+  let skipIds = null
+  if (scanningLibraryId) {
+    skipIds = new Set([scanningLibraryId])
+    normalizeDeferred.add(scanningLibraryId)
+    if (!normalizeSkippedWarned) {
+      normalizeSkippedWarned = true
+      console.warn('[paths] 库正在扫描中,本次跳过路径规范化(扫描结束后自动补跑):' + scanningLibraryId)
+    }
+  }
+  await ensureLibraryPathsNormalized(skipIds ? { skipIds } : {})
   // 多库:当前「切换框」里所有已生效的库各读各的库数据库,合并成一个书架(同一本书不去重)
   const libs = boxLibraries()
   let bookList = []
   if (libs.length) {
     for (const lib of libs) {
-      const model = await modelForLibrary(lib.id)
+      // ★库盘离线(或库路径临时不可达)时 modelForLibrary 会抛:这里必须兜住。
+      //   不兜的话整条「读书架」链路直接 reject,前端连空书架都拿不到 —— 而离线模式
+      //   的正确表现恰恰是「书架为空 + 明确提示」,不是白屏。
+      let model
+      try {
+        model = await modelForLibrary(lib.id)
+      } catch (e) {
+        console.warn(`[libraries] 跳过不可读的库「${lib.name || lib.id}」:${String((e && e.message) || e)}`)
+        continue
+      }
       let rows = []
       try {
         rows = await model.findAll()
@@ -2687,10 +3078,34 @@ let viewerActive = false
 let viewerActiveAt = 0
 const VIEWER_IDLE_TIMEOUT = 3 * 60 * 1000
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+// 扫描取消开关:提前声明,因为 waitViewerIdle 里要读它
+// (目前全仓没有地方置 true —— 留给以后的「停止扫描」按钮;切库**不会**取消扫描,见下)
+let scanCancelRequested = false
 // 用户正在阅读漫画时,扫描暂停,把 CPU/磁盘让给阅读器
 const waitViewerIdle = async () => {
   // 超过 3 分钟没有心跳 = 阅读器已不在(网页被强关),不再无限等待
-  while (viewerActive && Date.now() - viewerActiveAt < VIEWER_IDLE_TIMEOUT) await sleep(500)
+  while (viewerActive && Date.now() - viewerActiveAt < VIEWER_IDLE_TIMEOUT) {
+    // 如果将来加了「停止扫描」按钮:置上 scanCancelRequested 后不必再为「等阅读器」干等 3 分钟
+    if (scanCancelRequested) return
+    await sleep(500)
+  }
+}
+
+// ---------- 扫描「可取消」 ----------
+// ⚠ 现状:**没有任何地方会取消扫描**。
+//   · 切库/切框/改库设置都不再取消扫描(用户要求「点了就切、后台继续跑」,
+//     扫描全程只读 ctx,所以换库不影响它);
+//   · 下面这套检查点 + finishCancelledScan 保留,是为了以后加「停止扫描」按钮时能安全收摊。
+// 取消是「安全取消」,不是「半截取消」:
+//   · 已经扫到并入库的书**保留**(下次扫描会自然对上,不会缺书);
+//   · 绝不执行「删除库里已不存在的书」(否则取消时那批还没扫到的书会被当成「已删除」整批清掉);
+//   · 绝不写扫描快照(否则快照会记下「整库已核对完」,下次增量扫描就会漏掉没扫到的部分)。
+// 取消时的统一收尾(两个扫描入口共用):不打错误、不删数据、不写快照。
+// 这里也**不**给用户发 toast:文案走 scanState.message → scan-status 推送。
+const finishCancelledScan = (where) => {
+  setProgressBar(-1)
+  console.warn('[scan] 已取消:' + String(where || ''))
+  return { ok: true, cancelled: true }
 }
 
 // ---------- 元信息后台补全(页数 / hash) ----------
@@ -2712,10 +3127,10 @@ ipcMain.handle('meta-backfill-status', async () => ({ ...metaBackfill }))
 // 启动后延迟补全:容器/客户端重启时,把上次没补完的页数/hash/封面接着补上。
 // 但补全会逐本解压 7z 取页数/hash,体感等同一次扫描:
 // 必须跟随「设置 → 高级 → 启动时扫描」,否则用户在关掉开关后仍会看到整库扫一遍
-if (setting.loadOnStart) {
+if (setting.loadOnStart && !libraryOfflineInfo) {
   setTimeout(() => { if (boxLibraries().length) runMetaBackfill().catch(() => {}) }, 30000)
 } else {
-  console.log('[meta] 未开启「启动时扫描」,跳过启动补全')
+  console.log('[meta] 未开启「启动时扫描」或库盘离线,跳过启动补全')
 }
 ipcMain.handle('meta-backfill-stop', async () => {
   metaBackfill.stop = true
@@ -2887,6 +3302,24 @@ const compileExclude = () => {
   }
 }
 
+// ---------- 扫描写库的 SQLITE_BUSY 兜底 ----------
+// 背景:「边扫边切」放开之后,用户可能正在同一个库上写(改标签 / 移动 / 删书 / 补元数据),
+// 而 SQLite 是单写者 —— 扫描的 bulkCreate/destroy/update 会偶发 SQLITE_BUSY / database is locked。
+// 以前靠「扫描中不许切库」把这种并发挡在门外,现在必须自己在写点上兜一下。
+// 口径:只对**写操作**包一层「等 200ms 重试一次」,不重试第三次 ——
+//   扫描是后台任务,一次失败宁可让这一本书/这一批失败并被计入 failed,也不能让整轮扫描崩掉;
+//   也不包整个 runScan(那会把「枚举失败」「上下文错误」这类真问题一起重试,掩盖 bug)。
+const withBusyRetry = async (fn, label = '') => {
+  try {
+    return await fn()
+  } catch (e) {
+    if (!/SQLITE_BUSY|database is locked/i.test(String((e && e.message) || e))) throw e
+    await sleep(200)
+    console.warn(`[scan] ${label} 命中 SQLITE_BUSY,重试一次`)
+    return await fn()
+  }
+}
+
 // 共享:处理一本"枚举结果"漫画的 DB 比对(全量扫描与增量扫描共用)
 // 命中数据库 → 标记 exist;路径未命中但找到"搬家" → 更新 filepath 沿用封面;
 // 全新 → geneCover 探测并推入 batchNewBooks(由调用方批量入库)
@@ -2895,13 +3328,13 @@ const compileExclude = () => {
 // fp = inventoryLibrary 顺手拿到的指纹 { m: mtimeMs, s?: size } —— 免费,不用再 stat/dirSize
 const processScanItem = async (ctx, filepath, type, fp) => {
   // ★ 全程只用 ctx 里的模型与封面目录(哪本书属于哪个库就写哪个库)。
+  //   ⚠ 这里**不再**回退到 CURRENT_COVER_DIR / SNAPSHOT_FILE / LIBRARY_VIEWCACHE_DIR:
+  //   那几个是「用户当前活动库」的运行时值,而扫描现在允许边扫边切库 ——
+  //   一旦回退,就会把 A 库的封面路径写成 B 库的目录(两个库都错)。
   const { bookMap, bookIdMap, batchNewBooks, skipRelocateLookup } = ctx
-  const Db = ctx.model || Manga
-  const scanCtx = {
-    coverDir: ctx.coverDir || CURRENT_COVER_DIR,
-    snapshotFile: ctx.snapshotFile || SNAPSHOT_FILE,
-    viewcacheDir: ctx.viewcacheDir || LIBRARY_VIEWCACHE_DIR
-  }
+  const Db = ctx.model
+  const scanCtx = { coverDir: ctx.coverDir, snapshotFile: ctx.snapshotFile, viewcacheDir: ctx.viewcacheDir }
+  if (!Db || !scanCtx.coverDir) throw new Error('[scan] 扫描上下文不完整:缺少 model / coverDir')
   const foundData = bookMap.get(filepath)
   if (foundData === undefined) {
     /*
@@ -2922,13 +3355,15 @@ const processScanItem = async (ctx, filepath, type, fp) => {
           ? path.join(scanCtx.coverDir, path.basename(foundPrevBook.coverPath))
           : null
         foundPrevBook.coverPath = newCoverPath
-        await Db.update(
+        await withBusyRetry(() => Db.update(
           {
             filepath: toExternalPath(filepath, 'filepath', ctx.lib),
-            coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath') : null
+            // ★必须把本次扫描的 coverDir 传进去:不传会用全局 CURRENT_COVER_DIR,
+            //   而「边扫边切库」时它已经指向新库的封面目录了
+            coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath', null, scanCtx.coverDir) : null
           },
           { where: { id: existingManga.id } }
-        )
+        ), 'update(relocated)')
       }
     } else {
       // 新书:轻量入库 —— 只用遍历时拿到的指纹,不打开文件。
@@ -2960,7 +3395,7 @@ const processScanItem = async (ctx, filepath, type, fp) => {
         : null
       if (foundData.coverPath !== newCoverPath) {
         foundData.coverPath = newCoverPath
-        await Db.update({ coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath') : null }, { where: { id: foundData.id } })
+        await withBusyRetry(() => Db.update({ coverPath: newCoverPath ? toExternalPath(newCoverPath, 'coverPath', null, scanCtx.coverDir) : null }, { where: { id: foundData.id } }), 'update(coverPath)')
       }
     }
   }
@@ -2971,20 +3406,32 @@ const runScan = async (ctx) => {
   //   全程不再读全局 Manga / CURRENT_COVER_DIR / SNAPSHOT_FILE。
   //   事故复盘:这些全局量会在「几万文件的 await」期间被别的入口改掉,
   //   结果就是「枚举 A 库、写进 B 库、清 C 库封面」。ctx 把它们钉死在本次扫描上。
-  const scanLib = ctx ? ctx.lib : currentLibrary()
-  const Db = ctx ? ctx.model : Manga
-  // 没有 ctx(单库/旧的单次扫描)时,用当前运行时值兜底
+  // ★ ctx 必须完整:扫描全程只读它,**不许**回退到 CURRENT_COVER_DIR / SNAPSHOT_FILE /
+  //   LIBRARY_VIEWCACHE_DIR / Manga / setting.library —— 那些都是「用户当前活动库」的运行时值,
+  //   而切库不再取消扫描(边扫边切),它们随时会变成另一个库的值。
+  if (!ctx || !ctx.lib || !ctx.model || !ctx.coverDir) throw new Error('[scan] 缺少扫描上下文 ctx(lib/model/coverDir)')
+  const scanLib = ctx.lib
+  const Db = ctx.model
   const scanCtx = {
-    coverDir: ctx ? ctx.coverDir : CURRENT_COVER_DIR,
-    snapshotFile: ctx ? ctx.snapshotFile : SNAPSHOT_FILE,
-    viewcacheDir: ctx ? ctx.viewcacheDir : LIBRARY_VIEWCACHE_DIR
+    model: Db,
+    lib: scanLib,
+    coverDir: ctx.coverDir,
+    snapshotFile: ctx.snapshotFile,
+    viewcacheDir: ctx.viewcacheDir
   }
-  // 库里老格式的绝对路径先规范化成相对路径,否则下面按「本端绝对路径」索引会对不上
-  await ensureLibraryPathsNormalized()
+  // 这两个目录属于「本次扫描的库」:dataDir 要给快照落盘、coverDir 要读孤儿封面。
+  // 以前是靠 openLibraryForScan 顺手 mkdir 的;现在不再切全局,所以这里显式建(建不了就跳过,后面各自有 try/catch)。
+  try { if (scanCtx.snapshotFile) fs.mkdirSync(path.dirname(scanCtx.snapshotFile), { recursive: true }) } catch (e) { /* 忽略 */ }
+  try { fs.mkdirSync(scanCtx.coverDir, { recursive: true }) } catch (e) { /* 忽略 */ }
+  // 库里老格式的绝对路径先规范化成相对路径,否则下面按「本端绝对路径」索引会对不上。
+  // ★只规范化**本次扫描的这个库**:以前是无参调用(遍历所有生效库),
+  //   会把用户正在操作的别的库也 UPDATE 一遍 —— 而用户侧的写没有 BUSY 重试,撞锁就是「保存失败」。
+  await ensureLibraryPathsNormalized({ onlyIds: new Set([ctx.lib.id]) })
   const bookList = await Db.findAll({ raw: true })
   bookList.forEach(b => {
     b.filepath = translateBookPath(b.filepath, 'filepath', scanLib)
-    b.coverPath = translateBookPath(b.coverPath, 'coverPath')
+    // 封面按**本次扫描的库**的封面目录翻译(不传就会用 CURRENT_COVER_DIR → 切库后指向别的库)
+    b.coverPath = translateBookPath(b.coverPath, 'coverPath', null, scanCtx.coverDir)
     b.exist = false
   })
   // 用 Map 按 filepath / id 索引,替代 O(n²) 的数组 find
@@ -3001,7 +3448,14 @@ const runScan = async (ctx) => {
   // ⚠ 用本次扫描的库对象,不要读全局 setting.library ——
   //   多库依次扫描时,全局值可能已被别的库改掉,导致「扫的是 A 库、快照写的是 B 库、
   //   清理封面却清的是当前 scanCtx.coverDir」,书单和封面目录对不上 → 整目录被当孤儿删掉。
-  const scanRoot = String(scanLib.path || setting.library || '')
+  //   ★现在切库不再取消扫描,所以这里更要只用 ctx:lib.path 为空说明这条库配置有问题,直接跳过。
+  const scanRoot = String(scanLib.path || '')
+  if (!scanRoot) {
+    sendMessageToWebContents(`跳过库「${scanLib.name || scanLib.id}」:没有配置库文件夹路径`)
+    setProgressBar(-1)
+    sendMessageToWebContents('Scan complete')
+    return
+  }
   const inv = await inventoryLibrary(scanRoot, { excludeRe })
   let list = inv.books
   const listLength = list.length
@@ -3027,8 +3481,11 @@ const runScan = async (ctx) => {
   const CONCURRENCY = scanConcurrency()
   const BATCH_SIZE = 200
   setProgressBar(0.05)
+  // ★取消标记:一旦置上,跳过「删记录 / 删封面 / 写快照」,只带着已入库的部分收工
+  let scanCancelled = false
   // 分批并发处理,批次间清理 TEMP_PATH(替代原来每 50 本就递归删除一次)
   for (let start = 0; start < listLength; start += BATCH_SIZE) {
+    if (scanCancelRequested) { scanCancelled = true; break }
     // 用户在阅读漫画时暂停扫描,让出 CPU/磁盘
     await waitViewerIdle()
     const end = Math.min(start + BATCH_SIZE, listLength)
@@ -3036,10 +3493,21 @@ const runScan = async (ctx) => {
     const batchNewBooks = []
     await runConcurrent(chunk, CONCURRENCY, async ({ filepath, type }, chunkIndex) => {
       const i = start + chunkIndex
+      // ★取消检查点(每本开始处):本批剩下的书不再处理。
+      // 这里**不用 throw**:runConcurrent 会逐项 catch 并 console.error,取消会被刷成一屏错误日志。
+      if (scanCancelRequested) return
       // 用户在阅读时暂停任务,让出 CPU/磁盘
       await waitViewerIdle()
+      if (scanCancelRequested) return
       try {
-        await processScanItem({ bookMap, bookIdMap, batchNewBooks, skipRelocateLookup, lib: scanLib }, filepath, type, inv.dirs[filepath] || inv.arch[filepath])
+        // ★把完整 ctx 传下去(模型 / 库 / 封面目录 / 快照 / 缓存目录):
+        //   只传 lib 的话,processScanItem 里的 `ctx.coverDir || CURRENT_COVER_DIR` 会退回全局 —
+        //   而「边扫边切库」时全局已经是新库的封面目录了,会把封面路径写成别的库的。
+        await processScanItem({
+          bookMap, bookIdMap, batchNewBooks, skipRelocateLookup,
+          lib: scanLib, model: Db,
+          coverDir: scanCtx.coverDir, snapshotFile: scanCtx.snapshotFile, viewcacheDir: scanCtx.viewcacheDir
+        }, filepath, type, inv.dirs[filepath] || inv.arch[filepath])
       } catch (e) {
         sendMessageToWebContents(`加载 ${filepath} 失败:${e}(${i + 1}/${listLength})`)
       }
@@ -3064,11 +3532,12 @@ const runScan = async (ctx) => {
         sendMessageToWebContents(`已跳过 ${rejected.length} 本不属于当前库「${scanLib.name || rootForCheck}」的书(路径不符,已阻止写入)`)
       }
       if (owned.length) {
-        await Db.bulkCreate(owned.map(b => ({
+        await withBusyRetry(() => Db.bulkCreate(owned.map(b => ({
           ...b,
           filepath: toExternalPath(b.filepath, 'filepath', scanLib),
-          coverPath: toExternalPath(b.coverPath, 'coverPath')
-        })))
+          // 封面按本次扫描库的封面目录折算(不传会用 CURRENT_COVER_DIR,切库后就指错了)
+          coverPath: toExternalPath(b.coverPath, 'coverPath', null, scanCtx.coverDir)
+        }))), 'bulkCreate')
       }
       for (const newBook of batchNewBooks) {
         bookMap.set(newBook.filepath, newBook)
@@ -3079,8 +3548,15 @@ const runScan = async (ctx) => {
     if (batchNewBooks.length) sendScanBatch()
     if (end < listLength) await clearFolder(TEMP_PATH)
     setProgressBar(end / listLength)
+    if (scanCancelRequested) { scanCancelled = true; break }
   }
   await clearFolder(TEMP_PATH)
+
+  // ★★取消分支:必须在「删记录 / 删封面 / 写快照」之前返回。
+  //   一旦往下走:removeData 里全是这次还没扫到的书(exist=false),会被整批 destroy ——
+  //   用户看到的将是「点了取消,书架少了一大半」;快照也会被写成「整库已核对完」,
+  //   下次增量扫描不再核对那部分 → 书就真的回不来了。
+  if (scanCancelled || scanCancelRequested) return finishCancelledScan('runScan')
 
   const existData = bookList.filter(b => b.exist === true)
   const removeData = bookList.filter(b => b.exist === false)
@@ -3100,10 +3576,10 @@ const runScan = async (ctx) => {
       const removeIds = removeData.map(b => b.id)
       const removeHashes = removeData.map(b => b.hash).filter(Boolean)
       for (let i = 0; i < removeIds.length; i += 400) {
-        await Db.destroy({ where: { id: { [Op.in]: removeIds.slice(i, i + 400) } } })
+        await withBusyRetry(() => Db.destroy({ where: { id: { [Op.in]: removeIds.slice(i, i + 400) } } }), 'destroy')
       }
       for (let i = 0; i < removeHashes.length; i += 400) {
-        await Metadata.destroy({ where: { hash: { [Op.in]: removeHashes.slice(i, i + 400) } } })
+        await withBusyRetry(() => Metadata.destroy({ where: { hash: { [Op.in]: removeHashes.slice(i, i + 400) } } }), 'metadata.destroy')
       }
       sendMessageToWebContents(`清理了 ${removeData.length} 本不存在的漫画`)
     } catch (e) {
@@ -3163,6 +3639,11 @@ const runScanAll = async () => {
     return
   }
   for (let i = 0; i < libs.length; i++) {
+    // ★取消检查点(库之间):已被请求取消就不再开下一个库,直接跳到末尾的「还原活动库」
+    if (scanCancelRequested) {
+      console.warn(`[scan] 已取消,跳过剩余 ${libs.length - i} 个库`)
+      break
+    }
     const lib = libs[i]
     sendMessageToWebContents(`[${i + 1}/${libs.length}] 开始扫描库「${lib.name}」:${lib.path}`)
     // ★ 先建 ctx(把这个库的模型/根目录/数据目录绑死),再用 ctx 扫描。
@@ -3175,37 +3656,110 @@ const runScanAll = async () => {
       sendMessageToWebContents(`跳过库「${lib.name}」:${String((e && e.message) || e)}`)
       continue
     }
-    await openLibraryForScan(lib)
-    await runScan(ctx)
+    // ★ 不再 openLibraryForScan(lib)!
+    //   那一步会把 LIBRARY_DATA_DIR / LIBRARY_VIEWCACHE_DIR / CURRENT_COVER_DIR / SNAPSHOT_FILE /
+    //   setting.library / Manga 全部指向「正在扫的库」,于是「边扫边切库」根本不可能 ——
+    //   用户切到 B 库后,全局又被打回 A 库,书架和封面全指错。
+    //   现在 ctx 已经把这个库的 model / coverDir / snapshotFile / viewcacheDir 全带上了,
+    //   扫描全程只读 ctx,不再碰任何全局运行时。
+    // ★登记「正在扫描哪个库」:读书架(loadBookListFromDatabase)看到它就会跳过该库的路径规范化,
+    //   别和扫描抢 SQLite 写锁;扫描结束后在末尾补跑(见下面)。
+    scanningLibraryId = String(lib.id || '')
+    try {
+      await runScan(ctx)
+    } finally {
+      // 单个库扫完/扫崩都要清掉,否则后续读书架会一直跳过这个库的规范化
+      scanningLibraryId = ''
+    }
   }
-  // 扫完还原到当前活动库(路径/数据库模型)
+  // 扫完把运行时还原到「用户当前的活动库」(不是刚扫完的那个库)。
+  // 幂等:扫描全程没碰全局时这里只是把同样的值再写一次;
+  // 用户中途切过库时,activeLibraryOf(setting) 已经是用户选的那个库,所以是「指回用户正在看的库」。
   const active = activeLibraryOf(setting)
   if (active) await openLibraryForScan(active)
   setting.library = active ? active.path : setting.library
+
+  // ★扫描结束后补跑「扫描期间被跳过的路径规范化」(见 flushDeferredPathNormalization)
+  await flushDeferredPathNormalization()
+}
+
+// ★库盘离线(NAS/移动盘未挂载)时的统一守卫:任何「会扫描 / 会写库」的入口先过这里。
+// 返回 true = 已拦截(调用方立刻返回);false = 可以继续。纯读取(书架本身就是空的)不拦。
+// 不抛异常:启动/交互链路里抛错会直接弹崩溃栈,这不是用户能处理的错误。
+const rejectIfLibraryOffline = (what) => {
+  if (!libraryOfflineInfo) return false
+  try {
+    console.warn('[libraries] 离线模式拒绝操作:' + String(what || ''))
+    sendMessageToWebContents('漫画库暂不可用(磁盘未挂载),已跳过本次操作:' + String(what || ''))
+  } catch (e) { /* 提示失败也不影响拦截本身 */ }
+  return true
+}
+
+// ★「未登录不许出书架」闸门(桌面端)。
+// 背景:桌面版 preload 把所有通道原样透传,而 load-book-list / load-collection-list / get-all-tags
+// 这些只读通道原本一行鉴权都没有 —— 没登录(或退出登录后)照样能 invoke 一次拿到整库的书名、
+// 文件路径、标签。网页版有 web-server 的 401/403,桌面版这里全是裸的。
+// 口径(三条,按顺序):
+//   ① 网页版 → 直接放行:会话校验在 web-server 的 /api/ipc(那里已经 401/403),这里再判会打架;
+//   ② 桌面版但账户系统没启用(没有任何账户文件,老用户)→ 放行:行为与升级前完全一致,
+//      绝不能把人锁在门外(没有任何账户时也没人能登录);
+//   ③ 桌面版 + 账户系统启用 → 必须有有效会话(currentAuth 且 token 没过期/没被改密码作废)。
+// 与 requireAdmin()(见文件末尾)是同一套现实:那个只管「写操作要管理员」,这里只管「读操作要登录」。
+function isDesktopAuthed () {
+  if (WEB_MODE) return true
+  if (!auth.isEnabled()) return true
+  // 会话可能已被改密码/删账户作废(与 authStatus() 用同一套判定),否则会「显示已退出但仍能读书架」
+  if (currentAuth && currentAuth.token && !auth.getSession(currentAuth.token)) currentAuth = null
+  return !!currentAuth
 }
 
 ipcMain.handle('load-book-list', async (event, scan) => {
+  // ★桌面端「未登录不许出书架」兜底:
+  //   桌面版的 preload 是所有通道全透传的,这个 handler 原本没有任何鉴权 ——
+  //   没登录也能 invoke 一次拿到整库的书名/路径/标签(等于绕过登录框)。
+  //   未登录时**不读数据库**,直接给空书架(返回结构与正常路径一致:数组)。
+  if (!isDesktopAuthed()) return []
+  // 离线模式:允许「读取」(书架空着),但绝不允许扫描 —— 扫描会建库/写快照/写封面目录
+  if (scan && rejectIfLibraryOffline('扫描漫画库')) return await loadBookListFromDatabase()
   if (scan) {
     if (isScanning) {
       sendMessageToWebContents('扫描正在进行中,已跳过重复扫描')
     } else {
       isScanning = true
+      scanCancelRequested = false
+      // ★同步登记「马上要扫的库」:本 handler 紧接着就要读一次书架(下面的 loadBookListFromDatabase),
+      //   那次读取的路径规范化必须跳过正在扫的库,否则会和刚启动的扫描抢 SQLite 写锁。
+      //   (多库依次扫描时,runScanAll 会在进入每个库前更新它。)
+      const scanTargets = boxLibraries()
+      scanningLibraryId = scanTargets.length ? String(scanTargets[0].id || '') : ''
       beginScan('开始加载漫画库')
       sendMessageToWebContents('开始加载漫画库')
       // 后台扫描:立即返回当前列表,不阻塞 UI,扫描完成后再通知前端刷新
       setImmediate(async () => {
+        let cancelled = false
         try {
           await runScanAll()
+          cancelled = scanCancelRequested
           endScan(null)
+          // 取消时不改 error 字段(否则界面会显示成失败),只把文案说清楚
+          if (cancelled) { scanState.message = '扫描已取消'; broadcastScanStatus() }
         } catch (e) {
           console.error(e)
           sendMessageToWebContents(`扫描失败:${e}`)
           endScan(e)
         } finally {
           isScanning = false
+          // ★必须复位:否则下一次扫描一进来就立刻自我取消
+          scanCancelRequested = false
+          // 扫描结束时一定要清掉「正在扫描的库」,否则后续读书架会一直跳过它的规范化。
+          // (runScanAll 正常收尾时已经清过;这里兜住「扫描中途抛错」的情况)
+          scanningLibraryId = ''
           setProgressBar(-1)
-          // 扫描(建库/刷新)完成后:空闲时把还没探测过的书的页数/hash 补上
-          setImmediate(() => { runMetaBackfill().catch(() => {}) })
+          // 扫描期间被跳过的路径规范化在这里补跑(runScanAll 正常收尾时也调过一次,是幂等的)
+          flushDeferredPathNormalization().catch(() => {})
+          // 扫描(建库/刷新)完成后:空闲时把还没探测过的书的页数/hash 补上。
+          // 用户刚点了取消就别马上又跑一遍重活,把机会留给下一次正常扫描。
+          if (!cancelled) setImmediate(() => { runMetaBackfill().catch(() => {}) })
         }
       })
     }
@@ -3254,7 +3808,8 @@ const runIncrementalScan = async (ctx) => {
   const excludeRe = compileExclude()
   const diff = await diffInventory(scanRoot, oldSnap, { excludeRe })
   // 读取数据库并建立索引(与全量扫描相同的路径翻译;内存 Map 成本远低于枚举成本)
-  await ensureLibraryPathsNormalized()
+  // ★只规范化本次增量扫描的这个库(理由同 runScan:不能顺手 UPDATE 用户正在操作的其它库)
+  await ensureLibraryPathsNormalized({ onlyIds: new Set([scanLib.id]) })
   const bookList = await Db.findAll({ raw: true })
   bookList.forEach(b => {
     b.filepath = translateBookPath(b.filepath, 'filepath', scanLib)
@@ -3293,7 +3848,9 @@ const runIncrementalScan = async (ctx) => {
   const CONCURRENCY = scanConcurrency()
   const BATCH_SIZE = 200
   setProgressBar(0.1)
+  let scanCancelled = false
   for (let start = 0; start < candidates.length; start += BATCH_SIZE) {
+    if (scanCancelRequested) { scanCancelled = true; break }
     // 用户在阅读漫画时暂停扫描,让出 CPU/磁盘
     await waitViewerIdle()
     const end = Math.min(start + BATCH_SIZE, candidates.length)
@@ -3301,7 +3858,10 @@ const runIncrementalScan = async (ctx) => {
     const batchNewBooks = []
     await runConcurrent(chunk, CONCURRENCY, async ({ filepath, type }, chunkIndex) => {
       const i = start + chunkIndex
+      // ★取消检查点:每本开始处(不 throw —— runConcurrent 会逐项 catch 刷屏)
+      if (scanCancelRequested) return
       await waitViewerIdle()
+      if (scanCancelRequested) return
       try {
         await processScanItem({ bookMap, bookIdMap, batchNewBooks, lib: scanLib, model: Db, coverDir, snapshotFile, viewcacheDir: ctx.viewcacheDir }, filepath, type)
       } catch (e) {
@@ -3310,11 +3870,11 @@ const runIncrementalScan = async (ctx) => {
     })
     // 批量入库:一个事务写入一批,避免逐条 fsync(路径写入 Windows 格式)
     if (batchNewBooks.length) {
-      await Db.bulkCreate(batchNewBooks.map(b => ({
+      await withBusyRetry(() => Db.bulkCreate(batchNewBooks.map(b => ({
         ...b,
         filepath: toExternalPath(b.filepath, 'filepath', scanLib),
         coverPath: toExternalPath(b.coverPath, 'coverPath', null, coverDir)
-      })))
+      }))), 'bulkCreate(incremental)')
       for (const newBook of batchNewBooks) {
         bookMap.set(newBook.filepath, newBook)
         bookList.push(newBook)
@@ -3324,8 +3884,13 @@ const runIncrementalScan = async (ctx) => {
     if (batchNewBooks.length) sendScanBatch()
     if (end < candidates.length) await clearFolder(TEMP_PATH)
     setProgressBar(0.1 + 0.7 * (end / Math.max(1, candidates.length)))
+    if (scanCancelRequested) { scanCancelled = true; break }
   }
   await clearFolder(TEMP_PATH)
+  // ★★取消分支:与全量扫描同理 —— 这里往下会删「快照认为已消失」的记录、删封面、写新快照。
+  //   增量扫描只处理变化的那部分,取消时 diff.removedBooks 的判定并不可信(还没核对完),
+  //   硬着头皮删就是「点一下取消,书架少一片」;快照更不能写(会把「已核对」的错误状态固化)。
+  if (scanCancelled || scanCancelRequested) return finishCancelledScan('runIncrementalScan')
   // 清理增量发现的消失书目(封面文件 / 数据库记录 / 关联元数据)
   const removedRows = []
   const seenRemove = new Set()
@@ -3342,10 +3907,10 @@ const runIncrementalScan = async (ctx) => {
       const removeIds = removedRows.map(b => b.id)
       const removeHashes = removedRows.map(b => b.hash).filter(Boolean)
       for (let i = 0; i < removeIds.length; i += 400) {
-        await Db.destroy({ where: { id: { [Op.in]: removeIds.slice(i, i + 400) } } })
+        await withBusyRetry(() => Db.destroy({ where: { id: { [Op.in]: removeIds.slice(i, i + 400) } } }), 'destroy')
       }
       for (let i = 0; i < removeHashes.length; i += 400) {
-        await Metadata.destroy({ where: { hash: { [Op.in]: removeHashes.slice(i, i + 400) } } })
+        await withBusyRetry(() => Metadata.destroy({ where: { hash: { [Op.in]: removeHashes.slice(i, i + 400) } } }), 'metadata.destroy')
       }
       deleted = true
       sendMessageToWebContents(`清理了 ${removedRows.length} 本不存在的漫画`)
@@ -3378,30 +3943,48 @@ const runIncrementalScan = async (ctx) => {
 }
 
 ipcMain.handle('incremental-scan', async () => {
+  // 桌面端未登录:扫描会写库,一律不给(与 load-book-list 的兜底同一套口径)
+  if (!isDesktopAuthed()) return []
+  // 离线模式:增量扫描会写快照/建库,直接拒
+  if (rejectIfLibraryOffline('增量扫描')) return await loadBookListFromDatabase()
   if (isScanning) {
     sendMessageToWebContents('扫描正在进行中,已跳过重复扫描')
   } else {
     isScanning = true
+    scanCancelRequested = false
+    // ★同步登记被扫的库(理由同 load-book-list 的 scan 分支:本 handler 紧接着要读一次书架)
+    const scanLibNow = currentLibrary()
+    scanningLibraryId = scanLibNow ? String(scanLibNow.id || '') : ''
     beginScan('开始增量扫描')
     sendMessageToWebContents('开始加载漫画库')
     // 后台执行:立即返回当前列表,不阻塞 UI,完成后通知前端刷新
     setImmediate(async () => {
+      let cancelled = false
       try {
         // ★ 先把「这次扫哪个库」钉成 ctx,再开始:扫描期间用户切库也不会串库
         const lib = currentLibrary()
         const ctx = await scanContextFor(lib)
-        await openLibraryForScan(lib)
+        // ★ 不再 openLibraryForScan(lib):ctx 已经带上了这个库的 model/封面目录/快照/缓存目录,
+        //   而这里切全局反而会把「用户刚刚切到的库」又打回被扫的库。
         await runIncrementalScan(ctx)
-      // 增量扫描完成后同样要触发后台补全(以前只有全量扫描才触发,导致增量扫完的书一直没补) 
-      setImmediate(() => { runMetaBackfill().catch(() => {}) })
+        cancelled = scanCancelRequested
+      // 增量扫描完成后同样要触发后台补全(以前只有全量扫描才触发,导致增量扫完的书一直没补)
+      // 取消时不补:用户刚点了取消,别马上又跑一遍重活
+      if (!cancelled) setImmediate(() => { runMetaBackfill().catch(() => {}) })
         endScan(null)
+        if (cancelled) { scanState.message = '扫描已取消'; broadcastScanStatus() }
       } catch (e) {
         console.error(e)
         sendMessageToWebContents(`扫描失败:${e}`)
         endScan(e)
       } finally {
         isScanning = false
+        // ★必须复位:否则下一次扫描一进来就立刻自我取消
+        scanCancelRequested = false
+        // 清掉「正在扫描的库」并补跑被跳过的路径规范化(失败只 warn)
+        scanningLibraryId = ''
         setProgressBar(-1)
+        flushDeferredPathNormalization().catch(() => {})
       }
     })
   }
@@ -3409,93 +3992,124 @@ ipcMain.handle('incremental-scan', async () => {
 })
 
 ipcMain.handle('force-gene-book-list', async (event, arg) => {
+  // 离线模式:重建库会 truncate 数据库 + 清封面目录,必须拒绝
+  if (rejectIfLibraryOffline('重建漫画库')) return await loadBookListFromDatabase()
   // 重建库会清空数据库与封面目录,扫描进行中绝不能执行
+  // (重建自己也占着 isScanning,所以「连点两次重建」也会在这里被拦住)
   if (isScanning) {
     sendMessageToWebContents('正在扫描漫画库,请等扫描结束后再重建')
     return await loadBookListFromDatabase()
   }
-  // ⚠ 先枚举、后清库:以前是先 truncate 再 getBookFilelist,
-  //   库路径不可访问(网络盘没挂上 / 文件夹被改名)时 list 为空,
-  //   结果「点一下重建,一万多本书和封面全没了」。枚举成功才允许动数据。
-  sendMessageToWebContents('开始加载漫画库')
-  setProgressBar(0.02)
-  let list = await getBookFilelist(setting.library)
-  if (!_.isEmpty(setting.excludeFile)) {
-    let excludeRe
-    try {
-      excludeRe = compileExclude()
-      list = _.filter(list, file => !excludeRe.test(file.filepath))
-    } catch {
-      console.log('Illegal regular expressions')
-    }
-  }
-  if (!list || list.length === 0) {
-    // 一本都没枚举到 = 路径不可用或选错了库:直接取消,不碰数据库、不碰封面
-    sendMessageToWebContents('漫画库为空或不可访问,已取消重建(未改动任何数据)')
+  // ★把「重建哪个库」钉成 ctx,全程只用 ctx.model / ctx.root / ctx.coverDir。
+  //   隐患(切库放行之后才出现):重建过程中用户切库 → switchActiveLibraryRuntime 会把全局
+  //   Manga / CURRENT_COVER_DIR 换成新库 → 枚举的是 A 库、书却写进 B 库。
+  //   以前切库会先取消扫描,所以撞不上;现在必须自己钉住。
+  let ctx = null
+  try {
+    ctx = await scanContextFor(activeLibraryOf(setting))
+  } catch (e) {
+    // 库离线 / 未生效:直接报错返回,**绝不退回全局 Manga**(那正是「写错库」的入口)
+    const msg = String((e && e.message) || e)
+    console.error('[rebuild] 无法重建漫画库:' + msg)
+    sendMessageToWebContents(`重建漫画库失败:${msg}`)
     setProgressBar(-1)
     return await loadBookListFromDatabase()
   }
-  // 封面懒加载为固定行为:重建库也不生成封面,由用户浏览时按需生成
-  await Manga.destroy({ truncate: true })
-  // 整表清空 + 重新入库会换一批新 id:归属索引必须整体作废(否则 30s 内每本都会多生成一份封面)
-  clearCoverOwners()
-  await clearFolder(TEMP_PATH)
-  // 封面目录不再清空:文件名是确定性的(书名.webp),重建后按 basename 直接复用,避免「点一次重建封面全没」
-  const listLength = list.length
-  sendMessageToWebContents(`从漫画库找到 ${listLength} 本漫画`)
-  const CONCURRENCY = scanConcurrency()
-  const BATCH_SIZE = 200
-  setProgressBar(0.05)
-  for (let start = 0; start < listLength; start += BATCH_SIZE) {
-    // 用户在阅读漫画时暂停扫描,让出 CPU/磁盘
-    await waitViewerIdle()
-    const end = Math.min(start + BATCH_SIZE, listLength)
-    const chunk = list.slice(start, end)
-    const batchNewBooks = []
-    await runConcurrent(chunk, CONCURRENCY, async ({ filepath, type }, chunkIndex) => {
-      const i = start + chunkIndex
-      // 用户在阅读时暂停任务,让出 CPU/磁盘
-      await waitViewerIdle()
+  const Db = ctx.model
+  const rebuildLib = ctx.lib
+  // 与扫描同款的「占用标记」:① 读书架会跳过这个库的路径规范化(别和重建抢 SQLite 写锁);
+  // ② 第二次点「重建库」会被入口的 isScanning 拦下。
+  isScanning = true
+  scanningLibraryId = String(rebuildLib.id || '')
+  try {
+    // ⚠ 先枚举、后清库:以前是先 truncate 再 getBookFilelist,
+    //   库路径不可访问(网络盘没挂上 / 文件夹被改名)时 list 为空,
+    //   结果「点一下重建,一万多本书和封面全没了」。枚举成功才允许动数据。
+    sendMessageToWebContents('开始加载漫画库')
+    setProgressBar(0.02)
+    let list = await getBookFilelist(ctx.root)
+    if (!_.isEmpty(setting.excludeFile)) {
+      let excludeRe
       try {
-        const id = nanoid()
-        const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null, CURRENT_COVER_DIR)
-        // 懒加载模式下 coverPath 为 null(封面按需生成),书仍然入库
-        if (targetFilePath) {
-          batchNewBooks.push({
-            title: path.basename(filepath),
-            coverPath,
-            hash,
-            filepath,
-            type,
-            id,
-            pageCount,
-            bundleSize,
-            mtime: mtime.toJSON(),
-            coverHash,
-            status: 'non-tag',
-            date: Date.now()
-          })
-        }
-      } catch (e) {
-        sendMessageToWebContents(`加载 ${filepath} 失败:${e}(${i + 1}/${listLength})`)
+        excludeRe = compileExclude()
+        list = _.filter(list, file => !excludeRe.test(file.filepath))
+      } catch {
+        console.log('Illegal regular expressions')
       }
-    })
-    // 批量入库:一个事务写入一批(路径写入相对库根的相对路径)
-    if (batchNewBooks.length) await Manga.bulkCreate(batchNewBooks.map(b => ({
-      ...b,
-      filepath: toExternalPath(b.filepath, 'filepath', currentLibrary()),
-      coverPath: toExternalPath(b.coverPath, 'coverPath')
-    })))
-    if (end < listLength) await clearFolder(TEMP_PATH)
-    setProgressBar(end / listLength)
+    }
+    if (!list || list.length === 0) {
+      // 一本都没枚举到 = 路径不可用或选错了库:直接取消,不碰数据库、不碰封面
+      sendMessageToWebContents('漫画库为空或不可访问,已取消重建(未改动任何数据)')
+      setProgressBar(-1)
+      return await loadBookListFromDatabase()
+    }
+    // 封面懒加载为固定行为:重建库也不生成封面,由用户浏览时按需生成
+    await Db.destroy({ truncate: true })
+    // 整表清空 + 重新入库会换一批新 id:归属索引必须整体作废(否则 30s 内每本都会多生成一份封面)
+    clearCoverOwners()
+    await clearFolder(TEMP_PATH)
+    // 封面目录不再清空:文件名是确定性的(书名.webp),重建后按 basename 直接复用,避免「点一次重建封面全没」
+    const listLength = list.length
+    sendMessageToWebContents(`从漫画库找到 ${listLength} 本漫画`)
+    const CONCURRENCY = scanConcurrency()
+    const BATCH_SIZE = 200
+    setProgressBar(0.05)
+    for (let start = 0; start < listLength; start += BATCH_SIZE) {
+      // 用户在阅读漫画时暂停扫描,让出 CPU/磁盘
+      await waitViewerIdle()
+      const end = Math.min(start + BATCH_SIZE, listLength)
+      const chunk = list.slice(start, end)
+      const batchNewBooks = []
+      await runConcurrent(chunk, CONCURRENCY, async ({ filepath, type }, chunkIndex) => {
+        const i = start + chunkIndex
+        // 用户在阅读时暂停任务,让出 CPU/磁盘
+        await waitViewerIdle()
+        try {
+          const id = nanoid()
+          // 封面目录用 ctx.coverDir(本次重建的库),不用全局 CURRENT_COVER_DIR
+          const { targetFilePath, hash, coverPath, pageCount, bundleSize, mtime, coverHash } = await geneCover(filepath, type, null, ctx.coverDir)
+          // 懒加载模式下 coverPath 为 null(封面按需生成),书仍然入库
+          if (targetFilePath) {
+            batchNewBooks.push({
+              title: path.basename(filepath),
+              coverPath,
+              hash,
+              filepath,
+              type,
+              id,
+              pageCount,
+              bundleSize,
+              mtime: mtime.toJSON(),
+              coverHash,
+              status: 'non-tag',
+              date: Date.now()
+            })
+          }
+        } catch (e) {
+          sendMessageToWebContents(`加载 ${filepath} 失败:${e}(${i + 1}/${listLength})`)
+        }
+      })
+      // 批量入库:一个事务写入一批(路径写入相对库根的相对路径)
+      if (batchNewBooks.length) await Db.bulkCreate(batchNewBooks.map(b => ({
+        ...b,
+        filepath: toExternalPath(b.filepath, 'filepath', rebuildLib),
+        coverPath: toExternalPath(b.coverPath, 'coverPath', null, ctx.coverDir)
+      })))
+      if (end < listLength) await clearFolder(TEMP_PATH)
+      setProgressBar(end / listLength)
+    }
+    await clearFolder(TEMP_PATH)
+  } finally {
+    isScanning = false
+    scanningLibraryId = ''
+    setProgressBar(-1)
   }
-  await clearFolder(TEMP_PATH)
-
-  setProgressBar(-1)
   return await loadBookListFromDatabase()
 })
 
 ipcMain.handle('patch-local-metadata', async (event, arg) => {
+  // 离线模式:逐本重建封面会写不可达的库封面目录,直接拒(书架原样返回)
+  if (rejectIfLibraryOffline('批量补全元数据/封面')) return await loadBookListFromDatabase()
   const bookList = await loadBookListFromDatabase()
   const bookListLength = bookList.length
   await clearFolder(TEMP_PATH)
@@ -3554,6 +4168,9 @@ ipcMain.handle('patch-local-metadata', async (event, arg) => {
 })
 
 ipcMain.handle('patch-local-metadata-by-book', async (event, book) => {
+  // 离线模式:拒绝写库。返回 {} 是刻意的 —— 前端是 `_.assign(book, bookInfo)`,
+  // 给 {} 等于什么都不改;用户已经从 sendMessage 的提示里知道原因了。
+  if (rejectIfLibraryOffline('重新扫描这本漫画')) return {}
   let { filepath, type } = book
   if (!type) type = 'archive'
   // 同 patch-local-metadata:占位文件与封面都走「这本书所属库」的封面目录
@@ -3657,40 +4274,48 @@ ipcMain.handle('test-proxy', async (event, arg) => {
   }
 })
 
+// 取一个 EH 页面(带 Cookie,可走代理)。
+// 返回值约定:
+//   · 成功 → **原始 HTML 字符串**(老调用方 `new DOMParser().parseFromString(html)` 行为不变);
+//   · 失败 → **null**。
+// ⚠️ 以前失败时 catch 里没有 return → 调用方拿到 `undefined`,丢进 DOMParser 得到空文档,
+//    界面就是「在线列表/详情/评论全空」而且一点提示都没有(原因只进了主进程日志)。
+// 为什么失败返回 null 而不是 `{ ok:false }` 对象:
+//    现有消费方(如 src/ehOnline.js 的 collectGalleryThumbs)都是 `if (!html) break` 这套写法。
+//    ★真值对象会绕过这个判断★ —— 失败会被当成「取到了一条空页面」,接着白跑几十个分页请求
+//    (每个还要等超时),比原来的空文档更糟。null 让既有判断立刻生效、零回归;
+//    想要具体原因的调用方走下面新增的 `eh-webpage-last-error` 通道(带 error/url/时间)。
+let lastEhWebpageError = null
+const setEhWebpageError = (url, e) => {
+  lastEhWebpageError = {
+    at: Date.now(),
+    url: String(url || ''),
+    error: String((e && (e.message || e.error)) || e || 'unknown'),
+  }
+}
 ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
-  if (setting.proxy) {
-    return await fetch(url, {
-      headers: {
-        Cookie: cookie
-      },
-      agent: new HttpsProxyAgent(setting.proxy)
-    })
-    .then(async res => {
-      const result = await res.text()
-      if (!result) throw new Error('Empty response, maybe the cookie is expired')
-      return result
-    })
-    .catch(e => {
-      // 不弹提示:在线列表/预览拉不到时由调用方按「有没有已显示内容」决定要不要打扰用户,
-      // 这里每条失败都弹一次,就是「EH在线老是弹错误提示」的直接原因
-      console.error('get-ex-webpage failed', e)
-    })
-  } else {
-    return await fetch(url, {
-      headers: {
-        Cookie: cookie
-      }
-    })
-    .then(async res => {
-      const result = await res.text()
-      if (!result) throw new Error('Empty response, maybe the cookie is expired')
-      return result
-    })
-    .catch(e => {
-      sendMessageToWebContents(`获取 Ex 页面失败:${e}`)
-    })
+  try {
+    // ★复用 ehLogin.agentFor(按代理地址缓存 + keep-alive):以前每次调用都 new HttpsProxyAgent,
+    //   等于每个 EH 页面(在线列表一屏十几次)都重新跟代理建一次 TCP+TLS,是「EH 在线很慢」的大头。
+    const agent = setting.proxy ? ehLogin.agentFor(setting.proxy) : undefined
+    const res = agent
+      ? await fetch(url, { headers: { Cookie: cookie }, agent })
+      : await fetch(url, { headers: { Cookie: cookie } })
+    const result = await res.text()
+    if (!result) throw new Error('Empty response, maybe the cookie is expired')
+    return result
+  } catch (e) {
+    // 不弹系统提示:在线列表/预览拉不到时由调用方按「有没有已显示内容」决定要不要打扰用户,
+    // 这里每条失败都弹一次,就是「EH在线老是弹错误提示」的直接原因。
+    console.error('get-ex-webpage failed', e)
+    setEhWebpageError(url, e)
+    return null
   }
 })
+
+// 最近一次 get-ex-webpage 的失败原因(供前端在拿到 null 之后问「为什么」并给出可读提示)。
+// 没有失败过就回 null;同一次失败可以被多次读取。
+ipcMain.handle('eh-webpage-last-error', async () => ({ ok: !!lastEhWebpageError, ...(lastEhWebpageError || {}) }))
 
 ipcMain.handle('post-data-ex', async (event, { url, data }) => {
   if (setting.proxy) {
@@ -3700,7 +4325,8 @@ ipcMain.handle('post-data-ex', async (event, { url, data }) => {
       headers: {
         'Content-Type': 'application/json'
       },
-      agent: new HttpsProxyAgent(setting.proxy)
+      // 同样复用缓存的 agent(别每次 new,见 get-ex-webpage 的注释)
+      agent: ehLogin.agentFor(setting.proxy)
     })
     .then(res => res.text())
     .catch(e => {
@@ -3764,6 +4390,192 @@ ipcMain.handle('eh-password-login', async (event, arg) => {
 // (页数不再截断:前端的「加载更多」可以一直翻到最后一页,只是每次只解一小批)
 const previewArchiveCache = new Map()
 
+// ---------- 预览图 GIF 首帧(静态 JPEG 缓存) ----------
+// 为什么要有:详情页预览条把 GIF 原图直出,一进去几十个 GIF 同时动 —— 又卡又晃眼。
+// 前端约定「本批 GIF 超过 5 张就只放静帧」,所以主进程必须给得出「同一张图的静态首帧路径」。
+// 实现要点:
+//   · sharp(src) 默认只解第一帧(没开 animated),.jpeg() 出来的就是首帧静态图;
+//   · 缓存键 = (绝对路径 + 大小 + mtime) 的 md5,文件 gifprev_<hash>.jpg 落在 viewcache 目录,
+//     图没变过就一直是命中缓存(第二次打开预览只是多读一个小 JPEG);
+//   · 并发 4、整批预算 3 秒:超时先返回(剩下的留空)。
+//     预算从 1.5s 提到 3s 是因为现在改成「按需单独取」(preview-thumbs),预览首屏不再等它,
+//     多给点时间能把更多 GIF 一次算完(第二次打开直接命中缓存)。
+const GIF_PREVIEW_CONCURRENCY = 4
+const GIF_THUMBS_BUDGET_MS = 3000
+const GIF_PREVIEW_QUALITY = 78
+const gifPreviewCache = new Map() // key -> 绝对路径
+
+// 缓存目录:用「当前活动库」的 viewcache(LIBRARY_VIEWCACHE_DIR 是实时值;
+// 模块里的 VIEWCACHE_PATH 只是启动那一刻的快照,切库后不会跟着变)
+const gifPreviewDir = () => LIBRARY_VIEWCACHE_DIR || VIEWCACHE_PATH || STORE_PATH
+
+// 生成(或复用)一张 GIF 的首帧 JPEG;任何失败都返回 ''(调用方据此退回原图)
+const gifStillFrame = async (src) => {
+  let st = null
+  try { st = await fs.promises.stat(src) } catch (e) { return '' }
+  if (!st || !st.isFile() || !st.size) return ''
+  const key = createHash('md5').update(String(src) + '|' + st.size + '|' + Math.round(st.mtimeMs || 0)).digest('hex')
+  const hit = gifPreviewCache.get(key)
+  if (hit && fs.existsSync(hit)) return hit
+  const dir = gifPreviewDir()
+  const out = path.join(dir, 'gifprev_' + key + '.jpg')
+  try {
+    if (fs.existsSync(out) && fs.statSync(out).size > 0) {
+      gifPreviewCache.set(key, out)
+      return out
+    }
+    fs.mkdirSync(dir, { recursive: true })
+    // 只解第一帧:sharp 的 animated 默认是 false,这里显式写出来避免以后被改默认值坑到
+    await sharp(src, { animated: false }).jpeg({ quality: GIF_PREVIEW_QUALITY }).toFile(out)
+    if (fs.existsSync(out) && fs.statSync(out).size > 0) {
+      gifPreviewCache.set(key, out)
+      return out
+    }
+    return ''
+  } catch (e) {
+    // 半截文件会变成「下次打开又命中一个坏缓存」,失败就删掉
+    try { fs.rmSync(out, { force: true }) } catch (e2) { /* 忽略 */ }
+    return ''
+  }
+}
+
+// ---------- 预览用「小图」:把原图压成长边 ≤480px 的 JPEG ----------
+// 为什么必须做:预览格显示宽度只有 ~160px(放大后),但以前直接把**原图路径**交给渲染端 ——
+//   一张 4000×6000 的 JPEG 解码后约 72MB 内存,一屏几十格就是几个 GB 的解码量,
+//   渲染主线程被占满 → 用户看到的「图越大加载越卡,连点别的地方也卡」。
+// 现在:主进程用 sharp 压到长边 480px(q78),按 (路径+大小+mtime) 缓存到 viewcache,
+//   同一个文件第二次打开直接命中缓存,只读一张几十 KB 的小 JPEG。
+//   · .rotate():按 EXIF 方向摆正(<img> 会自动转,sharp 不会,不转的话缩略图方向会反)
+//   · animated:false:GIF 只取首帧(动图由前端在悬停时单独换回原图)
+//   · withoutEnlargement:本来就小的图不放大,避免糊
+const PREVIEW_THUMB_MAX = 480
+const PREVIEW_THUMB_QUALITY = 78
+const PREVIEW_THUMB_CONCURRENCY = 8
+// 一批预览最多等这么久:超时先用已有的(缺的退回原图),别让首屏干等
+const PREVIEW_THUMB_BUDGET_MS = 1500
+const previewThumbCache = new Map() // key -> 绝对路径
+
+const previewThumbImage = async (src) => {
+  let st = null
+  try { st = await fs.promises.stat(src) } catch (e) { return '' }
+  if (!st || !st.isFile() || !st.size) return ''
+  const key = createHash('md5').update(String(src) + '|' + st.size + '|' + Math.round(st.mtimeMs || 0)).digest('hex')
+  const hit = previewThumbCache.get(key)
+  if (hit && fs.existsSync(hit)) return hit
+  const dir = gifPreviewDir()
+  const out = path.join(dir, 'pvthumb_' + key + '.jpg')
+  try {
+    if (fs.existsSync(out) && fs.statSync(out).size > 0) {
+      previewThumbCache.set(key, out)
+      return out
+    }
+    fs.mkdirSync(dir, { recursive: true })
+    await sharp(src, { animated: false })
+      .rotate()
+      .resize({ width: PREVIEW_THUMB_MAX, height: PREVIEW_THUMB_MAX, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: PREVIEW_THUMB_QUALITY })
+      .toFile(out)
+    if (fs.existsSync(out) && fs.statSync(out).size > 0) {
+      previewThumbCache.set(key, out)
+      return out
+    }
+    return ''
+  } catch (e) {
+    // 半截文件会让下次「命中坏缓存」,失败就删掉
+    try { fs.rmSync(out, { force: true }) } catch (e2) { /* 忽略 */ }
+    return ''
+  }
+}
+
+// 给一批预览文件算「小图」:与 files 等长同序,失败/超时 → ''(调用方退回原图)
+const buildBatchPreviewThumbs = async (files) => {
+  const list = Array.isArray(files) ? files : []
+  const thumbs = list.map(() => '')
+  if (!list.length) return thumbs
+  let stopped = false
+  const jobs = runConcurrent(list.map((_, i) => i), PREVIEW_THUMB_CONCURRENCY, async (i) => {
+    if (stopped) return
+    thumbs[i] = await previewThumbImage(list[i])
+  }).catch(() => { /* 单张失败已在 previewThumbImage 吃掉 */ })
+  const budget = new Promise((resolve) => setTimeout(resolve, PREVIEW_THUMB_BUDGET_MS))
+  await Promise.race([jobs, budget])
+  stopped = true
+  // 复制一份:超时后才完成的会在后台继续写 thumbs,不影响已返回的这份
+  return thumbs.slice()
+}
+
+// 给一批预览文件算 thumbs:返回与 files **等长、同序**的数组,非 GIF / 失败 / 超时 → ''
+// ⚠ 现在只给 `preview-thumbs`(按需单独取)用 —— 不再挂在 book-preview-images 上,
+//   否则每批预览都要同步等首帧(预算 1.5s),首屏就被拖慢了。
+const buildPreviewThumbs = async (files) => {
+  const list = Array.isArray(files) ? files : []
+  const thumbs = list.map(() => '')
+  const targets = []
+  for (let i = 0; i < list.length; i++) {
+    if (/\.gif$/i.test(String(list[i] || ''))) targets.push(i)
+  }
+  if (!targets.length) return thumbs
+  let stopped = false
+  const jobs = runConcurrent(targets, GIF_PREVIEW_CONCURRENCY, async (i) => {
+    if (stopped) return
+    thumbs[i] = await gifStillFrame(list[i])
+  }).catch(() => { /* 单张失败已在 gifStillFrame 里吃掉 */ })
+  // 硬预算:到点就先把这一批返回(后面的任务自己会看到 stopped 直接跳过)
+  const budget = new Promise((resolve) => setTimeout(resolve, GIF_THUMBS_BUDGET_MS))
+  await Promise.race([jobs, budget])
+  stopped = true
+  // 复制一份:超时之后才完成的那几张会继续写 thumbs(不影响已经返回的这份)
+  return thumbs.slice()
+}
+
+// 按需取「GIF 首帧」:前端拿到 book-preview-images 的 files 后,只把 .gif 的那些路径发过来。
+// 与 book-preview-images 解耦的原因:预览首屏不该为「有没有 GIF」付 1.5 秒(用户报的首屏变慢)。
+// 按批补「预览小图」:前端拿到预览路径后单独调它,不阻塞批次返回。
+// 与 preview-thumbs(GIF 首帧)的区别:这里接受**任意图片**,统一压成长边 ≤480px 的 JPEG。
+const buildBatchPreviewThumbsSafe = async (files) => {
+  const list = Array.isArray(files) ? files : []
+  const thumbs = list.map(() => '')
+  if (!list.length) return thumbs
+  let stopped = false
+  const jobs = runConcurrent(list.map((_, i) => i), PREVIEW_THUMB_CONCURRENCY, async (i) => {
+    if (stopped) return
+    thumbs[i] = await previewThumbImage(list[i])
+  }).catch(() => { /* 单张失败已在 previewThumbImage 里吃掉 */ })
+  const budget = new Promise((resolve) => setTimeout(resolve, 4000))
+  await Promise.race([jobs, budget])
+  stopped = true
+  return thumbs.slice()
+}
+ipcMain.handle('preview-thumbs-batch', async (event, paths) => {
+  const list = Array.isArray(paths) ? paths : []
+  if (!list.length) return { ok: true, thumbs: [] }
+  const safe = list.map(p => {
+    const s = String(p || '')
+    return (s && path.isAbsolute(s)) ? s : ''
+  })
+  try {
+    const thumbs = await buildBatchPreviewThumbsSafe(safe)
+    return { ok: true, thumbs }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), thumbs: [] }
+  }
+})
+ipcMain.handle('preview-thumbs', async (event, paths) => {
+  const list = Array.isArray(paths) ? paths : []
+  if (!list.length) return { ok: true, thumbs: [] }
+  // 只处理绝对路径 + .gif(前端本来只传 GIF;这里再挡一道,避免被当成任意文件读取入口)
+  const safe = list.map(p => {
+    const s = String(p || '')
+    return (s && path.isAbsolute(s) && /\.gif$/i.test(s)) ? s : ''
+  })
+  try {
+    const thumbs = await buildPreviewThumbs(safe)
+    return { ok: true, thumbs }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), thumbs: safe.map(() => '') }
+  }
+})
+
 ipcMain.handle('book-preview-images', async (event, book) => {
   // 两种用法:
   //   · 分批(详细界面/侧栏):传 start + count,每次只解压/取这一批,前端取到就显示 ——
@@ -3782,7 +4594,11 @@ ipcMain.handle('book-preview-images', async (event, book) => {
     if (type === 'folder') {
       const list = await getImageListByBook(filepath, type)
       const files = list.slice(start, start + count).map(it => it.absolutePath).filter(Boolean)
-      return { ok: true, total: list.length, rawTotal: list.length, start, files }
+      // ★ 这里**不再等小图**:以前在这一批里同步压图,导致每批要等 1.5s 才返回,
+      //   界面表现就是「先冒出几排、停一下、再冒出几排」。
+      //   现在批次只回文件路径(很快就返回,预览快速铺开),
+      //   小图由前端拿完路径后调 preview-thumbs-batch 在后台补,到了再淡入。
+      return { ok: true, total: list.length, rawTotal: list.length, start, files, thumbs: [] }
     }
     // 压缩包:名字列表按「路径 + 修改时间」缓存,每次只解压要的这一批
     let mtime = 0
@@ -3799,16 +4615,19 @@ ipcMain.handle('book-preview-images', async (event, book) => {
       if (previewArchiveCache.size > 6) previewArchiveCache.delete(previewArchiveCache.keys().next().value)
     }
     const pick = entry.names.slice(start, start + count)
-    if (!pick.length) return { ok: true, total: entry.names.length, rawTotal: entry.rawTotal, start, files: [] }
+    if (!pick.length) return { ok: true, total: entry.names.length, rawTotal: entry.rawTotal, start, files: [], thumbs: [] }
     // 已经解压过的页不再重解(重新打开预览时省一大截时间)
     const missing = pick.filter(n => !fs.existsSync(path.join(entry.dir, n)))
     if (missing.length) await extractArchiveFiles(filepath, missing, entry.dir)
+    const files = pick.map(n => path.join(entry.dir, n)).filter(f => fs.existsSync(f))
+    // 同文件夹书:批次只回路径,小图由前端后台补(见上面的注释)
     return {
       ok: true,
       total: entry.names.length,
       rawTotal: entry.rawTotal,
       start,
-      files: pick.map(n => path.join(entry.dir, n)).filter(f => fs.existsSync(f))
+      files,
+      thumbs: []
     }
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) }
@@ -3897,30 +4716,89 @@ ipcMain.handle('eh-gallery-pages', async (event, arg) => {
 // 在线阅读用:①先把页链接收齐(快,几次请求就有总数)②再逐页解析图片地址。
 // 拆成两条是为了「点开就进阅读器」—— 界面先按总数摆好占位,哪一页解析好就填哪一页
 // (JHenTai 阅读器就是这么做的:进页面立刻可见,每页各自显示解析/加载状态)。
+//
+// ★ 首屏不再等全量 sweep:arg.quick=true 时只抓**详情页一次**(拿前 20 条内联页链接 + 真实总页数)
+//   就立刻返回。实测 977 页的画廊全量 sweep 要 56 次请求 / 7 秒,而详情页一次请求里就有前 20 条 —— 
+//   用户从第 1 页开始读,这 20 条足够开画;剩下的用同一个 handler(quick=false)在后台补全。
 ipcMain.handle('eh-gallery-page-links', async (event, arg) => {
-  const { url, limit = 3000 } = arg || {}
+  const { url, limit = 3000, quick = false, maxPages = 200 } = arg || {}
   if (!url) return { ok: false, error: 'noUrl', links: [] }
+  const cookie = ehCookieHeader()
   try {
+    if (quick) {
+      const fast = await ehLogin.fetchDetailInlineLinks(url, { proxy: setting.proxy, cookie })
+      const links = (fast && fast.links) || []
+      return {
+        ok: links.length > 0,
+        quick: true,
+        links,
+        total: Number((fast && fast.total) || 0) || links.length,
+        error: links.length ? '' : ((fast && fast.error) || 'noInline')
+      }
+    }
     const links = await ehLogin.listGalleryPageLinks(url, {
       proxy: setting.proxy,
-      cookie: ehCookieHeader(),
+      cookie,
       limit: Math.max(1, Math.min(Number(limit) || 3000, 5000)),
-      maxPages: 200
+      maxPages: Math.max(1, Math.min(Number(maxPages) || 200, 500))
     })
-    return { ok: links.length > 0, links, total: links.length, error: links.length ? '' : 'noPages' }
+    return { ok: links.length > 0, quick: false, links, total: links.length, error: links.length ? '' : 'noPages' }
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e), links: [] }
   }
 })
 
+// 后台增量补全页链接:只抓 [from, to) 这一段(不重头再扫整本)。
+// 首屏用 quick 拿到前 20 条之后,剩下的按「窗口」一点点补 —— 千页画廊也不会再出现
+// 「打开书先卡 7 秒、几十个请求一次打出去」那种观感。
+ipcMain.handle('eh-gallery-page-links-fill', async (event, arg) => {
+  const { url, from = 0, to = 0, batch = 8, known = null } = arg || {}
+  if (!url) return { ok: false, error: 'noUrl', links: [] }
+  try {
+    const links = await ehLogin.fetchGalleryPageRange(url, {
+      from: Math.max(0, Number(from) || 0),
+      to: Math.max(0, Number(to) || 0),
+      batch: Math.max(1, Math.min(Number(batch) || 8, 12)),
+      // known = 前端已经有的页链接:必须过滤掉,否则补回来的「第 21 条」其实是第 1 条
+      known: Array.isArray(known) ? known : null,
+      proxy: setting.proxy,
+      cookie: ehCookieHeader()
+    })
+    return { ok: links.length > 0, links, error: links.length ? '' : 'noPages' }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e), links: [] }
+  }
+})
+
+// 解析一页的图片地址。失败时给出 kind 分类(network / limit / other),
+// 渲染进程据此决定「值不值得换节点重试」—— 断网时换节点救不了,只是白等。
+// 走哪条腿由 ehLogin.request() 按目标域名决定(站点页走代理),这里不重复判断。
 ipcMain.handle('eh-page-image', async (event, arg) => {
   const { pageUrl, reloadKey = '' } = arg || {}
-  if (!pageUrl) return { ok: false, error: 'noUrl' }
+  if (!pageUrl) return { ok: false, error: 'noUrl', kind: 'other' }
   try {
-    const info = await ehLogin.resolvePageImageInfo(pageUrl, { proxy: setting.proxy, cookie: ehCookieHeader(), reloadKey })
-    return { ok: !!info.url, url: info.url, originalUrl: info.originalUrl, reloadKey: info.reloadKey, error: info.url ? '' : 'noImageUrl' }
+    const info = await ehLogin.resolvePageImageInfo(pageUrl, {
+      proxy: setting.proxy,
+      cookie: ehCookieHeader(),
+      reloadKey,
+      // 快速失败:旧默认是 20s×3 次(单页最坏 60.9s),阅读器重试链会把它放大成 245s
+      timeout: 12000,
+      retries: 1
+    })
+    return {
+      ok: !!info.url,
+      url: info.url,
+      originalUrl: info.originalUrl,
+      reloadKey: info.reloadKey,
+      error: info.url ? '' : 'noImageUrl',
+      kind: info.url ? '' : 'other'
+    }
   } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) }
+    const msg = String((e && e.message) || e)
+    const kind = /timeout|ECONN|socket|TLS|ENOTFOUND|EAI_AGAIN/i.test(msg) ? 'network'
+      : /403|429|509|limit|bandwidth/i.test(msg) ? 'limit'
+        : 'other'
+    return { ok: false, error: msg, kind }
   }
 })
 
@@ -4061,6 +4939,83 @@ const downloadTasks = new Map()
 // 下载记录的封面:建任务时抓一次存成本地文件(<数据目录>/download-covers/<id>.<ext>),
 // 之后界面直接读本地图 —— 不再走代理,代理挂了也不会变破图。
 const DOWNLOAD_COVER_DIR = path.join(STORE_PATH, 'download-covers')
+
+// ---------- 下载根目录的解析规则(唯一入口) ----------
+// 以前 `path.resolve(相对路径)` 的基准是**进程 cwd** —— 桌面版那就是安装目录(常常不可写 → EPERM),
+// Docker 里 cwd 也不是用户以为的地方;而跨端同步来的 POSIX 绝对路径 `/vol1/...` 在 Windows 上
+// 还会被静默拼成 `C:\vol1\...`(文件飞到 C 盘根,用户根本找不到)。
+// 现在统一三条:
+//   ① 本端可识别的绝对路径 → 原样使用;
+//   ② 相对路径 → 以**用户数据目录 STORE_PATH** 为基准(稳定、可写、语义就是「用户数据」);
+//   ③ 另一端形式的绝对路径(POSIX 的 /vol1/x 在 Windows、Windows 的 C:\x 在 Linux)→ 明确报错,
+//      由调用方提示用户重新设置下载目录,绝不静默改写成本地假路径。
+const isForeignAbsPath = (p) => {
+  const s = String(p == null ? '' : p)
+  if (process.platform === 'win32') {
+    // `/foo` 在 Windows 上不是本地路径写法的常态(UNC 是 `\\server\share`),按另一端的 POSIX 绝对路径处理
+    return /^\/(?!\/)/.test(s)
+  }
+  return /^[A-Za-z]:[\\/]/.test(s) || /^\\\\/.test(s)
+}
+// 「child 是否在 base 之下(含等于)」。Windows 上大小写不敏感、分隔符可能混用,统一按 resolve 后的形式比。
+const isUnder = (child, base) => {
+  if (!child || !base) return false
+  const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p)
+  const c = norm(path.resolve(String(child)))
+  const b = norm(path.resolve(String(base)))
+  if (c === b) return true
+  // base 是盘符根(C:\ 或 /)时本身已带分隔符,别再拼一层
+  const prefix = b.endsWith(path.sep) ? b : b + path.sep
+  return c.startsWith(prefix)
+}
+// 调用者角色来源:
+//   · 桌面版:渲染进程直接 invoke,event 上没有角色字段 → 视为管理员(本地单用户,行为不变);
+//   · 网页版:web-server 在 /api/ipc 分发时把会话角色写进 fakeEvent._emmRole(见 web-server.js)。
+// 这里只用来「收紧」权限,拿不到角色时绝不收紧,避免把桌面版功能误杀。
+const callerRoleOf = (event) => String((event && event._emmRole) || '')
+const isRestrictedCaller = (event) => {
+  const role = callerRoleOf(event)
+  return !!role && role !== 'admin'
+}
+// 返回 { dir, error }:error === '' 表示成功;'noPath' = 空;'foreignPath' = 另一端的绝对路径;
+// 'outsideDownloadPath' = 落在 opts.mustUnder(下载根目录)之外(只读账户专用闸门)
+const resolveDownloadRoot = (raw, opts = {}) => {
+  const mustUnder = String((opts && opts.mustUnder) || '').trim()
+  const check = (dir) => {
+    if (mustUnder && dir && !isUnder(dir, mustUnder)) return { dir: '', error: 'outsideDownloadPath' }
+    return { dir, error: '' }
+  }
+  const s = String(raw == null ? '' : raw).trim()
+  if (!s) return { dir: '', error: 'noPath' }
+  if (isForeignAbsPath(s)) return { dir: '', error: 'foreignPath' }
+  if (path.isAbsolute(s)) return check(path.resolve(s))
+  return check(path.resolve(STORE_PATH, s))
+}
+// 下载目录不可用时给前端的「可操作」错误。
+// 文案里带「设置 → 下载目录」以及要定位的设置项(settingKey),前端可以直接把它显示出来,
+// 并按 action 打开设置面板、跳到 downloadPath 那一项。
+// ⚠ 说明:这里不硬写「设置」下的具体分页名(常用/高级/AI功能)—— 设置界面的分页正在被重排,
+//   写死了反而会指错地方;准确的分页由前端用 settingKey 去定位。
+const downloadRootError = (error) => {
+  if (error === 'outsideDownloadPath') {
+    // 只读账户越界:这不是「用户没设置」,而是「不允许多账户往别处写」,所以不给「去设置」的动作
+    return {
+      ok: false,
+      error: 'outsideDownloadPath',
+      hint: '只读账户只能下载到管理员设置的下载目录。',
+    }
+  }
+  const foreign = error === 'foreignPath'
+  return {
+    ok: false,
+    error: foreign ? 'foreignPath' : 'noPath',
+    hint: foreign
+      ? '下载目录是另一台设备的路径,本机不存在。请打开「设置 → 下载目录」重新选一个本机目录。'
+      : '还没有设置下载目录。请打开「设置 → 下载目录」选一个本机可写的文件夹,再重新下载。',
+    action: 'open-setting',
+    settingKey: 'downloadPath'
+  }
+}
 // 记录里存的 cover 可能是原始 EH 地址,也可能是网页版的 /api/ex-image?url=... 代理地址
 const rawCoverUrl = (c) => {
   const s = String(c || '')
@@ -4102,11 +5057,21 @@ const cacheDownloadCover = async (rec) => {
       proxy: setting.proxy, cookie: ehCookieHeader(), raw: true,
       referer: 'https://e-hentai.org/', timeout: 30000
     })
-    if (!r || r.status !== 200 || !r.buffer || !r.buffer.length) return ''
+    // 2xx 都算成功:H@H / CDN 一跳转(302)以前直接 return '' → 封面永远空白。
+    // (request() 现在会跟随重定向,这里再放宽状态码判定做双保险)
+    const st = Number(r && r.status) || 0
+    if (!r || st < 200 || st >= 300 || !r.buffer || !r.buffer.length) return ''
+    // ★关键:await 期间用户可能已经把这条记录删了。以前这里无条件写回 rec.coverPath + 广播
+    //   「eh-download-progress」——前端 upsertDownloadRecord 一看 id 不在就 unshift 回去,
+    //   表现就是「任务记录删掉了,过几秒又自己冒出来」。
+    //   已经在 downloadTasks 里找不到(或已被同名新任务顶替)就整段放弃,连文件都不落盘。
+    if (downloadTasks.get(rec.id) !== rec) return ''
     const file = path.join(DOWNLOAD_COVER_DIR, rec.id + '.' + coverExtOf(r.headers && r.headers['content-type'], url))
     fs.writeFileSync(file, r.buffer)
     rec.coverPath = file
     persistDownloads()
+    // 再确认一次:写文件和 persist 也要花时间,这期间同样可能被删
+    if (downloadTasks.get(rec.id) !== rec) return ''
     emitToRenderer('eh-download-progress', publicDownload(rec))
     return file
   } catch (e) { return '' }
@@ -4161,7 +5126,12 @@ const restoreDownloads = () => {
       if (!t || !t.id) continue
       // 旧记录里的 saveDir / dir 可能是相对路径(取决于当时的设置):统一补成绝对路径,
       // 否则重启后「继续下载」会写到一个不存在的地方、预览也读不到文件。
-      const fix = (p) => { const s = String(p || ''); return s ? path.resolve(s) : '' }
+      // 基准是「用户数据目录」而不是进程 cwd(见 resolveDownloadRoot 的注释)
+      const fix = (p) => {
+        const r = resolveDownloadRoot(p)
+        // 解析不出来(空 / 另一端的绝对路径)就原样保留,至少不把它改写成一个错误的本地路径
+        return r.dir || String(p || '')
+      }
       // 上次没跑完的:重启后一律当「已暂停」,由用户点继续(继续时会跳过已下好的文件)
       downloadTasks.set(t.id, {
         ...t,
@@ -4175,6 +5145,10 @@ const restoreDownloads = () => {
         // total 兜底:links 收集不全的老记录会出现 done+failed > total(235/218,实际 236 页)。
         // 任务已经停了不会再走 onProgress,所以在恢复时按 done+failed 修正一次。
         total: Math.max(Number(t.total) || 0, (Number(t.done) || 0) + (Number(t.failed) || 0), Number(t.pageCount) || 0),
+        // 运行锁相关字段一律复位:重启后不可能有 worker 在跑
+        running: false,
+        pendingResume: false,
+        jobPromise: null,
         state: { stopped: false }
       })
     }
@@ -4184,6 +5158,20 @@ const restoreDownloads = () => {
 restoreDownloads()
 
 const runDownloadJob = (rec) => {
+  // ★ 运行锁:同一条记录同一时刻只允许一个 worker。
+  //   以前「暂停 → 立刻继续」会同时跑两个 worker —— 旧 worker 只在页边界检查 state.stopped,
+  //   而这里一进来就把 state.stopped 重置成 false,等于把「暂停」撤销了:
+  //   两个 worker 同时写同一批文件,进度来回跳、文件互相覆盖。
+  if (rec.running) {
+    // 已经在跑、而且没被要求停:直接什么也不做(连点两次「继续」不该起第二个 worker)
+    if (!(rec.state && rec.state.stopped)) return rec.jobPromise || Promise.resolve()
+    // 已经被要求停(刚点过暂停):把「用户还想继续」记在记录上,等这个 worker 真的退出后由 finally 接着跑,
+    // 不用用户再点一次,也不会两个 worker 并行。
+    rec.pendingResume = true
+    return rec.jobPromise || Promise.resolve()
+  }
+  rec.running = true
+  rec.pendingResume = false
   const state = rec.state || (rec.state = { stopped: false })
   state.stopped = false
   rec.status = 'downloading'
@@ -4218,6 +5206,11 @@ const runDownloadJob = (rec) => {
     periodSec: Math.max(0.1, Number(setting.downloadPeriodSec) || 1),
     state,
     onProgress: (u) => {
+      // ★存活判断:这条记录可能已经被用户删掉(删除时从 downloadTasks 里摘掉)。
+      //   worker 只在页边界检查 state.stopped,收尾前还会推进好几次进度 ——
+      //   以前每次都会广播 eh-download-progress,前端一看 id 不在就 unshift 回去,
+      //   于是「删掉的记录又回来了」。这里一刀切:记录不在 Map 里就完全不推进、不广播。
+      if (downloadTasks.get(rec.id) !== rec) return
       // 收页链接阶段(phase=links):只更新链接数,**不动 done/failed**。
       // 以前这里无条件 rec.done = u.done|0,而 links 阶段的 update 里 done 恒为 0 ——
       // 点「继续任务」后进度条先掉到 0、再把已下好的页数一遍爬回来,就是用户说的「短暂失灵」。
@@ -4258,22 +5251,24 @@ const runDownloadJob = (rec) => {
       }
     }
   }).then(() => {
+    // 自动重试的时间点:failed / waiting 都要在**这里**就算好。
+    // 以前只给 failed 设,waiting 靠 autoRetryTick(每 30 秒扫一遍)「发现 nextRetryAt 是 0 就补上」——
+    // 结果是等 GP 的任务要先白白多等一个 30 秒周期才开始倒计时,而且第一次扫描前 nextRetryAt=0
+    // 会让界面上的「下次重试」显示不出来。
+    const retryDelayMs = Math.max(1, Number(setting.retryIntervalMin) || 10) * 60000
     if ((rec.gpBlocked | 0) > 0) {
       // 原图被 EH 以「需要 GP」挡下:任务停在「等待中」——额度恢复后点「继续」接着下
       rec.status = 'waiting'
       rec.error = 'gp'
+      rec.nextRetryAt = Date.now() + retryDelayMs
     } else {
       // 有页失败就标成 failed(可「继续」补:继续时会跳过已下好的文件),不是 done ——
       // 否则用户看到 ✗ 却没有任何按钮能补齐(JHenTai 的 downloadFailed 也是可重下的状态)
-        rec.status = state.stopped ? 'paused' : ((rec.failed | 0) === 0 ? 'done' : 'failed')
+      rec.status = state.stopped ? 'paused' : ((rec.failed | 0) === 0 ? 'done' : 'failed')
       if (rec.status === 'failed' && !rec.error) rec.error = (rec.lastError || '部分页面下载失败')
-      // 失败(或等 GP 的 waiting)按设置排一次自动重试;完成/暂停清掉
-      if (rec.status === 'failed' || rec.status === 'waiting') {
-        const mins = Math.max(1, Number(setting.retryIntervalMin) || 10)
-        rec.nextRetryAt = Date.now() + mins * 60000
-      } else {
-        rec.nextRetryAt = 0
-      }
+      // ⚠ 这里 status 只可能是 done / failed / paused,不可能是 waiting(gpBlocked 已在上面的分支分流),
+      //   以前写成 `status === 'failed' || status === 'waiting'`,后半句是永远不成立的死代码。
+      rec.nextRetryAt = rec.status === 'failed' ? Date.now() + retryDelayMs : 0
       // 封面兜底:EH 封面抓不到(或早就没了)时,用下载目录里的第一页(本地文件,永远在)
       if (!rec.coverPath && rec.dir) {
         const local = firstImageInDir(rec.dir)
@@ -4284,6 +5279,17 @@ const runDownloadJob = (rec) => {
     rec.status = state.stopped ? 'paused' : 'failed'
     rec.error = String((e && e.message) || e)
   }).finally(() => {
+    rec.running = false
+    // 「暂停之后立刻点了继续」:这次 worker 是被要求退出的,绝不能走下面的收尾流程
+    // (会被标成 paused/failed、还可能在 onDownloadFinished 里被自动移动),直接接着起新 worker。
+    if (rec.pendingResume && downloadTasks.get(rec.id) === rec) {
+      rec.pendingResume = false
+      rec.phase = ''
+      rec.linkCount = 0
+      runDownloadJob(rec)
+      return
+    }
+    rec.pendingResume = false
     // ★关键:这条记录可能已经在下载过程中被用户删掉了(删除时把它从 downloadTasks 里摘掉)。
     //   以前这里无条件 persist + emit —— worker 在几秒后收尾,又把「已删除的记录」推回前端,
     //   前端 upsertDownloadRecord 一看 id 不在就 unshift 回去,于是「删掉的记录自己又回来了」。
@@ -4311,11 +5317,23 @@ ipcMain.handle('eh-download-gallery', async (event, arg) => {
   const { url, title = '', cover = '', original = false, tags = null, category = '', titleJpn = '', rating = 0 } = arg || {}
   // 统一成绝对路径:记录里的 dir 会一直用到「重启后继续下载」和「预览找文件」,
   // 存相对路径的话换个工作目录就全找不到(预览空白、续传失效)。
-  // 下载窗口里可以指定位置(saveDir):不传就用设置里的下载目录
-  const wantDir = String((arg && arg.saveDir) || '').trim() || String(setting.downloadPath || '').trim()
-  const saveDir = wantDir ? path.resolve(wantDir) : ''
+  // 下载窗口里可以指定位置(saveDir):不传就用设置里的下载目录。
+  // ★解析规则见 resolveDownloadRoot:相对路径以**用户数据目录**为基准(不是进程 cwd),
+  //   另一端形式的绝对路径(/vol1/... 在 Windows 上)直接报错,不再静默拼成 C:\vol1。
+  // ★★只读账户(viewer)不允许自定义 saveDir:eh-download-* 已经对只读账户开放,
+  //   如果再让它传任意绝对路径,等于把「往本机任意可写目录写文件」的能力给了只读账户
+  //   (实测传 saveDir:"C:\\Users\\x\\Desktop" 就能落地)。所以 viewer 一律用设置里的
+  //   downloadPath,并再叠一道 mustUnder 双向校验(即使 downloadPath 自身被写成怪路径也出不去)。
+  const restricted = isRestrictedCaller(event)
+  const downloadBase = resolveDownloadRoot(String(setting.downloadPath || '').trim()).dir
+  const wantDir = restricted
+    ? String(setting.downloadPath || '').trim()
+    : (String((arg && arg.saveDir) || '').trim() || String(setting.downloadPath || '').trim())
+  const root = resolveDownloadRoot(wantDir, restricted ? { mustUnder: downloadBase } : {})
+  const saveDir = root.dir
   if (!url) return { ok: false, error: 'badUrl' }
-  if (!saveDir) return { ok: false, error: 'noPath' }
+  // 下载目录不可用:回一个「可操作」的错误(带 hint 与 action),而不是只丢一句 noPath
+  if (!saveDir) return downloadRootError(root.error)
   const rec = {
     id: nanoid(), url, title, cover, original: !!original, saveDir,
     // EH 标注的页数(卡片/详情里带的):links 收集不全时用它兜底总数
@@ -4336,8 +5354,10 @@ ipcMain.handle('eh-download-gallery', async (event, arg) => {
 // 单页下载:直接存到下载目录(不建画廊子目录)
 ipcMain.handle('eh-download-page', async (event, arg) => {
   const { url, originalUrl = '', pageUrl = '', original = false, name = '' } = arg || {}
-  const saveDir = setting.downloadPath ? path.resolve(String(setting.downloadPath).trim()) : ''
-  if (!saveDir) return { ok: false, error: 'noPath' }
+  // 与整本下载同一套解析规则(相对路径按用户数据目录;另一端的绝对路径明确报错)
+  const root = resolveDownloadRoot(String(setting.downloadPath || '').trim())
+  const saveDir = root.dir
+  if (!saveDir) return downloadRootError(root.error)
   try {
     const r = await ehDownload.downloadOnePage({
       url, originalUrl, pageUrl, original, name, saveDir,
@@ -4399,12 +5419,23 @@ ipcMain.handle('eh-debug-links', async (event, arg) => {
 // 下载预览用:这个任务目录里每一页到底下了没有(按 1.webp / 02.jpg 这种序号文件名对应页码)。
 // 返回定长数组,没下到的位置是 null —— 前端用「空白 + 进度圈」补上。
 ipcMain.handle('eh-download-files', async (event, arg) => {
-  // 目录可能是相对路径(下载设置里填的是相对路径时),一律先转绝对路径:
+  // 目录可能是相对路径(下载设置里填的是相对路径时),一律按「用户数据目录」基准转绝对路径:
   // 否则 fs.readdirSync 会按进程 cwd 去找,读不到就返回空,前端表现为「预览什么都没有」;
   // 而且拼出来的图片路径也得是绝对的,file:// 才能加载。
   const rawDir = String((arg && arg.dir) || '')
-  const dir = rawDir ? path.resolve(rawDir) : ''
+  const dir = rawDir ? resolveDownloadRoot(rawDir).dir : ''
   const total = Math.max(0, Number((arg && arg.total) || 0))
+  // ★只读账户:只能看 downloadPath 里的文件。
+  //   以前 arg.dir 直接 path.resolve + readdirSync,等于给了「枚举本机任意目录 + 拿到绝对路径和体积」
+  //   的能力(网页版 viewer 传 C:\Users\x 就能列出来)。这里在解析后加一道 mustUnder 闸门,
+  //   越界直接回空(前端只会显示「没有可预览的页」,不会拿到任何目录信息)。
+  const restricted = isRestrictedCaller(event)
+  if (restricted && dir) {
+    const downloadBase = resolveDownloadRoot(String(setting.downloadPath || '').trim()).dir
+    if (!downloadBase || !isUnder(dir, downloadBase)) {
+      return { ok: false, error: 'outsideDownloadPath', files: [], total: 0, task: null }
+    }
+  }
   // 任务状态:用来区分「这一页还没轮到」和「这一页试过但失败了」,
   // 预览里前者显示等待,后者显示失败(用户要的「没好的就显示进度」)。
   const taskId = String((arg && arg.id) || '')
@@ -4438,10 +5469,48 @@ ipcMain.handle('eh-download-files', async (event, arg) => {
   return { ok: true, files, total: finalCount, task: task ? publicDownload(task) : null }
 })
 
+// 删掉某条下载记录留下的封面缓存文件。
+// 下载封面存在 <数据目录>/download-covers/<任务id>.<ext>,按 id 前缀 + 记录里的 coverPath 两路清,
+// 两条路径都失败也无所谓(force:true 忽略异常):残留文件只是占几 KB 盘,不会再复活记录。
+const removeDownloadCoverFiles = (rec) => {
+  if (!rec) return
+  const coverDir = path.resolve(DOWNLOAD_COVER_DIR)
+  const inCoverDir = (p) => {
+    const s = String(p || '')
+    if (!s) return false
+    return path.resolve(s).startsWith(coverDir + path.sep)
+  }
+  try {
+    if (rec.coverPath && inCoverDir(rec.coverPath)) fs.rmSync(rec.coverPath, { force: true })
+  } catch (e) { /* 忽略 */ }
+  const id = String(rec.id || '')
+  if (!id) return
+  try {
+    if (!fs.existsSync(coverDir)) return
+    for (const name of fs.readdirSync(coverDir)) {
+      if (!name.startsWith(id + '.')) continue
+      try { fs.rmSync(path.join(coverDir, name), { force: true }) } catch (e) { /* 忽略 */ }
+    }
+  } catch (e) { /* 目录读不了:忽略 */ }
+}
+
 ipcMain.handle('eh-download-action', async (event, arg) => {
   const { id, action } = arg || {}
   const t = downloadTasks.get(id)
   if (!t) return { ok: false, error: 'notFound' }
+  // ★只读账户只能操作「落在下载目录内」的记录:resume 会往 rec.saveDir 继续写,
+  //   restart 更狠 —— 先 rmSync(t.dir) 再重下。记录里的 saveDir 是建任务时定下来的,
+  //   管理员以前用「自定义目录」下过的老记录(比如 D:\other)如果被 viewer 重下,
+  //   就等于绕开了 eh-download-gallery 的那道闸门(还带删除)。
+  //   桌面版/管理员:isRestrictedCaller 为 false,直接放行(行为不变)。
+  const ensureInsideDownloadPath = () => {
+    if (!isRestrictedCaller(event)) return ''
+    const downloadBase = resolveDownloadRoot(String(setting.downloadPath || '').trim()).dir
+    const recBase = resolveDownloadRoot(String(t.saveDir || '').trim()).dir
+    if (!downloadBase || !recBase || !isUnder(recBase, downloadBase)) return 'outsideDownloadPath'
+    if (t.dir && !isUnder(t.dir, downloadBase)) return 'outsideDownloadPath'
+    return ''
+  }
   if (action === 'pause') {
     if (t.state) t.state.stopped = true
     t.status = 'paused'
@@ -4454,15 +5523,23 @@ ipcMain.handle('eh-download-action', async (event, arg) => {
     //   继续下载会往库里继续写文件、多余页还按序号塞进去 —— 用户看到的就是
     //   「移动完的漫画又在重新下载」。真要补页请用「重新下载」(会清干净再下到下载目录)。
     if (t.movedTo) return { ok: false, error: 'alreadyMoved' }
+    // 只读账户:记录必须落在下载目录内(否则就是在往别处写)
+    const denied = ensureInsideDownloadPath()
+    if (denied) return { ok: false, error: denied }
     // 手动继续 = 重新开始计数(自动重试的次数归零)
     t.retryCount = 0
     t.nextRetryAt = 0
+    // ★运行锁在 runDownloadJob 里:旧 worker 还没退出时,这里只会把「要继续」记成 pendingResume,
+    //   由那个 worker 收尾时自动接着跑 —— 不会再出现「两个 worker 同时写同一批文件」。
     runDownloadJob(t)
-    return { ok: true }
+    return { ok: true, pending: !!t.pendingResume }
   }
   if (action === 'restart') {
     // 重新下载(下载记录预览页右键):停掉正在跑的 worker → 等它退出 → 清掉已下好的文件
     // → 计数归零 → 重新入队。断点续传会跳过已存在的文件,所以「重下」必须显式删文件。
+    // 只读账户:这一步会 rmSync(t.dir),必须先过「记录在下载目录内」的闸门
+    const denied = ensureInsideDownloadPath()
+    if (denied) return { ok: false, error: denied }
     if (t.state) t.state.stopped = true
     // 已经移到库里的记录:重新下载要回到**下载目录**、按原来的目录名重建,
     // 绝不能把库里的那本书当成下载目录(会写坏用户已入库的漫画)。
@@ -4473,7 +5550,10 @@ ipcMain.handle('eh-download-action', async (event, arg) => {
         const gidMatch = /\/g\/(\d+)\//.exec(String(t.url || ''))
         const plain = ehDownload.sanitizeName(t.title || '')
         const gid = gidMatch ? gidMatch[1] : ''
-        t.dir = path.join(path.resolve(String(t.saveDir)), plain ? (gid ? gid + ' - ' + plain : plain) : '')
+        // saveDir 也走同一个解析入口:相对路径按用户数据目录算,另一端的绝对路径就当没有(留空由下载时重算),
+        // 绝不拿 path.resolve 把 /vol1/... 拼成 C:\vol1\...
+        const base = resolveDownloadRoot(String(t.saveDir)).dir
+        t.dir = base ? path.join(base, plain ? (gid ? gid + ' - ' + plain : plain) : '') : ''
       }
     }
     const doRestart = () => {
@@ -4515,6 +5595,10 @@ ipcMain.handle('eh-download-action', async (event, arg) => {
     downloadTasks.delete(id)
     persistDownloads()
     emitToRenderer('eh-download-removed', { id })
+    // 封面缓存也一并清掉:否则「删了又回来」还有第三条路 ——
+    // 后台补封面(backfillDownloadCovers / cacheDownloadCover)拿着旧 id 继续回写。
+    // 放在摘记录之后(已是最后一步),删文件失败也不影响记录本身已经消失。
+    removeDownloadCoverFiles(t)
     const cleanup = () => {
       if (!dirToRemove) return
       // 只删「下载目录」里的东西:绝不能因为路径被改过而删到库里的书(双保险)
@@ -4538,11 +5622,17 @@ ipcMain.handle('eh-download-action', async (event, arg) => {
 // 清空记录(只删记录,不动已下载的文件)
 ipcMain.handle('eh-download-clear', async () => {
   // 先停掉所有在跑的 worker:否则它们收尾时又把记录推回前端(「清空后记录又冒出来」)
-  for (const t of downloadTasks.values()) {
+  const cleared = Array.from(downloadTasks.values())
+  for (const t of cleared) {
     if (t && t.state) t.state.stopped = true
   }
   downloadTasks.clear()
   persistDownloads()
+  // 封面缓存跟着清掉(不然以后按旧 id 补封面还能把图写回来)
+  for (const t of cleared) removeDownloadCoverFiles(t)
+  // 广播一次「已整体清空」:前端据此清空列表 + 记时间戳,
+  // 免得它自己手上那份旧列表 / 迟到的进度事件又把记录塞回来。
+  emitToRenderer('eh-download-cleared', { at: Date.now() })
   return { ok: true, tasks: [] }
 })
 
@@ -4581,6 +5671,8 @@ const autoRetryTick = () => {
     for (const rec of downloadTasks.values()) {
       if (rec.status !== 'failed' && rec.status !== 'waiting') continue
       if ((rec.retryCount | 0) >= max) continue
+      // 兜底:`nextRetryAt` 正常由 runDownloadJob 收尾时设好(failed/waiting 都会设),
+      // 只有「老版本存下来的记录」或别的路径漏设时才会是 0 —— 这时补一个间隔,等下一轮再真正重试。
       if (!rec.nextRetryAt) { rec.nextRetryAt = now + mins * 60000; continue }
       if (now < rec.nextRetryAt) continue
       rec.retryCount = (rec.retryCount | 0) + 1
@@ -4609,7 +5701,9 @@ ipcMain.handle('eh-download-page-by-index', async (event, arg) => {
     // 原图任务下原图;拿不到原图链接才用普通图(与整本下载的口径一致)
     const target = rec.original ? (info.originalUrl || info.url) : info.url
     if (!target) return { ok: false, error: 'noImageUrl' }
-    const pad = String(links.length).length
+    // 与整本下载同一套位数规则(至少 4 位,且优先沿用目录里已有文件的位数),
+    // 否则「单页重下」会存成另一个文件名 —— 整本续传永远认为这一页没下好。
+    const pad = ehDownload.indexPad(rec.dir, links.length)
     const name = String(idx + 1).padStart(pad, '0')
     const file = path.join(rec.dir, name + '.' + ehDownload.extOf(target))
     const bytes = await ehDownload.downloadFile(target, file, {
@@ -4638,6 +5732,11 @@ ipcMain.handle('list-subfolders', async (event, dir) => {
 
 // 真正执行移动(供 IPC 与「下载完成后自动移动」复用)
 const runMoveDownloads = async (ids, targetRoot, opts = {}) => {
+  // 「移动到本地库」会建库记录 + 生成封面(写库),离线模式必须拒绝:
+  // 否则会在不可达的库路径上登记书、把封面写进 .offline 假库,盘回来后就变成脏数据。
+  if (rejectIfLibraryOffline('移动下载到漫画库')) {
+    return { ok: false, error: '漫画库暂不可用(磁盘未挂载)', results: (ids || []).map(id => ({ id, ok: false, error: 'libraryOffline' })) }
+  }
   const removeAfterMove = opts.removeAfterMove !== false && !!setting.downloadRemoveAfterMove
   targetRoot = path.resolve(String(targetRoot || '').trim())
   try { fs.mkdirSync(targetRoot, { recursive: true }) } catch (e) { /* 已存在或建不了,后面逐个报错 */ }
@@ -4904,42 +6003,77 @@ ipcMain.handle('save-book', async (event, book) => {
 })
 
 // home
+// 库根统一成「不带尾分隔符的绝对路径」(前端也会兜一次,但干净点更好)。
+// ⚠ 'C:\' / '/' 这种是根本身,剥完会变成 'C:' / '',那就保留原样。
+const normLibraryRoot = (p) => {
+  const s = String(p || '').trim()
+  if (!s) return ''
+  const cut = s.replace(/[\\/]+$/, '')
+  if (!cut || /^[A-Za-z]:$/.test(cut)) return s
+  return cut
+}
 ipcMain.handle('get-folder-tree', async (event, filePathList) => {
-  // 每个路径按「它所属的那个库」的根目录来切 —— 合并显示不同库时根深度可能不一样
-  const folderList = [...new Set(filePathList.map(filepath => path.dirname(filepath)))]
-  const bookPathSplitList = folderList.sort().map(fp => {
-    const root = (libraryForPath(fp) || libraryForPath(path.dirname(fp)) || { path: setting.library }).path
-    const rootDepth = String(root || '').split(path.sep).length - 1
-    return fp.split(path.sep).slice(rootDepth)
-  })
-  const folderTreeObject = {}
-  for (const folders of bookPathSplitList) {
-    _.set(folderTreeObject, folders.map(f => '_' + f), {})
+  // 每个路径按「它所属的那个库」的根目录来切 —— 合并显示不同库时根深度可能不一样。
+  // ★并且要把「这个节点可能属于哪些库根」一起带出去(rootPaths):
+  //   以前只给 folderPath(相对**某个**库根的路径),前端只能拿 setting.library(当前活动库)去拼,
+  //   多库时非活动库的节点永远拼不出正确路径 —— 点「03-小说」下任何目录都是 0 条(用户报的 bug)。
+  const folderList = [...new Set((Array.isArray(filePathList) ? filePathList : [])
+    .map(filepath => path.dirname(String(filepath || '')))
+    .filter(Boolean))]
+  const treeRoot = {}
+  for (const fp of folderList.sort()) {
+    // 只认「这本书所属的库」:libraryForPath 找不到就**不**退回 setting.library 硬切 ——
+    // 那正是造出「看着合法、点不出结果」节点的原因。
+    const lib = libraryForPath(fp) || libraryForPath(path.dirname(fp))
+    const ownerRoot = lib ? normLibraryRoot(lib.path) : ''
+    // 切段用的基准:优先所属库根;配置缺失时退回当前活动库,**只为保持树的形状不变**(不给 rootPaths)
+    const splitBase = ownerRoot || normLibraryRoot(setting.library)
+    if (!splitBase) continue
+    const rootDepth = splitBase.split(path.sep).length - 1
+    const segments = fp.split(path.sep).slice(rootDepth).filter(Boolean)
+    let node = treeRoot
+    for (const seg of segments) {
+      const key = '_' + seg
+      if (!node[key]) node[key] = { __roots: new Set() }
+      node = node[key]
+      // 每一层都记上:父节点可能横跨多个库(同名目录会被合并成一棵子树)
+      if (ownerRoot) node.__roots.add(ownerRoot)
+    }
   }
-  const resolveTree = (preRoot, tree, initFolder) => {
-    _.forIn(tree, (node, label) => {
+  const childKeysOf = (node) => Object.keys(node || {}).filter(k => k !== '__roots')
+  const resolveTree = (tree, initFolder) => {
+    const out = []
+    for (const label of childKeysOf(tree)) {
+      const node = tree[label] || {}
       const trueLabel = label.slice(1)
-      if (_.isEmpty(node)) {
-        preRoot.push({
-          label: trueLabel,
-          value: trueLabel,
-          folderPath: [...initFolder, trueLabel].slice(1).join(path.sep),
-        })
-      } else {
-        preRoot.push({
-          label: trueLabel,
-          value: trueLabel,
-          folderPath: [...initFolder, trueLabel].slice(1).join(path.sep),
-          children: resolveTree([], node, [...initFolder, trueLabel]),
-        })
+      // folderPath:相对**库根**的路径;树的第一层就是库根目录本身,所以顶层恒为 ''
+      const folderPath = [...initFolder, trueLabel].slice(1).join(path.sep)
+      // rootPaths:该节点涉及的**所有**库根绝对路径(同名目录合并时会多于一个)。
+      // 排序后再给,保证同一棵树多次生成时顺序稳定(uid 才能稳定)。
+      // 不属于任何库 → [] (绝不 undefined,前端用它区分「旧后端没这字段」和「明确不属于任何库」)
+      const rootPaths = [...(node.__roots || [])].sort()
+      // uid:唯一且稳定 —— el-tree 的 node-key 用它。
+      // 为什么不能用 folderPath 当 key:跨库同名目录合并后,(rootA,R18) 与 (rootB,R18)
+      // 是两个节点但 folderPath 都是 'R18' → key 撞车,展开/收起/setCurrentKey 只能命中一个。
+      const uid = (rootPaths.length ? rootPaths.join('|') : '__noroot__') + '::' + folderPath
+      const item = {
+        label: trueLabel,
+        value: trueLabel,
+        folderPath,
+        rootPaths,
+        uid,
       }
-    })
-    return preRoot
+      if (childKeysOf(node).length) item.children = resolveTree(node, [...initFolder, trueLabel])
+      out.push(item)
+    }
+    return out
   }
-  return resolveTree([], folderTreeObject, [])
+  return resolveTree(treeRoot, [])
 })
 
 ipcMain.handle('load-collection-list', async (event, arg) => {
+  // 合集里装的就是「书名 + 书 id」:未登录同样不许出(与 load-book-list 同一道闸门)
+  if (!isDesktopAuthed()) return []
   return collectionList
 })
 
@@ -4960,6 +6094,12 @@ ipcMain.handle('save-collection-list', async (event, list) => {
 //   · libraryId 硬隔离,绝不跨库合并
 ipcMain.handle('suggest-collections', async (event, books) => {
   try {
+    // 防御:算法要的是纯数据。渲染进程若误传了 Vue 响应式 Proxy,
+    // 结构化克隆在 IPC 层就报 "An object could not be cloned" 了(前端已改为先 JSON 脱代理)。
+    // 这里再兜一道:不是数组就当空处理,免得算法内部抛奇怪的错。
+    if (!Array.isArray(books)) {
+      return { ok: false, error: 'badArgs: books 必须是数组', suggestions: [] }
+    }
     const suggestions = collectionAuto.buildPlan(books, { threshold: 0.55 })
     return { ok: true, suggestions }
   } catch (e) {
@@ -6128,10 +7268,10 @@ ipcMain.handle('apply-libraries', async (event, arg) => {
     const prev = activeLibraryOf(setting)
     const next = activeLibraryOf(draft)
     const activeChanged = !prev || !next || prev.id !== next.id || prev.path !== next.path || (prev.dataPath || '') !== (next.dataPath || '')
-    // 扫描过程中换库会把「旧库的书」写进「新库的数据库」,必须等扫描结束
-    if (activeChanged && isScanning) {
-      return { ok: false, error: '正在扫描漫画库,请等扫描结束后再切换库' }
-    }
+    // ★扫描期间也能切库(用户明确要求:不中断、点了就切,扫描转后台继续跑)。
+    //   前提:扫描全程只读 ctx(模型/封面目录/快照/缓存目录都跟着 ctx 走),
+    //   所以这里换库只是换「用户正在看的运行时」,不会把扫描的库改掉。
+    if (activeChanged && isScanning) sendMessageToWebContents('扫描在后台继续,已切换库')
     // 库改名或改「库数据存放位置」:把该库的数据从旧目录搬到新目录(同名同目录不搬)
     // 库改名 → 默认目录按新库名变 → 数据要跟着搬,否则书架会「看起来空了」
     for (const nextLib of draft.libraries) {
@@ -6176,8 +7316,10 @@ ipcMain.handle('set-active-library', async (event, id) => {
     if (!isLibraryActive(lib, IS_WEB_ENV)) return { ok: false, error: `库「${lib.name}」还没填「库数据存放位置」,填完才会生效` }
     const prev = activeLibraryOf(setting)
     if (prev && prev.id === lib.id) return { ok: true, activeChanged: false, ...librariesSnapshot() }
-    if (isScanning) return { ok: false, error: '正在扫描漫画库,请等扫描结束后再切换库' }
+    // ★扫描期间也能切:扫描转后台继续跑(它只用 ctx),这里只换用户正在看的运行时。
+    //   注意 prevDataDir 必须**在**切换前抓,否则 switchActiveLibraryRuntime 判不出要不要搬数据。
     const prevDataDir = LIBRARY_DATA_DIR
+    if (isScanning) sendMessageToWebContents('扫描在后台继续,已切换库')
     setting.activeLibraryId = lib.id
     setting.library = lib.path
     await applySetting({})
@@ -6194,10 +7336,8 @@ ipcMain.handle('set-active-library', async (event, id) => {
 //   (历史上两者不一致时,切完框点「重建库」会「枚举新框的书、写进旧库 DB、清旧库封面目录」)。
 ipcMain.handle('set-active-box', async (event, arg) => {
   try {
-    // 切框会连带切换活动库运行时(Manga / CURRENT_COVER_DIR / SNAPSHOT_FILE),扫描中切等于
-    // 把扫描脚下的库换掉 —— 与 set-active-library 一样直接拒绝。
-    // (扫描本身已用 ctx 隔离,但运行时切换仍会打乱扫描收尾的写库/写快照。)
-    if (isScanning) return { ok: false, error: '正在扫描漫画库,请等扫描结束后再切换' }
+    // ★扫描期间也能切框:扫描转后台继续跑(它全程只用 ctx),切框只换「用户正在看的运行时」。
+    if (isScanning) sendMessageToWebContents('扫描在后台继续,已切换库')
     const boxes = Array.isArray(setting.switchBoxes) ? setting.switchBoxes : []
     if (!boxes.length) return { ok: false, error: '还没有配置「库切换」框(设置 → 常用)' }
     const n = boxes.length
@@ -6233,6 +7373,8 @@ ipcMain.handle('set-active-box', async (event, arg) => {
 
 // 全局标签列表(来自 metadata.sqlite,和当前库/切换框无关)—— 设置 → 标签 用它
 ipcMain.handle('get-all-tags', async () => {
+  // 标签表会暴露「这个库里有什么内容」:未登录只回空表(返回结构不变,前端不会崩)
+  if (!isDesktopAuthed()) return { ok: true, tags: [] }
   try {
     const rows = await Metadata.findAll({ attributes: ['tags'] })
     const seen = new Set()
@@ -6540,7 +7682,7 @@ ipcMain.handle('read-text-from-clipboard', async () => {
 ipcMain.handle('update-window-title', async (event, title) => {
   if (WEB_MODE) return
   const name = require('./package.json').name
-  const version = require('./package.json').version
+  const version = appVersion
   if (title) {
     mainWindow.setTitle(name + ' ' + version + ' | ' + title)
   } else {
@@ -8285,8 +9427,9 @@ ipcMain.handle('enable-LAN-browsing', async (event, arg) => {
 // 网页模式:启动 HTTP 服务(前端页面 + IPC 桥 + SSE + 文件服务)
 if (WEB_MODE) {
   // 容器里的封面目录同样要迁到「<库名>-cover」:不迁的话 Docker 升级后
-  // 旧 <库数据目录>/cover/ 里的封面全变孤儿,整库封面要重新解压一遍
-  ensureCoverDirsMigrated()
+  // 旧 <库数据目录>/cover/ 里的封面全变孤儿,整库封面要重新解压一遍。
+  // 库盘离线时跳过(会对不可达路径做 mkdir/rename)
+  if (!libraryOfflineInfo) ensureCoverDirsMigrated()
   require('./web-server.js').start({
     getSetting: () => setting,
     // 每个账户读自己那份 setting.<账户名>.json(同名账户在 Win 与 NAS 共用);
