@@ -13,7 +13,7 @@
         </div>
         <el-row class="book-detail-function book-detail-cover-frame">
           <img
-            v-if="coverSrc && !detailCoverGaveUp && !detailCoverBroken"
+            v-if="coverSrc"
             class="book-detail-cover"
             :src="coverSrc"
             alt=""
@@ -23,8 +23,7 @@
             @load="onDetailCoverLoad"
             @error="onCoverError"
           />
-          <!-- 没有封面可显示(还没生成 / 生成失败):首字占位,交互与封面一致。
-               以前这里留空 <img> + 永远关不掉的加载动画 -->
+          <!-- 还没有封面地址(封面还没生成出来):淡底占位,交互与封面一致 -->
           <div
             v-else
             class="book-detail-cover book-detail-cover-empty"
@@ -32,10 +31,13 @@
             @click="$emit('openContentView', bookDetail)"
             @mousedown.middle.prevent="openLocalBook(bookDetail)"
             @contextmenu="$emit('openThumbnailView', bookDetail)"
-          ><span>{{ coverInitial }}</span></div>
+          ></div>
+          <!-- 加载中一直转圈(含「封面还没生成出来」),生成本身可能要十几秒 -->
           <div class="cover-loading" v-if="detailCoverLoading">
             <el-icon class="is-loading" :size="26"><Loading /></el-icon>
           </div>
+          <!-- 真生成不出来才写「加载失败」;图仍留在下面继续加载,补出封面会自动消失 -->
+          <div class="cover-failed" v-if="detailCoverFailed">{{ $t('m.coverLoadFailed') }}</div>
           <el-icon
             v-if="!setting.hideBookmarkButton && !viewerRole && !isCollection"
             :size="30"
@@ -66,13 +68,17 @@
             <el-descriptions-item v-if="bookDetail.posted && !isCollection" :label="$t('m.postTime')+':'">{{ isOnline ? bookDetail.posted : new Date(bookDetail.posted * 1000).toLocaleString("zh-CN") }}</el-descriptions-item>
           </el-descriptions>
         </el-row>
-        <!-- 合集:编辑 / 删除合集(只删壳,书留在库里) / 删除文件(整组成员移入回收站) / 关闭。
-             阅读/打开本地目录/重扫/隐藏这些对「一组书」没有意义,一律不显示 -->
+        <!-- 合集:阅读 / 重扫 / 编辑 / 获取元数据 / 隐藏 / 删除合集(只删壳,书留在库里) / 删除文件(整组移入回收站)。
+             顺序按用户要求固定;「关闭」按钮已去掉(右上角 ✕ 或 ESC 一样能关)。
+             阅读 = 用当前排序的第一本开读;重扫 / 获取元数据 / 隐藏 都是对整组批量执行。 -->
         <el-row class="book-detail-function" v-if="isCollection">
-          <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain @click="$emit('editCollection', bookDetail)">{{$t('m.editCollection')}}</el-button>
+          <el-button class="detail-func-btn" type="success" plain :disabled="!collectionMembers.length" @click="readCollection">{{$t('m.collectionRead')}}</el-button>
+          <el-button v-if="!viewerRole" class="detail-func-btn" plain :loading="collectionRescanning" :disabled="!collectionMembers.length" @click="rescanCollection">{{$t('m.rescan')}}</el-button>
+          <el-button v-if="!viewerRole" class="detail-func-btn is-wide" type="primary" plain @click="editTags">{{editingTag ? $t('m.viewInfo') : $t('m.editCollection')}}</el-button>
+          <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain :disabled="!collectionMembers.length" @click="requestCollectionMetadata">{{$t('m.getMetadata')}}</el-button>
+          <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain :disabled="!collectionMembers.length" @click="triggerHiddenCollection">{{bookDetail.hiddenBook ? $t('m.showManga') : $t('m.hideManga')}}</el-button>
           <el-button v-if="!viewerRole" class="detail-func-btn" type="danger" plain @click="deleteCollectionOnly(bookDetail)">{{$t('c.deleteCollection')}}</el-button>
           <el-button v-if="!viewerRole" class="detail-func-btn" type="danger" plain @click="deleteCollectionFiles(bookDetail)">{{$t('m.deleteFile')}}</el-button>
-          <el-button class="detail-func-btn" plain @click="dialogVisibleBookDetail = false">{{$t('m.close')}}</el-button>
         </el-row>
         <el-row class="book-detail-function" v-if="!isCollection">
           <el-button-group class="detail-read-group">
@@ -103,6 +109,54 @@
       <el-col :span="setting.showComment ? 10 : 18">
         <el-scrollbar class="book-tag-frame">
           <div v-if="editingTag && !viewerRole">
+            <!-- ========== 合集编辑:名称 / 标签(批量作用于全部成员) ==========
+                 合集的「元数据」不在 DB 里:名称与成员在 collectionList 那条记录上,
+                 标签则完全落在每个成员身上 —— 所以这里的标签是「并集 + 差量下发」:
+                 删掉一个标签 = 合集内全部成员都删掉它,加一个 = 全部成员都加上。 -->
+            <template v-if="isCollection">
+              <div class="edit-line">
+                <el-input v-model="collectionEditTitle" :placeholder="$t('m.collectionName')" @change="saveCollectionTitle"></el-input>
+              </div>
+              <div class="tag-picker" v-for="(arr, key) in tagGroup" :key="key">
+                <el-select
+                  v-model="collectionEditTags[key]"
+                  class="tag-select"
+                  multiple
+                  filterable
+                  clearable
+                  allow-create
+                  default-first-option
+                  :reserve-keyword="false"
+                  fit-input-width
+                  popper-class="tag-select-dropdown"
+                  :placeholder="resolvedTranslation[key]?._name || catDisplayName(key)"
+                  @change="applyCollectionTags"
+                >
+                  <el-option
+                    v-for="opt in arr"
+                    :key="key + '|' + opt.value"
+                    :label="opt.label"
+                    :value="opt.value"
+                  />
+                </el-select>
+              </div>
+              <div class="collection-edit-hint">{{ $t('m.collectionTagEditHint') }}</div>
+              <div class="collection-edit-hint">{{ $t('m.collectionCoverEditHint') }}</div>
+              <!-- 与普通漫画编辑标签界面同一排按钮:合集的按「全部成员」执行 -->
+              <el-space wrap class="tag-edit-buttons">
+                <el-button @click="addCollectionCategory">{{$t('m.addCategory')}}</el-button>
+                <el-button type="success" @click="$emit('openAddTag')">{{$t('m.addNewTag')}}</el-button>
+                <el-button @click="collectionGetMetadataByUrl">{{$t('m.getTagbyUrl')}}</el-button>
+                <el-button :loading="queryingOrigins" @click="queryBookOrigins">{{$t('m.queryCharacterOrigins')}}</el-button>
+                <el-button :loading="analyzingTitle" @click="analyzeCollectionTitles">{{$t('m.translateTitle')}}</el-button>
+                <el-button @click="notImplemented($t('m.superResolution'))">{{$t('m.superResolution')}}</el-button>
+                <el-button @click="notImplemented($t('m.colorization'))">{{$t('m.colorization')}}</el-button>
+                <el-button @click="resetCollectionMetadata">{{$t('m.resetMetadata')}}</el-button>
+                <el-button @click="copyCollectionTags">{{$t('m.copyTagClipboard')}}</el-button>
+                <el-button @click="pasteCollectionTags">{{$t('m.pasteTagClipboard')}}</el-button>
+              </el-space>
+            </template>
+            <template v-else>
             <!-- 标题:沿用原样式(日文标题 / 中文标题 / 英文标题 三个输入框) -->
             <div class="edit-line">
               <el-input v-model="bookDetail.title_jpn" :placeholder="$t('m.titleLangJpn')" @change="saveBook(bookDetail)"></el-input>
@@ -164,7 +218,7 @@
             </div>
             <el-space wrap class="tag-edit-buttons">
               <el-button @click="addTagCat">{{$t('m.addCategory')}}</el-button>
-              <el-button type="success" @click="openAddNewTagDialog">{{$t('m.addNewTag')}}</el-button>
+              <el-button type="success" @click="$emit('openAddTag')">{{$t('m.addNewTag')}}</el-button>
               <el-button @click="$emit('getBookInfo')">{{$t('m.getTagbyUrl')}}</el-button>
               <el-button :loading="queryingOrigins" @click="queryBookOrigins">{{$t('m.queryCharacterOrigins')}}</el-button>
               <el-button :loading="analyzingTitle" @click="analyzeBookTitleCharacters">{{$t('m.translateTitle')}}</el-button>
@@ -193,6 +247,7 @@
                 <el-button size="small" type="primary" :disabled="!canCreateNewTag" @click="createNewTagHere">{{ $t('m.apply') }}</el-button>
               </template>
             </el-dialog>
+            </template>
           </div>
           <div v-else class="book-info-block">
             <el-descriptions :column="1">
@@ -241,8 +296,10 @@
               </el-descriptions-item>
             </el-descriptions>
           </div>
-          <!-- 故事简介:有内容才显示(在线画廊没有简介 → 整块不出现);编辑模式始终显示以便填写 -->
-          <div class="story-summary" v-if="bookDetail.description || (editingTag && !viewerRole)">
+          <!-- 故事简介:有内容才显示(在线画廊没有简介 → 整块不出现);编辑模式始终显示以便填写
+               ★ 合集没有简介这个东西(它不是一本书),编辑模式下也不显示 —— 否则这里改的东西
+                 会顺着 saveBook 写到聚合快照上,等于往「不存在的书」里写字段。 -->
+          <div class="story-summary" v-if="!isCollection && (bookDetail.description || (editingTag && !viewerRole))">
             <div class="story-summary-title">{{ $t('m.storySummary') }}</div>
             <el-input
               v-if="editingTag && !viewerRole"
@@ -254,11 +311,22 @@
             />
             <div v-else class="story-summary-text">{{ bookDetail.description }}</div>
           </div>
-          <!-- 预览:合集显示成员封面网格;本地书按批取页图;在线画廊用它自己的页预览(雪碧图) -->
-          <div class="book-preview" v-if="isCollection ? collectionMembers.length : (previewItems.length || previewLoading)">
+          <!-- 预览:合集显示成员封面网格;本地书按批取页图;在线画廊用它自己的页预览(雪碧图)
+               ★ 合集即使一本都没有也要显示这块:「添加漫画」按钮挂在这里,空合集也得能加书。 -->
+          <div class="book-preview" v-if="isCollection || previewItems.length || previewLoading">
             <div class="book-preview-title">
               <span v-if="isCollection">{{ $t('m.collectionBookCount', { n: collectionMembers.length }) }}</span>
               <span v-else>{{ $t('m.ehOnlinePagePreview') }}</span>
+              <!-- 添加漫画:弹窗勾选还没进这个合集的书(与合集抽屉那颗按钮同一个弹窗) -->
+              <el-button
+                v-if="isCollection && !viewerRole && editingTag"
+                class="preview-add-member"
+                size="small"
+                type="primary"
+                plain
+                :icon="Plus"
+                @click="emit('add-collection-member', bookDetail)"
+              >{{ $t('m.addMangaToCollection') }}</el-button>
               <template v-if="!isCollection">
                 <span class="book-preview-hint" v-if="previewTotal > previewItems.length">{{ previewItems.length }}/{{ previewTotal }}</span>
                 <span class="book-preview-hint" v-else-if="previewRawTotal > previewTotal">{{ previewTotal }}/{{ previewRawTotal }}</span>
@@ -267,22 +335,42 @@
             <div class="book-preview-strip" :style="{ '--preview-cell': previewCell + 'px' }">
               <!-- 合集:每本成员一格,点一下进那本书的详情(合集本身没有「页」) -->
               <template v-if="isCollection">
+                <div v-if="!collectionMembers.length" class="collection-member-empty">{{ $t('m.collectionEmptyBooks') }}</div>
                 <div
                   v-for="m in collectionMembers"
-                  :key="'cm' + m.id"
+                  :key="'cm' + (m.id != null ? m.id : m.hash)"
                   class="book-preview-item collection-member-item"
+                  :class="{ 'is-editing': editingTag && !viewerRole, 'is-cover': isCollectionCover(m) }"
                   :title="getDisplayTitle(m)"
-                  @click="openBookDetail(m)"
+                  @click="onMemberClick(m)"
+                  @contextmenu.prevent="onMemberContextMenu($event, m)"
                 >
+                  <!-- 图没解码出来之前只留空白格:以前 <img> 一挂上去就参与渲染,
+                       慢盘/坏封面时会先闪一下浏览器的「破图」图标(用户截图),
+                       现在加载完成前 opacity:0,失败直接整张撤掉 -->
+                  <div class="book-preview-pending"></div>
                   <img
-                    v-if="memberCoverSrc(m)"
+                    v-if="memberCoverSrc(m) && !memberCoverBroken(m)"
                     class="collection-member-cover"
+                    :class="{ 'is-loaded': memberCoverLoaded(m) }"
                     :src="memberCoverSrc(m)"
                     loading="lazy"
                     decoding="async"
+                    @load="onMemberCoverLoad(m)"
                     @error="onMemberCoverError(m)"
                   />
-                  <div v-else class="book-preview-pending"></div>
+                  <!-- 编辑态:右上角 ✕ = 移出合集(书还在库里);
+                       右下角垃圾桶 = 直接删除这本漫画(移入回收站,同时移出合集) -->
+                  <template v-if="editingTag && !viewerRole">
+                    <span class="member-op member-op-remove" :title="$t('m.removeFromCollection')" @click.stop="emitRemoveMember(m)">
+                      <el-icon :size="13"><Close /></el-icon>
+                    </span>
+                    <span class="member-op member-op-delete" :title="$t('m.deleteFile')" @click.stop="confirmDeleteMember(m)">
+                      <el-icon :size="13"><Delete /></el-icon>
+                    </span>
+                  </template>
+                  <!-- 当前合集封面:给个角标,不然右键设过之后看不出区别 -->
+                  <span v-if="isCollectionCover(m)" class="member-cover-badge">{{ $t('m.collectionCover') }}</span>
                 </div>
               </template>
               <template v-else>
@@ -379,7 +467,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { CaretRight20Regular, CaretLeft20Regular } from '@vicons/fluent'
 import { BookmarkTwotone } from '@vicons/material'
-import { Loading, ArrowDown, Download, Plus } from '@element-plus/icons-vue'
+import { Loading, ArrowDown, Download, Plus, Close, Delete } from '@element-plus/icons-vue'
 import { nanoid } from 'nanoid'
 import he from 'he'
 import * as linkify from 'linkifyjs'
@@ -388,10 +476,17 @@ import ContextMenu from '@imengyu/vue3-context-menu'
 import { buildImageContextMenuItems, imageObjectFromPreview, refreshPreviewItem } from '../imageContextMenu.js'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, giveUpBookCover, retryBookCover, bookImgSrc, catDisplayName, getDisplayTagName, resolveCatKey, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName } from '../utils.js'
+import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, retryBookCover, bookImgSrc, catDisplayName, getDisplayTagName, resolveCatKey, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName, compareCollectionBooks } from '../utils.js'
 import  { insertLocalReadRecord, toAssetUrl } from '../utils.js'
 import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, collectGalleryThumbs } from '../ehOnline.js'
 import { addTagToBlacklist, setBlacklistEnabled } from '../ehFilter.js'
+
+// 合集预览图的排序口径:由 App 把「合集界面设定的排序」传进来,
+// 保证详情页成员网格的顺序与合集抽屉完全一致(名称走自然序,见 utils.compareCollectionBooks)。
+const props = defineProps({
+  collectionSortKey: { type: String, default: '' },
+  collectionSortAsc: { type: Boolean, default: true },
+})
 
 const appStore = useAppStore()
 const {
@@ -466,14 +561,23 @@ const collectionMembers = computed(() => {
   // ★ 优先用聚合条目挂的 _members(元素就是实时书对象):书架卡片也是按它找成员,
   //   两边必须用同一份对象,否则详情页的封面/评分/页数可能与卡片不是同一时刻的数据;
   //   老数据或外部构造的条目没有 _members,再按 ids/list 回退到 bookList 里查。
-  if (Array.isArray(b._members) && b._members.length) return b._members
-  const keys = Array.isArray(b.ids) && b.ids.length ? b.ids : (Array.isArray(b.list) ? b.list : [])
-  const out = []
-  for (const key of keys) {
-    const m = bookList.value.find(x => x && (x.id === key || x.hash === key))
-    if (m) out.push(m)
+  let raw
+  if (Array.isArray(b._members) && b._members.length) {
+    raw = b._members
+  } else {
+    const keys = Array.isArray(b.ids) && b.ids.length ? b.ids : (Array.isArray(b.list) ? b.list : [])
+    raw = []
+    for (const key of keys) {
+      const m = bookList.value.find(x => x && (x.id === key || x.hash === key))
+      if (m) raw.push(m)
+    }
   }
-  return out
+  // 预览图顺序 = 合集界面设定的排序(名称 / 时间 / 页数 / 评分)。
+  // 没设过排序时保持合集原有顺序,与抽屉的行为一致。
+  const key = props.collectionSortKey
+  if (!key || raw.length < 2) return raw
+  const asc = props.collectionSortAsc
+  return [...raw].sort((a, b) => compareCollectionBooks(a, b, key, asc, x => getDisplayTitle(x)))
 })
 // 合集的页数 / 阅读次数 = 直接取聚合条目上的字段(与书架卡片同一个数,不再各自求一遍和)。
 // 聚合条目由 App.loadCollectionList 产出:pageCount = 成员页数合计,readCount = 成员阅读次数合计。
@@ -489,8 +593,15 @@ const collectionTotalReads = computed(() => {
   return collectionMembers.value.reduce((sum, m) => sum + (Number(m && m.readCount) || 0), 0)
 })
 // 合集大小 = 成员文件大小合计(合集不是磁盘上的一个文件,但有「这一堆占多少」的实际意义)
+// ★ 以前只累加 filesize —— 那是 EH 元数据里的「远端原图大小」,本地书基本是 null,
+//   于是合集这一行永远是 0 → 整行不渲染(用户反馈「合集详情没有大小」)。
+//   本地书的真实体积在 bundleSize(扫描时算好的、压缩包/目录的字节数),
+//   与普通书的「文件大小」行同一个口径(见 fileSizeText)。优先 bundleSize,filesize 兜底。
 const collectionTotalSize = computed(() => {
-  const total = collectionMembers.value.reduce((sum, m) => sum + (Number(m && m.filesize) || 0), 0)
+  const total = collectionMembers.value.reduce((sum, m) => {
+    if (!m) return sum
+    return sum + (Number(m.bundleSize) || Number(m.filesize) || 0)
+  }, 0)
   if (!total) return ''
   const fmt = (n) => n >= 1024 * 1024 * 1024 ? (n / 1024 / 1024 / 1024).toFixed(2) + ' GB'
     : n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + ' MB'
@@ -528,6 +639,16 @@ const emit = defineEmits([
   'refresh-list',
   // 合集详情里的「编辑合集」:交给 App 打开管理面板并选中该合集
   'editCollection',
+  // 合集内联编辑:改名 / 标签批量下发 / 设封面 / 移出或删除成员
+  'collection-rename',
+  'collection-tags-change',
+  'collection-remove-member',
+  'collection-set-cover',
+  // 合集详情新增的两个批量动作:整组隐藏 / 整组获取元数据(落盘与抓取都由 App 负责)
+  'collection-hidden-change',
+  'get-collection-metadata',
+  // 合集编辑态「添加漫画」:交给 App 打开选择弹窗
+  'add-collection-member',
   // 合集详情的「删除合集 / 删除文件」:确认后交给 App 落盘并刷新
   'delete-collection',
 ])
@@ -535,51 +656,53 @@ const emit = defineEmits([
 const dialogVisibleBookDetail = ref(false)
 
 // 封面加载动画(详情页)
-// ★ 与书架卡片同一套状态机:兜底定时器只在一次加载会话开头启动一次(反复 @error 不重置),
-//   失败次数封顶 2 次,到顶就回落首字占位 —— 既不留转不完的圈,也不留破图图标。
+// ★ 与书架卡片同一套状态机:只有「加载中(转圈)」与「真失败(文字)」两个状态。
+//   封面还没生成出来属于加载中,必须一直转圈等 —— 不能几秒后 / 一次 error 就写「加载失败」。
+//   生成失败走退避重试,全部失败才落失败态;coverPath 一变立刻恢复。
 const detailCoverLoading = ref(false)
-const detailCoverGaveUp = ref(false)
-// 本次 <img> 加载失败:先换首字占位,等后台生成出新的再换回来
-const detailCoverBroken = ref(false)
+const detailCoverFailed = ref(false)
 let detailCoverFailCount = 0
-let detailCoverWatchdog = null
+let detailCoverGenAttempt = 0
 let detailCoverToken = 0
+let detailCoverRetryTimer = null
 
+const clearDetailCoverRetry = () => {
+  if (detailCoverRetryTimer) { clearTimeout(detailCoverRetryTimer); detailCoverRetryTimer = null }
+}
 const stopDetailCoverLoading = () => {
   detailCoverLoading.value = false
-  if (detailCoverWatchdog) { clearTimeout(detailCoverWatchdog); detailCoverWatchdog = null }
 }
-const giveUpDetailCover = () => {
-  detailCoverGaveUp.value = true
-  detailCoverBroken.value = true
-  const b = bookDetail.value
-  // 普通书:清掉坏地址 + 打书级标记(书架卡片也会一起回落占位)
-  // 合集:封面来自成员,不写主书标记,只在本次弹窗里回落占位
-  if (b && !b.isCollection) giveUpBookCover(b)
-  stopDetailCoverLoading()
-}
-// ★ 转圈遮罩已取消:超时只收内部状态,不清 coverPath / 不打放弃标记,
-//   否则加载慢但正常的封面(NAS / 在线)会被误判成坏图。坏图由 @error 计数处理。
 const startDetailCoverLoading = () => {
-  if (detailCoverGaveUp.value) return
-  if (!detailCoverWatchdog) detailCoverWatchdog = setTimeout(stopDetailCoverLoading, 8000)
+  detailCoverFailed.value = false
   detailCoverLoading.value = true
+}
+const failDetailCover = () => {
+  detailCoverFailed.value = true
+  detailCoverLoading.value = false
 }
 const onDetailCoverLoad = () => {
   detailCoverFailCount = 0
-  detailCoverGaveUp.value = false
-  detailCoverBroken.value = false
-  if (bookDetail.value) retryBookCover(bookDetail.value)
+  detailCoverGenAttempt = 0
+  clearDetailCoverRetry()
+  detailCoverFailed.value = false
+  const b = bookDetail.value
+  if (b) retryBookCover(b)
   stopDetailCoverLoading()
 }
-onBeforeUnmount(() => {
-  if (detailCoverWatchdog) { clearTimeout(detailCoverWatchdog); detailCoverWatchdog = null }
-})
 
 // 第一个**有封面**的合集成员:详情页大封面取它的实时 coverPath。
 // 以前死取 members[0] —— 它没封面时整页封面空白,而书架卡片取的是「第一个有封面的」,
 // 两边还不是同一张图(用户反馈「卡片有图、详情空白」)。
-const coverMember = computed(() => collectionMembers.value.find(m => m && m.coverPath) || null)
+const coverMember = computed(() => {
+  // 手动指定过合集封面(coverKey 记的是成员的 hash/id)就优先用它;
+  // 没指定 / 指定那本恰好没封面时,才退回「第一个有封面的成员」。
+  const key = (bookDetail.value && bookDetail.value.coverKey) || ''
+  if (key) {
+    const hit = collectionMembers.value.find(m => m && (m.hash === key || m.id === key))
+    if (hit && hit.coverPath) return hit
+  }
+  return collectionMembers.value.find(m => m && m.coverPath) || null
+})
 // 详情页封面地址:
 //  · 普通书:就是它自己的 coverPath
 //  · 合集:第一个有封面的成员的实时 coverPath 优先,聚合快照兜底;
@@ -604,52 +727,83 @@ const memberCoverSrc = (m) => {
   const n = m._coverNonce
   return n ? base + (base.includes('?') ? '&' : '?') + 'r=' + n : base
 }
+// 成员封面的加载状态(合集预览网格):
+//   undefined/loading = 还没解码出来(只显示空白格,不显示破图图标)
+//   ok                = 已经 load 出来(opacity 1)
+//   bad               = 这张地址确实读不出来(整张撤掉,后台重新生成)
+const memberCoverStates = ref({})
+// 每本成员失败过几次:坏封面不能无限「error → 重新生成 → 又 error」地转
+const memberCoverErrCount = {}
+const memberKeyOf = (m) => String((m && (m.hash || m.id)) || '')
+const memberCoverLoaded = (m) => memberCoverStates.value[memberKeyOf(m)] === 'ok'
+const memberCoverBroken = (m) => memberCoverStates.value[memberKeyOf(m)] === 'bad'
+const setMemberCoverState = (m, state) => {
+  const k = memberKeyOf(m)
+  if (!k) return
+  memberCoverStates.value = { ...memberCoverStates.value, [k]: state }
+}
+const onMemberCoverLoad = (m) => {
+  memberCoverErrCount[memberKeyOf(m)] = 0
+  setMemberCoverState(m, 'ok')
+}
 // 成员封面缺失/失败:真的去生成,而不是画占位块
 const onMemberCoverError = (m) => {
-  if (m && !m.online) ensureBookCover(m)
+  // 先撤掉这张坏图(不再让浏览器画破图图标),再让后台重新生成;
+  // 生成成功拿到新地址后回到 loading 态,新 <img> 加载完自己显示。
+  setMemberCoverState(m, 'bad')
+  if (!m || m.online) return
+  const k = memberKeyOf(m)
+  const n = (memberCoverErrCount[k] || 0) + 1
+  memberCoverErrCount[k] = n
+  if (n > 2) return
+  ensureBookCover(m)
+    .then(next => { if (next) setMemberCoverState(m, 'loading') })
+    .catch(() => {})
 }
-
-// 详情页占位块里显示的书名首字
-const coverInitial = computed(() => {
-  const b = bookDetail.value || {}
-  const title = String(getDisplayTitle(b) || b.title || '').trim()
-  return title.slice(0, 1).toUpperCase() || '?'
+// 换一个合集 / 换一本书:成员封面状态全部从头来
+watch(() => (bookDetail.value && bookDetail.value.id), () => {
+  memberCoverStates.value = {}
+  Object.keys(memberCoverErrCount).forEach(k => { delete memberCoverErrCount[k] })
 })
 
-// 封面懒加载:失败次数封顶,避免「生成成功但地址依旧坏」的无限重试
+// 封面生成:失败不等于坏书 —— 大书库的封面队列很长,经常只是还没轮到。
+// 退避重试若干次,全部失败才落「加载失败」。
+const afterDetailEnsure = (next) => {
+  clearDetailCoverRetry()
+  if (next) return          // 成功:coverPath 变了,watch 会重新转圈,<img> 自己 load
+  detailCoverGenAttempt += 1
+  if (detailCoverGenAttempt > 2) { failDetailCover(); return }
+  const delay = Math.min(1200 * detailCoverGenAttempt, 8000)
+  detailCoverRetryTimer = setTimeout(() => {
+    detailCoverRetryTimer = null
+    if (!detailCoverFailed.value) triggerDetailEnsureCover()
+  }, delay)
+}
 const triggerDetailEnsureCover = () => {
   const b = bookDetail.value
-  if (!b || b.online || detailCoverGaveUp.value) return
+  if (!b || b.online) return
+  if (detailCoverRetryTimer) return
   const token = ++detailCoverToken
-  ensureBookCover(b)
-    .then((next) => {
-      if (token === detailCoverToken && !next && !detailCoverGaveUp.value) giveUpDetailCover()
-    })
-    .catch(() => { if (token === detailCoverToken && !detailCoverGaveUp.value) giveUpDetailCover() })
-}
-const onCoverError = async () => {
-  const b = bookDetail.value
-  if (!b || detailCoverGaveUp.value) { stopDetailCoverLoading(); return }
-  // 在线画廊封面是远程地址:这次直接回落占位(下次打开还有机会)
-  if (b.online) { detailCoverGaveUp.value = true; stopDetailCoverLoading(); return }
-  detailCoverFailCount += 1
-  if (detailCoverFailCount >= 2) { giveUpDetailCover(); return }
-  const token = ++detailCoverToken
-  // 加载失败立刻换首字占位(不留转圈 / 破图框),后台重试生成;
-  // 成功拿到新地址再换回 <img> 并重新亮起动画
-  detailCoverBroken.value = true
-  stopDetailCoverLoading()
+  detailCoverLoading.value = true
+  detailCoverFailed.value = false
   // 合集:生成的是「第一个有封面的成员」的封面(合集自己没有封面文件)
-  let next = null
-  if (b.isCollection) {
-    const m = coverMember.value || collectionMembers.value[0]
-    if (m && !m.online) next = await ensureBookCover(m).catch(() => null)
-  } else {
-    next = await ensureBookCover(b).catch(() => null)
-  }
-  if (token !== detailCoverToken || detailCoverGaveUp.value) return
-  if (!next) giveUpDetailCover()
-  else { detailCoverBroken.value = false; startDetailCoverLoading() }
+  const target = b.isCollection ? (coverMember.value || collectionMembers.value[0]) : b
+  if (!target || target.online) { clearDetailCoverRetry(); return }
+  ensureBookCover(target)
+    .then((next) => { if (token === detailCoverToken) afterDetailEnsure(next) })
+    .catch(() => { if (token === detailCoverToken) afterDetailEnsure(null) })
+}
+// <img> 读不出来:多半个是「封面正在生成 / 刚写完还没落盘」,继续转圈等,不要立刻判失败。
+const onCoverError = () => {
+  const b = bookDetail.value
+  if (!b) { stopDetailCoverLoading(); return }
+  // 在线画廊封面是远程地址:没有本地生成这回事,读不出来就是读不出来
+  if (b.online) { failDetailCover(); return }
+  detailCoverFailCount += 1
+  detailCoverLoading.value = true
+  detailCoverFailed.value = false
+  if (detailCoverFailCount > 6) { failDetailCover(); return }
+  triggerDetailEnsureCover()
 }
 // 合集打开时:把还没有封面的成员挨个交给生成器(与卡片同一条路径),上限 60 本。
 // ★ 并发 3 的队列:以前 60 个 ensure-book-cover 一起发出去会把 IO/CPU 打满。
@@ -667,22 +821,19 @@ const ensureCollectionCovers = () => {
   for (let i = 0; i < n; i++) worker()
 }
 watch(
-  () => [bookDetail.value?.id, bookDetail.value?.coverPath, bookDetail.value?.isCollection, bookDetail.value?._coverLoadGivenUp],
+  () => [bookDetail.value?.id, bookDetail.value?.coverPath, bookDetail.value?.isCollection],
   () => {
     const b = bookDetail.value
-    const givenUpByBook = !!(b && b._coverLoadGivenUp)
-    if (!givenUpByBook && detailCoverGaveUp.value) {
-      // 别处点了「重新生成封面」:解除放弃标记,再给一次机会
-      detailCoverGaveUp.value = false
-      detailCoverBroken.value = false
-      detailCoverFailCount = 0
-    }
+    detailCoverToken++              // 作废进行中的生成回调
+    clearDetailCoverRetry()
+    detailCoverFailCount = 0
+    detailCoverGenAttempt = 0
     if (!b) { stopDetailCoverLoading(); return }
-    if (detailCoverGaveUp.value || givenUpByBook) { stopDetailCoverLoading(); return }
     if (b.isCollection) ensureCollectionCovers()
     else if (!b.coverPath && !b.online) triggerDetailEnsureCover()
     if (coverSrc.value) startDetailCoverLoading()
-    else { detailCoverBroken.value = false; stopDetailCoverLoading() }
+    else if (b.online) failDetailCover()
+    else { detailCoverFailed.value = false; detailCoverLoading.value = true }
   },
   { immediate: true }
 )
@@ -712,8 +863,32 @@ const fileSizeText = computed(() => {
 })
 
 // 标签分组:按「设置 → 标签设置」里拖动的类别顺序排(和设置里的列表一致)
+// ★ 合集:标签取**全部成员的并集**(实时算,不读聚合快照)。
+//   以前直接读 bookDetail.tags —— 那是 App.applyCollectionAggregates 在加载时合并出来的快照,
+//   成员后来加了/删了标签不会回填,详情页就一直显示旧集合;而且那份快照一旦缺字段,
+//   整个标签区就是一片空白(用户反馈「合集的标签并集没实现」)。
+//   这里改成按 collectionMembers 现算:成员怎么变,标签区就怎么变。
+const collectionTags = computed(() => {
+  const out = {}
+  for (const m of collectionMembers.value) {
+    const tags = (m && m.tags) || {}
+    for (const rawCat in tags) {
+      const arr = tags[rawCat]
+      if (!Array.isArray(arr) || !arr.length) continue
+      // 分类名归一:库里同时存在 parody/作品、character/角色 时并进同一个类别行
+      const cat = resolveCatKey(rawCat)
+      if (!out[cat]) out[cat] = new Set()
+      for (const tag of arr) if (tag) out[cat].add(tag)
+    }
+  }
+  const res = {}
+  for (const cat in out) res[cat] = [...out[cat]].sort()
+  return res
+})
 const tagGroups = computed(() => {
-  const tags = (bookDetail.value && bookDetail.value.tags) || {}
+  const tags = isCollection.value
+    ? collectionTags.value
+    : ((bookDetail.value && bookDetail.value.tags) || {})
   return Object.keys(tags)
     .filter(k => Array.isArray(tags[k]) && tags[k].length)
     .map(k => ({
@@ -1115,6 +1290,19 @@ const createNewTagHere = async () => {
   if (!canCreateNewTag.value) return
   const cat = resolveCatKey(newTagCat.value)
   const name = String(newTagName.value).trim()
+  // 合集:标签落在每个成员身上,不能写聚合条目。这里只把标签加进编辑集合,
+  // 由 applyCollectionTags 统一按差量下发(合集编辑界面的「增加标签」按钮)。
+  if (isCollection.value) {
+    if (!tagGroup.value[cat]) tagGroup.value[cat] = []
+    const next = { ...(collectionEditTags.value || {}) }
+    if (!Array.isArray(next[cat])) next[cat] = []
+    if (!next[cat].includes(name)) next[cat].push(name)
+    collectionEditTags.value = next
+    if (!(cat in collectionBaseTags.value)) collectionBaseTags.value[cat] = []
+    applyCollectionTags()
+    newTagDialogVisible.value = false
+    return
+  }
   if (!bookDetail.value.tags) bookDetail.value.tags = {}
   if (!Array.isArray(bookDetail.value.tags[cat])) bookDetail.value.tags[cat] = []
   if (!bookDetail.value.tags[cat].includes(name)) bookDetail.value.tags[cat].push(name)
@@ -1144,6 +1332,16 @@ const openBookDetail = (book, addToHistory = true) => {
   comments.value = []
   if (setting.value.showComment) getComments(book.url)
   if (addToHistory) emit('addToHistory', book.id)
+}
+
+// 打开一个合集并直接进编辑态:合集抽屉里的「编辑合集」用这个入口,
+// 与详情页里点「编辑合集」完全同一套界面。
+const openCollectionEdit = (book) => {
+  if (!book) return
+  openBookDetail(book, false)
+  if (!editingTag.value) editTags()
+  // 已经处于编辑态(上一个合集还开着编辑)时,标题/标签基准要按新合集重算
+  else if (isCollection.value) startCollectionEdit()
 }
 
 const openUrl = (url) => {
@@ -1333,6 +1531,72 @@ const deleteCollectionFiles = async (collection) => {
   emit('delete-collection', { collection: c, withFiles: true })
 }
 
+// ---------- 合集:阅读 / 重扫 / 获取元数据 / 隐藏 ----------
+// 合集自己不是一本书,这四个动作都落在成员身上:
+//   阅读     → 从当前排序的第一本开读(合集的「开头」就是它)
+//   重扫     → 逐本重新解析本地文件(页数 / 大小 / 封面),再逐本落库
+//   获取元数据 → 整组交给 App 走批量抓取(逐本按 URL / 文件名匹配)
+//   隐藏     → 整组 + 合集本身一起隐藏,按钮变成「显示漫画」
+const collectionRescanning = ref(false)
+
+const readCollection = () => {
+  const first = collectionMembers.value[0]
+  if (!first) return
+  // ★ 不能直接复用 openLocalBook():它会把 bookDetail 改成传入的那本书,
+  //   合集详情会当场「变成」单本详情(isCollection 变 false、返回也回不到合集)。
+  //   这里只借它的两条阅读路径:系统看图 / 内置阅读器。
+  if (first.online) {
+    emit('openContentView', first)
+    return
+  }
+  if (setting.value.imageExplorer) {
+    first.readCount = (Number(first.readCount) || 0) + 1
+    saveBook(first)
+    ipcRenderer.invoke('open-local-book', first.filepath)
+  } else {
+    // ★ 内置阅读器会把全局 bookDetail 换成「正在读的这本」(它自己就是这么工作的),
+    //   合集详情留着不关就会当场变成一个单本详情(合集成员/标签/按钮全没了)。
+    //   所以进阅读器前先收起详情 —— 关掉阅读器回到书架,而不是回到一个错乱的详情页。
+    dialogVisibleBookDetail.value = false
+    emit('openContentView', first)
+  }
+  insertLocalReadRecord(first.id, first)
+}
+
+const rescanCollection = async () => {
+  if (collectionRescanning.value) return
+  const members = collectionMembers.value.filter(m => m && !m.online)
+  if (!members.length) return
+  collectionRescanning.value = true
+  let ok = 0
+  try {
+    for (const m of members) {
+      try {
+        const bookInfo = await ipcRenderer.invoke('patch-local-metadata-by-book', _.cloneDeep(m))
+        if (!bookInfo) continue
+        _.assign(m, bookInfo)
+        await saveBook(m)
+        ok += 1
+      } catch (e) { /* 单本失败不阻塞其余,最后按成功数提示 */ }
+    }
+    printMessage('success', t('c.rescanSuccess') + ' (' + ok + '/' + members.length + ')')
+  } finally {
+    collectionRescanning.value = false
+  }
+}
+
+const requestCollectionMetadata = () => {
+  const members = collectionMembers.value.slice()
+  if (!members.length) return
+  emit('get-collection-metadata', { collection: bookDetail.value, members })
+}
+
+const triggerHiddenCollection = () => {
+  const c = bookDetail.value
+  if (!c || !c.id) return
+  emit('collection-hidden-change', { collection: c, hidden: !c.hiddenBook })
+}
+
 const comments = ref([])
 
 const triggerShowComment = () => {
@@ -1381,10 +1645,182 @@ const editingTag = ref(false)
 
 const tagGroup = ref({})
 
+// ---------- 合集:内联编辑(名称 / 标签 / 封面 / 成员) ----------
+// 合集不是一个 DB 里的「书」,它的元数据分散在两处:
+//   · 名称 / 成员 / 封面 → collectionList 里那条记录(App 落盘)
+//   · 标签             → 每个成员自己的 tags(合集本身没有标签)
+// 所以这里**不能**走 saveBook(合集对象)——那会把聚合快照当成一本书写进库。
+// 每类改动都 emit 给 App,由它写到对应的地方。
+const collectionEditTitle = ref('')
+// 编辑态的标签用独立一份 v-model:合集详情里 bookDetail.tags 是聚合快照,
+// 直接绑上去会在用户还没确认时就改坏显示用的数据。
+const collectionEditTags = ref({})
+// 进入编辑那一刻的标签并集:用来算「这次加了哪些 / 删了哪些」
+const collectionBaseTags = ref({})
+
+const startCollectionEdit = () => {
+  const b = bookDetail.value || {}
+  collectionEditTitle.value = String(b.title || '')
+  const snapshot = _.cloneDeep(collectionTags.value)
+  collectionEditTags.value = _.cloneDeep(snapshot)
+  collectionBaseTags.value = snapshot
+}
+
+// 合集改名:交给 App 写 collectionList
+const saveCollectionTitle = () => {
+  const b = bookDetail.value
+  const title = String(collectionEditTitle.value || '').trim()
+  if (!b || !title || title === String(b.title || '')) return
+  emit('collection-rename', { collection: b, title })
+}
+
+// 合集标签:算差量 → 交给 App 批量下发到全部成员
+// 删掉的标签 = 每个成员都删;新增的 = 每个成员都加(已经有的不重复加)
+const applyCollectionTags = () => {
+  const next = collectionEditTags.value || {}
+  const base = collectionBaseTags.value || {}
+  const cats = new Set([...Object.keys(next), ...Object.keys(base)])
+  const add = {}
+  const remove = {}
+  for (const cat of cats) {
+    const a = new Set(next[cat] || [])
+    const b = new Set(base[cat] || [])
+    const added = [...a].filter(x => !b.has(x))
+    const removed = [...b].filter(x => !a.has(x))
+    if (added.length) add[cat] = added
+    if (removed.length) remove[cat] = removed
+  }
+  if (!Object.keys(add).length && !Object.keys(remove).length) return
+  // 基线立刻推到新值:连续改两次时,第二次的 diff 要对着上一次的结果算
+  collectionBaseTags.value = _.cloneDeep(next)
+  emit('collection-tags-change', { collection: bookDetail.value, add, remove })
+}
+
+// ---------- 合集版「编辑标签」工具栏 ----------
+// 合集没有自己的元数据文件,这些按钮要么作用于全部成员,要么只改合集标签的编辑集合。
+const addCollectionCategory = () => {
+  ElMessageBox.prompt(t('c.inputCategoryName'), t('m.addCategory'), {
+    inputPattern: /^[\p{L}\d_]+$/u,
+    inputErrorMessage: t('c.categoryNameError')
+  }).then(({ value }) => {
+    const cat = resolveCatKey(value)
+    if (!tagGroup.value[cat]) tagGroup.value[cat] = []
+    if (!collectionEditTags.value[cat]) collectionEditTags.value = { ...collectionEditTags.value, [cat]: [] }
+  }).catch(() => { /* 取消 */ })
+}
+// 合集没有「网址」这个概念
+const collectionGetMetadataByUrl = () => printMessage('info', t('c.collectionNoUrl'))
+// 翻译标题 + 角色识别:逐本跑,写完各自落库
+const analyzeCollectionTitles = async () => {
+  if (analyzingTitle.value) return
+  analyzingTitle.value = true
+  let changed = 0
+  try {
+    for (const m of collectionMembers.value) {
+      if (!m || m.online) continue
+      try {
+        const res = await ipcRenderer.invoke('analyze-book-title-characters', _.cloneDeep(m))
+        if (res && res.ok) {
+          _.assign(m, res.book)
+          await saveBook(m)
+          changed += 1
+        }
+      } catch (e) { /* 单本失败不阻塞其余 */ }
+    }
+    printMessage(changed ? 'success' : 'info', t('c.collectionAiDone', { n: changed }))
+  } finally {
+    analyzingTitle.value = false
+  }
+}
+// 重置元数据:整组合集一起重置(先确认)
+const resetCollectionMetadata = async () => {
+  const members = collectionMembers.value.slice()
+  if (!members.length) return
+  try {
+    await ElMessageBox.confirm(t('c.collectionResetConfirm', { n: members.length }), t('m.resetMetadata'), { type: 'warning' })
+  } catch (e) { return }
+  let ok = 0
+  for (const m of members) {
+    if (!m || m.online) continue
+    try { await resetMetadata(m); ok += 1 } catch (e) { /* 单本失败不阻塞 */ }
+  }
+  printMessage('success', t('c.rescanSuccess') + ' (' + ok + '/' + members.length + ')')
+  startCollectionEdit()
+}
+const copyCollectionTags = () => {
+  ipcRenderer.invoke('copy-text-to-clipboard', JSON.stringify({ tags: collectionTags.value }))
+  printMessage('success', t('c.copiedToClipboard'))
+}
+// 从剪贴板粘贴标签:并进编辑集合,再按差量下发到全部成员
+const pasteCollectionTags = async () => {
+  const text = await ipcRenderer.invoke('read-text-from-clipboard')
+  let obj = null
+  try { obj = JSON.parse(text) } catch (e) { obj = null }
+  const tags = obj && obj.tags ? obj.tags : obj
+  if (!tags || typeof tags !== 'object') {
+    printMessage('warning', t('c.clipboardNoTags'))
+    return
+  }
+  const next = { ...(collectionEditTags.value || {}) }
+  for (const rawCat of Object.keys(tags)) {
+    if (!Array.isArray(tags[rawCat])) continue
+    const cat = resolveCatKey(rawCat)
+    if (!Array.isArray(next[cat])) next[cat] = []
+    for (const tg of tags[rawCat]) if (tg && !next[cat].includes(tg)) next[cat].push(tg)
+    if (!(cat in collectionBaseTags.value)) collectionBaseTags.value[cat] = []
+    if (!tagGroup.value[cat]) tagGroup.value[cat] = []
+  }
+  collectionEditTags.value = next
+  applyCollectionTags()
+}
+
+// 当前哪个成员是「合集封面」(手动指定过才有)
+const isCollectionCover = (m) => {
+  const key = bookDetail.value && bookDetail.value.coverKey
+  if (!key || !m) return false
+  return m.hash === key || m.id === key
+}
+
+// 编辑态点成员:不跳进那本书的详情 —— 那会把 bookDetail 换成成员,合集上下文就丢了
+const onMemberClick = (m) => {
+  if (editingTag.value && !viewerRole.value) return
+  openBookDetail(m)
+}
+
+const emitRemoveMember = (m) => {
+  if (!m) return
+  emit('collection-remove-member', { collection: bookDetail.value, member: m, deleteFile: false })
+}
+
+const confirmDeleteMember = async (m) => {
+  if (!m) return
+  try {
+    await ElMessageBox.confirm(
+      t('c.collectionDeleteMemberConfirm', { title: getDisplayTitle(m) }),
+      t('m.deleteFile'),
+      { type: 'warning' }
+    )
+  } catch (e) { return }
+  emit('collection-remove-member', { collection: bookDetail.value, member: m, deleteFile: true })
+}
+
+// 成员封面右键:设为合集封面 / 移出合集 / 删除文件
+const onMemberContextMenu = (e, m) => {
+  if (!m) return
+  if (viewerRole.value) { openBookDetail(m); return }
+  const items = [
+    { label: t('m.setAsCollectionCover'), onClick: () => emit('collection-set-cover', { collection: bookDetail.value, member: m }) },
+    { label: t('m.removeFromCollection'), onClick: () => emitRemoveMember(m) },
+    { label: t('m.deleteFile'), onClick: () => confirmDeleteMember(m) },
+  ]
+  ContextMenu.showContextMenu({ x: e.x, y: e.y, items })
+}
+
 const editTags = () => {
   editingTag.value = !editingTag.value
   if (editingTag.value) {
-    if (!_.has(bookDetail.value, 'tags')) bookDetail.value.tags = {}
+    if (isCollection.value) startCollectionEdit()
+    else if (!_.has(bookDetail.value, 'tags')) bookDetail.value.tags = {}
     const tempTagGroup = {}
     _.forEach(bookList.value.map(b => b.tags), (tagObject) => {
       _.forIn(tagObject, (tagArray, tagCat) => {
@@ -1408,6 +1844,8 @@ const editTags = () => {
     })
     tagGroup.value = tempTagGroup
   } else {
+    // 合集:标签改动在 applyCollectionTags 里已经即时下发,这里没有「退出时再存一次」
+    if (isCollection.value) return
     saveBookTags(bookDetail.value)
   }
 }
@@ -1499,6 +1937,9 @@ const exitEditMode = () => {
   if (!editingTag.value) return
   cancelTagLongPress()
   editingTag.value = false
+  // 合集:它的标签改动在 applyCollectionTags 里已经批量下发到成员了,
+  // 这里绝不能走 saveBookTags(合集对象不是库里的书,写进去只会污染聚合快照)
+  if (isCollection.value) return
   // 在线书没有本地元数据可写,直接退出编辑态、绝不落盘
   if (bookDetail.value && bookDetail.value.online) return
   saveBookTags(bookDetail.value)
@@ -1700,6 +2141,7 @@ defineExpose({
   editingTag,
   openBookDetail,
   openLocalBook,
+  openCollectionEdit,
   rescanBook,
   getComments,
   showFile,
@@ -1720,6 +2162,16 @@ defineExpose({
   font-size: 13px
   font-weight: 600
   margin-bottom: 6px
+  // 「添加漫画」贴着「N 本」右边:按钮自己垂直居中,字号回到正常(不跟标题加粗)
+  .preview-add-member
+    align-self: center
+    margin-left: 4px
+    font-weight: 400
+.collection-member-empty
+  width: 100%
+  padding: 24px 0
+  font-size: 12px
+  color: var(--el-text-color-secondary)
 .book-preview-hint
   font-size: 12px
   font-weight: 400
@@ -1761,6 +2213,74 @@ defineExpose({
 .book-preview-item.is-sprite
   aspect-ratio: auto
   height: calc(var(--preview-cell, 118px) * var(--th, 1.4) / var(--tw, 1))
+// 预览格的「空白占位」:图还没解码出来 / 没有图时铺一层极淡的底,
+// 只表示「这里有一格」,不是破图也不是转圈(用户要求加载时不要残缺图)
+.book-preview-pending
+  width: 100%
+  height: 100%
+  border-radius: 4px
+  background: var(--el-fill-color-lighter, rgba(0, 0, 0, .03))
+// 合集成员格(编辑态)
+// 编辑态给每格加一圈描边,一眼看出「现在改的是整个合集」;
+// 当前合集封面用另一圈颜色 + 左上角角标标出来,不然右键设过之后看不出区别。
+.collection-member-item
+  position: relative
+  // 占位与封面都绝对定位铺满格子:占位始终垫在下面,封面加载完再显出来
+  // (否则占位会把 <img> 往下顶出格子)。加载完成前封面完全透明 → 不闪破图图标
+  .book-preview-pending
+    position: absolute
+    inset: 0
+  .collection-member-cover
+    position: absolute
+    inset: 0
+    width: 100%
+    height: 100%
+    object-fit: contain
+    opacity: 0
+    &.is-loaded
+      opacity: 1
+  &.is-editing
+    box-shadow: inset 0 0 0 2px var(--el-color-primary-light-5)
+  &.is-cover
+    box-shadow: inset 0 0 0 2px var(--el-color-warning)
+.member-op
+  position: absolute
+  right: 4px
+  z-index: 4
+  display: flex
+  align-items: center
+  justify-content: center
+  width: 22px
+  height: 22px
+  border-radius: 50%
+  color: #fff
+  cursor: pointer
+  transition: transform .15s ease
+  &:hover
+    transform: scale(1.12)
+  &.member-op-remove
+    top: 4px
+    background: rgba(64, 158, 255, .92)
+  &.member-op-delete
+    bottom: 4px
+    background: rgba(245, 108, 108, .92)
+.member-cover-badge
+  position: absolute
+  left: 4px
+  top: 4px
+  z-index: 3
+  padding: 0 6px
+  height: 20px
+  line-height: 20px
+  border-radius: 10px
+  font-size: 11px
+  color: #fff
+  background: var(--el-color-warning)
+.collection-edit-hint
+  margin-top: 8px
+  font-size: 12px
+  line-height: 1.6
+  color: var(--el-text-color-secondary)
 // 自动加载哨兵:不可见(用户要求预览加载期间不显示转圈/计数),只占 1px 供 IntersectionObserver 命中
 .book-preview-sentinel
   width: 1px
@@ -1821,6 +2341,9 @@ defineExpose({
     .detail-func-btn, .detail-read-group
       flex: 1 1 108px
       margin: 0
+    // 「编辑合集」单独占一整排(用户要求):盒子拉满一行,不再和「获取元数据」挤两列
+    .detail-func-btn.is-wide
+      flex: 1 0 100%
     .detail-read-group
       display: flex
       .el-button
@@ -1878,21 +2401,25 @@ defineExpose({
     margin: 4px 0
     .el-select, .el-select-v2
       width: 100%
-  // 「标签不超过类别」:label 绝对定位在左列(80px 右对齐),内容格固定从 90px 起。
-  //  inline 排布时长标签列表换行会绕到类别名左边(之前截图里第二行胶囊跑到最左),
-  //  现在内容永远在自己列内换行,一行都不会越界。
+  // 「标签不超过类别」:类别名固定左列(80px 右对齐),内容从 90px 起,
+  // 长标签列表只在自己列内换行,永远不会绕到类别名左边。
+  // ★ 这里以前是「label 绝对定位 + top:4px」的写法:绝对定位的 top 以**内边距盒**为基准,
+  //   而内容是从 cell 的 padding-top(8px)才开始排 —— 两者天然差 4px,
+  //   于是纯文字行(页数/文件大小/阅读次数/修改时间)的标签整体往上飘,和数值对不齐
+  //   (用户截图里就是这个现象)。改成 flex + 基线对齐后,文字行和标签胶囊行都按
+  //   首行基线对齐,不再依赖任何魔数,换主题/换字号也不会再漂。
   .el-descriptions__cell
-    position: relative
-    padding-left: 90px !important
+    display: flex
+    align-items: baseline
+    gap: 10px
+    padding-left: 0 !important
   .el-descriptions__label
-    position: absolute
-    left: 0
-    // 实测标签胶囊比类别名低 4px(胶囊自带 2px 上边距 + 行高差),这里补齐让两者垂直居中对齐
-    top: 4px
-    line-height: inherit
+    flex: 0 0 80px
     width: 80px
     text-align: right
+    line-height: inherit
   .el-descriptions__content
+    flex: 1 1 auto
     display: block
     width: auto
     min-width: 0
@@ -2098,20 +2625,37 @@ defineExpose({
     display: flex
     align-items: center
     justify-content: center
+  // 真生成不出来:与封面/转圈同尺寸同位,盖住破图
+  .cover-failed
+    position: absolute
+    top: 0
+    left: 50%
+    transform: translateX(-50%)
+    width: min(250px, 100%)
+    height: 354px
+    display: flex
+    align-items: center
+    justify-content: center
+    background: var(--el-fill-color-light, #f2f3f5)
+    color: var(--el-text-color-placeholder, #a8abb2)
+    font-size: 13px
+    line-height: 1
+    border-radius: 4px
+    pointer-events: none
     background: var(--el-fill-color-light, rgba(0, 0, 0, .04))
     color: var(--el-color-primary, #409eff)
     border-radius: 4px
     z-index: 6
     pointer-events: none
-  // 没有封面可显示时的首字占位(与封面同尺寸、同样可点)
+  // 没有封面可显示 / 加载失败(与封面同尺寸、同样可点)
   .book-detail-cover-empty
     display: flex
     align-items: center
     justify-content: center
     background: var(--el-fill-color-light, #f2f3f5)
     color: var(--el-text-color-placeholder, #a8abb2)
-    font-size: 56px
-    font-weight: 700
+    font-size: 14px
+    font-weight: 400
     user-select: none
 </style>
 
@@ -2131,18 +2675,20 @@ defineExpose({
 
 /* ---- 关闭按钮被裁的修复 ----
    以前只给了 margin(8px 16px 0 0),全屏弹窗贴到窗口边缘时按钮右半边会被 dialog 的 overflow 裁掉。
-   现在 header 右侧留 56px 固定避让位,按钮改 top/right 绝对定位,尺寸放大到 36px。 */
+   现在 header 右侧留 56px 固定避让位,按钮改 top/right 绝对定位,尺寸放大到 36px。
+   ★ 2026-11:编辑态右侧第一个输入框的右上角会被这个 ✕ 压住(用户截图)。
+     两件事一起做:按钮整体上移到 top:0(36→32px),内容区再往下让 12px。 */
 .el-dialog.is-fullscreen.dialog-detail
   .el-dialog__header
     position: relative
     padding-right: 56px
     .el-dialog__headerbtn
       position: absolute
-      top: 4px
+      top: 0
       right: 10px
       margin: 0
-      width: 36px
-      height: 36px
+      width: 32px
+      height: 32px
       display: flex
       align-items: center
       justify-content: center
@@ -2153,6 +2699,9 @@ defineExpose({
         svg
           height: 24px
           width: 24px
+  // 内容区整体下移一点:避免右上角 ✕ 与编辑态第一行输入框的右上角叠在一起
+  .el-dialog__body
+    padding-top: 20px
 
 /* ---- 预览格 ----
    一次渲染几十上百个格子:content-visibility 让离屏的不参与布局/绘制。

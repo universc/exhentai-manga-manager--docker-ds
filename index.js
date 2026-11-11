@@ -6271,14 +6271,24 @@ const movePathToTrash = async (srcPath, meta = {}, options = {}) => {
     mode = 'copy'
     await fs.promises.cp(srcPath, dest, { recursive: true, force: true })
   } else {
-    try {
-      await fs.promises.rename(srcPath, dest)
-    } catch (e) {
-      if (e && e.code === 'EXDEV') {
-        mode = 'copy'
-        await fs.promises.cp(srcPath, dest, { recursive: true, force: true })
-        await fs.promises.rm(srcPath, { recursive: true, force: true })
-      } else {
+    // Windows 上文件常被缩略图缓存 / 杀毒 / 索引服务短暂占用:rename 会抛 EBUSY / EPERM / EACCES。
+    // 以前直接失败 → 用户看到「被占用？无法删除」。这里退避重试几次,大多数情况第二次就过了。
+    const retryCodes = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY'])
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await fs.promises.rename(srcPath, dest)
+        break
+      } catch (e) {
+        if (e && e.code === 'EXDEV') {
+          mode = 'copy'
+          await fs.promises.cp(srcPath, dest, { recursive: true, force: true })
+          await fs.promises.rm(srcPath, { recursive: true, force: true })
+          break
+        }
+        if (attempt < 6 && e && retryCodes.has(e.code)) {
+          await new Promise(r => setTimeout(r, 120 * (attempt + 1)))
+          continue
+        }
         throw e
       }
     }
@@ -6376,6 +6386,50 @@ ipcMain.handle('trash-list', async () => {
 })
 
 // 从回收站还原(优先还原回原路径;原路径已被占用则报错,不覆盖)
+// 回收站恢复 → 直接把这本书写回库(不用再整库重扫)。
+// 只做「探测页数/体积/hash + 入库」,封面按懒加载(null)不生成,打开书架时按需生成。
+const addRestoredBook = async (filepath) => {
+  try {
+    const lib = libraryForPath(filepath)
+    if (!lib) return { error: 'notInLibrary' }
+    const libId = String(lib.id || '')
+    const Db = await modelForLibrary(libId)
+    const coverDir = coverDirOf(lib)
+    const extPath = toExternalPath(filepath, 'filepath', lib)
+    const exist = await Db.findOne({ where: { filepath: extPath } })
+    if (exist) return { id: exist.id, existed: true }
+    const stat = await fs.promises.stat(filepath)
+    let type = 'folder'
+    if (!stat.isDirectory()) {
+      const ext = path.extname(filepath).toLowerCase()
+      if (ext === '.epub') type = 'epub'
+      else if (ext === '.txt') type = 'novel'
+      else if (ext === '.zip' || ext === '.cbz') type = 'zip'
+      else type = 'archive'
+    }
+    const r = await geneCover(filepath, type, null, coverDir)
+    if (!r || !r.targetFilePath) return { error: 'parseFailed' }
+    const id = nanoid()
+    await Db.create({
+      title: path.basename(filepath),
+      coverPath: r.coverPath ? toExternalPath(r.coverPath, 'coverPath', null, coverDir) : null,
+      hash: r.hash || null,
+      filepath: extPath,
+      type,
+      id,
+      pageCount: r.pageCount || null,
+      bundleSize: r.bundleSize || null,
+      mtime: r.mtime ? (r.mtime.toJSON ? r.mtime.toJSON() : r.mtime) : new Date().toJSON(),
+      coverHash: r.coverHash || null,
+      status: 'non-tag',
+      date: Date.now()
+    })
+    return { id }
+  } catch (e) {
+    return { error: String((e && e.message) || e) }
+  }
+}
+
 ipcMain.handle('trash-restore', async (event, id) => {
   const list = await readTrashIndex()
   const item = list.find(x => x.id === id)
@@ -6399,7 +6453,9 @@ ipcMain.handle('trash-restore', async (event, id) => {
     }
     await writeTrashIndex(list.filter(x => x.id !== id))
     await appendDeleteLog({ restoredAt: Date.now(), restoredAtText: new Date().toLocaleString(), src: item.src, from: item.dest, mode, ok: true, action: 'restore' })
-    return { ok: true, path: item.src }
+    // ★ 恢复后直接把这本书加回书架(以前要用户再点一次重新扫描)
+    const added = await addRestoredBook(item.src)
+    return { ok: true, path: item.src, added }
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) }
   }
@@ -6804,6 +6860,31 @@ ipcMain.handle('delete-image', async (event, filename, filepath, type) => {
     }
     try {
       await fs.promises.stat(abs)
+    } catch (e) {
+      // ★ 文件已经不在了:最常见的是「这张图刚才已经删过一次」(原地改名成 .xxx.deleted-<时间戳>),
+      //   但阅读器/预览里的列表还没刷新,用户又点了一次删除 —— 以前会把 ENOENT 当成失败报错
+      //   (用户看到的就是「发生错误:ENOENT … stat 'Y:\…\img01_1.jpg'」)。
+      //   这里先查回收站索引:确认是「我们删过」就当成功收掉;真找不到文件才报错。
+      if (e && e.code === 'ENOENT') {
+        let already = null
+        try {
+          const idx = await readTrashIndex()
+          already = idx.find(x => x && x.src === abs) || null
+        } catch (_) { /* 索引读不到就按未删过处理 */ }
+        if (already) {
+          result.ok = true
+          result.trashed = true
+          result.alreadyGone = true
+          sendMessageToWebContents('这张图已经不在了(之前已删除):' + rel)
+          return result
+        }
+      }
+      result.error = String((e && e.message) || e)
+      await appendDeleteLog({ deletedAt: Date.now(), deletedAtText: new Date().toLocaleString(), src: abs, ok: false, error: result.error, ...meta })
+      sendMessageToWebContents('删除 ' + abs + ' 失败:' + result.error)
+      return result
+    }
+    try {
       await movePathToTrash(abs, meta, { inPlace: true })
       result.ok = true
       result.trashed = true
@@ -7687,6 +7768,25 @@ ipcMain.handle('update-window-title', async (event, title) => {
     mainWindow.setTitle(name + ' ' + version + ' | ' + title)
   } else {
     mainWindow.setTitle(name + ' ' + version)
+  }
+})
+
+// 窗口最小宽度:渲染进程按「当前卡片尺寸 × 2」算好后传过来。
+// 用户要求「限制缩放窗口大小为至少两张卡片的大小」——锁住下限,卡片就不会被挤到缩水。
+ipcMain.handle('set-window-min-width', async (event, width) => {
+  if (WEB_MODE || !mainWindow) return false
+  try {
+    // 不能超过屏幕可用宽度(卡片调到 800 时「两张卡」会超过小屏,锁死会让窗口拖不回来)
+    const work = screen.getPrimaryDisplay().workAreaSize
+    const cap = Math.max(560, Math.floor(work.width * 0.96))
+    const w = Math.min(cap, Math.max(0, Math.round(Number(width) || 0)))
+    const [, h] = mainWindow.getMinimumSize()
+    mainWindow.setMinimumSize(w, h)
+    const [cw, ch] = mainWindow.getSize()
+    if (w && cw < w) mainWindow.setSize(w, ch)
+    return true
+  } catch (e) {
+    return false
   }
 })
 

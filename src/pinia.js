@@ -87,10 +87,9 @@ export const useAppStore = defineStore('appStore', {
       return ipcRenderer.sendSync('get-path-sep')
     },
     displayBookCount (state) {
-      if (state.sortValue === 'hidden') {
-        return _.sumBy(state.displayBookList, book => book.hiddenBook ? 1 : 0)
-      }
-      return _.sumBy(state.displayBookList, book => this.isVisibleBook(book) ? 1 : 0)
+      // 与 customChunk 共用 isCountedBook:总数 = 真实会铺出来的格子数。
+      // 以前 hidden 视图单独一套口径、切页那边又按 isVisibleBook 数,两边一对不上就空页。
+      return _.sumBy(state.displayBookList, book => this.isCountedBook(book) ? 1 : 0)
     },
     tagList (state) {
       const uniqedTagMap = new Map()
@@ -200,7 +199,11 @@ export const useAppStore = defineStore('appStore', {
     // 合集视图那一份(!book.hiddenBook 过滤)已删除:合集与标签共用同一个网格,
     // 隐藏书在这里也要能被选中/编辑(用户可以在「其他 → 显示漫画」里把它放出来)。
     visibleManageBookList (state) {
-      return state.chunkDisplayBookList.filter(book => !book.isCollection && !book.folderHide)
+      // ★ 管理界面也要能看见合集卡(用户要求):以前把 isCollection 全滤掉,
+      //   合集在管理视图里完全消失,没法从这一侧进合集。
+      //   chunkDisplayBookList 本身已经是「算作书架格子」的那一批(合集成员不在里面),
+      //   这里只需要把被文件夹树挡掉的书滤掉。
+      return state.chunkDisplayBookList.filter(book => !book.folderHide)
     },
   },
   actions: {
@@ -275,6 +278,18 @@ export const useAppStore = defineStore('appStore', {
       // hiddenBook mean book hide by user operation
       return !book.folderHide && !book.collectionHide && !book.hiddenBook
     },
+    // 分页唯一口径:**这一条算不算书架上的一个格子**。
+    // 总数(el-pagination 的 total)与切页(customChunk)必须用同一个判断,
+    // 否则算出来的页数和实际能铺出来的条数对不上 —— 最后一页就会是空的。
+    // ★ 合集成员(collectionHide)不算:它们已经被收进合集卡里,
+    //   合集卡本身算一条。扫 14648 本、其中 35 本是 2 个合集的成员 →
+    //   书架上是 14648 - 35 + 2 = 14615 个格子。
+    isCountedBook (book) {
+      if (!book) return false
+      // 「隐藏」视图里只认 hiddenBook:那个视图本身就是把隐藏的书捞出来看
+      if (this.sortValue === 'hidden') return !!book.hiddenBook
+      return this.isVisibleBook(book)
+    },
     printMessage(type, msg) {
       ElMessage.closeAll()
       ElMessage[type]({
@@ -341,6 +356,18 @@ export const useAppStore = defineStore('appStore', {
       await this.saveBook(book)
     },
     saveBook (book) {
+      // 同一本书在不同地方可能是「副本」(详情页/侧栏/搜索结果):保存后把常用字段同步回书架那份,
+      // 否则回列表一看还是旧值(评分/标记/标题最明显)。
+      try {
+        if (book && book.id && Array.isArray(this.bookList)) {
+          const hit = this.bookList.find(b => b && b.id === book.id && b !== book)
+          if (hit) {
+            for (const k of ['rating', 'mark', 'status', 'hiddenBook', 'tags', 'title', 'title_jpn', 'category', 'pageCount', 'readCount']) {
+              if (k in book) hit[k] = book[k]
+            }
+          }
+        }
+      } catch (e) { /* 同步失败不影响落盘 */ }
       return ipcRenderer.invoke('save-book', _.cloneDeep(book))
     },
     async switchMark (book) {

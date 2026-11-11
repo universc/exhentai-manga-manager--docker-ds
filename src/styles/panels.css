@@ -1400,6 +1400,123 @@
 .manage-tag-cat-chip:active {
     cursor: grabbing;
 }
+/* 类别后面跟着的标签数量(与设置页「角色 192」同一口径) */
+.manage-tag-cat-count {
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: 8px;
+    font-size: 11px;
+    line-height: 16px;
+    background: var(--el-fill-color-darker, rgba(0, 0, 0, .08));
+    color: var(--el-text-color-secondary);
+}
+/* 更改标签 / 更改类别:内联区块(不再是弹窗) */
+.manage-inline-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px;
+    margin-bottom: 4px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+    background: var(--el-fill-color-blank, #fff);
+    transition: box-shadow .2s ease, border-color .2s ease;
+}
+.manage-inline-block.is-flash {
+    border-color: var(--el-color-primary);
+    box-shadow: 0 0 0 2px var(--el-color-primary-light-7);
+}
+.manage-inline-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+}
+.manage-inline-actions .el-button {
+    width: 100%;
+    margin: 0;
+}
+/* 管理网格里的合集卡:顶部徽标是「合集」,给一点提示色 */
+.book-manage-card.is-collection-card {
+    outline: 1px dashed var(--el-color-primary-light-5);
+    outline-offset: -1px;
+}
+.book-manage-card.is-collection-card .book-manage-title {
+    color: var(--el-color-primary);
+}
+/* 标签设置:与设置页「标签」右上角那排按钮一致(增加标签 / 增加类别 / 标题分析) */
+.manage-tag-settings-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 8px;
+}
+.manage-tag-settings-actions .el-button {
+    width: 100%;
+    margin: 0;
+    padding-left: 4px;
+    padding-right: 4px;
+}
+/* 顶部「扫描与生成」四颗按钮:两列,面板再窄也不会挤成一条 */
+.manage-quick-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+}
+.manage-quick-actions .el-button {
+    width: 100%;
+    margin: 0;
+    padding-left: 6px;
+    padding-right: 6px;
+}
+/* 类别胶囊可点选(选中后只显示该类别的标签) */
+.manage-tag-cat-chip.is-active {
+    background: var(--el-color-primary-light-9);
+    border-color: var(--el-color-primary);
+    color: var(--el-color-primary);
+}
+/* 标签列表:与设置页中间那块同款(可滚动) */
+.manage-tag-list {
+    max-height: 260px;
+    overflow-y: auto;
+    margin: 4px 0 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+    background: var(--el-fill-color-blank, #fff);
+}
+.manage-tag-group + .manage-tag-group {
+    margin-top: 8px;
+}
+.manage-tag-group-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--el-text-color-regular);
+    margin-bottom: 6px;
+}
+.manage-tag-item {
+    display: inline-block;
+    margin: 0 8px 6px 0;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--el-color-primary);
+    cursor: pointer;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+}
+.manage-tag-item:hover {
+    text-decoration: underline;
+}
+.manage-tag-list-empty {
+    font-size: 12px;
+    color: var(--el-text-color-placeholder);
+}
 .manage-tag-cat-drag .sortable-ghost {
     opacity: 0.4;
 }

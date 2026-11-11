@@ -316,6 +316,11 @@ const runUpscaleInner = (id, inputPath, outputPath, options = {}) => {
   if (!exePath) return Promise.reject(new Error(def.name + ' 未安装,请先在 设置 → 功能 → 本地模型 中下载'))
 
   const args = ['-i', inputPath, '-o', outputPath]
+  // ★ 强制单线程(load:proc:save = 1:1:1)。
+  //   这两个 ncnn-vulkan 程序默认是 -j 1:2:2,proc 线程会**同时**处理多个分块;
+  //   在部分显卡/驱动上,并发分块会互相踩 offset —— 输出图就是一张「分块错位」的网格
+  //   (用户截图里的 Real-ESRGAN 错误)。GPU 本来就是串行的,单线程不会更慢多少,
+  //   但能彻底消除接缝。
   if (id === 'realesrgan') {
     // -n 权重模型;-s 输出倍数;可选 -t 分块 / -g 显卡 / -x TTA
     args.push('-n', String(options.model || def.defaultModel))
@@ -323,6 +328,7 @@ const runUpscaleInner = (id, inputPath, outputPath, options = {}) => {
     if (Number(options.tileSize) > 0) args.push('-t', String(Number(options.tileSize)))
     if (options.gpuId !== undefined) args.push('-g', String(Number(options.gpuId) || 0))
     if (options.tta) args.push('-x')
+    args.push('-j', '1:1:1')
   } else if (id === 'waifu2x') {
     // -m 模型目录;-s 放大倍数(1/2);-n 降噪等级
     if (options.model) args.push('-m', String(options.model))
@@ -331,6 +337,7 @@ const runUpscaleInner = (id, inputPath, outputPath, options = {}) => {
     if (Number(options.tileSize) > 0) args.push('-t', String(Number(options.tileSize)))
     args.push('-g', String(Number(options.gpuId) || 0))
     if (options.tta) args.push('-x')
+    args.push('-j', '1:1:1')
   }
 
   const timeoutMs = Number(options.timeoutMs) || 10 * 60 * 1000

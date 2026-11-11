@@ -418,9 +418,9 @@
         </div>
 
         <div class="next-manga-button" v-if="setting.showNextMangaButtons !== false" :class="{ 'next-manga-button-visible': nextMangaButtonsVisible }">
-          <el-button size="large" type="success" plain @click="$emit('toNextManga', -1)">{{$t('m.previousManga')}}</el-button>
-          <el-button size="large" type="success" plain @click="$emit('toNextMangaRandom')">{{$t('m.nextMangaRandom')}}</el-button>
-          <el-button size="large" type="success" plain @click="$emit('toNextManga', 1)">{{$t('m.nextManga')}}</el-button>
+          <el-button size="large" type="success" plain @click="goNextManga(-1)">{{$t('m.previousManga')}}</el-button>
+          <el-button size="large" type="success" plain @click="goNextMangaRandom()">{{$t('m.nextMangaRandom')}}</el-button>
+          <el-button size="large" type="success" plain @click="goNextManga(1)">{{$t('m.nextManga')}}</el-button>
         </div>
       </div>
       <!-- 加载遮罩(可关闭):在线解析画廊页面 / 本地取图片列表;失败或卡住时点「关闭」退出 -->
@@ -992,6 +992,33 @@ const handleReachEnd = () => {
     return
   }
   maybeTipLastPage()
+}
+
+// 越过第一页继续往前:与 handleReachEnd 对称 —— 开了「自动进入下一本」时,往回翻就回到上一本。
+// ★ 用户要求:「自动进入下一本功能开启时,可以返回上一本漫画」。
+//   以前只有「到底了自动下一本」,想回去只能点底部那颗按钮 / 退出重开。
+let lastReachStartAt = 0
+const handleReachStart = () => {
+  const action = setting.value.viewerEndAction || 'none'
+  if (action !== 'next') return
+  // 500ms 后才会真的换书:这期间滚轮会连续触发,限流一下,免得一次上滑退好几本
+  const now = Date.now()
+  if (now - lastReachStartAt < 900) return
+  lastReachStartAt = now
+  emit('toNextManga', -1)
+}
+// 是否停在开头(与 isAtScrollEnd 对称)
+const isAtScrollStart = (tolerance = 2) => {
+  const el = scrollBox()
+  if (!el) return false
+  if (isScrollHorizontal.value) {
+    const maxLeft = el.scrollWidth - el.clientWidth
+    if (maxLeft <= tolerance) return true
+    return isRtl.value ? el.scrollLeft >= maxLeft - tolerance : el.scrollLeft <= tolerance
+  }
+  const maxTop = el.scrollHeight - el.clientHeight
+  if (maxTop <= tolerance) return true
+  return el.scrollTop <= tolerance
 }
 
 const drawerVisibleViewer = ref(false)
@@ -2577,7 +2604,13 @@ const viewManga = (book, viewerHeight = '100%', startIndex = null, opts = {}) =>
   // ⚠ 只有在「书的页数已知」时才做上限钳制。
   //   以前写成 Math.min(startIndex, Math.max(0, (pageCount || 0) - 1)):
   //   书还没统计出页数时 pageCount 是 null → 算成 -1 → 钳成 0 → **点第 N 页永远回到第 1 页**。
-  const wantIdx = (startIndex != null && Number(startIndex) > 0) ? (Number(startIndex) | 0) : 0
+  // ★ 换书回来:如果这本书刚才被「上一本/下一本」切走过,恢复当时那一页
+  let effectiveStart = startIndex
+  if ((effectiveStart === null || effectiveStart === undefined) && book && book.id) {
+    const hit = pageMemo.get(book.id)
+    if (hit && Date.now() - hit.at < PAGE_MEMO_TTL) effectiveStart = hit.index
+  }
+  const wantIdx = (effectiveStart != null && Number(effectiveStart) > 0) ? (Number(effectiveStart) | 0) : 0
   const knownCount = Number(book && book.pageCount) || 0
   const wantIdxClamped = (knownCount > 0) ? Math.min(wantIdx, knownCount - 1) : wantIdx
   // 双页模式下 currentImageIndex 是「屏」序号:先按 每屏 2 页 估一个,
@@ -2587,6 +2620,7 @@ const viewManga = (book, viewerHeight = '100%', startIndex = null, opts = {}) =>
   // 换书:上一本残留的「跳页校正」必须清掉,否则新书刚打开就被旧定时器拽一下
   clearJumpCorrections()
   lastPageTipShown = false
+  lastReachStartAt = 0
   pinHorizontalStart = false
   currentImageId.value = ''
   resetAutoUpscale()
@@ -2597,11 +2631,11 @@ const viewManga = (book, viewerHeight = '100%', startIndex = null, opts = {}) =>
   emit('updateWindowTitle', book)
   if (!opts.skipHistory) insertLocalReadRecord(book.id, book)
   // 「进入阅读(第 N 页)」:等主进程把图片推全了再跳(见 manga-image 的到齐分支)
-  pendingJumpIndex = (startIndex == null ? null : Math.max(0, Number(startIndex) | 0))
+  pendingJumpIndex = (effectiveStart == null ? null : Math.max(0, Number(effectiveStart) | 0))
   // 记下「这次开书是用户指定了页码」—— 后续所有「按阅读进度跳」的分支都要看它。
   // ★ 必须用 startIndex != null 而不是 > 0:以前 0 被当成「没指定页码」,
   //   点预览第 1 页会被「上次阅读进度」拉走,打开的却是第 N 页(实测命中)
-  openedToPage = (startIndex != null && Number(startIndex) >= 0) ? (Number(startIndex) | 0) : null
+  openedToPage = (effectiveStart != null && Number(effectiveStart) >= 0) ? (Number(effectiveStart) | 0) : null
   ipcRenderer.invoke('load-manga-image-list', _.cloneDeep(book))
   .then((res) => {
     // txt / epub:取「内容块」(章节 / 段落 / 插图原位)。
@@ -2666,6 +2700,29 @@ const viewManga = (book, viewerHeight = '100%', startIndex = null, opts = {}) =>
   if (localStorage.getItem('showViewerSide') === 'true') {
     showViewerSide.value = true
   }
+}
+
+// ---------- 换书时的页码记忆 ----------
+// 自动进入下一本后再往回翻,以前是从第 1 页重新开始(重新加载整本)。
+// 这里记住「离开这本书时看到第几页」,回来时直接落到那一页。
+// 键 = book.id,值 = { index, at };超过 30 分钟的记忆作废(避免很久以后突然跳页)。
+const pageMemo = new Map()
+const PAGE_MEMO_TTL = 30 * 60 * 1000
+const currentPageIndexForMemo = () =>
+  (imageStyleType.value === 'double' ? currentImageIndex.value * 2 : currentImageIndex.value)
+const rememberCurrentPage = () => {
+  const b = bookDetail.value
+  if (!b || !b.id) return
+  pageMemo.set(b.id, { index: currentPageIndexForMemo(), at: Date.now() })
+}
+// 模板/键盘触发的「上一本 / 下一本」:先把当前页记下来再切
+const goNextManga = (step) => {
+  rememberCurrentPage()
+  emit('toNextManga', step)
+}
+const goNextMangaRandom = () => {
+  rememberCurrentPage()
+  emit('toNextMangaRandom')
 }
 
 const _currentImageIndex = ref(0)
@@ -2909,7 +2966,11 @@ const frameCount = () => (imageStyleType.value === 'double' ? viewerImageListDou
 const turnPage = (step) => {
   if (!step) return
   const next = currentImageIndex.value + step
-  if (next < 0) return
+  if (next < 0) {
+    // 已经在第一页还往前翻:开了自动下一本 → 回到上一本(与「越过最后一页」对称)
+    handleReachStart()
+    return
+  }
   currentImageIndex.value = next // setter 会夹住上限,并在越过最后一页时触发「阅读完成后」
   nextTick(() => {
     const el = drawerViewerBody.value
@@ -3796,10 +3857,13 @@ const handleBodyWheel = (event) => {
       el.scrollLeft += isRtl.value ? -delta : delta
       pinHorizontalStart = false
       if (delta > 0 && isAtScrollEnd(4)) handleReachEnd()
+      // 反向:已经在整排最前面还往前滚 → 上一本(自动下一本开启时才生效)
+      if (delta < 0 && isAtScrollStart(4)) handleReachStart()
       return
     }
     // 纵向卷轴:交给原生滚动(惯性滚动模块接管),只在到底后继续滚时触发「阅读完成后」
     if (event.deltaY > 0 && isAtScrollEnd(4)) handleReachEnd()
+    if (event.deltaY < 0 && isAtScrollStart(4)) handleReachStart()
     return
   }
   // 分页
@@ -4398,6 +4462,10 @@ defineExpose({
 // 分页(单页 / 双页):没放大时内容正好一屏,不该出现滚动条;放大后才允许滚动
 .drawer-viewer-body.viewer-paged
   overflow: hidden
+  // ★ 内容区必须撑满一屏:否则 .viewer-paging 的 min-height:100% 没有百分比基准,
+  //   图片按内容高度贴在顶部,下面留一大片空白(用户截图)。
+  .drawer-image-content
+    height: 100%
 
 .drawer-viewer-body.viewer-paged.viewer-zoomed
   overflow: auto
@@ -4408,6 +4476,10 @@ defineExpose({
   flex-direction: column
   min-height: 100%
   min-width: 100%
+  // 图片比可视区矮时上下也居中(auto margin 在有剩余空间时均分,
+  // 放大到超出屏幕时自动变成 0 —— 仍然贴左上、能滚到)
+  > .image-frame
+    margin: auto
 
 // 退出按钮:固定在右上角,但与设置栏同步显示/隐藏(一起出现、一起消失)
 .viewer-exit-button

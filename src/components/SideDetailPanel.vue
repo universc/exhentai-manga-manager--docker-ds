@@ -33,8 +33,16 @@
         </div>
         <!-- 右列:标题 / 副标题 / 信息行(全部靠左;面板窄时信息行隐藏) -->
         <div class="detail-head-info">
-          <div class="detail-title" :title="mainTitle">{{ mainTitle }}</div>
-          <div class="detail-subtitle" v-if="subTitle" :title="subTitle">{{ subTitle }}</div>
+          <el-input
+            v-if="collectionEditing"
+            class="detail-title-input"
+            size="small"
+            v-model="collectionEditTitle"
+            :placeholder="isCollection ? $t('m.collectionName') : $t('m.title')"
+            @change="saveCollectionTitle"
+          />
+          <div class="detail-title" v-else :title="mainTitle">{{ mainTitle }}</div>
+          <div class="detail-subtitle" v-if="subTitle && !collectionEditing" :title="subTitle">{{ subTitle }}</div>
           <div class="detail-info">
             <div class="detail-info-row">
               <span class="k">{{ $t('m.sideDetailPages') }}</span>
@@ -83,11 +91,16 @@
            整排本地按钮露出来(本地/在线功能串场)。 -->
       <div class="detail-actions">
         <el-button class="detail-act" size="small" :icon="View" v-if="!isCollection" @click="$emit('read', book)">{{ $t('m.read') }}</el-button>
-        <!-- 合集:打开合集抽屉看里面的书 / 进详细界面 / 编辑合集(删除在详细界面里,那里有完整确认) -->
+        <!-- 合集:按钮与「合集详细界面」完全一致 —— 阅读 / 重扫 / 编辑合集 / 获取元数据 / 隐藏 /
+             删除合集 / 删除文件(顺序也照那边)。以前只有「打开合集/合集详情/编辑合集」三颗。 -->
         <template v-if="isCollection">
-          <el-button class="detail-act" size="small" :icon="View" @click="$emit('read', book)">{{ $t('m.openCollection') }}</el-button>
-          <el-button class="detail-act" size="small" :icon="Edit" @click="$emit('open-book-detail', book)">{{ $t('m.collectionDetail') }}</el-button>
-          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="FolderOpened" @click="$emit('edit-collection', book)">{{ $t('m.editCollection') }}</el-button>
+          <el-button class="detail-act" size="small" :icon="View" :disabled="!collectionMembers.length" @click="$emit('collection-read', book)">{{ $t('m.collectionRead') }}</el-button>
+          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="Refresh" :disabled="!collectionMembers.length" @click="$emit('collection-rescan', book)">{{ $t('m.rescan') }}</el-button>
+          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="Edit" @click="toggleCollectionEdit">{{ collectionEditing ? $t('m.viewInfo') : $t('m.editCollection') }}</el-button>
+          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="MdSearch" :disabled="!collectionMembers.length" @click="$emit('collection-get-metadata', book)">{{ $t('m.getMetadata') }}</el-button>
+          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="Hide" :disabled="!collectionMembers.length" @click="$emit('collection-toggle-hidden', book)">{{ book.hiddenBook ? $t('m.showManga') : $t('m.hideManga') }}</el-button>
+          <el-button v-if="!viewerRole" class="detail-act detail-act-danger" size="small" :icon="FolderDelete" @click="deleteCollection">{{ $t('c.deleteCollection') }}</el-button>
+          <el-button v-if="!viewerRole" class="detail-act detail-act-danger" size="small" :icon="Delete" @click="deleteCollectionFiles">{{ $t('m.deleteFile') }}</el-button>
         </template>
         <!-- 在线画廊 -->
         <template v-else-if="book && book.online">
@@ -102,7 +115,8 @@
         <!-- 本地库:把「详细界面」里那一整排按钮也搬过来
              (查看/编辑信息、获取元数据、隐藏、打开文件位置、重新扫描、删除) -->
         <template v-else>
-          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="Edit" @click="$emit('open-book-detail', book)">{{ $t('m.editInfo') }}</el-button>
+          <!-- 「编辑信息」不再跳到详细界面:和「编辑合集」同款,在面板里就地编辑标题 + 标签 -->
+          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="Edit" @click="toggleCollectionEdit">{{ collectionEditing ? $t('m.viewInfo') : $t('m.editInfo') }}</el-button>
           <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="MdSearch" @click="$emit('get-metadata', book)">{{ $t('m.getMetadata') }}</el-button>
           <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="Hide" @click="$emit('toggle-hidden', book)">{{ book.hiddenBook ? $t('m.showManga') : $t('m.hideManga') }}</el-button>
           <el-button class="detail-act" size="small" :icon="FolderOpened" @click="showFile">{{ $t('m.openMangaFileLocation') }}</el-button>
@@ -113,9 +127,57 @@
              合集没有评论,不显示 -->
         <el-button v-if="!isCollection" class="detail-act" size="small" :icon="ChatDotSquare" @click="toggleSideComments">{{ sideCommentsOn ? $t('m.hideComment') : $t('m.showComment') }}</el-button>
       </div>
-      <!-- 标签分组:点一个标签 = 按它搜(JHenTai 详情页点标签也是这个动作) -->
+      <!-- 标签分组:点一个标签 = 按它搜(JHenTai 详情页点标签也是这个动作)
+           合集在编辑态时换成「每个类别一个多选框」:改动即时下发到全部成员 -->
       <div class="detail-tags">
-        <template v-if="tagGroups.length">
+        <template v-if="collectionEditing">
+          <!-- 与「合集详细界面」的编辑标签完全同款:一个类别一个多选框,
+               类别名做 placeholder(不再在框上面单占一行),下拉里的标签横排铺开。
+               普通漫画走同一套(改动直接写自己)。 -->
+          <div class="tag-picker" v-for="cat in editableCats" :key="cat">
+            <el-select
+              v-model="collectionEditTags[cat]"
+              size="small"
+              multiple
+              filterable
+              clearable
+              allow-create
+              default-first-option
+              :reserve-keyword="false"
+              fit-input-width
+              popper-class="tag-select-dropdown"
+              class="tag-select"
+              :placeholder="catLabel(cat)"
+              @change="applyCollectionTags"
+            >
+              <el-option v-for="o in collectionTagOptions[cat]" :key="cat + '|' + o.value" :label="o.label" :value="o.value" />
+            </el-select>
+          </div>
+          <!-- 与普通漫画「编辑标签」同一排按钮:合集的按全部成员执行 -->
+          <el-space wrap class="detail-tag-buttons">
+            <el-button size="small" @click="addColCategory">{{ $t('m.addCategory') }}</el-button>
+            <el-button size="small" type="success" @click="emit('openAddTag')">{{ $t('m.addNewTag') }}</el-button>
+            <el-button size="small" @click="colGetTagByUrl">{{ $t('m.getTagbyUrl') }}</el-button>
+            <el-button size="small" :loading="queryingOrigins" @click="queryColOrigins">{{ $t('m.queryCharacterOrigins') }}</el-button>
+            <el-button size="small" :loading="analyzingTitles" @click="analyzeColTitles">{{ $t('m.translateTitle') }}</el-button>
+            <el-button size="small" @click="colNotImplemented">{{ $t('m.superResolution') }}</el-button>
+            <el-button size="small" @click="colNotImplemented">{{ $t('m.colorization') }}</el-button>
+            <el-button size="small" @click="resetColMetadata">{{ $t('m.resetMetadata') }}</el-button>
+            <el-button size="small" @click="copyColTags">{{ $t('m.copyTagClipboard') }}</el-button>
+            <el-button size="small" @click="pasteColTags">{{ $t('m.pasteTagClipboard') }}</el-button>
+          </el-space>
+          <el-dialog v-model="colTagDialogVisible" :title="$t('m.addNewTag')" width="360px" append-to-body>
+            <el-select v-model="colTagCat" :placeholder="$t('m.category')" style="width: 100%; margin-bottom: 10px;">
+              <el-option v-for="cat in editableCats" :key="'nt' + cat" :label="catLabel(cat)" :value="cat" />
+            </el-select>
+            <el-input v-model="colTagName" :placeholder="$t('m.tagNamePlaceholder')" />
+            <template #footer>
+              <el-button size="small" @click="colTagDialogVisible = false">{{ $t('m.cancel') }}</el-button>
+              <el-button size="small" type="primary" :disabled="!colTagCat || !colTagName.trim()" @click="confirmAddColTag">{{ $t('m.apply') }}</el-button>
+            </template>
+          </el-dialog>
+        </template>
+        <template v-else-if="tagGroups.length">
           <div class="detail-tag-group" v-for="g in tagGroups" :key="g.cat">
             <!-- 自然行内流:类别名和标签在同一条基线上,标签换行就回到左边缘,不做列对齐 -->
             <span class="detail-tag-cat">{{ g.label }}</span>
@@ -172,16 +234,30 @@
       </div>
       <!-- 合集:没有「页」这个概念,这里显示成员的封面网格(点一下打开那一本的详细界面) -->
       <div class="detail-preview" v-else-if="isCollection">
+        <!-- 编辑态:添加漫画(与合集详情编辑态同一颗按钮) -->
+        <div class="detail-collection-tools" v-if="collectionEditing && !viewerRole">
+          <el-button size="small" type="primary" plain :icon="Plus" @click="emit('collection-add-member', book)">{{ $t('m.addMangaToCollection') }}</el-button>
+        </div>
         <div class="detail-preview-grid" v-if="collectionMembers.length" :style="{ '--cell': PREVIEW_W + 'px' }">
           <div
             v-for="m in collectionMembers.slice(0, 80)"
             :key="'cm' + m.id"
-            class="detail-preview-item"
+            class="detail-preview-item detail-collection-member"
+            :class="{ 'is-editing': collectionEditing }"
             :title="m.title"
-            @click="emit('open-book-detail', m)"
+            @click="collectionEditing ? null : emit('open-book-detail', m)"
           >
             <img v-if="m.coverPath" :src="bookImgSrc(m.coverPath)" loading="lazy" decoding="async" />
             <div v-else class="detail-preview-pending"></div>
+            <!-- 编辑态:右上角 ✕ = 移出合集;右下角垃圾桶 = 同时把文件移入回收站 -->
+            <template v-if="collectionEditing && !viewerRole">
+              <span class="detail-member-op is-remove" :title="$t('m.removeFromCollection')" @click.stop="removeCollectionMember(m)">
+                <el-icon :size="11"><Close /></el-icon>
+              </span>
+              <span class="detail-member-op is-delete" :title="$t('m.deleteFile')" @click.stop="confirmDeleteCollectionMember(m)">
+                <el-icon :size="11"><Delete /></el-icon>
+              </span>
+            </template>
           </div>
         </div>
         <div v-else class="detail-preview-error">{{ $t('m.collectionEmptyBooks') }}</div>
@@ -230,19 +306,19 @@
 </template>
 
 <script setup>
-import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount, h } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ContextMenu from '@imengyu/vue3-context-menu'
 // 与阅读器同一套「图片右键菜单」(共享模块,见 src/imageContextMenu.js)
 import { buildImageContextMenuItems, imageObjectFromPreview, refreshPreviewItem } from '../imageContextMenu.js'
-import { Loading, View, Download, Star, Link, FolderOpened, Edit, Hide, Refresh, Delete, ChatDotSquare } from '@element-plus/icons-vue'
+import { Loading, View, Download, Star, Link, FolderOpened, Edit, Hide, Refresh, Delete, ChatDotSquare, FolderDelete, Plus, Close } from '@element-plus/icons-vue'
 import { MdAttach, MdSearch } from '@vicons/ionicons4'
 import { MdRefresh } from '@vicons/ionicons4'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, collectGalleryThumbs } from '../ehOnline.js'
-import { catDisplayName, toAssetUrl, bookImgSrc, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName, sortContextMenuItems, isContextMenuItemEnabled } from '../utils.js'
+import { catDisplayName, toAssetUrl, bookImgSrc, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName, sortContextMenuItems, isContextMenuItemEnabled, resolveCatKey } from '../utils.js'
 import { addTagToBlacklist, setBlacklistEnabled } from '../ehFilter.js'
 // 统一空态（P0-08）：侧栏没有选中漫画时的提示
 import EmptyState from './states/EmptyState.vue'
@@ -269,8 +345,17 @@ const emit = defineEmits([
   'save-book',
   // 预览图右键菜单:打开图片 / 打开所在目录 / 浏览器打开 URL
   'open-image', 'open-url', 'open-path',
-  // 合集:「编辑合集」交给 App 打开管理面板并选中该合集
-  'edit-collection'
+  // 合集:「编辑合集」在本面板内联编辑(改名 + 标签差量下发),不再跳管理面板
+  'collection-rename', 'collection-tags-change',
+  // 合集:与合集详细界面一致的批量动作 / 删除
+  'collection-read', 'collection-rescan', 'collection-get-metadata', 'collection-toggle-hidden',
+  'collection-delete', 'collection-delete-files',
+  // 编辑态:添加漫画 / 移出成员 / 删除成员文件
+  'collection-add-member', 'collection-remove-member',
+  // 「增加标签」统一入口:打开 设置 → 标签 界面
+  'openTagSettings',
+  // 「增加标签」:弹「编辑标签」弹窗(新增模式)
+  'openAddTag'
 ])
 // 侧边详情的评论开关:独立于「详细界面」的 setting.showComment(那是一整栏评论页)
 const sideCommentsOn = ref(true)
@@ -774,6 +859,8 @@ const isCollection = computed(() => !!(book.value && book.value.isCollection))
 const collectionMembers = computed(() => {
   if (!isCollection.value) return []
   const b = book.value || {}
+  // 与书架卡片/详细界面用同一份实时成员(刚「添加漫画」加进来的会立刻出现在这里)
+  if (Array.isArray(b._members) && b._members.length) return b._members
   const keys = Array.isArray(b.ids) && b.ids.length ? b.ids : (Array.isArray(b.list) ? b.list : [])
   const out = []
   for (const key of keys) {
@@ -783,8 +870,13 @@ const collectionMembers = computed(() => {
   return out
 })
 // 合集大小 = 成员文件大小合计
+// ★ 与详细界面同一口径:优先 bundleSize(本地书真实体积),filesize(EH 远端原图大小)兜底。
+//   只读 filesize 时本地书全是 null → 合计 0 → 这一行永远不显示。
 const collectionSizeText = computed(() => {
-  const total = collectionMembers.value.reduce((sum, m) => sum + (Number(m && m.filesize) || 0), 0)
+  const total = collectionMembers.value.reduce((sum, m) => {
+    if (!m) return sum
+    return sum + (Number(m.bundleSize) || Number(m.filesize) || 0)
+  }, 0)
   if (!total) return ''
   if (total >= 1024 * 1024 * 1024) return (total / 1024 / 1024 / 1024).toFixed(2) + ' GB'
   if (total >= 1024 * 1024) return (total / 1024 / 1024).toFixed(1) + ' MB'
@@ -865,9 +957,17 @@ const onRateChange = (v) => {
   emit('save-book', b)
 }
 
-const mainTitle = computed(() => book.value.title_jpn || book.value.title || '')
+// 合集:标题就是合集名(以前取 title_jpn —— 聚合条目上那是「全部成员标题拼起来」,
+// 侧栏会显示一长串漫画名,用户看到的就是这个)
+const mainTitle = computed(() => {
+  const b = book.value || {}
+  if (isCollection.value) return b.title || ''
+  return b.title_jpn || b.title || ''
+})
 const subTitle = computed(() => {
   const b = book.value
+  // 合集只有「合集名」一个标题,不要再拿成员拼出来的 title_cn 当副标题
+  if (isCollection.value) return ''
   const sub = b.title_cn || b.title
   return sub && sub !== mainTitle.value ? sub : ''
 })
@@ -891,6 +991,305 @@ const tagGroups = computed(() => {
 const tagStyle = (cat, tag) => {
   const c = tagColorOf(setting.value, cat, tag)
   return c ? { color: c, borderColor: c } : {}
+}
+
+// ---------- 面板内联编辑(普通漫画 / 合集共用一套界面) ----------
+// 以前「编辑信息」只能跳到详细界面;现在和「编辑合集」完全同款:
+//   · 标题直接在面板里改(合集改 collectionList 的记录,普通书改书名)
+//   · 标签一个类别一个多选框,改动即时生效(合集按差量下发给全部成员,普通书直接写自己)
+// collectionEditing 这个名字沿用下来,现在表示「面板处于内联编辑态」(两种书通用)
+const collectionEditing = ref(false)
+const collectionEditTitle = ref('')
+const collectionEditTags = ref({})
+const collectionBaseTags = ref({})
+// 「增加类别」新增、但书库里还没有任何标签的空类别
+const extraCats = ref([])
+// 标签工具栏的状态
+const colTagDialogVisible = ref(false)
+const colTagCat = ref('')
+const colTagName = ref('')
+const queryingOrigins = ref(false)
+const analyzingTitles = ref(false)
+
+// 内联编辑作用的书:合集 = 全部成员;普通书 = 它自己
+const editMembers = computed(() => (isCollection.value ? collectionMembers.value : (book.value && book.value.id ? [book.value] : [])))
+
+// 标签并集(编辑起点):合集取成员并集;普通书就是它自己的标签(类别键归一)
+const collectionTagUnion = computed(() => {
+  const out = {}
+  for (const m of editMembers.value) {
+    const tags = (m && m.tags) || {}
+    for (const cat in tags) {
+      if (!Array.isArray(tags[cat])) continue
+      const key = resolveCatKey(cat)
+      if (!out[key]) out[key] = []
+      for (const tg of tags[cat]) if (!out[key].includes(tg)) out[key].push(tg)
+    }
+  }
+  return out
+})
+
+// 每个类别可选标签 = 整个书库出现过的标签(允许新建)
+const collectionTagOptions = computed(() => {
+  const group = {}
+  for (const b of (bookList.value || [])) {
+    const tags = b && b.tags
+    if (!tags) continue
+    for (const cat in tags) {
+      if (!Array.isArray(tags[cat])) continue
+      const key = resolveCatKey(cat)
+      if (!group[key]) group[key] = new Set()
+      tags[cat].forEach(tg => group[key].add(tg))
+    }
+  }
+  const out = {}
+  for (const key of Object.keys(group)) {
+    out[key] = [...group[key]].sort().map(v => ({ value: v, label: tagName(key, v) }))
+  }
+  return out
+})
+
+const catLabel = (cat) => categoryDisplayName(setting.value, appStore.resolvedTranslation, cat) || cat
+
+// 编辑时显示哪些类别:成员并集 ∪ 书库里出现过的类别
+const editableCats = computed(() => {
+  const set = new Set([
+    ...Object.keys(collectionTagUnion.value),
+    ...Object.keys(collectionTagOptions.value),
+    ...extraCats.value
+  ])
+  return [...set].sort((a, b) => tagCatRank(setting.value, a) - tagCatRank(setting.value, b))
+})
+
+const startCollectionEdit = () => {
+  // 普通书的「主标题」就是面板上显示的那个(title_jpn 优先),编辑它才有反馈
+  const b = book.value || {}
+  collectionEditTitle.value = String(isCollection.value ? (b.title || '') : (b.title_jpn || b.title || ''))
+  extraCats.value = []
+  const union = JSON.parse(JSON.stringify(collectionTagUnion.value))
+  // 每个可编辑类别都给一个数组:否则空类别的 v-model 是 undefined,输入框会一直是占位态
+  const next = {}
+  for (const cat of editableCats.value) next[cat] = Array.isArray(union[cat]) ? [...union[cat]] : []
+  collectionEditTags.value = next
+  collectionBaseTags.value = union
+}
+const toggleCollectionEdit = () => {
+  collectionEditing.value = !collectionEditing.value
+  if (collectionEditing.value) startCollectionEdit()
+}
+// 保存标题:合集写 collectionList 记录,普通书写书名(title_jpn 优先,与面板显示一致)
+const saveCollectionTitle = () => {
+  const b = book.value
+  const title = String(collectionEditTitle.value || '').trim()
+  if (!b || !b.id || !title) return
+  if (isCollection.value) {
+    if (title === String(b.title || '')) return
+    b.title = title
+    emit('collection-rename', { collection: b, title })
+    return
+  }
+  if (b.title_jpn) {
+    if (title === String(b.title_jpn)) return
+    b.title_jpn = title
+  } else {
+    if (title === String(b.title)) return
+    b.title = title
+  }
+  emit('save-book', b)
+}
+// 标签改动:
+//   合集 → 算差量交给 App 批量下发到全部成员
+//   普通书 → 直接把归一后的标签写回自己
+const applyCollectionTags = () => {
+  const b = book.value
+  if (!b || !b.id) return
+  const base = collectionBaseTags.value || {}
+  const next = collectionEditTags.value || {}
+  if (!isCollection.value) {
+    const tags = {}
+    for (const cat of Object.keys(next)) {
+      const arr = (next[cat] || []).filter(x => x != null && x !== '')
+      if (arr.length) tags[cat] = [...new Set(arr)]
+    }
+    b.tags = tags
+    collectionBaseTags.value = JSON.parse(JSON.stringify(next))
+    emit('save-book', b)
+    return
+  }
+  const add = {}
+  const remove = {}
+  const cats = new Set([...Object.keys(base), ...Object.keys(next)])
+  for (const cat of cats) {
+    const before = new Set(base[cat] || [])
+    const after = new Set(next[cat] || [])
+    const added = [...after].filter(x => !before.has(x))
+    const removed = [...before].filter(x => !after.has(x))
+    if (added.length) add[cat] = added
+    if (removed.length) remove[cat] = removed
+  }
+  if (!Object.keys(add).length && !Object.keys(remove).length) return
+  emit('collection-tags-change', { collection: b, add, remove })
+  collectionBaseTags.value = JSON.parse(JSON.stringify(next))
+  // 面板显示读的是聚合条目上的标签快照:编辑结果就是新的并集,就地同步
+  const tags = {}
+  for (const cat of Object.keys(next)) {
+    if (Array.isArray(next[cat]) && next[cat].length) tags[cat] = [...next[cat]]
+  }
+  b.tags = tags
+}
+const deleteCollection = async () => {
+  const b = book.value
+  if (!b || !b.id) return
+  try {
+    await ElMessageBox.confirm(t('c.deleteCollectionConfirm'), t('c.deleteCollection'), { type: 'warning' })
+  } catch (e) { return }
+  emit('collection-delete', b)
+}
+const removeCollectionMember = (m) => {
+  if (!m) return
+  emit('collection-remove-member', { collection: book.value, member: m, deleteFile: false })
+}
+const confirmDeleteCollectionMember = async (m) => {
+  if (!m) return
+  try {
+    await ElMessageBox.confirm(
+      t('c.collectionDeleteMemberConfirm', { title: appStore.getDisplayTitle(m) }),
+      t('m.deleteFile'),
+      { type: 'warning' }
+    )
+  } catch (e) { return }
+  emit('collection-remove-member', { collection: book.value, member: m, deleteFile: true })
+}
+const deleteCollectionFiles = async () => {
+  const b = book.value
+  if (!b || !b.id) return
+  const n = collectionMembers.value.length
+  try {
+    await ElMessageBox.confirm(t('c.deleteCollectionFilesConfirm', { n }), t('m.deleteFile'), { type: 'warning' })
+  } catch (e) { return }
+  emit('collection-delete-files', b)
+}
+// 换书 / 换合集:退出编辑态,别把上一本的标题带过来
+watch(() => book.value.id, () => {
+  collectionEditing.value = false
+  collectionEditTitle.value = ''
+  collectionEditTags.value = {}
+  collectionBaseTags.value = {}
+  extraCats.value = []
+})
+
+// ---------- 侧栏合集编辑:标签工具栏(与详细界面同一批按钮) ----------
+const addColCategory = () => {
+  ElMessageBox.prompt(t('c.inputCategoryName'), t('m.addCategory'), {
+    inputPattern: /^[\p{L}\d_]+$/u,
+    inputErrorMessage: t('c.categoryNameError')
+  }).then(({ value }) => {
+    const cat = resolveCatKey(value)
+    if (!extraCats.value.includes(cat)) extraCats.value.push(cat)
+    if (!collectionEditTags.value[cat]) collectionEditTags.value = { ...collectionEditTags.value, [cat]: [] }
+    if (!(cat in collectionBaseTags.value)) collectionBaseTags.value[cat] = []
+  }).catch(() => { /* 取消 */ })
+}
+const openColTagDialog = () => {
+  colTagCat.value = ''
+  colTagName.value = ''
+  colTagDialogVisible.value = true
+}
+const confirmAddColTag = () => {
+  const cat = resolveCatKey(colTagCat.value)
+  const name = String(colTagName.value || '').trim()
+  if (!cat || !name) return
+  const next = { ...(collectionEditTags.value || {}) }
+  if (!Array.isArray(next[cat])) next[cat] = []
+  if (!next[cat].includes(name)) next[cat].push(name)
+  collectionEditTags.value = next
+  if (!(cat in collectionBaseTags.value)) collectionBaseTags.value[cat] = []
+  if (!extraCats.value.includes(cat)) extraCats.value.push(cat)
+  applyCollectionTags()
+  colTagDialogVisible.value = false
+}
+// 网址获取:普通书直接走「获取元数据」(和详细界面那颗按钮同一个入口);合集没有网址
+const colGetTagByUrl = () => {
+  if (isCollection.value) { ElMessage.info(t('c.collectionNoUrl')); return }
+  if (book.value && book.value.id) emit('get-metadata', book.value)
+}
+const colNotImplemented = () => ElMessage.info(t('c.featureComingSoon'))
+const queryColOrigins = async () => {
+  if (queryingOrigins.value) return
+  const names = collectionTagUnion.value.character || []
+  if (!names.length) { ElMessage.warning(t('c.characterOriginNoTags')); return }
+  queryingOrigins.value = true
+  try {
+    const res = await ipcRenderer.invoke('query-character-origins', names)
+    if (res && res.ok) {
+      ElMessageBox.alert(
+        h('pre', { style: 'white-space: pre-wrap; text-align: left; max-height: 50vh; overflow: auto; margin: 0' }, res.result || t('c.characterOriginEmpty')),
+        t('m.queryCharacterOrigins'),
+        { confirmButtonText: t('c.close'), showClose: true }
+      )
+    } else {
+      ElMessage.error((res && res.error) || t('c.characterOriginFailed'))
+    }
+  } finally {
+    queryingOrigins.value = false
+  }
+}
+const analyzeColTitles = async () => {
+  if (analyzingTitles.value) return
+  analyzingTitles.value = true
+  let changed = 0
+  try {
+    for (const m of editMembers.value) {
+      if (!m || m.online) continue
+      try {
+        const r = await ipcRenderer.invoke('analyze-book-title-characters', JSON.parse(JSON.stringify(m)))
+        if (r && r.ok) {
+          Object.assign(m, r.book)
+          await appStore.saveBook(m)
+          changed += 1
+        }
+      } catch (e) { /* 单本失败不阻塞 */ }
+    }
+    ElMessage.success(t('c.collectionAiDone', { n: changed }))
+  } finally {
+    analyzingTitles.value = false
+  }
+}
+const resetColMetadata = async () => {
+  const members = editMembers.value.slice()
+  if (!members.length) return
+  try {
+    await ElMessageBox.confirm(t('c.collectionResetConfirm', { n: members.length }), t('m.resetMetadata'), { type: 'warning' })
+  } catch (e) { return }
+  let ok = 0
+  for (const m of members) {
+    if (!m || m.online) continue
+    try { await appStore.resetMetadata(m); ok += 1 } catch (e) { /* 单本失败 */ }
+  }
+  ElMessage.success(t('c.rescanSuccess') + ' (' + ok + '/' + members.length + ')')
+  startCollectionEdit()
+}
+const copyColTags = () => {
+  ipcRenderer.invoke('copy-text-to-clipboard', JSON.stringify({ tags: collectionTagUnion.value }))
+  ElMessage.success(t('c.copiedToClipboard'))
+}
+const pasteColTags = async () => {
+  const text = await ipcRenderer.invoke('read-text-from-clipboard')
+  let obj = null
+  try { obj = JSON.parse(text) } catch (e) { obj = null }
+  const tags = obj && obj.tags ? obj.tags : obj
+  if (!tags || typeof tags !== 'object') { ElMessage.warning(t('c.clipboardNoTags')); return }
+  const next = { ...(collectionEditTags.value || {}) }
+  for (const rawCat of Object.keys(tags)) {
+    if (!Array.isArray(tags[rawCat])) continue
+    const cat = resolveCatKey(rawCat)
+    if (!Array.isArray(next[cat])) next[cat] = []
+    for (const tg of tags[rawCat]) if (tg && !next[cat].includes(tg)) next[cat].push(tg)
+    if (!(cat in collectionBaseTags.value)) collectionBaseTags.value[cat] = []
+    if (!extraCats.value.includes(cat)) extraCats.value.push(cat)
+  }
+  collectionEditTags.value = next
+  applyCollectionTags()
 }
 
 // 在线书:thumbnails 会被别的入口写胖(详细界面的补页 / 详情刷新 / 阅读器解析),
@@ -1157,6 +1556,54 @@ const startResize = (e) => {
  * panels.css，同特异性 (0,2,0) 下整体覆盖新版样式。
  * ============================================================ */
 .detail-panel
+  // 合集内联编辑:标题输入框 / 标签框(与详细界面同款)
+  .detail-title-input
+    width: 100%
+    margin-bottom: 2px
+  .tag-picker
+    margin-bottom: 6px
+    .tag-select
+      width: 100%
+  // 标签工具栏:按钮小一点、自动换行
+  .detail-tag-buttons
+    margin: 4px 0 8px
+    .el-button
+      margin: 0
+  // 编辑态:添加漫画
+  .detail-collection-tools
+    margin-bottom: 6px
+  // 编辑态的成员格:✕ / 垃圾桶
+  .detail-collection-member
+    position: relative
+    &.is-editing
+      box-shadow: inset 0 0 0 2px var(--el-color-primary-light-5)
+    .detail-member-op
+      position: absolute
+      z-index: 4
+      width: 18px
+      height: 18px
+      border-radius: 50%
+      display: flex
+      align-items: center
+      justify-content: center
+      color: #fff
+      cursor: pointer
+      &.is-remove
+        top: 3px
+        right: 3px
+        background: rgba(64, 158, 255, .92)
+      &.is-delete
+        bottom: 3px
+        right: 3px
+        background: rgba(245, 108, 108, .92)
+  // 删除类按钮:红色(用户要求「删除合集/删除文件」是红的)
+  .detail-act-danger
+    color: var(--el-color-danger)
+    border-color: var(--el-color-danger-light-5)
+    &:hover
+      color: #fff
+      background: var(--el-color-danger)
+      border-color: var(--el-color-danger)
   .detail-preview
     margin: 8px 0 4px
   .detail-preview-grid

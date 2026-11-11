@@ -247,15 +247,18 @@ const mergeContextMenuOptions = (options) => {
 // ---------- 封面懒加载 ----------
 // 封面缺失(空路径)或加载失败时,请求主进程按需生成封面(以漫画名命名)并更新路径。
 // 网页版(Docker)经 web-ipc 桥转发,返回的 coverPath 会被改写为 /api/file?path=...。
-// 失败后标记 _coverFailed,避免 img onerror 死循环。
 // 同一个 book.id 的并发请求合并成一个(同一份 Promise):书架重排/滚动会让同一张卡片
 // 的 watch 与 onerror 短时间内各触发一次,不去重就会对同一本重复解压压缩包。
 const coverInFlight = new Map()
 // 失败重试节奏:第 1 次 1.5s 后、第 2 次 5s 后再试,并且都带 verify(让主进程解码校验,
-// 好把「文件非空但已损坏」的封面删掉重生成);第 3 次仍失败就彻底放弃(本页不再自动试)。
+// 好把「文件非空但已损坏」的封面删掉重生成)。
 const COVER_RETRY_DELAYS = [1500, 5000]
 const ensureBookCover = (book) => {
-  if (!book || book._coverFailed || !book.id) return Promise.resolve()
+  // ★ 不再因 book._coverFailed 直接 return:
+  //   那个标记只是「上一次没成功」,而大书库里绝大多数书当时只是**还没轮到生成**。
+  //   永久短路会让这些书永远长不出封面(界面一直显示「加载失败」),用户实测就是这个。
+  //   重复解压由下面的 coverInFlight 合并 + 主进程 coverJobs 去重 + 卡片层的重试上限兜住。
+  if (!book || !book.id) return Promise.resolve()
   const auth = window.__AUTH__ || {}
   if (auth.enabled && auth.role === 'viewer') return Promise.resolve()
   const running = coverInFlight.get(book.id)
@@ -514,32 +517,42 @@ const applyCoverStyle = (setting) => {
   if (typeof document === 'undefined') return
   const root = document.documentElement
   const s = setting || {}
-  const size = Number(s.coverWidth) > 0 ? Number(s.coverWidth) : 220
-  const height = Number(s.coverHeight) > 0 ? Number(s.coverHeight) : 360
+  // 二号样式:主界面换成「封面+标题」密集网格,尺寸取第二套(style2*)。
+  //   ── 二号样式的界面缩放用 --emm-card-zoom(整张卡片 zoom),不动全局 Electron zoom
+  const style2 = !!s.cardStyle2
+  // 二号样式的「界面缩放」:直接按比例放大卡片宽/高/间距(连同标题字号),
+  //   不用 CSS zoom —— Chromium 这一版 zoom 不影响 flex 布局占位,卡片会互相压住。
+  const zoom = style2 ? Math.max(50, Math.min(300, Number(s.style2UiZoom) || 100)) / 100 : 1
+  const baseSize = style2
+    ? (Number(s.style2CoverWidth) > 0 ? Number(s.style2CoverWidth) : 140)
+    : (Number(s.coverWidth) > 0 ? Number(s.coverWidth) : 220)
+  const baseHeight = style2
+    ? (Number(s.style2CoverHeight) > 0 ? Number(s.style2CoverHeight) : 220)
+    : (Number(s.coverHeight) > 0 ? Number(s.coverHeight) : 360)
+  const size = Math.round(baseSize * zoom)
+  const height = Math.round(baseHeight * zoom)
   const oldGap = Number(s.cardGap) >= 0 ? Number(s.cardGap) : 6
-  const gapV = Number(s.cardGapV) >= 0 ? Number(s.cardGapV) : oldGap
-  const gapH = Number(s.cardGapH) >= 0 ? Number(s.cardGapH) : oldGap
+  const baseGapV = style2
+    ? (Number(s.style2CardGapV) >= 0 ? Number(s.style2CardGapV) : 6)
+    : (Number(s.cardGapV) >= 0 ? Number(s.cardGapV) : oldGap)
+  const baseGapH = style2
+    ? (Number(s.style2CardGapH) >= 0 ? Number(s.style2CardGapH) : 8)
+    : (Number(s.cardGapH) >= 0 ? Number(s.cardGapH) : oldGap)
+  const gapV = Math.round(baseGapV * zoom)
+  const gapH = Math.round(baseGapH * zoom)
   root.style.setProperty('--emm-cover-size', size + 'px')
-  // 宽 / 高:只有用户真调过(不等于默认值)才写变量,没调过时由各布局自己算
-  //   --emm-card-width  : 移动端布局用它代替「按屏宽自适应的列宽」(App.vue body.emm-mobile)
-  //   --emm-card-height : 卡片整体高度(填充封面 / 纯封面布局直接用)
-  //   --emm-cover-height: 经典布局的封面图高度 = 卡片高度 - 标题等固定区域(约 84px)
-  const widthCustom = Number(s.coverWidth) > 0 && Number(s.coverWidth) !== 220
-  const heightCustom = Number(s.coverHeight) > 0 && Number(s.coverHeight) !== 360
-  // ⚠️ 不能写空字符串:CSS 里「变量已定义但值为空」会让 var(--x, fallback) 整体失效
-  //    (不是回退到 fallback,而是整条声明作废)。表现就是封面高度塌成 0、
-  //    没生成封面的卡片被压扁。必须 removeProperty 才是真正的"没设置"。
-  const setOrRemove = (name, value) => {
-    if (value) root.style.setProperty(name, value)
-    else root.style.removeProperty(name)
-  }
-  setOrRemove('--emm-card-width', widthCustom ? size + 'px' : '')
-  setOrRemove('--emm-card-height', heightCustom ? height + 'px' : '')
-  setOrRemove('--emm-cover-height', heightCustom ? Math.max(60, height - 84) + 'px' : '')
+  // ★ 尺寸设置必须**始终**生效:以前只有「不等于默认值」才写变量,默认 220/360 时
+  //   手机/平板布局会用「按屏宽自适应列宽」顶掉设置 —— 窗口一窄卡片就缩水(用户截图)。
+  root.style.setProperty('--emm-card-width', size + 'px')
+  root.style.setProperty('--emm-card-height', height + 'px')
+  // 二号样式没有底部按钮行,标题只占一行多;普通经典布局的固定区域约 84px
+  root.style.setProperty('--emm-cover-height', Math.max(60, height - Math.round((style2 ? 34 : 84) * zoom)) + 'px')
   root.style.setProperty('--emm-card-gap-v', gapV + 'px')
   root.style.setProperty('--emm-card-gap-h', gapH + 'px')
   // 兼容旧引用
   root.style.setProperty('--emm-card-gap', gapV + 'px')
+  // 只给标题字号用(布局尺寸已经按 zoom 放大)
+  root.style.setProperty('--emm-card-zoom', String(zoom))
 }
 
 // ---------- 工具栏按钮 ----------
@@ -983,8 +996,37 @@ const defaultUiSettings = () => ({
   hideNonTag: false,
   hideTitle: false,
   hideRating: false,
-  // 隐藏合集卡片右上角的「合集」标签(设置 → 高级 → 卡片样式)
+  // 隐藏合集卡片右上角的「合集」标签(设置 → 高级 → 卡片样式,和普通卡片开关同一排)
   hideCollectionTag: false,
+  // 合集界面卡片:总开关 —— 关掉时抽屉里的卡片完全跟随主界面卡片样式,
+  // 打开后才展开下面这一整套独立开关与尺寸(用户要求「启用后才展开设置」)
+  collectionCardStyleEnabled: false,
+  // 合集界面卡片的二号样式(封面 + 标题的密集网格,只作用在抽屉里)
+  collectionCardStyle2: false,
+  // 合集界面卡片(打开合集后的底部抽屉):与普通卡片完全独立的一整套开关 + 第二套尺寸
+  //   collectionHideCount     : 隐藏页数角标
+  //   collectionHideReadCount : 隐藏阅读数角标
+  //   collectionFillCover     : 合集抽屉卡片单独用「填充封面」布局
+  collectionHideBookmarkButton: false,
+  collectionHideCount: false,
+  collectionHideReadCount: false,
+  collectionHideReadButton: false,
+  collectionHideNonTag: false,
+  collectionHideTitle: false,
+  collectionHideRating: false,
+  collectionFillCover: false,
+  collectionUiZoom: 100,
+  collectionCoverWidth: 220,
+  collectionCoverHeight: 360,
+  collectionCardGapV: 6,
+  collectionCardGapH: 6,
+  // 二号样式:主界面只显示「封面 + 标题」的密集网格,并拥有自己的第二套尺寸
+  cardStyle2: false,
+  style2UiZoom: 100,
+  style2CoverWidth: 140,
+  style2CoverHeight: 220,
+  style2CardGapV: 6,
+  style2CardGapH: 8,
   // 填充封面(开关):开 = 封面铺满卡片、文字/按钮透明浮层;关 = 经典卡片布局
   fillCover: false,
   coverWidth: 220,
@@ -1095,6 +1137,39 @@ const defaultUiSettings = () => ({
   upscaleTargetWidth: 2000,
   colorizeSaveMode: 'same',
 })
+
+// ---------- 合集内排序(合集抽屉 / 合集详情预览图共用同一套口径) ----------
+// 名称必须走「自然序」:位数按数值比,1 < 2 < 10 < 11。
+// 默认的 localeCompare 是纯字典序,「第1话」后面会跟「第10话、第11话…」,
+// 然后才是「第2话」—— 用户反馈的「名称排序明显有问题」就是这个。
+// numeric:true 打开数值感知;对中文标题也不影响字形排序(仍然按 zh-Hans-CN 拼音/笔画规则)。
+const collectionTitleCollator = new Intl.Collator('zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+
+// 取出参与比较的键:标题(调用方给显示标题取法)/ 时间(mtime 优先,退发布日期)/ 页数 / 评分
+export const collectionSortValueOf = (book, key, titleOf) => {
+  if (!book) return key === 'title' ? '' : 0
+  if (key === 'title') {
+    const t = typeof titleOf === 'function' ? titleOf(book) : ''
+    return String(t || book.title || book.title_jpn || '')
+  }
+  if (key === 'time') {
+    const raw = book.mtime || book.date || book.posted
+    const n = raw ? new Date(raw).getTime() : 0
+    return Number.isFinite(n) ? n : 0
+  }
+  if (key === 'pages') return Number(book.pageCount) || 0
+  return Number(book.rating) || 0
+}
+
+// sort() 的比较函数:asc=true 升序,false 降序
+export const compareCollectionBooks = (a, b, key, asc, titleOf) => {
+  const dir = asc ? 1 : -1
+  const va = collectionSortValueOf(a, key, titleOf)
+  const vb = collectionSortValueOf(b, key, titleOf)
+  if (key === 'title') return dir * collectionTitleCollator.compare(String(va), String(vb))
+  if (va === vb) return 0
+  return dir * (va < vb ? -1 : 1)
+}
 
 export {
   getWidth,

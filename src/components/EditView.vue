@@ -17,12 +17,18 @@
       <transition name="pop">
         <el-badge
           v-if="visibilityMap[book.id]"
-          :value="book.selected ? '✓' : '+'"
-          :type="book.selected ? 'success' : 'warning'"
+          :value="isCardSelected(book) ? '✓' : '+'"
+          :type="isCardSelected(book) ? 'success' : 'warning'"
           class="book-add-badge"
         >
           <!-- ⚠ :id="book.id" 必须保留:拖框多选(handleMouseUpForSelection)靠它反查 book -->
-          <div class="book-manage-card selectable-card" @contextmenu="$emit('previewManga', book)" :id="book.id" @click="toggleBookSelected(book)">
+          <div
+            class="book-manage-card selectable-card"
+            :class="{ 'is-collection-card': book.isCollection }"
+            @contextmenu="$emit('previewManga', book)"
+            :id="book.id"
+            @click="toggleBookSelected(book)"
+          >
             <p class="book-manage-title" :title="getDisplayTitle(book)">{{getDisplayTitle(book)}}</p>
             <el-popover placement="left" :width="300" trigger="hover" :show-after="1000" :hide-after="100">
               <template #reference>
@@ -32,6 +38,8 @@
                      包一层 relative 容器就不必写 46px 这种魔数,标题高度以后改了也不会漂。 -->
                 <span class="book-manage-cover-wrap">
                   <img class="book-manage-cover" :src="bookImgSrc(book.coverPath)"/>
+                  <!-- 合集标记:贴在封面左下角(用户要求),选中态交给右上角的 ✓/+ -->
+                  <span v-if="book.isCollection" class="book-manage-collection-tag">{{ $t('m.collection') }}</span>
                   <!-- 合集成员角点:纯提示,和选中态(book.selected)完全无关,
                        只为让用户看得出「哪几本已经是当前合集的成员」,别让「移出选中」变盲操作 -->
                   <span v-if="currentCollectionHashes.has(book.hash || book.id)" class="book-manage-member-dot"></span>
@@ -94,34 +102,30 @@
             <el-button size="small" type="primary" plain @click="unselectAllBooks">{{$t('m.unselectAll')}}</el-button>
           </el-space>
         </div>
-        <!-- 合集:分区标题 + 「选择合集」按钮。
-             ★ 原来这里是一个 el-select 下拉框(占位文案「选择一个合集来编辑」)。
-               面板最窄只有 260px,合集名长一点就被截断,也看不出每个合集有几本。
-               现在改成按钮 + 居中弹窗:弹窗里列全名 + 成员数,还能搜索。 -->
+        <!-- 扫描 / 生成:原来「管理合集」那一栏已按用户要求删掉,换成四颗动作按钮 -->
         <el-divider content-position="left">
-          <span class="emm-divider-label label-with-hint">{{$t('m.manageCollection')}}<SettingHint :title="$t('m.manageCollection')" :lines="[$t('m.hintManageCollection')]" /></span>
+          <span class="emm-divider-label label-with-hint">{{$t('m.scanAndGenerate')}}<SettingHint :title="$t('m.scanAndGenerate')" :lines="[$t('m.hintScanAndGenerate')]" /></span>
         </el-divider>
-        <el-button
-          class="manage-collection-pick"
-          type="primary"
-          plain
-          :icon="Collections24Regular"
-          :title="$t('m.pickCollection')"
-          @click="collectionPickDialogVisible = true"
-        >{{ currentCollectionTitle || $t('m.pickCollection') }}</el-button>
-        <div class="emm-manage-actions-row">
-          <el-button class="emm-manage-act" size="small" type="primary" plain :icon="Collections24Regular" :title="$t('m.addCollection')" @click="addCollection"></el-button>
-          <el-button class="emm-manage-act" size="small" type="warning" plain :icon="Wand24Regular" :title="$t('m.autoCollectionTitle')" @click="$emit('auto-collection')"></el-button>
-          <el-button class="emm-manage-act" size="small" type="success" plain :icon="Edit" :title="$t('m.editCollection')" @click="editCollection"></el-button>
-          <el-button class="emm-manage-act" size="small" :icon="Save16Regular" :title="$t('m.save')" @click="saveCollection">{{ $t('m.save') }}</el-button>
+        <div class="manage-quick-actions">
+          <el-button size="small" type="primary" plain :icon="MdRefresh" :loading="incrementalScanning" @click="runIncrementalScan">{{ $t('m.incrementalScan') }}</el-button>
+          <el-button size="small" type="primary" plain :icon="Refresh" :loading="fullScanning" @click="runFullScan">{{ $t('m.rescanAll') }}</el-button>
+          <el-button size="small" type="warning" plain :icon="Wand24Regular" @click="$emit('auto-collection')">{{ $t('m.autoCollectionTitle') }}</el-button>
+          <el-button size="small" type="success" plain :icon="MagicStick" :loading="autoTagging" @click="smartGenerateTags">{{ $t('m.smartTagTitle') }}</el-button>
+          <!-- 重新生成全部封面:调主进程的 regenerate-cover(先写临时文件、成功后原子替换,失败保留旧封面) -->
+          <el-button
+            size="small"
+            type="primary"
+            plain
+            :icon="Picture"
+            :loading="regenRunning"
+            @click="regenerateAllCovers"
+          >{{ regenRunning ? $t('m.regenerateCoversProgress', { done: regenDone, total: regenTotal }) : $t('m.regenerateCovers') }}</el-button>
         </div>
-        <!-- 已选中:网格里勾的 + 当前合集的成员,合并成一条列表。
-             ★ 原来这里是「当前合集的成员列表」,只显示合集里的书;
-               改成「已选中」之后,用户在左边勾的书也会立刻出现在这里,
-               下面的 13 个操作按钮作用于整条列表,不必先加进合集才能批量处理。 -->
+        <!-- 已选中:网格里勾的书(合集那栏删掉后只剩这一种来源) -->
         <el-divider content-position="left">
-          <span class="emm-divider-label label-with-hint">{{$t('m.selectedBooks')}}<SettingHint :title="$t('m.selectedBooks')" :lines="[$t('m.hintSelectedBooks')]" /></span>
+          <span class="emm-divider-label label-with-hint">{{$t('m.manage')}}<SettingHint :title="$t('m.manage')" :lines="[$t('m.hintManageSection')]" /></span>
         </el-divider>
+        <div class="manage-sub-title">{{$t('m.selectedBooks')}}</div>
         <div class="manage-collection-block" ref="collectionSectionRef">
           <div v-if="selectedBookObjects.length" class="manage-collection-list">
             <div v-for="book in selectedBookObjects" :key="book.id" class="book-collection-line">
@@ -139,21 +143,17 @@
                每个分区各带一个下拉框或输入控件,面板要滚很久才找得到底。
                现在压成一条两列按钮网:需要参数的走弹窗(标签/类别/状态/移动),
                不需要参数的直接执行。 -->
-        <el-divider content-position="left">
-          <span class="emm-divider-label label-with-hint">{{$t('m.selectedActions')}}<SettingHint :title="$t('m.selectedActions')" :lines="[$t('m.hintSelectedActions')]" /></span>
-        </el-divider>
+        <div class="manage-sub-title">{{$t('m.selectedActions')}}</div>
         <div class="selected-action-grid">
-          <el-button size="small" type="primary" plain @click="openAddToCollectionPick">{{$t('m.addToCollection')}}</el-button>
-          <el-button size="small" type="primary" plain @click="addCollectionWithSelected">{{$t('m.addCollection')}}</el-button>
-          <el-button size="small" type="primary" plain @click="tagEditDialogVisible = true">{{$t('m.changeTag')}}</el-button>
-          <el-button size="small" type="primary" plain @click="categoryDialogVisible = true">{{$t('m.changeCategory')}}</el-button>
+          <el-button size="small" type="primary" plain :disabled="addToCollectionDisabled" @click="openAddToCollectionPick">{{$t('m.addToCollection')}}</el-button>
+          <el-button size="small" type="primary" plain :disabled="newCollectionDisabled" @click="addCollectionWithSelected">{{$t('m.addCollection')}}</el-button>
           <el-button size="small" type="primary" plain @click="statusDialogVisible = true">{{$t('m.changeStatus')}}</el-button>
           <el-button size="small" type="primary" plain @click="moveDialogVisible = true">{{$t('m.moveFile')}}</el-button>
           <el-button size="small" type="primary" plain @click="groupGetMetadata">{{$t('m.batchGetMetadata')}}</el-button>
           <el-button size="small" type="primary" plain @click="groupReGetMetadata">{{$t('m.reGetMetadataShort')}}</el-button>
           <el-button size="small" type="danger" plain @click="groupDeleteLocalBook">{{$t('m.deleteFile')}}</el-button>
-          <el-button size="small" type="primary" plain @click="groupTriggerHiddenBook(false)">{{$t('m.showManga')}}</el-button>
-          <el-button size="small" type="primary" plain @click="groupTriggerHiddenBook(true)">{{$t('m.hideManga')}}</el-button>
+          <el-button size="small" type="primary" plain :disabled="!selectedHasHidden" @click="groupTriggerHiddenBook(false)">{{$t('m.showManga')}}</el-button>
+          <el-button size="small" type="primary" plain :disabled="selectedAllHidden" @click="groupTriggerHiddenBook(true)">{{$t('m.hideManga')}}</el-button>
           <el-button size="small" type="primary" plain @click="groupRescanBook">{{$t('m.rescan')}}</el-button>
           <el-button size="small" type="primary" plain @click="runTaskForSelected('translate')">{{$t('m.translateBook')}}</el-button>
           <el-button size="small" type="primary" plain @click="runTaskForSelected('upscale')">{{$t('m.upscaleBook')}}</el-button>
@@ -213,9 +213,10 @@
             <el-button size="small" type="primary" plain @click="addCollection">{{ $t('m.addCollection') }}</el-button>
           </template>
         </el-dialog>
-        <!-- 更改标签:原来这一整块(标签多选 + 加入/移除 + 增加标签)常驻在面板里,
-             现在收进弹窗,面板上只留一个「更改标签」按钮 -->
-        <el-dialog v-model="tagEditDialogVisible" :title="$t('m.changeTag')" width="440px" align-center append-to-body>
+        <!-- ★ 更改标签 / 更改类别:不再弹窗,直接铺在面板下方(用户要求)。
+             「已选中操作」里那两颗按钮现在只是滚到这两块,不会再盖一层弹窗挡住网格。 -->
+        <div class="manage-sub-title">{{$t('m.changeTag')}}</div>
+        <div class="manage-inline-block" ref="tagSectionRef">
           <el-select
             v-model="groupTagSelected"
             class="manage-tag-select"
@@ -223,7 +224,8 @@
             :collapse-tags-tooltip="true"
             :reserve-keyword="false"
             :placeholder="$t('m.manageTagPickPlaceholder')"
-            popper-class="manage-tag-popper"
+            fit-input-width
+            popper-class="tag-select-dropdown"
             style="width: 100%"
           >
             <el-option
@@ -235,23 +237,21 @@
               <span class="manage-tag-option">{{ opt.label }}</span>
             </el-option>
           </el-select>
-          <template #footer>
-            <el-button size="small" @click="tagEditDialogVisible = false">{{ $t('m.cancel') }}</el-button>
-            <el-button size="small" type="success" plain @click="openAddTagDialog">{{ $t('m.addNewTag') }}</el-button>
-            <el-button size="small" type="primary" plain @click="addTagToGroupAndClose">{{ $t('m.addGroupTag') }}</el-button>
-            <el-button size="small" type="primary" plain @click="removeTagToGroupAndClose">{{ $t('m.removeGroupTag') }}</el-button>
-          </template>
-        </el-dialog>
-        <!-- 更改类别 -->
-        <el-dialog v-model="categoryDialogVisible" :title="$t('m.changeCategory')" width="380px" align-center append-to-body>
+          <div class="manage-inline-actions">
+            <el-button size="small" type="primary" plain @click="addTagToGroup">{{ $t('m.addGroupTag') }}</el-button>
+            <el-button size="small" type="primary" plain @click="removeTagToGroup">{{ $t('m.removeGroupTag') }}</el-button>
+          </div>
+        </div>
+        <div class="manage-sub-title">{{$t('m.changeCategory')}}</div>
+        <div class="manage-inline-block" ref="categorySectionRef">
           <el-select v-model="categorySelected" :placeholder="$t('m.category')" clearable style="width: 100%">
             <el-option v-for="cat in categoryOption" :value="cat" :key="cat" :label="galleryCategoryName(cat, $t)" />
           </el-select>
-          <template #footer>
-            <el-button size="small" @click="categoryDialogVisible = false">{{ $t('m.cancel') }}</el-button>
-            <el-button size="small" type="primary" @click="applyCategoryAndClose">{{ $t('m.apply') }}</el-button>
-          </template>
-        </el-dialog>
+          <div class="manage-inline-actions">
+            <el-button size="small" type="primary" :disabled="!selectedBookObjects.length" @click="applyCategory">{{ $t('m.apply') }}</el-button>
+          </div>
+        </div>
+        <!-- 原来这里有一对「更改标签 / 更改类别」弹窗,现已改为上面的内联区块 -->
         <!-- 更改元数据状态 -->
         <el-dialog v-model="statusDialogVisible" :title="$t('m.changeStatus')" width="380px" align-center append-to-body>
           <el-select v-model="statusSelected" :placeholder="$t('m.metadataStatus')" style="width: 100%">
@@ -282,44 +282,16 @@
           </template>
         </el-dialog>
 
-        <!-- ★ 第4项:把「设置 → 标签设置」里的各项也放到这里,改标签时不用来回跳设置页。
-             只做「最常用的三项」,完整编辑器(配色/改名/关联/删除)还是留在设置页。 -->
+        <!-- ★ 标签:直接把「设置 → 标签」整页搬过来(同一个组件),不再自己拼一套残缺的 -->
         <el-divider content-position="left">
           <span class="emm-divider-label label-with-hint">{{$t('m.manageTagSettingsSection')}}<SettingHint :title="$t('m.manageTagSettingsSection')" :lines="[$t('m.hintManageTagSettings')]" /></span>
         </el-divider>
-        <!-- 注:上面这块是「标签设置」快捷区(类别顺序/翻译语言/默认类别),与设置页同一批字段 -->
-
-        <!-- ① 类别标签顺序:可拖动排序,决定详细信息里标签分类的上下顺序 -->
-        <div class="manage-tag-setting-line">
-          <span class="manage-tag-setting-label">{{$t('m.tagCatSet')}}</span>
-        </div>
-        <draggable
-          v-model="manageTagCatOrder"
-          item-key="id"
-          class="manage-tag-cat-drag"
-          animation="180"
-          @end="saveTagCatOrder"
-        >
-          <template #item="{ element }">
-            <span class="manage-tag-cat-chip">{{ categoryLabel(element.cat) }}</span>
-          </template>
-        </draggable>
-
-        <!-- ② 标签翻译目标语言 -->
-        <div class="manage-tag-setting-line">
-          <span class="manage-tag-setting-label">{{$t('m.tagTranslate')}}</span>
-          <el-select v-model="manageTagTargetLang" size="small" class="manage-tag-setting-select" @change="saveTagTargetLang">
-            <el-option v-for="lang in tagLangOptions" :key="lang.value" :value="lang.value" :label="lang.label" />
-          </el-select>
-        </div>
-
-        <!-- ③ 生成标签时默认归入的类别 -->
-        <div class="manage-tag-setting-line">
-          <span class="manage-tag-setting-label">{{$t('m.tagGenCategories')}}</span>
-          <el-select v-model="manageTagGenCategories" size="small" multiple collapse-tags clearable class="manage-tag-setting-select" @change="saveTagGenCategories">
-            <el-option v-for="cat in categoryOption" :key="cat" :value="cat" :label="galleryCategoryName(cat, $t)" />
-          </el-select>
-        </div>
+        <TagSettingsSection
+          expanded
+          click-to-search
+          @refresh="$emit('loadBookList')"
+          @search="(tg, cat) => $emit('searchFromTag', tg, cat)"
+        />
         </div>
       </div>
     </div>
@@ -338,19 +310,21 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 //   组件里直接用全局 ipcRenderer 即可。
 //   一旦 import electron 模块,打包器会把整个 Electron 主进程代码塞进渲染端 bundle,
 //   运行时立刻炸在 __dirname is not defined —— 整页白屏(这次就是这么挂的)。
-import { IosRemoveCircleOutline } from '@vicons/ionicons4'
+import { IosRemoveCircleOutline, MdRefresh } from '@vicons/ionicons4'
 // 管理面板头部那排功能按钮的图标(原来在 App.vue 的工具栏里)
-import { Collections24Regular, Wand24Regular, Save16Regular } from '@vicons/fluent'
+import { Wand24Regular } from '@vicons/fluent'
+import { Refresh, MagicStick, Picture } from '@element-plus/icons-vue'
 import { MdExit } from '@vicons/ionicons4'
-import { Edit } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
 import { nanoid } from 'nanoid'
 // 分区标题旁的感叹号说明(与设置页同一个组件,观感一致)
 import SettingHint from './SettingHint.vue'
+// 与「设置 → 标签」完全共用的整页组件
+import TagSettingsSection from './TagSettingsSection.vue'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { galleryCategoryName, bookImgSrc } from '../utils.js'
+import { galleryCategoryName, bookImgSrc, categoryDisplayName, resolveCatKey, tagColorOf, retryBookCover } from '../utils.js'
 const appStore = useAppStore()
 const {
   cat2letter,
@@ -381,9 +355,25 @@ const tagLangOptions = computed(() => [
   { value: 'ja', label: '日本語' },
   { value: 'en', label: 'English' }
 ])
-// 类别标签顺序:tagCatOrder 是 ['language','parody',...] 的数组,拖拽后写回
+// 类别标签顺序:tagCatOrder 是 ['language','parody',...] 的数组,拖拽后写回。
+// ★ 老设置里可能还没这个数组(或者只有一部分):这里把「书里真实出现过的标签类别」补在后面,
+//   否则这块会是空的 —— 用户看到的就是「标签设置界面还没做完」。
 const manageTagCatOrder = computed({
-  get: () => (setting.value.tagCatOrder || []).map(cat => ({ id: cat, cat })),
+  get: () => {
+    const ordered = Array.isArray(setting.value.tagCatOrder) ? setting.value.tagCatOrder.slice() : []
+    const known = new Set(ordered.map(c => resolveCatKey(c)))
+    for (const b of (bookList.value || [])) {
+      const tags = b && b.tags
+      if (!tags) continue
+      for (const c in tags) {
+        const k = resolveCatKey(c)
+        if (!k || known.has(k)) continue
+        ordered.push(k)
+        known.add(k)
+      }
+    }
+    return ordered.map(cat => ({ id: cat, cat }))
+  },
   set: (val) => {
     if (!setting.value) return
     setting.value.tagCatOrder = val.map(it => it.cat)
@@ -397,10 +387,24 @@ const manageTagGenCategories = computed({
   get: () => setting.value.tagGenCategories || [],
   set: (v) => { if (setting.value) setting.value.tagGenCategories = v }
 })
-// 类别显示名:走 i18n 表(categoryOption 里是国际键名 language/parody/...)
-const categoryLabel = (cat) => {
-  const el = (categoryOption.value || []).find(o => (o.value || o) === cat)
-  return el ? galleryCategoryName(cat, t) : cat
+// 类别显示名:走「设置 → 标签」那套内置译名(角色/语言/作品/作者/男性/女性/其他/地点/服装/…),
+// ⚠ 以前用的是 galleryCategoryName —— 那只认 EH 的画廊类别(Doujinshi/Manga/…),
+//   对标签类别一律原样返回,于是面板上显示的是 character/language/parody 这种英文键,
+//   看着就像「这块还没做完」。
+const categoryLabel = (cat) => categoryDisplayName(setting.value, resolvedTranslation.value, cat) || cat
+// 每个类别下有多少个标签(去重)—— 与设置页「类别标签」后面那个数字同一口径
+const tagCountOfCat = (cat) => {
+  const key = resolveCatKey(cat)
+  const set = new Set()
+  for (const b of (bookList.value || [])) {
+    const tags = b && b.tags
+    if (!tags) continue
+    for (const c in tags) {
+      if (resolveCatKey(c) !== key) continue
+      for (const tg of tags[c] || []) set.add(tg)
+    }
+  }
+  return set.size
 }
 // 落盘:与设置页同一条路径(ipcRenderer.invoke('save-setting', 纯对象))
 const persistSetting = () => {
@@ -412,9 +416,184 @@ const saveTagCatOrder = () => persistSetting()
 const saveTagTargetLang = () => persistSetting()
 const saveTagGenCategories = () => persistSetting()
 
+// 增加类别:与设置页「增加类别」同一套(写 setting.tagCatOrder,设置页那边立刻就能看到)
+const addTagCategory = () => {
+  ElMessageBox.prompt(t('c.inputCategoryName'), t('m.tagCatAdd'), {
+    inputPattern: /^[\p{L}\d_]+$/u,
+    inputErrorMessage: t('c.categoryNameError')
+  }).then(({ value }) => {
+    const key = resolveCatKey(String(value || '').trim())
+    if (!key) return
+    if (!Array.isArray(setting.value.tagCatOrder)) setting.value.tagCatOrder = []
+    const order = setting.value.tagCatOrder.slice()
+    if (!order.map(c => resolveCatKey(c)).includes(key)) order.push(key)
+    setting.value.tagCatOrder = order
+    persistSetting()
+    printMessage('success', t('m.tagCatAdded'))
+  }).catch(() => { /* 取消 */ })
+}
+// 标题分析:与设置页那颗按钮同一条 IPC(扫全库标题,补角色标签)
+const titleAnalyzing = ref(false)
+const analyzeTitlesByTags = async () => {
+  if (titleAnalyzing.value) return
+  try {
+    await ElMessageBox.confirm(t('m.titleAnalyzeConfirm'), t('m.titleAnalyze'), { type: 'info' })
+  } catch (e) { return }
+  titleAnalyzing.value = true
+  try {
+    const r = await ipcRenderer.invoke('analyze-titles-by-tags', {})
+    if (r && r.ok) {
+      printMessage('success', t('m.titleAnalyzeDone', { changed: r.changed || 0, added: r.added || 0 }))
+      emit('loadBookList')
+    } else {
+      printMessage('error', (r && r.error) || 'failed')
+    }
+  } catch (e) {
+    printMessage('error', String((e && e.message) || e))
+  } finally {
+    titleAnalyzing.value = false
+  }
+}
+
+// ---------- 顶部四颗动作按钮 ----------
+// 增量扫描:只处理目录指纹变化的子树(App 那边有进度提示与收尾刷新)
+const incrementalScanning = ref(false)
+const runIncrementalScan = () => {
+  if (incrementalScanning.value) return
+  incrementalScanning.value = true
+  emit('incrementalScan')
+  // App 的扫描是后台跑完才通知,这里给个上限时间把按钮的 loading 收掉
+  setTimeout(() => { incrementalScanning.value = false }, 8000)
+}
+// 重新扫描:整库重扫(与工具栏「重新加载(扫描)」同一入口)
+const fullScanning = ref(false)
+const runFullScan = () => {
+  if (fullScanning.value) return
+  fullScanning.value = true
+  emit('loadBookList', true)
+  setTimeout(() => { fullScanning.value = false }, 8000)
+}
+// 智能生成标签:对「已选中」的每本书跑标题分析(analyze-book-title-characters),
+// 命中的作者/原作/角色直接写回书里 —— 与侧边详情那颗「翻译标题」同一条 IPC。
+const autoTagging = ref(false)
+// 智能生成标签:全局动作(不依赖选中)—— 扫全库标题,按标题里的角色/作品/作者
+// 命中已有标签库,生成对应语言的标签(与 设置 → 标签 → 标题分析 同一条 IPC)。
+const smartGenerateTags = async () => {
+  if (autoTagging.value) return
+  try {
+    await ElMessageBox.confirm(t('m.titleAnalyzeConfirm'), t('m.smartTagTitle'), { type: 'info' })
+  } catch (e) { return }
+  autoTagging.value = true
+  try {
+    const r = await ipcRenderer.invoke('analyze-titles-by-tags', {})
+    if (r && r.ok) {
+      printMessage('success', t('m.titleAnalyzeDone', { changed: r.changed || 0, added: r.added || 0 }))
+      emit('loadBookList')
+    } else {
+      printMessage('error', (r && r.error) || 'failed')
+    }
+  } catch (e) {
+    printMessage('error', String((e && e.message) || e))
+  } finally {
+    autoTagging.value = false
+  }
+}
+
+// ---------- 重新生成全部封面 ----------
+// 复用主进程的 regenerate-cover:它「先写 .tmp- 临时文件 → rename 原子覆盖」,
+// 失败时旧封面原样保留(用户要求:不要先删已有封面)。
+const regenRunning = ref(false)
+const regenDone = ref(0)
+const regenTotal = ref(0)
+let regenAbort = false
+const regenerateAllCovers = async () => {
+  if (regenRunning.value) {
+    regenAbort = true
+    printMessage('info', t('m.regenerateCoversStopping'))
+    return
+  }
+  const books = (bookList.value || []).filter(b => b && !b.isCollection && !b.online && b.id)
+  if (!books.length) {
+    printMessage('info', t('m.manageNeedBooks'))
+    return
+  }
+  try {
+    await ElMessageBox.confirm(t('m.regenerateCoversConfirm', { n: books.length }), t('m.regenerateCovers'), { type: 'warning' })
+  } catch (e) { return }
+  regenRunning.value = true
+  regenAbort = false
+  regenDone.value = 0
+  regenTotal.value = books.length
+  let ok = 0
+  let fail = 0
+  const queue = books.slice()
+  // 并发 2:封面生成是 CPU/磁盘活,再多会让书库整体卡顿
+  const worker = async () => {
+    while (queue.length && !regenAbort) {
+      const b = queue.shift()
+      try {
+        const r = await ipcRenderer.invoke('regenerate-cover', b.id)
+        if (r && r.ok) {
+          ok += 1
+          if (r.coverPath) b.coverPath = r.coverPath
+          b._coverNonce = Date.now()
+          retryBookCover(b)
+        } else {
+          fail += 1
+        }
+      } catch (e) {
+        fail += 1
+      }
+      regenDone.value += 1
+    }
+  }
+  try {
+    await Promise.all([worker(), worker()])
+  } finally {
+    regenRunning.value = false
+    const stopped = regenAbort
+    regenAbort = false
+    printMessage('success', t(stopped ? 'm.regenerateCoversStopped' : 'm.regenerateCoversDone', { ok, fail }))
+    emit('loadBookList')
+  }
+}
+
+// ---------- 标签列表(与 设置 → 标签 中间那块一致) ----------
+const manageTagSelCat = ref('')
+const manageTagGroups = computed(() => {
+  const map = new Map()
+  for (const b of (bookList.value || [])) {
+    const tags = b && b.tags
+    if (!tags) continue
+    for (const c in tags) {
+      const key = resolveCatKey(c)
+      if (!map.has(key)) map.set(key, new Set())
+      for (const tg of (tags[c] || [])) map.get(key).add(tg)
+    }
+  }
+  const order = new Map((setting.value.tagCatOrder || []).map((c, i) => [resolveCatKey(c), i]))
+  return [...map.entries()]
+    .map(([cat, set]) => ({ cat, tags: [...set].sort((a, b) => String(a).localeCompare(String(b), 'zh-Hans-CN')) }))
+    .sort((a, b) => {
+      const ia = order.has(a.cat) ? order.get(a.cat) : 999
+      const ib = order.has(b.cat) ? order.get(b.cat) : 999
+      return ia - ib
+    })
+})
+const tagStyleOf = (cat, tg) => {
+  const c = tagColorOf(setting.value, cat, tg)
+  return c ? { color: c, borderColor: c } : {}
+}
+
 const emit = defineEmits(['previewManga', 'searchFromTag', 'loadBookList', 'getBooksMetadata', 'handleRemoveBookDisplay', 'tagLongPress',
   // 「智能生成合集」:弹窗由 App.vue 持有(autoCollectionVisible),这里只负责把意图传上去
-  'auto-collection'])
+  'auto-collection',
+  // 管理网格里的合集卡:点一下打开这个合集(App 用同一个 openCollection)
+  'openCollection',
+  // 「增加标签」→ 打开 设置 → 标签 界面(全软件统一入口)
+  'openTagSettings',
+  // 管理面板顶部的「增量扫描」
+  'incrementalScan'])
 
 const visibilityMap = ref({})
 const loadBookCardContent = (id) => {
@@ -492,11 +671,34 @@ const selectedBookObjects = computed(() => {
 // 否则「只选了合集里的书、左边网格一本没勾」时,13 个按钮全都变成空操作。
 const selectedBookIds = computed(() => selectedBookObjects.value.map(b => b.id))
 
-// 当前合集的标题(「选择合集」按钮上显示)
-const currentCollectionTitle = computed(() => {
-  const c = _.find(collectionList.value, { id: selectCollection.value })
-  return (c && c.title) || ''
+// ---------- 选中里混着合集时的规则 ----------
+// ① 选中的合集数量:0 = 正常;1 = 「添加到合集」直接把这些漫画并进那个合集;
+//    ≥2 = 无从判断加进哪一个 → 「添加到合集」禁用。② 只要有合集被选中,「新增合集」禁用
+//    (合集不是真书,没必要为它新建合集;要新建请先取消合集)。
+// 被「选中」的合集 = 成员全部进了选中的那些(合集本身不会出现在选中列表里)
+const selectedCollections = computed(() => {
+  const out = []
+  for (const c of (visibleManageBookList.value || [])) {
+    if (!c || !c.isCollection) continue
+    const members = membersOfCollection(c)
+    if (members.length && members.every(m => m && m.selected)) out.push(c)
+  }
+  return out
 })
+const addToCollectionDisabled = computed(() => !selectedBookObjects.value.length || selectedCollections.value.length >= 2)
+const newCollectionDisabled = computed(() => !selectedBookObjects.value.length || selectedCollections.value.length >= 1)
+// 显示 / 隐藏漫画:选中里「没有隐藏的」就没必要显示;「全是隐藏的」就没必要再隐藏
+const selectedHasHidden = computed(() => selectedBookObjects.value.some(b => !!(b && b.hiddenBook)))
+const selectedAllHidden = computed(() => !selectedBookObjects.value.length || selectedBookObjects.value.every(b => !!(b && b.hiddenBook)))
+
+// 合集 → 成员(优先用聚合条目上已经算好的 _members,老数据按 ids/list 回查)
+const membersOfCollection = (c) => {
+  if (!c) return []
+  if (Array.isArray(c._members) && c._members.length) return c._members
+  const keys = Array.isArray(c.ids) && c.ids.length ? c.ids : (Array.isArray(c.list) ? c.list : [])
+  return keys.map(k => _.find(bookList.value, b => b && (b.id === k || b.hash === k))).filter(Boolean)
+}
+
 
 // 「选择合集」弹窗里的搜索过滤
 const collectionPickKeyword = ref('')
@@ -511,10 +713,22 @@ const filteredCollectionList = computed(() => {
 const collectionPickDialogVisible = ref(false)
 const collectionPickMode = ref('select')
 // 13 个操作里需要参数的那几个,各自一个居中弹窗
-const tagEditDialogVisible = ref(false)
-const categoryDialogVisible = ref(false)
+// (更改标签 / 更改类别已改为面板内联,不再有弹窗)
 const statusDialogVisible = ref(false)
 const moveDialogVisible = ref(false)
+// 内联的「更改标签 / 更改类别」区块:上面的按钮点了就滚到对应位置
+const tagSectionRef = ref(null)
+const categorySectionRef = ref(null)
+const scrollToSection = (kind) => {
+  const el = (kind === 'tag' ? tagSectionRef.value : categorySectionRef.value)
+  if (!el) return
+  if (el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  // 顺带闪一下边框,让用户看清是哪一块
+  el.classList.remove('is-flash')
+  void el.offsetWidth
+  el.classList.add('is-flash')
+  setTimeout(() => el.classList.remove('is-flash'), 1200)
+}
 
 // 没有任何已选中时统一提示(否则下面的批量函数会静默什么都不做)
 const ensureSelection = () => {
@@ -677,6 +891,13 @@ const handleSelectCollectionChange = (val) => {
 // mode='add':把「已选中」一次性加进被点的那个合集,不切换当前编辑的合集也行
 const openAddToCollectionPick = () => {
   if (!ensureSelection()) return
+  // ★ 只选了一个合集(+ 若干普通漫画):不弹选择框,直接把这些漫画并进那个合集
+  if (selectedCollections.value.length === 1) {
+    const rec = _.find(collectionList.value, { id: selectedCollections.value[0].id })
+    if (rec) { addSelectedToPickedCollection(rec); return }
+    printMessage('info', t('m.manageNeedCollection'))
+    return
+  }
   if (!(collectionList.value || []).length) {
     printMessage('info', t('m.manageNeedCollection'))
     return
@@ -703,6 +924,8 @@ const addSelectedToPickedCollection = (c) => {
   handleSelectCollectionChange(c.id)
   addSelectedToCollection()
   collectionPickDialogVisible.value = false
+  // ★ 合集那栏的「保存」按钮已按用户要求删掉 → 这里直接落盘(keepOpen:不成批退出管理面板)
+  if (collectionDirty.value) saveCollection({ keepOpen: true })
 }
 
 // 新建合集 + 直接把「已选中」灌进去(用户点的是「新建合集」,意图就是给这批书建个新组)
@@ -724,6 +947,8 @@ const addCollectionWithSelected = () => {
       }
       collectionDirty.value = true
       printMessage('success', t('c.applied'))
+      // 没有「保存」按钮了:新建即写盘
+      saveCollection({ keepOpen: true })
     })
     .catch(() => {
       printMessage('info', t('c.canceled'))
@@ -783,7 +1008,8 @@ const addSelectedToCollection = () => {
   let added = 0
   for (const id of selectedBookIds.value) {
     const book = _.find(bookList.value, b => b.id === id || b.hash === id)
-    if (!book) continue
+    // 合集卡不是真书:不能被塞进另一个合集的成员表里
+    if (!book || book.isCollection) continue
     const key = book.hash || book.id
     if (exist.has(key) || exist.has(book.id)) continue
     target.list.push(key)
@@ -848,7 +1074,7 @@ const startOpResize = (e) => {
   e.preventDefault()
   const sx = e.clientX
   const sw = editOpWidth.value
-  const mv = (ev) => { editOpWidth.value = Math.max(260, Math.min(sw + (sx - ev.clientX), 600)) }
+  const mv = (ev) => { editOpWidth.value = Math.max(260, Math.min(sw + (sx - ev.clientX), Math.max(600, window.innerWidth - 360))) }
   const up = () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); try { localStorage.setItem('emmEditOpWidth', String(editOpWidth.value)) } catch (_) {} }
   window.addEventListener('mousemove', mv)
   window.addEventListener('mouseup', up)
@@ -895,13 +1121,38 @@ onBeforeUnmount(() => {
 
 // 点卡片 = 切换选中(合并后合集与标签共用这一套选区,不再有 book.collected)
 const toggleBookSelected = (book) => {
-  if (book.selected) {
-    book.selected = false
-    selectBookList.value = _.filter(selectBookList.value, id => id !== book.id)
-  } else {
-    book.selected = true
-    selectBookList.value.push(book.id)
+  if (!book) return
+  // ★ 合集卡:选中的是「它包含的漫画」,合集本身不进选中列表(用户要求)。
+  //   合集卡上的 ✓ 由 isCardSelected 按「成员是否全选中」推出来。
+  if (book.isCollection) {
+    const members = membersOfCollection(book)
+    if (!members.length) return
+    const allOn = members.every(m => m.selected)
+    const picked = new Set(selectBookList.value)
+    for (const m of members) {
+      if (!m || !m.id) continue
+      m.selected = !allOn
+      if (allOn) picked.delete(m.id)
+      else picked.add(m.id)
+    }
+    selectBookList.value = [...picked]
+    return
   }
+  const next = !book.selected
+  book.selected = next
+  if (next) {
+    if (!selectBookList.value.includes(book.id)) selectBookList.value = [...selectBookList.value, book.id]
+  } else {
+    selectBookList.value = selectBookList.value.filter(id => id !== book.id)
+  }
+}
+
+// 卡片右上角 ✓/+ 的判定:普通书看自己,合集看「成员是否全被选中」
+const isCardSelected = (book) => {
+  if (!book) return false
+  if (!book.isCollection) return !!book.selected
+  const members = membersOfCollection(book)
+  return members.length > 0 && members.every(m => m.selected)
 }
 
 const selectionBox = ref(null)
@@ -970,6 +1221,16 @@ const handleMouseUpForSelection = () => {
 const selectAllBooks = () => {
   const picked = new Set(selectBookList.value)
   visibleManageBookList.value.forEach(book => {
+    if (!book) return
+    if (book.isCollection) {
+      // 合集:只选成员(与单击合集卡一致)
+      for (const m of membersOfCollection(book)) {
+        if (!m || !m.id) continue
+        m.selected = true
+        picked.add(m.id)
+      }
+      return
+    }
     book.selected = true
     picked.add(book.id)
   })
@@ -1141,10 +1402,6 @@ const addTagToGroup = async () => {
     return false
   }
 }
-// 弹窗版:成功就关窗(失败或没选书时留在窗里,用户不用重新点开)
-const addTagToGroupAndClose = async () => {
-  if (await addTagToGroup()) tagEditDialogVisible.value = false
-}
 
 const removeTagToGroup = async () => {
   if (!ensureSelection()) return false
@@ -1171,9 +1428,6 @@ const removeTagToGroup = async () => {
     return false
   }
 }
-const removeTagToGroupAndClose = async () => {
-  if (await removeTagToGroup()) tagEditDialogVisible.value = false
-}
 
 const applyCategory = async () => {
   if (!ensureSelection()) return false
@@ -1194,9 +1448,6 @@ const applyCategory = async () => {
     updateTagsLoading.value = false
     return false
   }
-}
-const applyCategoryAndClose = async () => {
-  if (await applyCategory()) categoryDialogVisible.value = false
 }
 
 const applyStatus = async () => {
@@ -1405,8 +1656,8 @@ defineExpose({
   overflow-x: hidden
   overflow-y: auto
   padding-top: 4px
-  /* 卡片从左上角开始排,不要居中/底部对齐(否则宽屏时会有一大块空白) */
-  text-align: left
+  /* 窗口拉宽后整排居中:以前靠左,右侧会空出一大片(用户截图) */
+  text-align: center
   line-height: normal
 /* 操作列:高度与网格列一致(两列底边平齐),但**不再**横向滚动 ——
    横向滚动已经由里面的 .emm-manage-body / 网格列各自负责,
@@ -1450,11 +1701,44 @@ defineExpose({
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9)
   pointer-events: none
   z-index: 2
+/* 合并后的「管理」分区里的小标题:比分区分隔线轻,但同级之间仍看得清 */
+.manage-sub-title
+  font-size: 12px
+  font-weight: 600
+  color: var(--el-text-color-regular)
+  margin: 14px 0 6px
+  padding-left: 2px
+  text-align: left
+
+/* 合集卡:封面左下角贴边的「合集」标记(选中态交给右上角 ✓/+) */
+.book-manage-collection-tag
+  position: absolute
+  left: 0
+  bottom: 0
+  z-index: 3
+  padding: 1px 7px
+  font-size: 11px
+  line-height: 16px
+  color: #fff
+  background: var(--el-color-primary)
+  border-top-right-radius: 8px
+  border-bottom-left-radius: 4px
+  pointer-events: none
+
 .book-add-badge
   .el-badge__content.is-fixed
     top: 6px
     right: 17px
     cursor: pointer
+  /* 合集角标:右上角会和「✓」挤在一起,而且合集卡第一眼要看封面左下角的归属 → 挪到左下 */
+  &.is-collection-badge
+    .el-badge__content.is-fixed
+      top: auto
+      bottom: 8px
+      right: auto
+      left: 8px
+      border: none
+      z-index: 3
 .book-manage-title
   height: 38px
   overflow-y: hidden

@@ -12,7 +12,7 @@
     </button>
     <!-- ================= 经典卡片布局(默认;原版布局原样保留) ================= -->
     <template v-if="!fillCover">
-    <p class="book-title" v-if="!setting.hideTitle"
+    <p class="book-title" v-if="!viewSetting.hideTitle"
       @click="$emit('titleClick')"
       @contextmenu="onTitleContextMenu($event)"
       :title="getDisplayTitle(book)"
@@ -25,7 +25,7 @@
         <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
       </div>
       <img
-        v-if="coverSrc && !coverGaveUp && !coverBroken"
+        v-if="coverSrc"
         class="book-cover"
         :src="coverSrc"
         alt=""
@@ -39,8 +39,7 @@
         @load="onCoverLoad"
         @error="onCoverError"
       />
-      <!-- 没有封面可显示(还没生成 / 生成失败):淡底 + 书名首字。
-           以前这里留一个空 <img> + 加载动画,封面生成失败的书会永远转圈 -->
+      <!-- 还没有封面地址(扫描后还没生成出来):只放一块淡底,文字由下面的失败层负责 -->
       <div
         v-else
         class="book-cover book-cover-empty"
@@ -52,18 +51,26 @@
         @touchmove.passive="cancelCoverPress"
         @touchcancel="cancelCoverPress"
         @contextmenu="onCoverContextMenu($event)"
-      ><span>{{ coverInitial }}</span></div>
-      <!-- ★ 2026-11 按用户要求取消封面加载转圈(截图 195337 那个一直转的圈):
-           封面解码完成前就显示首字占位,不再叠这层遮罩。
-           坏图仍走下面那套「失败两次就放弃」的兜底,coverLoading 只作内部状态。 -->
-      <el-tag class="book-card-language" size="small" v-if="book.historyTime || !setting.hideReadCount"
+      ></div>
+      <!-- 加载中:一直转圈。这里的「加载中」包含「封面还没生成出来」——
+           大书库首屏几十张封面同时解码、或现场解压生成,十几秒才出图是常态。
+           ★ 绝不按秒数判死:一旦按时间判,正在生成的书会整屏显示「加载失败」。
+           只有封面生成彻底失败(重试耗尽)才收成失败态。 -->
+      <div class="cover-loading" v-if="coverLoading">
+        <el-icon class="is-loading" :size="26"><Loading /></el-icon>
+        <span class="emm-eq pixel-only"><i></i><i></i><i></i><i></i></span>
+      </div>
+      <!-- 真的生成不出来才显示「加载失败」。<img> 仍然留在下面继续加载,
+           后台稍后补出封面时会自己换回来。 -->
+      <div class="cover-failed" v-if="coverFailed">{{ $t('m.coverLoadFailed') }}</div>
+      <el-tag class="book-card-language" size="small" v-if="book.historyTime || !viewSetting.hideReadCount"
         :type="isChineseTranslatedManga(book) ? 'danger' : 'info'"
         @click="onReadCountClick"
       >{{ book.historyTime ? historyTimeText : (book.online ? languageBadgeText(book) : book.readCount) }}</el-tag>
-      <el-tag class="book-card-pagecount" size="small" type="danger" v-if="!setting.hidePageCount && book.pageDiff && book.pageCount != null" @click="$emit('pageCountClick')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
-      <el-tag class="book-card-pagecount" size="small" type="info" v-else-if="!setting.hidePageCount && book.pageCount != null" @click="$emit('pageCountClick')">{{ book.pageCount }}P</el-tag>
+      <el-tag class="book-card-pagecount" size="small" type="danger" v-if="!viewSetting.hidePageCount && book.pageDiff && book.pageCount != null" @click="$emit('pageCountClick')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
+      <el-tag class="book-card-pagecount" size="small" type="info" v-else-if="!viewSetting.hidePageCount && book.pageCount != null" @click="$emit('pageCountClick')">{{ book.pageCount }}P</el-tag>
       <el-icon
-        v-if="!setting.hideBookmarkButton && !viewerRole"
+        v-if="!viewSetting.hideBookmarkButton && !viewerRole"
         :size="30"
         :color="markColor(book)"
         class="book-card-mark"
@@ -89,27 +96,27 @@
       >{{ tagDisplayPrefix(setting, resolvedTranslation, tag.cat, tag.tag) }}:{{ tagDisplayName(setting, resolvedTranslation, resolveCatKey(tag.cat), tag.tag) }}</el-tag>
     </div>
     <div class="book-card-footer">
-      <el-button-group class="outer-read-button-group" v-if="!setting.hideReadButton">
+      <el-button-group class="outer-read-button-group" v-if="!viewSetting.hideReadButton">
         <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('yueClick')">{{$t('m.re')}}</el-button>
         <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('duClick')">{{$t('m.ad')}}</el-button>
       </el-button-group>
       <!-- 这个「标签」格:有类别就显示所属类别(如 Misc / Western),没有才显示 tagged / non-tag 状态;悬停可看真实状态 -->
       <el-tag
-        v-if="!setting.hideNonTag"
+        v-if="!viewSetting.hideNonTag"
         class="book-status-tag"
         effect="plain"
         :type="book.status === 'non-tag' ? 'info' : book.status === 'tagged' ? 'success' : 'warning'"
         :title="book.status"
         @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
       >{{ galleryCategoryName(book.category, $t) || book.status }}</el-tag>
-      <el-rate v-if="!setting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
+      <el-rate v-if="!viewSetting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
     </div>
     </template>
     <!-- ================= 填充封面布局(设置 → 显示选项「填充封面」打开后) ================= -->
     <!-- 封面铺满整卡;阅读数/页数/阅·读按钮/状态/评分/收藏标签全部透明浮在图上(无白底) -->
     <template v-else>
       <img
-        v-if="coverSrc && !coverGaveUp && !coverBroken"
+        v-if="coverSrc"
         class="book-cover-fill"
         :src="coverSrc"
         alt=""
@@ -134,8 +141,13 @@
         @touchmove.passive="cancelCoverPress"
         @touchcancel="cancelCoverPress"
         @contextmenu="onCoverContextMenu($event)"
-      ><span>{{ coverInitial }}</span></div>
-      <!-- 填充封面布局同样不再显示封面加载转圈 -->
+      ></div>
+      <!-- 填充封面布局:同经典布局 —— 加载中一直转圈,真失败才写「加载失败」 -->
+      <div class="cover-loading" v-if="coverLoading">
+        <el-icon class="is-loading" :size="26"><Loading /></el-icon>
+        <span class="emm-eq pixel-only"><i></i><i></i><i></i><i></i></span>
+      </div>
+      <div class="cover-failed" v-if="coverFailed">{{ $t('m.coverLoadFailed') }}</div>
       <!-- 任务进度遮罩:填充封面布局同样展示(旋转环 + 任务单字 + 已处理/总数) -->
       <div class="book-task-mask" v-if="bookTaskChar">
         <div class="book-task-ring"></div>
@@ -143,11 +155,11 @@
         <span class="book-task-text">{{ bookTaskChar }}</span>
         <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
       </div>
-      <div class="fill-top" v-if="fillTopShown || (!setting.hideBookmarkButton && !viewerRole)">
-        <el-tag class="fill-badge" size="small" v-if="book.historyTime || !setting.hideReadCount"
+      <div class="fill-top" v-if="fillTopShown || (!viewSetting.hideBookmarkButton && !viewerRole)">
+        <el-tag class="fill-badge" size="small" v-if="book.historyTime || !viewSetting.hideReadCount"
           @click="onReadCountClick"
         >{{ book.historyTime ? historyTimeText : (book.online ? languageBadgeText(book) : book.readCount) }}</el-tag>
-        <p class="fill-title" v-if="!setting.hideTitle"
+        <p class="fill-title" v-if="!viewSetting.hideTitle"
           @click="$emit('titleClick')"
           @contextmenu="onTitleContextMenu($event)"
           :title="getDisplayTitle(book)"
@@ -155,7 +167,7 @@
         <!-- 收藏按钮:与角标/标题同一行;标题在角标与收藏按钮之间居中,
              隐藏任一侧时标题自动伸展填补空位 -->
         <el-icon
-          v-if="!setting.hideBookmarkButton && !viewerRole"
+          v-if="!viewSetting.hideBookmarkButton && !viewerRole"
           :size="24"
           :color="book.online ? (book.favcat == null ? '#ffffff' : '#F7BA2A') : (book.mark ? '#F7BA2A' : '#ffffff')"
           class="fill-mark"
@@ -165,7 +177,7 @@
       </div>
       <div class="fill-footer" v-if="fillFooterShown">
         <!-- 阅读/页数/标签/评分尽量排在一行,放不下自动换行,换出的行居中 -->
-        <div class="footer-row" v-if="fillRow1Shown || !setting.hideRating">
+        <div class="footer-row" v-if="fillRow1Shown || !viewSetting.hideRating">
           <el-tag
             v-for="tag in filterCollectTag(book.tags)" :key="tag.id"
             @click="onCollectTagClick(tag)"
@@ -181,19 +193,19 @@
             size="small"
             effect="dark"
           >{{tag.letter}}:{{ tagDisplayName(setting, resolvedTranslation, resolveCatKey(tag.cat), tag.tag) }}</el-tag>
-          <el-tag class="fill-badge" size="small" v-if="!setting.hidePageCount && book.pageDiff" @click="$emit('pageCountClick')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
-          <el-tag class="fill-badge" size="small" v-else-if="!setting.hidePageCount" @click="$emit('pageCountClick')">{{ book.pageCount }}P</el-tag>
-          <el-button-group class="outer-read-button-group" v-if="!setting.hideReadButton">
+          <el-tag class="fill-badge" size="small" v-if="!viewSetting.hidePageCount && book.pageDiff" @click="$emit('pageCountClick')">{{book.pageCount}}|{{book.filecount}}P</el-tag>
+          <el-tag class="fill-badge" size="small" v-else-if="!viewSetting.hidePageCount" @click="$emit('pageCountClick')">{{ book.pageCount }}P</el-tag>
+          <el-button-group class="outer-read-button-group" v-if="!viewSetting.hideReadButton">
             <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('yueClick')">{{$t('m.re')}}</el-button>
             <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('duClick')">{{$t('m.ad')}}</el-button>
           </el-button-group>
           <el-tag
-            v-if="!setting.hideNonTag"
+            v-if="!viewSetting.hideNonTag"
             class="fill-badge"
             :title="book.status"
             @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
           >{{ galleryCategoryName(book.category, $t) || book.status }}</el-tag>
-          <el-rate v-if="!setting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
+          <el-rate v-if="!viewSetting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
         </div>
       </div>
     </template>
@@ -211,7 +223,7 @@ import ContextMenu from '@imengyu/vue3-context-menu'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, giveUpBookCover, retryBookCover, bookImgSrc, getDisplayTagName, tagDisplayName, resolveCatKey, galleryCategoryName, tagDisplayPrefix } from '../utils.js'
+import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, retryBookCover, bookImgSrc, getDisplayTagName, tagDisplayName, resolveCatKey, galleryCategoryName, tagDisplayPrefix } from '../utils.js'
 const appStore = useAppStore()
 const TASK_CHARS = { translate: '翻', colorize: '色', upscale: '分', extract: '字' }
 const bookTaskProgress = computed(() => (appStore.bookTaskProgress && appStore.bookTaskProgress[props.book && props.book.id]) || null)
@@ -246,20 +258,45 @@ const languageBadgeText = (book) => {
   return code
 }
 
+// 卡片实际生效的开关:
+//   · 主书架(含主界面的合集卡)→ 普通「卡片样式」
+//   · 合集界面(底部抽屉)里的卡 → 「卡片样式 → 合集界面卡片」那组开关覆盖三项
+//     (页数角标 / 阅读数角标 / 填充封面)。「隐藏合集」这种只对主界面合集卡有意义,
+//     不在这一组里。
+const viewSetting = computed(() => {
+  const s = setting.value
+  // 合集界面卡片的总开关没开 → 抽屉卡片完全跟随主界面(与主界面同一套开关/尺寸)
+  if (!props.collectionView || !s.collectionCardStyleEnabled) return s
+  return {
+    ...s,
+    // 合集界面卡片:整套开关独立(设置 → 高级 → 卡片样式 → 合集界面卡片)
+    hideBookmarkButton: !!s.collectionHideBookmarkButton,
+    hidePageCount: !!s.collectionHideCount,
+    hideReadCount: !!s.collectionHideReadCount,
+    hideReadButton: !!s.collectionHideReadButton,
+    hideNonTag: !!s.collectionHideNonTag,
+    hideTitle: !!s.collectionHideTitle,
+    hideRating: !!s.collectionHideRating,
+    fillCover: !!s.collectionFillCover,
+    // 二号样式(密集封面网格):同样只作用在抽屉里
+    cardStyle2: !!s.collectionCardStyle2
+  }
+})
+
 // 填充封面开关(设置 → 显示选项「填充封面」):开 = 封面铺满卡片、文字/按钮透明浮层
-const fillCover = computed(() => !!setting.value.fillCover)
+const fillCover = computed(() => !!viewSetting.value.fillCover)
 
 // 填充布局:顶部/底部浮层是否有内容(各元素显隐由独立开关控制,互相不联动)
 const fillTopShown = computed(() => {
-  const s = setting.value
+  const s = viewSetting.value
   return !s.hideTitle || !s.hideReadCount
 })
 const fillRow1Shown = computed(() => {
-  const s = setting.value
+  const s = viewSetting.value
   return filterCollectTag(props.book.tags).length > 0 || !s.hidePageCount || !s.hideReadButton || !s.hideNonTag
 })
 const fillFooterShown = computed(() => {
-  const s = setting.value
+  const s = viewSetting.value
   return fillRow1Shown.value || !s.hideRating
 })
 
@@ -294,7 +331,11 @@ const emit = defineEmits([
 ])
 
 const props = defineProps({
-  book: Object
+  book: Object,
+  // 这张卡是不是「合集界面」(打开合集后的底部抽屉)里的卡。
+  // 是 → 用设置里「卡片样式 → 合集界面卡片」那组开关覆盖普通卡片的三项显隐;
+  // 否 → 完全跟随普通「卡片样式」。
+  collectionView: { type: Boolean, default: false }
 })
 
 // 在线画廊不是本地书:本地右键菜单(移动/删除/超分…)、评分写回都不能碰
@@ -326,7 +367,14 @@ const onReadCountClick = () => {
   if (props.book?.online) return
   emit('handleSearchString', ':count=' + props.book.readCount)
 }
-const onRateChange = () => { if (props.book?.online) return; saveBook(Object.assign({}, props.book, { rating: bookRating.value })) }
+const onRateChange = () => {
+  if (props.book?.online) return
+  // ★ 必须写回 props.book 本身:以前用 Object.assign({}, book) 造副本去保存,
+  //   书架/详情里的对象还是旧评分,一重排或翻页就变回 0 —— 用户说的「评分后评分消失」。
+  // eslint-disable-next-line vue/no-mutating-props -- 书架里传进来的就是 store 里的那本书,写回它评分才不会丢
+  props.book.rating = Number(bookRating.value) || 0
+  saveBook(props.book)
+}
 
 const bookRating = ref(props.book.rating)
 
@@ -334,90 +382,94 @@ watchEffect(() => {
   bookRating.value = props.book.rating
 })
 
-// 封面加载动画:只有「真的有封面地址、且还没加载完」才转圈。
-// ★ 第二轮的坑(用户反馈「还是有漫画一直在转圈」):主进程「生成成功」但返回的
-//   地址依旧加载不出来时,会形成 error → ensureBookCover(换新 nonce) → 又 error 的循环;
-//   而「每次 coverLoading 变化都重置兜底定时器」让 15 秒永远到不了。
-//   现在:兜底只在一次加载会话开头启动一次,失败次数封顶 2 次,到顶就打书级放弃标记,
-//   清掉坏地址并显示首字占位(既不留转圈,也不留破图)。
+// ---------- 封面状态机 ----------
+// 只有两个状态:**加载中(转圈)** 与 **加载失败(文字)**。
+// ★ 关键(用户反复强调的):
+//   · 扫描后「封面还没生成出来」是常态,不是失败 —— 这种书必须一直转圈等生成,
+//     绝不能一开始(或几秒后)就写「加载失败」;
+//   · 只有封面生成彻底失败(退避重试耗尽)才落成失败态;
+//   · 失败态**不是终点**:后台稍后补出封面(coverPath 变化)会立刻恢复成封面。
+//   · 不写书级放弃标记:翻页/滚动回来要能重新尝试,否则一本当时没生成好的书永远坏在界面上。
 const coverLoading = ref(false)
-const coverGaveUp = ref(!!(props.book && props.book._coverLoadGivenUp))
-// 本次 <img> 加载失败:先把坏图换成首字占位,等后台生成出新的再换回来
-const coverBroken = ref(false)
-let coverFailCount = 0
-let coverWatchdog = null
+const coverFailed = ref(false)
+let coverFailCount = 0      // <img> 连续 error 次数
+let coverGenAttempt = 0     // 封面生成尝试次数
 let coverTaskToken = 0
+let coverRetryTimer = null
 
-const stopCoverLoading = () => {
-  coverLoading.value = false
-  if (coverWatchdog) { clearTimeout(coverWatchdog); coverWatchdog = null }
+const clearCoverRetry = () => {
+  if (coverRetryTimer) { clearTimeout(coverRetryTimer); coverRetryTimer = null }
 }
-const giveUpCover = () => {
-  coverGaveUp.value = true
-  coverBroken.value = true
-  giveUpBookCover(props.book)
-  stopCoverLoading()
-}
-// 兜底定时器只在「一次加载会话」开头启动一次:后续反复 @error 绝不重置它。
-// ★ 封面加载转圈已被取消,这里超时**只收掉内部状态**,绝不能清 coverPath / 打放弃标记:
-//   NAS、在线封面这类加载慢但正常的图,8 秒后还在下载,强清路径会把正在加载的 <img>
-//   直接卸载、永远显示占位。真正的坏图由 @error(失败 2 次)走 giveUpCover 处理。
+const stopCoverLoading = () => { coverLoading.value = false }
+// 开始等封面:清掉失败态、亮起转圈
 const startCoverLoading = () => {
-  if (coverGaveUp.value) return
-  if (!coverWatchdog) coverWatchdog = setTimeout(stopCoverLoading, 8000)
+  coverFailed.value = false
   coverLoading.value = true
+}
+// 生成彻底失败:收掉转圈、写「加载失败」。<img> 不卸载,后台补出来还能自己恢复
+const failCover = () => {
+  coverFailed.value = true
+  coverLoading.value = false
 }
 const onCoverLoad = () => {
   coverFailCount = 0
-  coverGaveUp.value = false
-  coverBroken.value = false
-  retryBookCover(props.book)
+  coverGenAttempt = 0
+  clearCoverRetry()
+  coverFailed.value = false
   stopCoverLoading()
+  retryBookCover(props.book)
+}
+// 生成失败不等于坏书:大书库的封面队列很长,经常只是还没轮到。
+// 退避重试若干次,全部失败才落「加载失败」。
+const afterCoverEnsure = (next) => {
+  clearCoverRetry()
+  // 成功:coverPath 已写回,watch 会重新转圈,<img> 自己会 load
+  if (next) return
+  coverGenAttempt += 1
+  // 3 轮生成(每轮内部还有 3 次 IPC 重试)≈ 20 秒:足够熬过「队列里还没轮到」的等待,
+  // 又不会让一本真坏(压缩包损坏)的书永远转圈。慢盘排队是 Promise 挂着,不消费这里的机会。
+  if (coverGenAttempt > 2) { failCover(); return }
+  const delay = Math.min(1200 * coverGenAttempt, 8000)
+  coverRetryTimer = setTimeout(() => {
+    coverRetryTimer = null
+    if (!coverFailed.value) triggerEnsureCover()
+  }, delay)
 }
 const triggerEnsureCover = () => {
+  if (coverRetryTimer) return      // 已经排着队,别层层叠加
   const token = ++coverTaskToken
+  coverLoading.value = true
+  coverFailed.value = false
   ensureBookCover(props.book)
-    .then((next) => {
-      // 内部 3 次重试全失败 → 收摊显示占位(成功时 coverPath 变化由 watcher 接管)
-      if (token === coverTaskToken && !next && !coverGaveUp.value) giveUpCover()
-    })
-    .catch(() => { if (token === coverTaskToken && !coverGaveUp.value) giveUpCover() })
+    .then((next) => { if (token === coverTaskToken) afterCoverEnsure(next) })
+    .catch(() => { if (token === coverTaskToken) afterCoverEnsure(null) })
 }
-const onCoverError = async () => {
-  if (coverGaveUp.value) { stopCoverLoading(); return }
-  // 在线画廊封面是远程地址:这次直接回落占位,但不打书级标记(下次刷新还有机会加载)
-  if (props.book?.online) { coverGaveUp.value = true; stopCoverLoading(); return }
+// <img> 读不出来。绝大多数是「封面正在生成 / 刚写完还没落盘」,不是坏图 ——
+// 继续转圈并让后台重做,不要立刻写「加载失败」。
+const onCoverError = () => {
+  // 在线画廊是远程地址,没有本地生成这回事:读不出来就是读不出来
+  if (props.book?.online) { failCover(); return }
   coverFailCount += 1
-  // 同一个坏地址最多试两轮(ensureBookCover 内部还有 2 次重试),
-  // 到顶就放弃,避免「生成成功但图片依旧加载不出来」的无限循环
-  if (coverFailCount >= 2) { giveUpCover(); return }
-  const token = ++coverTaskToken
-  // 加载失败:立刻换成首字占位(不留转圈、也不留破图框),后台慢慢重试生成;
-  // 等真有新地址了再换回 <img> 并重新亮起动画,不让用户干看着转十几秒
-  coverBroken.value = true
-  stopCoverLoading()
-  const next = await ensureBookCover(props.book).catch(() => null)
-  if (token !== coverTaskToken || coverGaveUp.value) return
-  if (!next) giveUpCover()
-  else { coverBroken.value = false; startCoverLoading() }
+  coverLoading.value = true
+  coverFailed.value = false
+  if (coverFailCount > 6) { failCover(); return }
+  triggerEnsureCover()
 }
 watch(() => props.book.coverPath, (v) => {
-  const givenUpByBook = !!(props.book && props.book._coverLoadGivenUp)
-  if (!givenUpByBook && coverGaveUp.value) {
-    // 别处点了「重新生成封面」(清掉了书级标记) → 本地也解除放弃,再给一次机会
-    coverGaveUp.value = false
-    coverBroken.value = false
-    coverFailCount = 0
-  }
-  if (coverGaveUp.value) { stopCoverLoading(); return }
+  coverTaskToken++                 // 作废进行中的生成回调
+  clearCoverRetry()
+  coverFailCount = 0
+  coverGenAttempt = 0
   if (v) {
+    // 有地址了:不管之前失败过几次,立刻恢复成「转圈等图」
+    if (props.book && props.book._coverFailed) retryBookCover(props.book)
     startCoverLoading()
-  } else {
-    // 没有地址:不转圈(先显示占位),后台再尝试生成
-    coverBroken.value = false
-    stopCoverLoading()
-    if (!props.book?.online) triggerEnsureCover()
+    return
   }
+  // 没有地址:本地书 = 封面还没生成,转圈等生成;在线画廊没有本地生成,直接算失败
+  if (props.book?.online) { failCover(); return }
+  startCoverLoading()
+  triggerEnsureCover()
 }, { immediate: true })
 
 // 封面重新生成后文件名不变,给 src 加一个时间戳,强制浏览器重新拉图
@@ -430,11 +482,6 @@ const coverSrc = computed(() => {
   const n = props.book._coverNonce
   if (!n) return base
   return base + (base.includes('?') ? '&' : '?') + 'r=' + n
-})
-// 没有封面时占位块里显示书名首字(至少能认出是哪一本,而不是一块空白)
-const coverInitial = computed(() => {
-  const title = String(getDisplayTitle(props.book) || props.book?.title || '').trim()
-  return title.slice(0, 1).toUpperCase() || '?'
 })
 
 // ---------- 封面单击/双击分离:双击时取消单击动作 ----------
@@ -563,10 +610,9 @@ const onMangaTitleContextMenu = (e, book) => {
 }
 
 // 卡片被移出列表(换页 / 筛掉)时把挂在 window 上的定时器清掉:
-// ① 封面兜底定时器不该在已卸载的组件上继续跑;
-// ② 否则 300ms 后那个「单击封面」还会触发一次,把一本已经不在列表里的书打开
+// 否则 300ms 后那个「单击封面」还会触发一次,把一本已经不在列表里的书打开
 onUnmounted(() => {
-  if (coverWatchdog) { clearTimeout(coverWatchdog); coverWatchdog = null }
+  if (coverRetryTimer) { clearTimeout(coverRetryTimer); coverRetryTimer = null }
   clearTimeout(coverClickTimer)
   clearTimeout(coverPressTimer)
   clearTimeout(tagPressTimer)
@@ -633,10 +679,39 @@ onUnmounted(() => {
       border-width: 0
       padding-left: 4px
       padding-right: 4px
-// 封面加载遮罩已取消(用户要求):coverLoading 只作内部状态,不渲染任何视觉层
-// 没有封面时的占位:淡底 + 书名首字(与封面同尺寸、同样可点)
+// 封面加载圈(经典/填充布局共用):覆盖封面区,加载完成或判定失败后由 v-if 收起
+.cover-loading
+  position: absolute
+  top: 0
+  left: 0
+  right: 0
+  bottom: 0
+  display: flex
+  align-items: center
+  justify-content: center
+  background: var(--el-fill-color-light, #f2f3f5)
+  color: var(--el-text-color-secondary, #909399)
+  border-radius: 6px
+  pointer-events: none
+// 真失败:盖一层「加载失败」。<img> 仍留在下面继续加载(不卸载),
+// 后台补出封面 / 慢盘终于读完时会自己消失,不需要用户重新翻页。
+.cover-failed
+  position: absolute
+  top: 0
+  left: 0
+  right: 0
+  bottom: 0
+  display: flex
+  align-items: center
+  justify-content: center
+  background: var(--el-fill-color-light, #f2f3f5)
+  color: var(--el-text-color-placeholder, #a8abb2)
+  font-size: 13px
+  line-height: 1
+  border-radius: 6px
+  pointer-events: none
 // ★ 用双类选择器提权:后面的 .book-cover { display: block } 同特异性会把它盖掉,
-//   占位字就会顶到左上角而不是居中
+//   文字就会顶到左上角而不是居中
 .book-cover.book-cover-empty,
 .book-cover-fill.book-cover-empty
   display: flex
@@ -644,22 +719,22 @@ onUnmounted(() => {
   justify-content: center
   background: var(--el-fill-color-light, #f2f3f5)
   color: var(--el-text-color-placeholder, #a8abb2)
-  font-size: 34px
-  font-weight: 700
+  font-size: 13px
+  font-weight: 400
   line-height: 1
   object-fit: initial
   user-select: none
   span
     line-height: 1
-    opacity: .8
 .book-title
-  height: 36px
+  // 高度/字号跟着「界面缩放」一起放大(变量在普通样式下是 1)
+  height: calc(36px * var(--emm-card-zoom, 1))
   overflow-y: hidden
   margin: 8px 6px
   // 跟随自定义主题的字体大小(--emm-custom-font-size 只在该主题下存在,其它主题回退 14px)
-  font-size: var(--emm-custom-font-size, 14px)
+  font-size: calc(var(--emm-custom-font-size, 14px) * var(--emm-card-zoom, 1))
   cursor: pointer
-  line-height: 18px
+  line-height: calc(18px * var(--emm-card-zoom, 1))
   // 一行、两行都居中(用户要求):
   //   内层盒子是「收缩包裹」的 —— 一行时宽度=文字宽度,外层 flex 居中;
   //   两行时撑满可用宽度,再用 text-align:center 让两行文字本身也居中
@@ -750,6 +825,12 @@ onUnmounted(() => {
     object-fit: cover
     display: block
     transform: scale(1.15)
+    // 失败占位要恢复成弹性居中:上面那条 display: block 比 .book-cover-empty 的
+    // flex 优先级高(3 个类 vs 2 个类),不在这里补回来文字会跑到卡片左上角
+    &.book-cover-empty
+      display: flex
+      align-items: center
+      justify-content: center
   // 顶部浮层:阅读数角标 + 标题 + 收藏按钮同一行。
   // 标题始终在"角标 ~ 收藏按钮"之间的可用区居中;任一侧隐藏,标题自动伸展填补空位
   .fill-top
@@ -889,4 +970,62 @@ onUnmounted(() => {
   &:hover
     opacity: 1
     transform: scale(1.08)
+
+// ---------- 二号样式(设置 → 高级 → 卡片样式 → 二号样式) ----------
+// 版式照「合集界面 → 添加漫画」的选择弹窗:封面在上(圆角、铺满整格)、标题在下(左对齐、最多两行),
+// 没有卡片边框/底色/角标/按钮/评分/标签。点击仍走标题/封面的点击策略,标题显隐仍由「隐藏标题」控制。
+// ⚠ 选择器不绑定 .book-card-list:合集抽屉(setting.collectionCardStyle2)用的是另一套容器,
+//   它也会挂 .card-style-2。
+.card-style-2
+  .book-card
+    padding: 0
+    border: none
+    border-radius: 4px
+    background: transparent
+    box-shadow: none
+    &:hover
+      transform: none
+      box-shadow: none
+    .book-card-footer,
+    .collect-tag,
+    .book-card-pagecount,
+    .book-card-language,
+    .book-card-mark,
+    .book-card-torrent,
+    .book-collection-tag,
+    .fill-footer,
+    .fill-top .fill-badge,
+    .fill-top .fill-mark
+      display: none !important
+    // 经典布局:封面在前、标题在后(与「添加漫画」的卡片一致)
+    &:not(.fill-cover)
+      display: flex
+      flex-direction: column
+      .book-cover-frame
+        order: 1
+        width: 100%
+        margin: 0
+      .book-cover
+        height: 100%
+        border-radius: 4px
+      .book-title
+        order: 2
+        display: block
+        height: auto
+        max-height: 2.75em
+        margin: 4px 0 0
+        padding: 0
+        font-size: calc(12px * var(--emm-card-zoom, 1))
+        line-height: 1.35
+        text-align: left
+        .book-title-inner
+          display: -webkit-box
+          -webkit-line-clamp: 2
+          -webkit-box-orient: vertical
+          overflow: hidden
+          text-align: left
+          max-width: 100%
+    // 填充封面:保留标题浮层,字号与上面一致
+    &.fill-cover .fill-title
+      font-size: calc(12px * var(--emm-card-zoom, 1))
 </style>

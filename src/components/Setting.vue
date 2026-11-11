@@ -399,167 +399,9 @@
         </el-row>
       </el-tab-pane>
       <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.tagSettings')" name="collectTag">
-        <el-row :gutter="8">
-          <!-- 当前库中的全部标签:分类在上,标签在下;点击收藏、色点改色、双击重命名 -->
-          <el-col :span="24" class="setting-line collect-tag">
-            <div class="tag-cat-header">
-              <!-- 只有两个子元素:左边「标题 + 感叹号」包在一个 inline-flex 里(图标才会紧跟文字,
-                   不会被 space-between 的中间空档推开),右边按钮组仍然靠右 -->
-              <span class="label-with-hint">
-                <span class="context-menu-title">{{$t('m.tagCatSet')}}</span>
-                <SettingHint
-                  placement="right-start"
-                  :title="$t('m.tagHelpTitle')"
-                  :lines="[$t('m.tagHelp1'), $t('m.tagHelp2'), $t('m.tagHelp3'), $t('m.tagHelp4')]"
-                />
-              </span>
-              <el-space>
-                <el-button size="small" type="success" plain @click="openAddTagDialog()">{{$t('m.addNewTag')}}</el-button>
-                <el-button size="small" plain @click="openAddCategoryDialog">{{$t('m.tagCatAdd')}}</el-button>
-                <el-button size="small" type="primary" plain :loading="titleAnalyzing" @click="analyzeTitles">{{$t('m.titleAnalyze')}}</el-button>
-              </el-space>
-            </div>
-            <!-- 类别标签:可拖动排序,顺序存 setting.tagCatOrder,并决定详细信息里标签分类的上下顺序 -->
-            <draggable
-              v-model="orderedTagCats"
-              item-key="cat"
-              animation="200"
-              class="tag-cat-list"
-              @change="onTagCatOrderChange"
-            >
-              <template #item="{ element: g }">
-                <el-tag
-                  class="tag-cat-chip"
-                  :effect="selectedTagCat === g.cat ? 'dark' : 'plain'"
-                  :type="selectedTagCat === g.cat ? 'primary' : 'info'"
-                  :title="$t('m.editTagNames')"
-                  @click="onTagCatClick(g)"
-                  @dblclick="onTagCatDblClick(g)"
-                >
-                  <span class="tag-cat-drag" @click.stop>⠿</span>{{ categoryDefaultName(g.cat) }}
-                  <span class="tag-cat-count">{{ g.tags.length }}</span>
-                </el-tag>
-              </template>
-            </draggable>
-            <div class="all-tags-list">
-              <template v-for="g in allTagsGroups" :key="g.cat">
-                <div v-if="!selectedTagCat || selectedTagCat === g.cat" class="tag-group">
-                  <div class="tag-group-title">{{ categoryLabel(g.cat) }}</div>
-                  <!-- 用户要求：长按收藏后的框去掉 ×（取消收藏用再次长按）；已收藏的填充 1.14.x 柔和色 -->
-                  <el-tag
-                    v-for="tag in g.tags"
-                    :key="tag.id"
-                    :class="['all-tag-item', { 'is-collected': !!collectedTagMap[tag.id] }]"
-                    :effect="'plain'"
-                    :style="collectedTagMap[tag.id] ? tagChipFillStyle(tag.cat, tag.tag) : tagColorStyle(tag.cat, tag.tag)"
-                    @pointerdown="startLongPressCollect(tag)"
-                    @pointerup="cancelLongPressCollect"
-                    @pointerleave="cancelLongPressCollect"
-                    @pointercancel="cancelLongPressCollect"
-                    @dblclick="openTagNameEditor(tag)"
-                    :title="$t('m.editTagNames')"
-                  >
-                    {{ tagLabelWithSets(tag) }}
-                  </el-tag>
-                </div>
-              </template>
-            </div>
-          </el-col>
-          <!-- 已收藏标签:拖动排序;长按(或右键)= 取消收藏 -->
-          <el-col :span="24" class="setting-line collect-tag">
-            <div class="context-menu-title">
-              <span class="label-with-hint">
-                {{$t('m.collectedTags')}}
-                <SettingHint :text="$t('m.hintCollectedTags')" />
-              </span>
-            </div>
-            <draggable
-              v-model="setting.collectTag"
-              item-key="id"
-              animation="200"
-              @change="saveSetting"
-            >
-              <template #item="{element}">
-                <!-- 用户要求：去掉 ×；填充色 = 标签自己的柔和色（1.14.x 色板），深色配白字、亮色配深字。
-                     长按 600ms 取消收藏（与拖动排序区分：位移超过 8px 就当作拖动） -->
-                <el-tag
-                  class="collected-tag-item"
-                  :style="tagChipFillStyle(element.cat, element.tag)"
-                  @pointerdown="startLongPressUncollect(element, $event)"
-                  @pointermove="onLongPressUncollectMove($event)"
-                  @pointerup="cancelLongPressUncollect"
-                  @pointerleave="cancelLongPressUncollect"
-                  @pointercancel="cancelLongPressUncollect"
-                  @contextmenu.prevent="uncollectTag(element)"
-                >{{ tagDisplayPrefix(setting, resolvedTranslation, element.cat, element.tag) }}:{{ getDisplayTagName(setting, resolveCatKey(element.cat), element.tag) || resolvedTranslation[resolveCatKey(element.cat)]?.[element.tag]?.name || element.tag }}</el-tag>
-              </template>
-            </draggable>
-          </el-col>
-          <!-- 收藏标签 / 随机标签 / 语言 / 更新词库:一行放完 -->
-          <el-col :span="24" class="setting-line tag-option-row">
-            <el-switch
-              v-model="setting.showCollectTag"
-              :active-text="$t('m.showCollectTag')"
-              @change="onShowCollectTagChange"
-            />
-            <el-switch
-              v-model="setting.randomTagsEnabled"
-              :active-text="$t('m.randomTagsEnabled')"
-              @change="onRandomTagsChange"
-            />
-            <span class="setting-label tag-translate-label">{{$t('m.tagTranslate')}}</span>
-            <el-select v-model="setting.tagTargetLang" size="small" class="tag-target-lang" @change="onTagLangChange">
-              <el-option :label="$t('m.langDefault')" value=""></el-option>
-              <el-option :label="$t('m.langZhCn')" value="zh-CN"></el-option>
-              <el-option :label="$t('m.langZhTw')" value="zh-TW"></el-option>
-              <el-option :label="$t('m.langEn')" value="en"></el-option>
-              <el-option :label="$t('m.langJa')" value="ja"></el-option>
-            </el-select>
-            <el-button
-              size="small"
-              plain
-              class="tag-translation-refresh"
-              :loading="translationStatus === 'loading'"
-              @click="loadTranslationFromEhTagTranslation(true)"
-            >{{ $t('m.tagTranslationUpdate') }}</el-button>
-            <span class="setting-hint tag-translation-status" v-if="translationStatus === 'ok' && translationUpdatedText">
-              {{ $t('m.tagTranslationUpdated') }} {{ translationUpdatedText }}
-            </span>
-            <span class="setting-hint tag-translation-status" v-else-if="translationStatus === 'fail'">
-              {{ $t('m.tagTranslationFailed') }}
-            </span>
-          </el-col>
-</el-row>
-        <!-- 添加类别:建立一个新的空类别,之后可以往里加标签 -->
-        <el-dialog v-model="addCategoryVisible" :title="$t('m.tagCatAdd')" width="360px" append-to-body>
-          <el-input
-            v-model="addCategoryName"
-            :placeholder="$t('m.tagCatAddPlaceholder')"
-            @keyup.enter="createCategory"
-          />
-          <div class="setting-hint" v-if="addCategoryName && !canAddCategory">{{$t('m.tagCatExists')}}</div>
-          <template #footer>
-            <el-button size="small" @click="addCategoryVisible = false">{{ $t('m.cancel') }}</el-button>
-            <el-button size="small" type="primary" :disabled="!canAddCategory" @click="createCategory">{{ $t('m.apply') }}</el-button>
-          </template>
-        </el-dialog>
-        <!-- 添加标签:选类别 + 输入名称 -->
-        <el-dialog v-model="addTagVisible" :title="$t('m.addNewTag')" width="380px" append-to-body>
-          <el-select v-model="addTagCat" :placeholder="$t('m.category')" style="width: 100%; margin-bottom: 10px;">
-            <el-option v-for="g in allTagsGroups" :key="g.cat" :label="categoryLabel(g.cat)" :value="g.cat" />
-          </el-select>
-          <el-input
-            v-model="addTagName"
-            :placeholder="$t('m.tagNamePlaceholder')"
-            @keyup.enter="createGlobalTag"
-          />
-          <div class="setting-hint" v-if="addTagName && !canAddTag">{{$t('m.tagExistsHint')}}</div>
-          <template #footer>
-            <el-button size="small" @click="addTagVisible = false">{{ $t('m.cancel') }}</el-button>
-            <el-button size="small" type="primary" :disabled="!canAddTag" @click="createGlobalTag">{{ $t('m.apply') }}</el-button>
-          </template>
-        </el-dialog>
-        <!-- 双击标签/类别:编辑多语言名称,按「语言」下拉选定的语言显示 -->
+        <!-- ★ 整页标签设置现在是独立组件:设置页与管理界面共用同一个 TagSettingsSection,
+             所以「类别胶囊 / 标签列表 / 已收藏标签 / 收藏与随机开关 / 语言 / 更新词库」在两边完全一致。 -->
+        <TagSettingsSection ref="tagSectionRef" @refresh="emit('loadBookList')" />
       </el-tab-pane>
       <el-tab-pane v-if="(showDesktopUI && !viewerRole) || isAdmin" :label="$t('m.advanced')" name="advanced">
         <el-row :gutter="8">
@@ -607,30 +449,15 @@
             </div>
           </el-col>
           <el-col :span="24">
-            <NameFormItem class="setting-line" prependWidth="110px">
-              <template #prepend>{{$t('m.customOptions')}}</template>
-              <template #default>
-                <el-input
-                  v-model="setting.customOptions" :placeholder="$t('m.customOptionsPlaceholder')" @change="saveSetting"
-                  type="textarea" :autosize="{ minRows: 2, maxRows: 4 }"
-                ></el-input>
-              </template>
-            </NameFormItem>
-          </el-col>
-          <el-col :span="24">
             <div class="setting-line regexp">
               <el-input v-model="setting.trimTitleRegExp" :placeholder="$t('m.trimTitleRegExpInfo')" @change="saveSetting">
                 <template #prepend><span class="setting-label">{{$t('m.trimTitleRegExp')}}</span></template>
               </el-input>
             </div>
           </el-col>
-          <el-col :span="24">
-            <div class="setting-line">
-              <el-input v-model="setting.searchKeySuffix" :placeholder="$t('m.searchKeySuffixInfo')" @change="saveSetting">
-                <template #prepend><span class="setting-label">{{$t('m.searchKeySuffix')}}</span></template>
-              </el-input>
-            </div>
-          </el-col>
+          <!-- ★ 2026-11 移除(用户要求):「预定义搜索项」与「搜索关键词后缀」两个高级设置项。
+               前者只是搜索框的候选词、后者是抓元数据时自动拼在关键词后面的尾巴,
+               都不常用还占一整行,直接删掉;底层字段仍然保留(老配置不会报错)。 -->
           <el-col :span="24">
             <div class="setting-line regexp">
               <el-input v-model="setting.excludeFile" :placeholder="$t('m.excludeFileInfo')" @change="saveSetting">
@@ -866,6 +693,15 @@
               @change="saveSetting"
             />
           </el-col>
+          <!-- 二号样式:主界面只留「封面 + 标题」的密集网格(尺寸见下方第二套配置) -->
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.cardStyle2"
+              :active-text="$t('m.cardStyle2')"
+              @change="handleCoverStyleChange"
+            />
+          </el-col>
+          <!-- 「合集」角标只出现在主界面的合集卡上 → 属于普通卡片开关(以前错放在合集界面分组里) -->
           <el-col :span="6" class="setting-switch">
             <el-switch
               v-model="setting.hideCollectionTag"
@@ -874,13 +710,187 @@
             />
           </el-col>
         </el-row>
-        <!-- 封面大小(整体百分比,宽高等比)/ 封面宽度 / 封面高度 -->
+        <!-- 尺寸配置:普通样式一套、二号样式一套。启用二号样式后这里自动切换成第二套 -->
+        <template v-if="!setting.cardStyle2">
+          <!-- 封面大小(整体百分比,宽高等比)/ 封面宽度 / 封面高度 -->
+          <el-row :gutter="8">
+            <el-col :span="12">
+              <div class="setting-line">
+                <NameFormItem class="label-input" prependWidth="100px">
+                  <template #prepend><span class="setting-label">{{$t('m.uiZoom')}}</span></template>
+                  <el-input-number v-model="uiZoomPercent" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" placeholder="100" />
+                </NameFormItem>
+              </div>
+            </el-col>
+            <el-col :span="12">
+              <div class="setting-line">
+                <NameFormItem class="label-input" prependWidth="100px">
+                  <template #prepend><span class="setting-label">{{$t('m.coverWidth')}}</span></template>
+                  <el-input-number v-model="setting.coverWidth" :min="80" :max="800" :step="10" :value-on-clear="220" controls-position="right" placeholder="220" @change="handleCoverStyleChange" />
+                </NameFormItem>
+              </div>
+            </el-col>
+            <el-col :span="12">
+              <div class="setting-line">
+                <NameFormItem class="label-input" prependWidth="100px">
+                  <template #prepend><span class="setting-label">{{$t('m.coverHeight')}}</span></template>
+                  <el-input-number v-model="setting.coverHeight" :min="100" :max="1200" :step="10" :value-on-clear="360" controls-position="right" placeholder="360" @change="handleCoverStyleChange" />
+                </NameFormItem>
+              </div>
+            </el-col>
+          </el-row>
+          <!-- 卡片间距:上下 / 左右 分别调整 -->
+          <el-row :gutter="8">
+            <el-col :span="12">
+              <div class="setting-line">
+                <NameFormItem class="label-input" prependWidth="100px">
+                  <template #prepend><span class="setting-label">{{$t('m.cardGapV')}}</span></template>
+                  <el-input-number v-model="setting.cardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
+                </NameFormItem>
+              </div>
+            </el-col>
+            <el-col :span="12">
+              <div class="setting-line">
+                <NameFormItem class="label-input" prependWidth="100px">
+                  <template #prepend><span class="setting-label">{{$t('m.cardGapH')}}</span></template>
+                  <el-input-number v-model="setting.cardGapH" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
+                </NameFormItem>
+              </div>
+            </el-col>
+          </el-row>
+        </template>
+        <template v-else>
+          <!-- 二号样式的第二套尺寸(默认值取用户给的参考图:140×210,间距 6/8) -->
+          <el-row :gutter="8">
+            <el-col :span="12">
+              <div class="setting-line">
+                <NameFormItem class="label-input" prependWidth="100px">
+                  <template #prepend><span class="setting-label">{{$t('m.uiZoom')}}</span></template>
+                  <el-input-number v-model="setting.style2UiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" placeholder="100" @change="handleCoverStyleChange" />
+                </NameFormItem>
+              </div>
+            </el-col>
+            <el-col :span="12">
+              <div class="setting-line">
+                <NameFormItem class="label-input" prependWidth="100px">
+                  <template #prepend><span class="setting-label">{{$t('m.coverWidth')}}</span></template>
+                  <el-input-number v-model="setting.style2CoverWidth" :min="80" :max="800" :step="10" :value-on-clear="140" controls-position="right" placeholder="140" @change="handleCoverStyleChange" />
+                </NameFormItem>
+              </div>
+            </el-col>
+            <el-col :span="12">
+              <div class="setting-line">
+                <NameFormItem class="label-input" prependWidth="100px">
+                  <template #prepend><span class="setting-label">{{$t('m.coverHeight')}}</span></template>
+                  <el-input-number v-model="setting.style2CoverHeight" :min="100" :max="1200" :step="10" :value-on-clear="220" controls-position="right" placeholder="220" @change="handleCoverStyleChange" />
+                </NameFormItem>
+              </div>
+            </el-col>
+          </el-row>
+          <el-row :gutter="8">
+            <el-col :span="12">
+              <div class="setting-line">
+                <NameFormItem class="label-input" prependWidth="100px">
+                  <template #prepend><span class="setting-label">{{$t('m.cardGapV')}}</span></template>
+                  <el-input-number v-model="setting.style2CardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
+                </NameFormItem>
+              </div>
+            </el-col>
+            <el-col :span="12">
+              <div class="setting-line">
+                <NameFormItem class="label-input" prependWidth="100px">
+                  <template #prepend><span class="setting-label">{{$t('m.cardGapH')}}</span></template>
+                  <el-input-number v-model="setting.style2CardGapH" :min="0" :max="40" :step="2" :value-on-clear="8" controls-position="right" placeholder="8" @change="handleCoverStyleChange" />
+                </NameFormItem>
+              </div>
+            </el-col>
+          </el-row>
+        </template>
+        <!-- 合集界面卡片:是「卡片样式」的分支(不是同级分区),只管打开合集后
+             底部抽屉里那些卡片;主界面的合集卡跟普通卡片走同一套开关。
+             带一个总开关:关掉时抽屉卡片完全跟随主界面样式,打开后才展开下面的设置。 -->
+        <div class="advanced-subsection-title with-switch">
+          <span class="label-with-hint">{{$t('m.collectionCardStyle')}}<SettingHint :title="$t('m.collectionCardStyle')" :lines="[$t('m.hintCollectionCardStyle')]" /></span>
+          <el-switch
+            v-model="setting.collectionCardStyleEnabled"
+            :active-text="$t('m.collectionCardStyleEnable')"
+            @change="handleCoverStyleChange"
+          />
+        </div>
+        <template v-if="setting.collectionCardStyleEnabled">
+        <el-row :gutter="8">
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.collectionHideBookmarkButton"
+              :active-text="$t('m.hideBookmarkButton')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.collectionHideCount"
+              :active-text="$t('m.hidePageCount')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.collectionHideReadCount"
+              :active-text="$t('m.hideReadCount')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.collectionHideReadButton"
+              :active-text="$t('m.hideReadButton')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.collectionHideNonTag"
+              :active-text="$t('m.hideNonTag')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.collectionHideTitle"
+              :active-text="$t('m.hideTitle')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.collectionHideRating"
+              :active-text="$t('m.hideRating')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.collectionFillCover"
+              :active-text="$t('m.fillCover')"
+              @change="saveSetting"
+            />
+          </el-col>
+          <!-- 二号样式:抽屉里换成「封面 + 标题」的密集网格(尺寸沿用下面这套合集尺寸) -->
+          <el-col :span="6" class="setting-switch">
+            <el-switch
+              v-model="setting.collectionCardStyle2"
+              :active-text="$t('m.cardStyle2')"
+              @change="handleCollectionStyle2Change"
+            />
+          </el-col>
+        </el-row>
+        <!-- 合集界面卡片的第二套尺寸(只作用在打开合集后的底部抽屉) -->
         <el-row :gutter="8">
           <el-col :span="12">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.uiZoom')}}</span></template>
-                <el-input-number v-model="uiZoomPercent" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" placeholder="100" />
+                <el-input-number v-model="setting.collectionUiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" placeholder="100" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -888,7 +898,7 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverWidth')}}</span></template>
-                <el-input-number v-model="setting.coverWidth" :min="80" :max="800" :step="10" :value-on-clear="220" controls-position="right" placeholder="220" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.collectionCoverWidth" :min="80" :max="800" :step="10" :value-on-clear="220" controls-position="right" placeholder="220" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
@@ -896,18 +906,17 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.coverHeight')}}</span></template>
-                <el-input-number v-model="setting.coverHeight" :min="100" :max="1200" :step="10" :value-on-clear="360" controls-position="right" placeholder="360" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.collectionCoverHeight" :min="100" :max="1200" :step="10" :value-on-clear="360" controls-position="right" placeholder="360" @change="handleCoverStyleChange" />
               </NameFormItem>
             </div>
           </el-col>
         </el-row>
-        <!-- 卡片间距:上下 / 左右 分别调整 -->
         <el-row :gutter="8">
           <el-col :span="12">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.cardGapV')}}</span></template>
-                <el-input-number v-model="setting.cardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.collectionCardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="saveSetting" />
               </NameFormItem>
             </div>
           </el-col>
@@ -915,11 +924,12 @@
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="100px">
                 <template #prepend><span class="setting-label">{{$t('m.cardGapH')}}</span></template>
-                <el-input-number v-model="setting.cardGapH" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
+                <el-input-number v-model="setting.collectionCardGapH" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="saveSetting" />
               </NameFormItem>
             </div>
           </el-col>
         </el-row>
+        </template>
 
         <!-- 工具栏按钮自定义(设置按钮始终保留) -->
         <div class="advanced-section-title"><span class="label-with-hint">{{$t('m.toolbarButtons')}}<SettingHint :title="$t('m.toolbarButtons')" :lines="[$t('m.hintToolbarButtons'), $t('m.toolbarButtonsHint')]" /></span></div>
@@ -2001,6 +2011,7 @@ import appIcon from '../assets/icon.png'
 import universcAvatar from '../assets/universc.png'
 import { ref, onMounted, h, computed, watch } from 'vue'
 import LibraryFolderPicker from './LibraryFolderPicker.vue'
+import TagSettingsSection from './TagSettingsSection.vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import draggable from 'vuedraggable'
@@ -2212,8 +2223,43 @@ const handleCoverStyleChange = () => {
   fillNumberDefault('coverHeight', 360, 100, 1200)
   fillNumberDefault('cardGapV', 6, 0, 40)
   fillNumberDefault('cardGapH', 6, 0, 40)
+  // 二号样式的第二套尺寸:清空时回到参考图的默认值(140×210,间距 6/8,缩放 100)
+  const fill2 = (key, def, min, max) => {
+    let v = Number(setting.value[key])
+    if (!Number.isFinite(v) || v === 0) v = def
+    setting.value[key] = Math.min(max, Math.max(min, v))
+  }
+  fill2('style2UiZoom', 100, 50, 300)
+  fill2('style2CoverWidth', 140, 80, 800)
+  fill2('style2CoverHeight', 220, 100, 1200)
+  fill2('style2CardGapV', 6, 0, 40)
+  fill2('style2CardGapH', 8, 0, 40)
+  // 合集界面卡片的独立尺寸(抽屉):清空同样回到默认值
+  fill2('collectionUiZoom', 100, 50, 300)
+  fill2('collectionCoverWidth', 220, 80, 800)
+  fill2('collectionCoverHeight', 360, 100, 1200)
+  fill2('collectionCardGapV', 6, 0, 40)
+  fill2('collectionCardGapH', 6, 0, 40)
   applyCoverStyle(setting.value)
+  // 卡片尺寸 / 样式变了:主界面首屏要重新填满(二号样式一行能放十几张,24 张不到一屏时
+  // 没有滚动条也滚不动) —— 通知 App 重新铺一次
+  emit('cover-style-change')
   saveSetting()
+}
+// 合集界面卡片「二号样式」开关:
+// 打开时如果合集尺寸还是旧默认(220×360、间距 6/6),顺手换成与主界面二号样式一致的密度
+// (140×220、间距 6/8) —— 否则抽屉里一张卡比抽屉还高,标题直接被裁在可视区外。
+const handleCollectionStyle2Change = () => {
+  const s = setting.value
+  if (s.collectionCardStyle2 &&
+      Number(s.collectionCoverWidth) === 220 && Number(s.collectionCoverHeight) === 360 &&
+      Number(s.collectionCardGapV) === 6 && Number(s.collectionCardGapH) === 6 &&
+      Number(s.collectionUiZoom) === 100) {
+    s.collectionCoverWidth = 140
+    s.collectionCoverHeight = 220
+    s.collectionCardGapH = 8
+  }
+  handleCoverStyleChange()
 }
 // 界面缩放:和 Ctrl + 鼠标滚轮是同一套(Electron 的 zoom level,每级 ×1.2)
 //   百分比 = 1.2^level,反解 level = log(百分比 / 100) / log(1.2)
@@ -2882,6 +2928,9 @@ const resetContextMenuOptions = () => {
 const emit = defineEmits([
   'loadBookList',
   'loadCollectionList',
+  // 卡片样式/尺寸变了:App 要重新铺一次首屏(否则二号样式下 24 张不到一屏,
+  // 没有滚动条 → 也滚不到下一批,看起来就是「加载数量不对」)
+  'cover-style-change',
 ])
 
 onMounted(() => {
@@ -2973,6 +3022,9 @@ onMounted(() => {
       if (res.hideRating === undefined) setting.value.hideRating = false
       // 新增开关:老配置没有这个字段 → 默认关闭(继续显示「合集」标签,行为不变)
       if (res.hideCollectionTag === undefined) setting.value.hideCollectionTag = false
+      // 合集卡片专属三项:老配置没有 → 沿用当前观感(成员数/阅读数都显示)
+      if (res.collectionHideCount === undefined) setting.value.collectionHideCount = false
+      if (res.collectionHideReadCount === undefined) setting.value.collectionHideReadCount = false
       if (res.coverWidth === undefined) setting.value.coverWidth = 220
       if (res.coverHeight === undefined) setting.value.coverHeight = 360
       // 卡片间距:旧版单值 cardGap → 拆分为 上下/左右 两个方向
@@ -2982,6 +3034,31 @@ onMounted(() => {
       // - 曾开启 coverOnly 的用户:还原其联动隐藏项,并把新开关置为开(延续大图偏好)
       // - 其余用户:开关默认关(经典卡片布局)
       if (res.fillCover === undefined) setting.value.fillCover = !!res.coverOnly
+      // 合集卡片的填充封面:老配置没有 → 跟随普通卡片此刻的值(观感不变),之后可单独改
+      if (res.collectionFillCover === undefined) setting.value.collectionFillCover = !!setting.value.fillCover
+      // 合集界面卡片:完整的一套开关 + 第二套尺寸(老配置没有 → 全部关/默认值)
+      if (res.collectionHideBookmarkButton === undefined) setting.value.collectionHideBookmarkButton = false
+      if (res.collectionHideReadButton === undefined) setting.value.collectionHideReadButton = false
+      if (res.collectionHideNonTag === undefined) setting.value.collectionHideNonTag = false
+      if (res.collectionHideTitle === undefined) setting.value.collectionHideTitle = false
+      if (res.collectionHideRating === undefined) setting.value.collectionHideRating = false
+      if (res.collectionUiZoom === undefined) setting.value.collectionUiZoom = 100
+      if (res.collectionCoverWidth === undefined) setting.value.collectionCoverWidth = 220
+      if (res.collectionCoverHeight === undefined) setting.value.collectionCoverHeight = 360
+      if (res.collectionCardGapV === undefined) setting.value.collectionCardGapV = 6
+      if (res.collectionCardGapH === undefined) setting.value.collectionCardGapH = 6
+      // 合集界面卡片的总开关 / 二号样式:老配置没有 → 关(抽屉保持跟随主界面观感)
+      if (res.collectionCardStyleEnabled === undefined) setting.value.collectionCardStyleEnabled = false
+      if (res.collectionCardStyle2 === undefined) setting.value.collectionCardStyle2 = false
+      // 二号样式:默认尺寸取「添加漫画」网格的观感(140 宽、3:4 封面 + 标题 = 220 高、间距 6/8)
+      if (res.cardStyle2 === undefined) setting.value.cardStyle2 = false
+      if (res.style2UiZoom === undefined) setting.value.style2UiZoom = 100
+      if (res.style2CoverWidth === undefined) setting.value.style2CoverWidth = 140
+      if (res.style2CardGapV === undefined) setting.value.style2CardGapV = 6
+      if (res.style2CardGapH === undefined) setting.value.style2CardGapH = 8
+      if (res.style2CoverHeight === undefined) setting.value.style2CoverHeight = 220
+      // 上一版默认 210(封面不是 3:4):发布时间很短,统一挪到 220
+      else if (Number(res.style2CoverHeight) === 210 && Number(res.style2CoverWidth) === 140) setting.value.style2CoverHeight = 220
       if (res.coverOnly) {
         for (const key of ['hideBookmarkButton', 'hidePageCount', 'hideReadCount', 'hideReadButton', 'hideNonTag', 'hideTitle', 'hideRating']) {
           setting.value[key] = false
@@ -3287,6 +3364,8 @@ const restoreTrashItem = async (row) => {
     if (res && res.ok) {
       ElMessage.success(t('m.trashRestoreDone'))
       await loadTrashList()
+      // ★ 主进程已经把这本书直接写回库了,这里只要重新读书架(不扫描)
+      if (res.added && res.added.id) emit('loadBookList', false)
     } else {
       ElMessage.error((res && res.error) || t('m.trashRestoreFail'))
     }
@@ -4349,7 +4428,6 @@ const saveTagNames = async () => {
     await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
     tagEditVisible.value = false
     printMessage('success', t('m.saveTagNamesDone'))
-    emit('loadBookList')
     return
   }
 
@@ -4455,7 +4533,7 @@ const saveTagNames = async () => {
   await ipcRenderer.invoke('save-setting', JSON.parse(JSON.stringify(setting.value)))
   tagEditVisible.value = false
   printMessage('success', t('m.saveTagNamesDone'))
-  emit('loadBookList')
+  // 改名称/配色不需要重载书库(与 TagEditorDialog 一致)
 }
 // 标题分析:和库里已有标签做对比(标题按括号/分隔符切开),命中就写入 团队/作者/原作/角色
 const analyzeTitles = async () => {
@@ -4758,6 +4836,8 @@ const tagCategoryKeys = computed(() => {
 })
 const tagCategoryLabel = (c) => ((resolvedTranslation.value && resolvedTranslation.value[c] && resolvedTranslation.value[c]._name) || catDisplayName(c))
 
+// 标签设置整页组件(与管理界面共用)
+const tagSectionRef = ref(null)
 const dialogVisibleSetting = ref(false)
 // 高级主题(像素风格)
 // 像素风格设置(音效 / 清晰度 / 块大小 / 颜色数量 / 算法 / 网格)
@@ -5243,6 +5323,12 @@ defineExpose({
   // 「标签设置」里的完整标签编辑器(配色/分类/关联/删除)。
   // App.vue 的右键「编辑标签」直接调它 —— 以前那里只能快速改个名。
   openTagNameEditor,
+  // 全软件统一的「增加标签」入口:直接打开 设置 → 标签 这一页。
+  // (详细界面 / 侧边详情 / 管理面板上的「增加标签」都调这里,不再各弹各的小窗)
+  openTagPanel: () => {
+    activeSettingPanel.value = 'collectTag'
+    dialogVisibleSetting.value = true
+  },
   saveSetting
 })
 
@@ -5718,6 +5804,27 @@ defineExpose({
     text-align: left
     &:first-child
       margin-top: 4px
+  // 分区下的「分支」小标题(例:卡片样式 → 合集界面卡片):
+  // 比大标题低一级 —— 没有主色竖条,改用缩进 + 细竖线,一眼看出是从属关系
+  .advanced-subsection-title
+    font-weight: 600
+    font-size: 12px
+    color: var(--el-text-color-regular)
+    border-left: 2px solid var(--el-border-color)
+    padding-left: 10px
+    margin: 16px 0 8px 14px
+    line-height: 18px
+    text-align: left
+    // 带总开关的子分区标题(合集界面卡片):文字在左、开关在右,同一行
+    &.with-switch
+      display: flex
+      align-items: center
+      justify-content: space-between
+      gap: 12px
+      padding-right: 4px
+      .el-switch
+        flex: none
+        font-weight: 400
   // 设置项说明文字(灰字小提示)
   .setting-hint
     font-size: 12px

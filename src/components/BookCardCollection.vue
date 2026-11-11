@@ -4,9 +4,9 @@
        填充封面布局)。唯一的合集专属元素是右上角的「合集」标签 —— 它用绝对定位盖住标题右上角,
        这是**预期**的遮挡行为;可在 设置 → 高级 → 卡片样式 →「隐藏合集」里关掉。
        底部状态标签保持原样(显示「合集」),与普通卡的 non-tag/tagged 状态标签对齐。 -->
-  <div class="book-card book-card-collection" :class="{ 'fill-cover': setting.fillCover }">
+  <div class="book-card book-card-collection" :class="{ 'fill-cover': cardFillCover }">
     <!-- ================= 经典卡片布局(默认) ================= -->
-    <template v-if="!setting.fillCover">
+    <template v-if="!cardFillCover">
       <p class="book-title" v-if="!setting.hideTitle"
         @click.stop="$emit('titleClick')"
         @contextmenu="onTitleContextMenu($event)"
@@ -20,9 +20,15 @@
           @click="$emit('openCollection')"
           @dblclick="$emit('coverDblclick')"
           @contextmenu="onCoverContextMenu($event)"
+          @load="onCoverLoad"
           @error="onCoverError"
         />
-        <div v-else class="book-cover" @click="$emit('openCollection')" @contextmenu="onCoverContextMenu($event)"></div>
+        <div v-else class="book-cover book-cover-empty" @click="$emit('openCollection')" @contextmenu="onCoverContextMenu($event)"></div>
+        <!-- 加载中一直转圈(包含「成员封面还没生成出来」);生成彻底失败才落文字 -->
+        <div class="cover-loading" v-if="coverLoading">
+          <el-icon class="is-loading" :size="26"><Loading /></el-icon>
+        </div>
+        <div class="cover-failed" v-if="coverFailed">{{ $t('m.coverLoadFailed') }}</div>
         <el-tag class="book-card-language" size="small" v-if="!setting.hideReadCount"
           @click.stop="$emit('openCollection')"
         >{{book.readCount}}</el-tag>
@@ -60,9 +66,14 @@
         @click="$emit('openCollection')"
         @dblclick="$emit('coverDblclick')"
         @contextmenu="onCoverContextMenu($event)"
+        @load="onCoverLoad"
         @error="onCoverError"
       />
-      <div v-else class="book-cover-fill" @click="$emit('openCollection')" @contextmenu="onCoverContextMenu($event)"></div>
+      <div v-else class="book-cover-fill book-cover-empty" @click="$emit('openCollection')" @contextmenu="onCoverContextMenu($event)"></div>
+      <div class="cover-loading" v-if="coverLoading">
+        <el-icon class="is-loading" :size="26"><Loading /></el-icon>
+      </div>
+      <div class="cover-failed" v-if="coverFailed">{{ $t('m.coverLoadFailed') }}</div>
       <div class="fill-top">
         <el-tag class="fill-badge" size="small" v-if="!setting.hideReadCount"
           @click.stop="$emit('openCollection')"
@@ -108,6 +119,7 @@ import ContextMenu from '@imengyu/vue3-context-menu'
 import { useAppStore } from '../pinia.js'
 import { storeToRefs } from 'pinia'
 import { ensureBookCover, bookImgSrc } from '../utils.js'
+import { Loading } from '@element-plus/icons-vue'
 const appStore = useAppStore()
 const { bookList, setting } = storeToRefs(appStore)
 const { isChineseTranslatedManga } = appStore
@@ -156,12 +168,24 @@ const memberBooks = computed(() => {
 
 // 第一个成员(按成员顺序):所有成员都没封面时,由它负责去生成
 const firstMember = computed(() => memberBooks.value[0] || null)
+// 主界面的合集卡跟随普通「卡片样式」的填充封面开关 ——
+// 「合集界面卡片」那组开关现在只管打开合集后底部抽屉里的那些卡(用户要求)。
+const cardFillCover = computed(() => !!setting.value.fillCover)
+
 // 第一个**有封面**的成员:合集封面取它的实时 coverPath。
 // 以前先读聚合那一刻的 coverPath 快照 —— 第一本当时没封面、后来生成了也不回填,
 // 卡片就永远空白(用户说的「后期也不会自动获取」);快照本身是坏图时更糟:
 // 成员重新生成封面后 src 仍指向快照那条坏地址,卡片永久停在坏图。
-// 详情页(BookDetailDialog)现在也是「第一个有封面的成员」,卡片和详情不会再对不上。
-const coverMember = computed(() => memberBooks.value.find(m => m && m.coverPath) || null)
+// ★ 现在再加一层:合集可以在详情里手动「设为封面」(coverKey = 成员 hash/id),
+//   指定过就优先用它 —— 否则手动设的封面在卡片上根本不生效。
+const coverMember = computed(() => {
+  const key = (props.book && props.book.coverKey) || ''
+  if (key) {
+    const hit = memberBooks.value.find(m => m && (m.hash === key || m.id === key))
+    if (hit && hit.coverPath) return hit
+  }
+  return memberBooks.value.find(m => m && m.coverPath) || null
+})
 
 // 封面地址:成员实时 coverPath 优先,所有成员都没封面时才退回聚合快照兜底。
 // 查询串带 nonce:同名文件重建后浏览器会用缓存,必须换 src 才会重新拉图 ——
@@ -182,27 +206,50 @@ const coverSrc = computed(() => {
   if (!parts.length) return base
   return base + (base.includes('?') ? '&' : '?') + 'r=' + parts.join('-')
 })
+// 封面加载状态:与普通卡片同一套 —— 加载中一直转圈,直到 @load 出图或真失败;
+// 不做「N 秒算失败」的超时(大书库并发读封面十几秒很正常,超时会整屏误标加载失败)。
+const coverLoading = ref(false)
+const coverFailed = ref(false)
+const stopCoverLoading = () => { coverLoading.value = false }
+const startCoverLoading = () => { coverFailed.value = false; coverLoading.value = true }
+const failCover = () => { coverFailed.value = true; coverLoading.value = false }
+const onCoverLoad = () => { coverFailed.value = false; stopCoverLoading() }
+// 地址一换(成员换封面 / 重试 nonce)就重新等图,失败态一并清掉。
+// 地址为空时不在这里停转圈 —— 那是「还没有封面」,交给下面那个 watcher 去生成 / 收失败。
+watch(coverSrc, (v) => {
+  if (v) startCoverLoading()
+}, { immediate: true })
 // 换了封面成员、或成员的 coverPath 变了(重新生成 / 被外部改写):重试计数从头来。
 // ★ 同一个坏地址反复失败时 coverPath 不变、计数不清零,连续 3 次后彻底停手,
 //   不会无限刷 IPC;封面真的换了(新文件)才给一份新预算。
 watch([coverMember, () => (coverMember.value && coverMember.value.coverPath) || ''], () => { coverRetry.value = 0 })
 
-// 没有封面就**真的去生成**(而不是画一个首字占位块)。盯第一个成员:它长出封面后
+// 没有封面就**真的去生成**(而不是画一个空占位块)。盯第一个成员:它长出封面后
 // coverSrc 会自动接上。只对本地书有意义:在线书没有「本地封面」这回事。
-watch([coverSrc, firstMember], () => {
-  if (coverSrc.value) return
+// ★ 生成期间必须转圈等:合集封面来自成员,成员封面常常还没生成出来 ——
+//   这正是「显示加载失败的书其实只是还没生成」的同一类情况。
+watch([coverSrc, firstMember], async () => {
+  if (coverSrc.value) { startCoverLoading(); return }
   const m = firstMember.value
-  if (m && !m.online) ensureBookCover(m)
+  if (!m) { failCover(); return }
+  if (m.online) { failCover(); return }
+  startCoverLoading()
+  const next = await ensureBookCover(m).catch(() => null)
+  // 拿到地址后 coverSrc 变化会接管;拿不到才算这轮没封面
+  if (!next && !coverSrc.value) failCover()
 }, { immediate: true })
 
-// 图片加载失败(封面文件被清理 / 损坏):换一个新 src 强制浏览器重新拉图 + 真的去重新生成。
+// 图片加载失败(封面文件被清理 / 损坏):继续转圈 + 重新生成,重试耗尽才显示「加载失败」。
 // 连续失败上限 3 次:坏封面也不能无限刷 IPC(ensureBookCover 自己还有 _coverFailed 兜底)。
 const onCoverError = () => {
   // 生成「当前显示的那个成员」的封面;一个都没封面时才轮到第一个成员
   const m = coverMember.value || firstMember.value
-  if (!m || m.online) return
-  if (coverRetry.value >= MAX_COVER_RETRY) return
+  if (!m) { failCover(); return }
+  coverLoading.value = true
+  coverFailed.value = false
+  if (coverRetry.value >= MAX_COVER_RETRY) { failCover(); return }
   coverRetry.value++
+  if (m.online) return
   ensureBookCover(m)
 }
 
