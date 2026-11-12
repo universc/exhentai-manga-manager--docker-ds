@@ -84,6 +84,11 @@ const solveBookTypeFolder = async (folderpath, TEMP_PATH, COVER_PATH, coverName)
     cwd: folderpath,
     nocase: true
   })
+  // ★ 超分生成的副本(0001_realesrgan_4x.webp / 0001_waifu2x_2x.png / 0001_lanczos_2x.jpg)不是漫画页。
+  //   以前它们会被 glob 收进来,变成「多出来的页」—— 而且旧版本生成坏了的副本永远在阅读器里显示,
+  //   用户看到的就是「超分还是一样的问题」。这里直接把它们排除在页列表之外。
+  const UPSCALE_COPY_RE = /_(realesrgan|waifu2x|lanczos|api)_\d+(?:\.\d+)?x\.(?:jpe?g|png|webp|avif|gif)$/i
+  list = list.filter(f => !UPSCALE_COPY_RE.test(f))
   list = list.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })).map(f => path.join(folderpath, f))
   let targetFilePath
   if (list.length > 8) {
@@ -107,6 +112,10 @@ const getImageListFromFolder = async (folderpath, VIEWER_PATH) => {
     cwd: folderpath,
     nocase: true
   })
+  // ★ 超分副本(0001_realesrgan_4x.webp 等)不是漫画页:排除掉,否则阅读器会多出这些页面,
+  //   旧版本生成坏了的副本就会一直显示成「超分出问题」。
+  const UPSCALE_COPY_RE = /_(realesrgan|waifu2x|lanczos|api)_\d+(?:\.\d+)?x\.(?:jpe?g|png|webp|avif|gif)$/i
+  list = list.filter(f => !UPSCALE_COPY_RE.test(f))
   list = list.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
   return list.map(f => ({
     relativePath: f,

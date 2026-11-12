@@ -278,6 +278,24 @@ const insideServeRoots = (target) => {
 
 // 本地超分模型目录:<数据目录>/models/upscale/<模型 id>
 localModels.init(STORE_PATH)
+// ---------- 系统代理兜底 ----------
+// 用户经常是「浏览器能上 EH、应用上不了」:浏览器走系统代理(Clash 等),而 setting.proxy 是空的。
+// 这里在没配置代理时读一次系统代理(Electron 的 resolveProxy 会读 Windows 的 WinINET/系统设置),
+// 写进内存里的 setting.proxy —— 所有 EH 请求/模型下载都复用它,不再直连被墙的地址。
+const applySystemProxyIfNeeded = async () => {
+  if (String(setting.proxy || '').trim()) return
+  try {
+    const { session } = require('electron')
+    const res = await session.defaultSession.resolveProxy('https://e-hentai.org')
+    const m = /PROXY\s+([^\s;]+)/i.exec(String(res || ''))
+    if (!m) return
+    const addr = m[1].replace(/^https?:\/\//i, '')
+    setting.proxy = 'http://' + addr
+    localModels.setProxy(setting.proxy)
+    console.log('[proxy] 未配置代理,自动跟随系统代理:' + setting.proxy)
+  } catch (e) { /* 读不到就保持直连 */ }
+}
+
 // 下载走用户配置的代理,或镜像前缀(国内直连 GitHub 大文件经常被重置)
 localModels.setProxy(setting.proxy || process.env.HTTPS_PROXY || process.env.https_proxy || '')
 localModels.setMirror(setting.localModelMirror || '')
@@ -1543,6 +1561,7 @@ if (!WEB_MODE) {
       showMainWindow()
     })
     app.whenReady().then(() => {
+  applySystemProxyIfNeeded()
       // 在线图片代理(桌面版):只放行 EH 的几个域名,避免变成任意 URL 的代理
       try {
 
@@ -6430,6 +6449,27 @@ const addRestoredBook = async (filepath) => {
   }
 }
 
+// 恢复用的移动:rename 在 Windows 上会因为「目标已存在 / 文件被占用 / 只读属性」报 EPERM。
+// 依次尝试:删除已存在的目标 → rename(重试 3 次) → 复制后删除源(最慢但最能成功)。
+const moveFileRobust = async (src, dest) => {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+  try { await fs.promises.rm(dest, { recursive: true, force: true }) } catch (e) { /* 目标不存在或删不掉,交给后面重试 */ }
+  for (let i = 0; i < 3; i++) {
+    try {
+      await fs.promises.rename(src, dest)
+      return 'rename'
+    } catch (e) {
+      const code = e && e.code
+      if (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY' && code !== 'EEXIST' && code !== 'EXDEV') throw e
+      await sleep(300 * (i + 1))
+    }
+  }
+  // 兜底:复制(逐文件,能覆盖已存在的目标)再删源
+  await fs.promises.cp(src, dest, { recursive: true, force: true })
+  await fs.promises.rm(src, { recursive: true, force: true })
+  return 'copy'
+}
+
 ipcMain.handle('trash-restore', async (event, id) => {
   const list = await readTrashIndex()
   const item = list.find(x => x.id === id)
@@ -6441,21 +6481,14 @@ ipcMain.handle('trash-restore', async (event, id) => {
       await fs.promises.rm(item.src, { recursive: true, force: true })
     }
     await fs.promises.mkdir(path.dirname(item.src), { recursive: true })
-    let mode = 'move'
-    try {
-      await fs.promises.rename(item.dest, item.src)
-    } catch (e) {
-      if (e && e.code === 'EXDEV') {
-        mode = 'copy'
-        await fs.promises.cp(item.dest, item.src, { recursive: true, force: true })
-        await fs.promises.rm(item.dest, { recursive: true, force: true })
-      } else throw e
-    }
+    // ★ 以前直接 rename:Windows 上目标已存在 / 文件被占用(阅读器还开着、缩略图进程在读)
+    //   就报 EPERM,用户看到「恢复失败」。现在走带重试的 moveFileRobust。
+    const mode = await moveFileRobust(item.dest, item.src)
     await writeTrashIndex(list.filter(x => x.id !== id))
     await appendDeleteLog({ restoredAt: Date.now(), restoredAtText: new Date().toLocaleString(), src: item.src, from: item.dest, mode, ok: true, action: 'restore' })
     // ★ 恢复后直接把这本书加回书架(以前要用户再点一次重新扫描)
     const added = await addRestoredBook(item.src)
-    return { ok: true, path: item.src, added }
+    return { ok: true, path: item.src, mode, added }
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) }
   }
@@ -8586,6 +8619,12 @@ ipcMain.handle('upscale-image', async (event, filepath, options) => {
     if (localEngine) {
       // 参数来自「本地模型」里该模型自己的设置
       const opts = Object.assign({}, localModels.defaultOptionsOf(localEngine), (setting.localUpscaleOptions || {})[localEngine] || {})
+      // 把原图尺寸带下去:分块策略要按尺寸决定(小图一整块,避免分块错位)
+      try {
+        const m0 = await sharp(filepath, { failOnError: false }).metadata()
+        opts.srcWidth = m0.width || 0
+        opts.srcHeight = m0.height || 0
+      } catch (e) { /* 读不到就按默认分块 */ }
       await localModels.runUpscale(localEngine, filepath, tmpOut, opts)
       engine = 'local:' + localEngine
       engineName = localEngine
