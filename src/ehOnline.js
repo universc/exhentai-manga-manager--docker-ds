@@ -459,7 +459,11 @@ export const mergeDetailIntoBook = (book, detail) => {
 //   ⚠ 很重要:EH 的 H@H 节点会校验收图来源。以前统一用站点根当 referer,实测更容易被拒;
 //   浏览器读图时 referer 天然就是图片页本身。现在把它透传给主进程。
 export const ehImageSrc = (url, tracker, referer) => {
-  const u = String(url || '')
+  let u = String(url || '').trim()
+  // ★ 列表页的缩略图常是协议相对地址(//ehgt.org/…):直接丢给 <img> 会被解析成
+  //   file://ehgt.org/… → 必然失败;主进程的 emm-eh 也只放行 https,所以统一补成 https。
+  if (u.startsWith('//')) u = 'https:' + u
+  if (/^http:\/\//i.test(u)) u = u.replace(/^http:/i, 'https:')
   if (!u || !/^https?:\/\//i.test(u)) return u
   const tr = tracker ? '&t=' + encodeURIComponent(String(tracker)) : ''
   const rf = referer ? '&r=' + encodeURIComponent(String(referer)) : ''

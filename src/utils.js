@@ -339,7 +339,13 @@ const toFileUrl = (p) => {
 const bookImgSrc = (p) => {
   if (!p) return ''
   const s = String(p)
-  if (/^(https?:|data:|blob:|file:)/i.test(s)) return s
+  // ★ 任何 `scheme://` 地址都原样返回 —— 包括自定义协议 emm-eh://。
+  //   以前只认 https/file/data/blob,EH 在线封面(emm-eh://img/?u=…)会被下面的
+  //   toFileUrl 拼成 file:///emm-eh:/img/%3Fu%3D…, Chromium 必然 404,
+  //   于是「在线画廊一进来,所有封面都写着加载失败」。这是那个 bug 的根因。
+  //   盘符 C:/… 只有一个斜杠,不会误匹配。
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return s
+  if (/^(data|blob):/i.test(s)) return s
   if (typeof window !== 'undefined' && window.__WEB_MODE__) {
     // 主进程已经把 coverPath 改写成 /api/file?path=...:别再包一层
     if (s.startsWith('/api/')) return s

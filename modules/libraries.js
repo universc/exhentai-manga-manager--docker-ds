@@ -96,8 +96,14 @@ const runtimeLibraries = (setting, isWeb) => (Array.isArray(setting && setting.l
 // options.nameHint:容器模式下 setting.library 会被映射成 /library,但共享 setting.json 里存的是
 // Windows 路径(Y:\...)。用这个名字提示保证容器与桌面算出同一个「库名」,即同一个库数据目录。
 const ensureLibraries = (setting, options = {}) => {
-  // 当前环境:网页版/容器 还是 桌面版 —— 决定运行时投影用哪一组路径
-  const isWeb = (options && options.isWeb !== undefined) ? !!options.isWeb : !!process.env.WEB_LIBRARY
+  // 当前环境:网页版/容器 还是 桌面版 —— 决定运行时投影用哪一组路径。
+  // ⚠ 必须和 localLibraryPath / localLibraryDataPath 的默认判定完全一致
+  //   (WEB_LIBRARY **或** WEB_MODE=1):只认 WEB_LIBRARY 时,纯 WEB_MODE 的容器
+  //   会把 setting.library 同步成 Windows 盘符路径,currentLibrary() 随后匹配不上,
+  //   增量扫描 / 当前库判定就会挑错库。
+  const isWeb = (options && options.isWeb !== undefined)
+    ? !!options.isWeb
+    : !!(process.env.WEB_LIBRARY || process.env.WEB_MODE === '1')
   const before = JSON.stringify({
     libraries: setting.libraries === undefined ? null : setting.libraries,
     activeLibraryId: setting.activeLibraryId === undefined ? null : setting.activeLibraryId,
@@ -133,36 +139,23 @@ const ensureLibraries = (setting, options = {}) => {
 
   const state = { migrated: false, changed: false, active: null }
 
-  // 旧版单库 → 默认库(容器模式优先用 nameHint,保证与桌面端同名)。
-  // ⚠️ 只在「从来没有 libraries 字段」时迁移:用户主动删光库之后 libraries 是空数组,
-  //    这时若还按 setting.library 重建,就会出现「删掉的库自己复活、一万多本又回来了」。
-  if (!list.length && setting.libraries === undefined) {
-    const legacy = String(setting.library || '').trim()
-    if (legacy) {
-      const nameHint = String((options && options.nameHint) || '').trim()
-      const name = nameHint ? libraryNameFromPath(nameHint, 0) : libraryNameFromPath(legacy, 0)
-      list.push({ id: newLibraryId(), name, path: legacy, dataPath: '', pathWeb: '', dataPathWeb: '' })
-      state.migrated = true
+  // 新库如果没填「库数据存放位置」,补成默认目录 <数据存放目录>/libraries/<库名>/。
+  // 与设置页提示保持一致(留空 = 默认目录),避免「建了库却因 dataPath 为空被判未生效、书架 0 条」。
+  if (options && options.storePath) {
+    for (const lib of list) {
+      if (String(lib.dataPath || '').trim() || String(lib.dataPathWeb || '').trim()) continue
+      const dir = libraryDataDir(String(options.storePath), lib, isWeb)
+      if (isWeb) lib.dataPathWeb = dir
+      else lib.dataPath = dir
     }
   }
 
   // 活动库:优先 activeLibraryId,失效则退回第一个
   let active = list.find(l => l.id === setting.activeLibraryId) || null
   if (!active) active = list[0] || null
-  // 旧字段优先(默认):设置页改的是 setting.library,把它同步进活动库。
-  // options.preferList = true 时反过来 —— 以传入的 libraries 为准(多库管理 UI 用),
-  // 由活动库路径回填 setting.library,避免旧值把用户刚选中的新库路径覆盖掉。
-  if (active) {
-    const legacy = String(setting.library || '').trim()
-    if (options.preferList) setting.library = localLibraryPath(active, isWeb)
-    else if (legacy && !isWeb && !String(active.path || '').trim()) {
-      // setting.library 是**桌面端的遗留单值字段**。它只该在「这个库还没配过路径」时兜底迁移;
-      // 库列表里已经有路径时绝不覆盖 —— 否则一个过期/填错的 legacy 值会在**每次启动**把
-      // 「库文件夹」改回去(现象:书架能列出、点开没图,而设置里看着"自己变回去了")。
-      active.path = legacy
-      setting.library = localLibraryPath(active, isWeb)
-    } else setting.library = localLibraryPath(active, isWeb)
-  }
+  // setting.library 只是「活动库在本端的路径投影」,单向由库列表推导。
+  // ★ 绝不再反过来用这个旧字段去填/覆盖库的 path —— 一个过期的旧值会在每次启动把库路径改回去。
+  if (active) setting.library = localLibraryPath(active, isWeb)
   state.active = active
 
   // 库名唯一:默认库数据目录按「库名」生成,同名会指向同一个目录(用户明确要求库名不重复)

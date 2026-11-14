@@ -53,3 +53,7 @@ electron_err.txt
 
 # esbuild / 打包临时目录
 .tmp-build/
+
+# 打包临时目录
+out-build
+.build-tmp*

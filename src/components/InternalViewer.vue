@@ -1054,6 +1054,29 @@ const imageVersion = ref({})
 const bumpImageVersion = (id) => {
   imageVersion.value = { ...imageVersion.value, [id]: Date.now() }
 }
+// 用文件 mtime 当版本号:外部把 .bak 恢复回原文件、或用资源管理器替换了图片时,
+// 程序没有任何通知,只能靠「切回窗口时对一下 mtime」发现内容变了。
+// 用 mtime(而不是 Date.now)是为了幂等:没变化时不会无谓地重新拉图。
+const syncImageVersion = (id, mtime) => {
+  if (!id || !mtime) return
+  if (imageVersion.value[id] === mtime) return
+  imageVersion.value = { ...imageVersion.value, [id]: mtime }
+}
+// 校验当前页(以及前后各一页,预加载区域)在磁盘上有没有被换过
+const verifyVisibleImagesFresh = async () => {
+  if (!viewerImageList.value.length) return
+  if (bookDetail.value && bookDetail.value.online) return   // 在线画廊没有本地文件
+  const idx = Number(currentImageIndex.value) || 0
+  const targets = [idx - 1, idx, idx + 1]
+    .map(i => viewerImageList.value[i])
+    .filter(it => it && it.filepath && !it.online)
+  for (const it of targets) {
+    try {
+      const mt = await ipcRenderer.invoke('image-file-mtime', it.filepath)
+      if (mt) syncImageVersion(it.id, mt)
+    } catch (e) { /* 取不到就算了,不影响阅读 */ }
+  }
+}
 // 统一的图片 src:兼容「磁盘路径」与「网页版 URL」两种形态
 const imageSrc = (image) => {
   if (!image || !image.filepath) return ''
@@ -1832,6 +1855,9 @@ const flushPendingThumbnails = () => {
 }
 
 onMounted(() => {
+  // 从资源管理器切回来时,当前页的磁盘文件可能已被换过(恢复 .bak / 手动替换):
+  // 对一下 mtime,变了就换 URL 版本号强制重拉,否则 Chromium 一直显示缓存里的旧图。
+  window.addEventListener('focus', verifyVisibleImagesFresh)
   imageStyleType.value = localStorage.getItem('imageStyleType') || 'scroll'
   imageStyleFit.value = localStorage.getItem('imageStyleFit') || 'window'
   viewerReadingProgress.value = JSON.parse(localStorage.getItem('viewerReadingProgress')) || []
@@ -1894,6 +1920,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('focus', verifyVisibleImagesFresh)
   window.removeEventListener('resize', handleWindowResize)
   if (imageStateRaf != null) {
     cancelAnimationFrame(imageStateRaf)
@@ -3546,6 +3573,10 @@ const onMangaImageContextMenu = (e, image) => {
           return
         }
         if (res && res.ok) {
+          // ★ 必须换 URL 版本号:恢复只改磁盘内容,地址没变,
+          //   Chromium 会继续用缓存里的超分图 —— 之前就是这里漏了 bump,
+          //   用户看到的还是「恢复后仍显示超分后的图片」。
+          bumpImageVersion(image.id)
           // 让这张图重新加载(内容已换回原图)
           setImageLoaded(image.id, false)
           nextTick(() => setImageLoaded(image.id, true))

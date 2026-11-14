@@ -447,8 +447,27 @@ const triggerEnsureCover = () => {
 // <img> 读不出来。绝大多数是「封面正在生成 / 刚写完还没落盘」,不是坏图 ——
 // 继续转圈并让后台重做,不要立刻写「加载失败」。
 const onCoverError = () => {
-  // 在线画廊是远程地址,没有本地生成这回事:读不出来就是读不出来
-  if (props.book?.online) { failCover(); return }
+  // 在线画廊封面走 emm-eh:// 由主进程带 Cookie/代理去取,EH 节点抖动、
+  // 限速、keystamp 过期都会让第一次请求失败 —— 这不是「封面坏了」。
+  // 以前这里一次 error 就直接判死,表现就是「一进在线画廊,满屏加载失败」。
+  // 现在换 nonce 重拉,最多 4 次,间隔递增;全失败才写「加载失败」。
+  if (props.book?.online) {
+    coverFailCount += 1
+    if (coverFailCount > 4) { failCover(); return }
+    coverLoading.value = true
+    coverFailed.value = false
+    const delay = Math.min(900 * coverFailCount, 4000)
+    clearCoverRetry()
+    coverRetryTimer = setTimeout(() => {
+      coverRetryTimer = null
+      if (!props.book || coverFailed.value) return
+      // 换 nonce 让 coverSrc 变,Chromium 才会真的重新请求(同 URL 会直接吃缓存里的失败)
+      // eslint-disable-next-line vue/no-mutating-props
+      props.book._coverNonce = Date.now() + coverFailCount
+      coverLoading.value = true
+    }, delay)
+    return
+  }
   coverFailCount += 1
   coverLoading.value = true
   coverFailed.value = false
@@ -466,8 +485,19 @@ watch(() => props.book.coverPath, (v) => {
     startCoverLoading()
     return
   }
-  // 没有地址:本地书 = 封面还没生成,转圈等生成;在线画廊没有本地生成,直接算失败
-  if (props.book?.online) { failCover(); return }
+  // 没有地址:本地书 = 封面还没生成,转圈等生成。
+  // 在线书:列表页解析偶尔拿不到缩略图地址(懒加载 data-src 缺失),先转圈等 6 秒,
+  //   仍然没有才判失败 —— 「一进来就加载失败」多半就是这里立刻判死造成的。
+  if (props.book?.online) {
+    startCoverLoading()
+    clearCoverRetry()
+    coverRetryTimer = setTimeout(() => {
+      coverRetryTimer = null
+      if (!props.book || props.book.coverPath) return
+      failCover()
+    }, 6000)
+    return
+  }
   startCoverLoading()
   triggerEnsureCover()
 }, { immediate: true })

@@ -155,8 +155,11 @@ const throttleClear = (username, ip) => {
 // 只读账户(viewer)允许的 IPC 通道:浏览/阅读/搜索类;写操作一律 403
 const VIEWER_ALLOWED_CHANNELS = new Set([
   'load-setting', 'load-book-list', 'get-folder-tree', 'load-collection-list', 'load-manga-image-list', 'load-novel-content',
+  // 库列表/活动库快照是纯读:切库失败时前端要靠它把界面状态拉回后端权威值,
+  // 不给 viewer 会导致「回滚了界面、后端其实已切成功」的错位无法自愈。
+  'get-libraries',
   'open-url', 'show-file', 'open-local-book', 'get-default-manga-reader',
-  'get-locale', 'get-path-sep', 'copy-text-to-clipboard', 'copy-image-to-clipboard', 'image-file-info',
+  'get-locale', 'get-path-sep', 'copy-text-to-clipboard', 'copy-image-to-clipboard', 'image-file-info', 'image-file-mtime',
   'read-text-from-clipboard', 'update-window-title', 'switch-fullscreen',
   'set-viewer-active', 'set-progress-bar', 'extract-image-text',
   'ai-translate-text', 'ai-list-images',

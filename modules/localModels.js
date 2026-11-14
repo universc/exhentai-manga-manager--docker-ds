@@ -316,29 +316,17 @@ const runUpscaleInner = (id, inputPath, outputPath, options = {}) => {
   if (!exePath) return Promise.reject(new Error(def.name + ' 未安装,请先在 设置 → 功能 → 本地模型 中下载'))
 
   const args = ['-i', inputPath, '-o', outputPath]
-  // ★ 强制单线程(load:proc:save = 1:1:1)。
-  //   这两个 ncnn-vulkan 程序默认是 -j 1:2:2,proc 线程会**同时**处理多个分块;
-  //   在部分显卡/驱动上,并发分块会互相踩 offset —— 输出图就是一张「分块错位」的网格
-  //   (用户截图里的 Real-ESRGAN 错误)。GPU 本来就是串行的,单线程不会更慢多少,
-  //   但能彻底消除接缝。
+  // ⚠ 只传官方支持的参数,不要自作聪明加 -j / 自定义 -t:
+  //   上一版为了「消除分块接缝」强行 -j 1:1:1 并按尺寸塞 -t,结果在用户机器上
+  //   直接把图拼错了(整块错位、比例错乱)。ncnn 的默认调度本来是对的,
+  //   分块只在用户明确设置了 tileSize 时才传,其余交给程序自己算。
   if (id === 'realesrgan') {
     // -n 权重模型;-s 输出倍数;可选 -t 分块 / -g 显卡 / -x TTA
     args.push('-n', String(options.model || def.defaultModel))
     args.push('-s', String(Math.min(Math.max(Number(options.scale) || 4, 2), 4)))
-    // 分块策略:默认(tileSize=0)让程序自己算,但在部分显卡/驱动上会切出一堆块并**错位**
-    // (输出就是一张分块拼错的网格)。这里改成:
-    //   · 用户手动设了 tileSize → 听用户的;
-    //   · 否则小图(长边 ≤1600)直接一整块(比图片大就不会切块,不可能错位);
-    //   · 大图用 512,块数可控。
-    const srcW = Number(options.srcWidth) || 0
-    const srcH = Number(options.srcHeight) || 0
-    const longest = Math.max(srcW, srcH)
-    let tile = Number(options.tileSize) > 0 ? Number(options.tileSize) : 0
-    if (!tile) tile = longest && longest <= 1600 ? longest + 32 : 512
-    if (tile > 0) args.push('-t', String(tile))
+    if (Number(options.tileSize) > 0) args.push('-t', String(Number(options.tileSize)))
     if (options.gpuId !== undefined) args.push('-g', String(Number(options.gpuId) || 0))
     if (options.tta) args.push('-x')
-    args.push('-j', '1:1:1')
   } else if (id === 'waifu2x') {
     // -m 模型目录;-s 放大倍数(1/2);-n 降噪等级
     if (options.model) args.push('-m', String(options.model))
@@ -347,7 +335,6 @@ const runUpscaleInner = (id, inputPath, outputPath, options = {}) => {
     if (Number(options.tileSize) > 0) args.push('-t', String(Number(options.tileSize)))
     args.push('-g', String(Number(options.gpuId) || 0))
     if (options.tta) args.push('-x')
-    args.push('-j', '1:1:1')
   }
 
   const timeoutMs = Number(options.timeoutMs) || 10 * 60 * 1000

@@ -604,7 +604,7 @@
     <TagGraph ref="TagGraphRef" @search="handleSearchString"/>
     <SearchDialog ref="SearchDialogRef"/>
     <EhFilterDialog v-model:visible="ehFilterVisible" :filter="ehFilterForDialog" :online="onlineActive" @apply="applyEhFilterAndRefresh"/>
-    <Setting ref="SettingRef" @load-book-list="loadBookList" @load-collection-list="loadCollectionList" @cover-style-change="onCoverStyleChange"/>
+    <Setting ref="SettingRef" @load-book-list="loadBookList" @load-collection-list="loadCollectionList" @cover-style-change="onCoverStyleChange" @library-changed="onLibraryChanged"/>
   </el-config-provider>
 </template>
 
@@ -700,6 +700,11 @@ export default defineComponent({
   },
   data () {
     return {
+      // 切库竞态序号:每次「重建库视图」+1,所有在途的异步刷新回来前都要对一次。
+      // 旧库响应 / 旧库 $nextTick 回调一律丢弃,绝不允许覆盖新库的列表与数量。
+      _libLoadSeq: 0,
+      // 切库请求序号:连点两次时,先发出的那次后回来也不能把界面状态改回去。
+      _libSwitchSeq: 0,
       // home
       searchString: '',
       // 「EH在线」没被勾进任何「库切换」框时的临时站位标志:
@@ -2247,117 +2252,160 @@ export default defineComponent({
       }
     },
 
+    // ---------- 切库:状态重建 + 竞态防护 ----------
+    // 「当前库」的唯一标识:活动库 + 当前框 + 框内库集合 + 在线/本地。
+    // 所有异步刷新都带上它,回来对不上就丢弃 —— 旧库响应不许写进新库界面。
+    libraryToken () {
+      const s = this.setting || {}
+      const boxes = Array.isArray(s.switchBoxes) ? s.switchBoxes : []
+      const idx = Number.isInteger(s.activeBoxIndex) ? s.activeBoxIndex : 0
+      const box = boxes[idx]
+      const ids = box && Array.isArray(box.libraryIds) ? box.libraryIds.slice().sort().join(',') : '*'
+      return [String(s.activeLibraryId || ''), String(idx), ids, this.onlineActive ? 'online' : 'local'].join('|')
+    },
+    // 切库后列表 / 数量 / 选中态 / 分页 / 筛选 / 文件夹树全部按新库重建。
+    // ★最关键的一步:_libLoadSeq +1 让所有在途的 loadBookList / loadCollectionList /
+    //   geneFolderTree / scan-batch 回调失效(它们捕获的是旧库的数组)。
+    resetLibraryViewState () {
+      this._libLoadSeq = (this._libLoadSeq || 0) + 1
+      this._libSwitchSeq = (this._libSwitchSeq || 0) + 1
+      if (this._scanBatchTimer) { clearTimeout(this._scanBatchTimer); this._scanBatchTimer = null }
+      this.bookList = []
+      this.displayBookList = []
+      this.chunkDisplayBookList = []
+      this.collectionList = []
+      this.openCollectionBookList = []
+      this.collectionDrawerList = []
+      this.drawerVisibleCollection = false
+      this.collectionPickerVisible = false
+      this.folderTreeData = []
+      // displayBookCount 完全由 displayBookList 推导,不清空它就会一直显示旧库数量。
+      // 直接写 currentPage_:此刻列表是空的,currentPage 的 setter 会把页码夹成 0。
+      this.currentPage_ = 1
+      this.renderedCount = this.renderBatchSize
+      this.searchString = ''
+      this.searchTyping = ''
+      this.filterAppliedKeyword = ''
+      this.manageView = false
+      this.exitBookEditMode()
+      try { this.scrollMainPageTop() } catch (e) { /* 书架区域还没挂载 */ }
+      try { if (this.$refs.EditViewRef) this.$refs.EditViewRef.selectBookList = [] } catch (e) { /* 组件可能未挂载 */ }
+      try { if (this.$refs.FolderTreeRef) this.$refs.FolderTreeRef.resetSelect() } catch (e) { /* 同上 */ }
+    },
+    // 后端是「当前库」的权威来源:切库失败后用它的快照把界面拉回一致,
+    // 不再像以前那样盲目回滚前端 index(后端可能其实已经切成功了)。
+    applyLibrarySnapshot (res) {
+      if (!res || typeof res !== 'object') return
+      if (Number.isInteger(res.activeBoxIndex)) this.setting.activeBoxIndex = res.activeBoxIndex
+      if (res.activeLibraryId) this.setting.activeLibraryId = res.activeLibraryId
+      if (res.library !== undefined) this.setting.library = res.library
+      if (Array.isArray(res.switchBoxes)) {
+        this.setting.switchBoxes = res.switchBoxes.map(b => ({
+          id: b.id,
+          libraryIds: Array.isArray(b.libraryIds) ? [...b.libraryIds] : []
+        }))
+      }
+    },
+    async syncLibraryStateFromBackend () {
+      try {
+        const res = await ipcRenderer.invoke('get-libraries')
+        this.applyLibrarySnapshot(res)
+      } catch (e) { /* 只读账户/离线:保留界面回滚后的状态,不打断使用 */ }
+    },
+    // 设置页增删库 / 改切换框 / 重建某个库之后:统一走这里重建书架
+    onLibraryChanged () {
+      this.resetLibraryViewState()
+      this.loadBookList()
+    },
     async switchBox () {
-      // ⚠ 这里**不能**无条件置 loading:这个函数有好几条提前 return 的路
-      //   (只有一条框 / 切到 EH在线 / 已经在 EH在线),那些路径根本不加载列表,
-      //   置了不还原 → 工具栏按钮**永远转圈**(线上就是"一直转圈"这个死现象)。
-      //   所以 loading 只在「确实要拉列表」的分支里打开,由 loadBookList 自己收尾。
       const boxes = this.switchBoxes
       const n = boxes.length
-      // ①「EH在线」已经勾进某个切换框:完全按框循环(勾进哪个框,切到那个框就显示在线漫画)
-      if (this.ehOnlineInAnyBox) {
-        if (n <= 1) {
-          this.$message.info(this.$t('m.switchBoxNeedMore'))
-          return
-        }
-        const next1 = ((this.activeBoxIndex + 1) % n + n) % n
-        // 先把「当前框」切过去(按钮/标题立刻变),后端切换与加载随后进行 ——
-        // 以前要等 set-active-box + loadBookList 都回来才有反应,切库像卡住了
-        const prevBoxIndex = this.activeBoxIndex
-        this.setting.activeBoxIndex = next1
-        try {
-          // ★ 12 秒兜底:后端切库前要先把正在跑的扫描停下来,那个等待窗口最长 8 秒 ——
-          //   以前 5 秒兜底会先「成功」返回,于是标题栏切了、列表还是旧库(验收抓到的错位)。
-          //   超时也不再当成功:回滚 + 提示稍候。
-          const res = await Promise.race([
-            ipcRenderer.invoke('set-active-box', { index: next1 }),
-            new Promise((resolve) => setTimeout(() => resolve({ ok: true, activeChanged: true, timeout: true }), 12000)),
-          ])
-          if (res && res.timeout) {
-            // 超时不能当成功:把框回滚回去,提示稍候(后端可能还在停扫描)
-            this.setting.activeBoxIndex = prevBoxIndex
-            this.$message.warning(this.$t('m.switchLibrarySlow'))
-          } else if (res && res.ok) {
-            this.setting.activeBoxIndex = res.activeBoxIndex
-            this.setting.activeLibraryId = res.activeLibraryId
-            this.setting.library = res.library
-            if (res.activeChanged) {
-              // 换库了:先退出「编辑信息」模式(编辑态是 BookDetailDialog 的内部 ref,
-              // 以前切库从不复位 —— 切过去还停在编辑态,一保存就写进新库)
-              this.exitBookEditMode()
-              // ★ 先清空旧列表再拉新库:以前直接 loadBookList() 但不清空,
-              //   用户看到的一直是**上一个库的书**,以为"切了但还是本界面"。
-              //   ⚠ loading 不在这里置:交给 loadBookList 自己管,它每条路径都会收尾。
-              this.bookList = []
-              this.chunkDisplayBookList = []
-              this.loadBookList()   // 不 await:界面先切好,列表随后填
-            }
-          } else {
-            this.setting.activeBoxIndex = prevBoxIndex   // 失败回滚
-            this.$message.error((res && res.error) || this.$t('m.librarySaveFailed'))
-          }
-        } catch (e) {
-          this.setting.activeBoxIndex = prevBoxIndex
-          this.$message.error(String((e && e.message) || e))
-        }
-        return
-      }
-      // ② 没勾进任何框:保持「循环末尾临时多一站 EH在线」的旧行为
-      if (this.onlineActive) {
-        // 从 EH在线 回到第一个框:界面立刻回落(先把列表清空显示 loading),后端切换在后台做
-        this.onlineStopActive = false
-        this.bookList = []
-        this.chunkDisplayBookList = []
-        if (n) {
-          ipcRenderer.invoke('set-active-box', { index: 0 }).then(res => {
-            if (res && res.ok) {
-              this.setting.activeBoxIndex = res.activeBoxIndex
-              this.setting.activeLibraryId = res.activeLibraryId
-              this.setting.library = res.library
-            }
-            this.loadBookList()
-          }).catch(() => { this.loadBookList() })
+      // 处理一次切库响应(带序号保护:连点时旧响应不许改界面)
+      const settle = (res, prevIndex, seq) => {
+        if (seq !== this._libSwitchSeq) return true
+        if (res && res.ok) {
+          this.applyLibrarySnapshot(res)
+          this.loadBookList()
         } else {
+          if (Number.isInteger(prevIndex)) this.setting.activeBoxIndex = prevIndex
+          this.$message.error((res && res.error) || this.$t('m.librarySaveFailed'))
+        }
+        return !!(res && res.ok)
+      }
+      // ①「EH在线」已经勾进某个切换框:完全按框循环
+      if (this.ehOnlineInAnyBox) {
+        if (n <= 1) { this.$message.info(this.$t('m.switchBoxNeedMore')); return }
+        const next = ((this.activeBoxIndex + 1) % n + n) % n
+        const prev = this.activeBoxIndex
+        this.setting.activeBoxIndex = next
+        this.resetLibraryViewState()
+        const seq = this._libSwitchSeq
+        let ok = false
+        try {
+          // ★删掉了原来的 Promise.race「12 秒兜底」:后端切库早已不等扫描停止,
+          //   那个「超时就回滚前端」的分支会让后端已切成功、前端却退回旧框,
+          //   下一次读书架拿到的是另一个库 —— 数量/库名全错,连点几次会累积错位。
+          //   现在一律以后端响应为准,慢就由 loadBookList 显示 loading,不再制造分叉。
+          const res = await ipcRenderer.invoke('set-active-box', { index: next })
+          ok = settle(res, prev, seq)
+        } catch (e) {
+          if (seq === this._libSwitchSeq) {
+            this.setting.activeBoxIndex = prev
+            this.$message.error(String((e && e.message) || e))
+          }
+        }
+        if (!ok && seq === this._libSwitchSeq) {
+          await this.syncLibraryStateFromBackend()
           this.loadBookList()
         }
         return
       }
+      // ② 没勾进任何框:循环末尾临时多一站 EH在线,回来时切回第 0 框
+      if (this.onlineActive) {
+        this.onlineStopActive = false
+        this.resetLibraryViewState()
+        const seq = this._libSwitchSeq
+        if (n) {
+          try {
+            const res = await ipcRenderer.invoke('set-active-box', { index: 0 })
+            if (seq === this._libSwitchSeq) {
+              if (res && res.ok) this.applyLibrarySnapshot(res)
+              else await this.syncLibraryStateFromBackend()
+            }
+          } catch (e) {
+            if (seq === this._libSwitchSeq) await this.syncLibraryStateFromBackend()
+          }
+        }
+        if (seq === this._libSwitchSeq) this.loadBookList()
+        return
+      }
+      // ③ 最后一站的下一站是 EH在线(纯前端站位,不动后端运行时)
       if (this.ehOnlineAvailable && (n === 0 || this.activeBoxIndex + 1 >= n)) {
-        // 最后一个框的下一个就是 EH在线:只切前端状态,后端仍停在原来的框(回来时不用重建运行时)
-        // ⚠ 这条路**不加载列表**:必须显式收掉 loading,否则按钮一直转圈
-        this.exitBookEditMode()   // 切到在线同理:退出编辑信息模式
+        this.resetLibraryViewState()
         this.onlineStopActive = true
         this.buttonLoadBookListLoading = false
         return
       }
-      if (n <= 1) {
-        this.$message.info(this.$t('m.switchBoxNeedMore'))
-        return
-      }
-      // 前端算好「下一条框」的序号再传给后端:避免前后端状态不同步时「点了没反应」
+      if (n <= 1) { this.$message.info(this.$t('m.switchBoxNeedMore')); return }
+      // ④ 普通切框:序号由前端算好再传给后端
       const next = ((this.activeBoxIndex + 1) % n + n) % n
-      const prevIndex = this.activeBoxIndex
-      this.setting.activeBoxIndex = next      // 先切界面
+      const prev = this.activeBoxIndex
+      this.setting.activeBoxIndex = next
+      this.resetLibraryViewState()
+      const seq = this._libSwitchSeq
+      let ok = false
       try {
         const res = await ipcRenderer.invoke('set-active-box', { index: next })
-        if (res && res.ok) {
-          this.setting.activeBoxIndex = res.activeBoxIndex
-          this.setting.activeLibraryId = res.activeLibraryId
-          this.setting.library = res.library
-          if (res.activeChanged) {
-            this.exitBookEditMode()   // 同上:换库就退出编辑信息模式
-            // 同上一处:切库先清空;loading 交给 loadBookList 自己管
-            this.bookList = []
-            this.chunkDisplayBookList = []
-            this.loadBookList()    // 后加载
-          }
-        } else {
-          this.setting.activeBoxIndex = prevIndex
-          this.$message.error((res && res.error) || this.$t('m.librarySaveFailed'))
-        }
+        ok = settle(res, prev, seq)
       } catch (e) {
-        this.setting.activeBoxIndex = prevIndex
-        this.$message.error(String((e && e.message) || e))
+        if (seq === this._libSwitchSeq) {
+          this.setting.activeBoxIndex = prev
+          this.$message.error(String((e && e.message) || e))
+        }
+      }
+      if (!ok && seq === this._libSwitchSeq) {
+        await this.syncLibraryStateFromBackend()
+        this.loadBookList()
       }
     },
     async loadBookList (scan) {
@@ -2373,10 +2421,13 @@ export default defineComponent({
       }
       // 顺带刷新全局标签列表(设置 → 标签 用)
       this.loadAllTags()
-      // ★ 竞态序号:连点两次切库时,先发的那次可能后回来,把新库的数据覆盖掉。
-      //   每次进来取一个新序号,await 回来后对不上就直接丢弃。
+      // ★ 竞态序号 + 库标识:连点两次切库时,先发的那次可能后回来,把新库的数据覆盖掉;
+      //   扫描完成 / scan-batch 触发的刷新也可能在切库之后落回来。
+      //   每次进来取一个新序号并记下当前库,await 回来后任一对不上就直接丢弃。
       const seq = (this._libLoadSeq || 0) + 1
       this._libLoadSeq = seq
+      const token = this.libraryToken()
+      const isFresh = () => seq === this._libLoadSeq && token === this.libraryToken()
       try {
         this.buttonLoadBookListLoading = true
         if (scan) this.scanning = true
@@ -2384,7 +2435,7 @@ export default defineComponent({
         // ⚠ 过期响应要**先复位 loading 再 return**:
         //   以前这里直接 return,loading 永远停在 true → 工具栏一直转圈。
         //   (连点两次切库、或切库时又点了重新加载,都会走到这里)
-        if (seq !== this._libLoadSeq) {
+        if (!isFresh()) {
           this.buttonLoadBookListLoading = false
           return
         }
@@ -2397,15 +2448,21 @@ export default defineComponent({
         // 否则第一次启动时 bookList 还是空的,一条名字都写不进去
         if (this.resolvedTranslation && Object.keys(this.resolvedTranslation).length) this.backfillLibraryTagNames()
         this.$nextTick(async () => {
+          // ★切库之后这个 $nextTick 可能才轮到:它捕获的是**发起时那个库**的 bookList。
+          //   放它继续跑会把旧库的合集卡 / 文件夹树写进新库界面(数量与内容全错)。
+          if (!isFresh()) return
           try {
             await this.loadCollectionList(bookList)
+            if (!isFresh()) return
             await this.$refs.FolderTreeRef.geneFolderTree()
+            if (!isFresh()) return
             this.$refs.FolderTreeRef.resetSelect()
             this.$refs.EditViewRef.selectBookList = []
           } catch (e) { /* 后台这两步失败不打扰:首屏已经出来了 */ }
         })
       } catch (error) {
-        this.buttonLoadBookListLoading = false
+        // 只在「本次刷新仍然有效」时收 loading,免得把新一次加载的 loading 提前清掉
+        if (seq === this._libLoadSeq) this.buttonLoadBookListLoading = false
         console.error(error)
       }
       // 扫描已后台化:扫描完成由 'Scan complete' 消息触发刷新与提示
@@ -2414,12 +2471,18 @@ export default defineComponent({
     // 不重建文件夹树/不重置选中,避免打断浏览,整轮完成后会再完整刷新一次
     queueScanBatchLoad () {
       if (this._scanBatchTimer) return
+      // ★记下发起时的库:扫描现在允许「边扫边切库」,这批刷新若在切库后才回来,
+      //   直接 this.bookList = list 就会用旧库结果盖掉新库列表。
+      const seq = this._libLoadSeq
+      const token = this.libraryToken()
+      const isFresh = () => seq === this._libLoadSeq && token === this.libraryToken()
       this._scanBatchTimer = setTimeout(async () => {
         this._scanBatchTimer = null
         if (!this.scanning) return // 扫描已完成,最终刷新会接管
+        if (!isFresh()) return
         try {
           const res = await ipcRenderer.invoke('load-book-list', false)
-          if (!this.scanning || !res) return
+          if (!this.scanning || !res || !isFresh()) return
           const list = this.prepareBookList(res)
           // ★ 这批新书是「裸」的:没有合集聚合条目、成员书上也没有 collectionHide。
           //   直接 this.bookList = list 的话,watch 重排后合集卡整批消失、被收进合集的
@@ -3544,10 +3607,15 @@ export default defineComponent({
 
     // collection view function
     async loadCollectionList (bookList = null) {
-      if (!bookList) {
-        bookList = this.bookList
-      }
-      this.collectionList = await ipcRenderer.invoke('load-collection-list')
+      // ★陈旧回调防护:切库会 +1 _libLoadSeq。聚合条目 / syncShelfAfterCollectionAggregate
+      //   会把传进来的(旧库)数组重排进 displayBookList —— 一旦放行,数量就是旧库的。
+      const seq = this._libLoadSeq
+      const token = this.libraryToken()
+      if (!bookList) bookList = this.bookList
+      let list = null
+      try { list = await ipcRenderer.invoke('load-collection-list') } catch (e) { list = null }
+      if (seq !== this._libLoadSeq || token !== this.libraryToken()) return
+      this.collectionList = Array.isArray(list) ? list : []
       this.applyCollectionAggregates(bookList)
       // 聚合条目是异步补进来的,补完必须让书架与新数据对齐(见下面那个方法)
       this.syncShelfAfterCollectionAggregate(bookList)

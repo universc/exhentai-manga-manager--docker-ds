@@ -41,7 +41,6 @@ const {
   writeLibrariesFile,
   extractLibraryConfig,
   applyLibraryConfig,
-  findLibrariesInSettingFiles,
   _mange_reader
 } = require('./modules/init_folder_setting.js')
 const { findSameFile } = require('./fileLoader/folder.js')
@@ -58,6 +57,8 @@ const {
   ensureLibraries, libraryDataDir, libraryRuntimePaths, isLibraryActive, shouldMoveLibraryData, migrateLibraryData,
   coverDirName, migrateCoverDir,
   runtimeLibraries, localLibraryPath, localLibraryDataPath,
+  // 旧版单库 → 默认库迁移要用:新库 id 与「按文件夹名取库名」
+  newLibraryId, libraryNameFromPath,
   // 库盘离线(NAS/USB 掉线)时用:safeDirName 拼离线兜底目录名,isPathReachable 判可达性
   safeDirName, isPathReachable
 } = require('./modules/libraries.js')
@@ -193,25 +194,21 @@ preparePath()
 let defaultSetting = prepareSetting()
 
 // ---------- 库配置与账户解耦(库单独存 <数据目录>/libraries.json) ----------
-// 库是「这个数据目录」的属性,不该跟着账户设置走。启动时:
-//   ① 有 libraries.json → 直接用它覆盖设置里的库字段;
-//   ② 没有 → 从现有设置里迁移一份(优先挑"真的有库"的那份,例如 setting.<账户>.json)。
-const LIBRARY_CONFIG_KEYS = ['libraries', 'activeLibraryId', 'switchBoxes', 'activeBoxIndex']
+// 库是「这个数据目录」的属性,不该跟着账户设置走。
+// 启动时只认 libraries.json 一份:有就用,没有就是空列表(全新安装由用户新建库)。
+// ★ 不再从 setting.library / 其它账户的 setting 文件里恢复库 —— 那条路径正是串库事故的源头。
+const LIBRARY_CONFIG_KEYS = ['libraries', 'activeLibraryId', 'switchBoxes', 'activeBoxIndex', 'librariesCleared']
+
+// ★ 库列表只认 <数据目录>/libraries.json 本身。
+//   以前这里会从旧版 setting.library / 其它账户的 setting 文件里「迁移出默认库」——
+//   线上串库事故(1.3 万本漫画被灌进小说库)就是这条路径 + 「猜不出归属就落当前活动库」造成的。
+//   现在整段删除:没有 libraries.json(全新安装)= 空库列表,由用户在设置里新建库。
 const bootstrapLibrariesConfig = (() => {
-  let cfg = readLibrariesFile()
+  const read = readLibrariesFile()
   const hasLibs = (c) => Array.isArray(c && c.libraries) && c.libraries.length > 0
-  if (!hasLibs(cfg)) {
-    const mine = extractLibraryConfig(defaultSetting)
-    const migrated = hasLibs(mine) ? mine : findLibrariesInSettingFiles()
-    if (hasLibs(migrated)) {
-      cfg = migrated
-      writeLibrariesFile(cfg)
-      console.log(`[libraries] 已把库配置迁移到 libraries.json(${cfg.libraries.length} 个库)`)
-    } else if (!cfg) {
-      cfg = { libraries: [], activeLibraryId: '', switchBoxes: [], activeBoxIndex: 0 }
-      writeLibrariesFile(cfg)
-    }
-  }
+  if (hasLibs(read)) return { ...read, librariesCleared: false }
+  const cfg = { libraries: [], activeLibraryId: '', switchBoxes: [], activeBoxIndex: 0, librariesCleared: false }
+  writeLibrariesFile(cfg)
   return cfg
 })()
 applyLibraryConfig(defaultSetting, bootstrapLibrariesConfig)
@@ -371,6 +368,28 @@ const boxLibraries = (s = setting) => {
   if (!ids.length) return active       // 框里没选库 → 显示全部已生效的库(下拉/设置里都写明「未选库 = 显示全部」)
   return active.filter(l => ids.includes(l.id))
 }
+// ---------- 库切换「世代号」(generation) ----------
+// ★ 任何一次切库都会 +1。耗时/异步的读写路径在开头记下当时的世代,写回前再对一次:
+//   对不上就说明期间用户已经切过库,这次结果属于旧库 —— 必须丢弃或按新库重算。
+// 解决两类事故:
+//   ① 并发连点「切换库」:旧的那次最后完成,把全局运行时覆盖回旧库;
+//   ② 读书架/扫描走到一半切库:旧库的列表或旧库的写入结果被交给新库界面。
+// 注意:世代号只用于「识别陈旧结果」,不参与业务数据,也不改变任何对外数据格式。
+let libraryEpoch = 0
+// 当前「库上下文」的稳定签名:活动库 + 当前框 + 框内库集合。
+// 读书架结束时比对它,可以识别出「没有走 switchActiveLibraryRuntime、但 setting 被改了」的情况。
+const currentLibraryKey = () => {
+  const s = setting
+  const active = activeLibraryOf(s)
+  const ids = boxLibraries(s).map(l => String(l.id || '')).sort()
+  return [
+    String((active && active.id) || ''),
+    String(s.activeLibraryId || ''),
+    String(Number.isInteger(s.activeBoxIndex) ? s.activeBoxIndex : 0),
+    ids.join(',')
+  ].join('|')
+}
+
 // 每个库一个 sequelize 实例:合并书架要同时读多个库数据库
 const mangaModels = new Map()
 // 丢掉某个库的数据库连接:库被删除、或库数据目录被换到别处时必须调用 ——
@@ -441,21 +460,54 @@ const rememberBookLibrary = (b) => {
   if (b.id) bookLibraryById.set(b.id, b.libraryId)
   if (b.hash) bookLibraryByHash.set(b.hash, b.libraryId)
 }
-const modelForBookId = async (id) => modelForLibrary(bookLibraryById.get(id))
+// 按 id 找「这本书真正所在的库」的模型。
+// 以前只查内存索引 bookLibraryById,没登记(重建库/后台生成封面/切库后索引过期)时
+// 直接 modelForLibrary(undefined) 抛错;这里补一个按 id 的精确回查,
+// 并把结果记回索引。绝不退回「当前活动库」—— 那会把封面写到别的库。
+const modelForBookId = async (id) => {
+  const known = bookLibraryById.get(id)
+  if (known) {
+    try { return await modelForLibrary(known) } catch (e) { /* 库被删/改名了,继续精确回查 */ }
+  }
+  for (const lib of runtimeLibs().filter(l => isLibraryActive(l, IS_WEB_ENV))) {
+    const model = await modelForLibraryOrNull(lib.id)
+    if (!model) continue
+    const hit = await model.findOne({ where: { id }, attributes: ['id'], raw: true }).catch(() => null)
+    if (hit) {
+      bookLibraryById.set(id, lib.id)
+      return model
+    }
+  }
+  throw new Error('[libraries] 找不到书籍所属的库:' + String(id))
+}
 // 在「当前框的所有库 + 当前库」里找一条记录,返回 { model, row, libraryId }
 const findBookAcrossLibraries = async (where) => {
   const entries = []
-  for (const lib of boxLibraries()) entries.push({ lib, model: await modelForLibraryOrNull(lib.id) })
-  if (!entries.some(e => e.model === Manga)) entries.push({ lib: activeLibraryOf(setting), model: Manga })
+  const seen = new Set()
+  for (const lib of boxLibraries()) {
+    seen.add(lib.id)
+    entries.push({ lib, model: await modelForLibraryOrNull(lib.id) })
+  }
+  // 「当前活动库」可能不在当前框里,也要能查到 —— 但必须按它自己的 id 取模型。
+  // ⚠ 以前这里直接塞全局 Manga,查不到书时又 `return { model: Manga }`:
+  //   切库后 Manga 已经换成新库,一个来自旧库的陈旧 id/path 会被拿去 destroy/update,
+  //   结果就是删错库 / 写脏新库。现在找不到就明确返回 null 模型,调用方必须自己处理。
+  const active = activeLibraryOf(setting)
+  if (active && !seen.has(active.id)) {
+    entries.push({ lib: active, model: await modelForLibraryOrNull(active.id) })
+  }
   for (const e of entries) {
+    if (!e.model) continue
     try {
       const row = await e.model.findOne({ where, raw: true })
       if (row) return { model: e.model, row, libraryId: e.lib ? e.lib.id : undefined }
     } catch (err) { /* 忽略:某个库查不动不影响其它库 */ }
   }
-  return { model: Manga, row: null, libraryId: undefined }
+  return { model: null, row: null, libraryId: undefined }
 }
-const libraryState = ensureLibraries(setting, { nameHint: setting.externalLibraryRoot })
+// storePath:旧版单库迁移出默认库时,用它算出「默认库数据目录」并写进 dataPath
+// (dataPath 为空会被 isLibraryActive 判成未配置完成 → 书架 0 条)
+const libraryState = ensureLibraries(setting, { nameHint: setting.externalLibraryRoot, storePath: STORE_PATH })
 const activeLibrary = libraryState.active
 // 库盘可能没挂载(NAS/USB 掉线):此时绝不能让模块级初始化抛异常,也不能把库数据建到错误位置。
 // 判定两处:库根本身 + 库数据目录的盘符/UNC 根(用户可能把 dataPath 指到另一个盘)。
@@ -565,15 +617,20 @@ const ensureMangaSchema = async (model) => {
 // 扫描循环用:把运行时切到指定库(搬数据只发生在设置页改目录/改名时,这里不搬)
 const openLibraryForScan = async (lib) => {
   if (!lib) return false
+  const epoch = libraryEpoch
   const paths = libraryRuntimePaths(STORE_PATH, lib)
+  // ★先把模型准备好再动全局:期间若用户切了库,这次「扫描收尾对齐」直接作废,
+  //   否则会把刚切好的新库运行时又打回扫描开始时的那个库。
+  const model = await modelForLibrary(lib.id)
+  if (epoch !== libraryEpoch) return false
   LIBRARY_DATA_DIR = paths.dataDir
   LIBRARY_VIEWCACHE_DIR = paths.viewcacheDir
   CURRENT_COVER_DIR = paths.coverDir
-  try { fs.mkdirSync(CURRENT_COVER_DIR, { recursive: true }) } catch (e) { /* 稍后生成封面时再试 */ }
   SNAPSHOT_FILE = paths.snapshotFile
   LIBRARY_DB_FILE = paths.dbFile
-  setting.library = lib.path
-  Manga = await modelForLibrary(lib.id)
+  setting.library = localLibraryPath(lib, IS_WEB_ENV)
+  Manga = model
+  try { fs.mkdirSync(CURRENT_COVER_DIR, { recursive: true }) } catch (e) { /* 稍后生成封面时再试 */ }
   return true
 }
 
@@ -601,6 +658,10 @@ const scanContextFor = async (lib) => {
 // 已经做过「旧版库数据迁移」的库 id:迁移是一次性的历史动作,不该每次切库都跑。
 const libraryDataMigrated = new Set()
 const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}) => {
+  // ★每次切库先领一个世代号。下面唯一的 await 之后必须复核:
+  //   期间又发生了一次切库 → 本次结果已过期,直接放弃(绝不覆盖 newer 的运行时)。
+  //   连点「切换库」时,旧的那次不会再最后完成并把全局量改回旧库。
+  const epoch = ++libraryEpoch
   // 切换账户(另一份 setting.<账户>.json)时只切运行时,绝不搬数据 ——
   // 两个账户可能给同一个库配了不同的库数据目录,搬一次就是灾难。
   const allowMove = options.allowMove !== false
@@ -610,23 +671,19 @@ const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}
   const movedFromOldDir = (allowMove && !dataPathFallback && shouldMoveLibraryData(prevLibrary, lib, prevDataDir, paths.dataDir))
     ? migrateLibraryData(prevDataDir, paths.dataDir)
     : { moved: [], kept: [] }
-  LIBRARY_DATA_DIR = paths.dataDir
-  LIBRARY_VIEWCACHE_DIR = paths.viewcacheDir
-  CURRENT_COVER_DIR = paths.coverDir
-  try { fs.mkdirSync(CURRENT_COVER_DIR, { recursive: true }) } catch (e) { /* 稍后生成封面时再试 */ }
   // ⚠ 只跑一次:旧版放在数据存放目录根部的库数据,迁进库数据目录。
   //   以前这里**每次切库都跑**:默认 dataDir=libraries/<库名>,src≠dst 恒成立,
   //   于是每次切库都 mkdirSync + 6 个文件各 2 次 existsSync(网络盘 50~300ms),
   //   renameSync 失败时还会走 cpSync 把上万张缩略图整份拷贝 —— 秒级到分钟级阻塞。
   //   迁移是一次性的历史动作, 每个库迁过就记下来不再跑。
+  let migration = { moved: [], kept: [] }
   if (lib && !libraryDataMigrated.has(lib.id)) {
     libraryDataMigrated.add(lib.id)
-    libraryDataMigration = migrateLibraryData(STORE_PATH, LIBRARY_DATA_DIR)
-  } else {
-    libraryDataMigration = { moved: [], kept: [] }
+    migration = migrateLibraryData(STORE_PATH, paths.dataDir)
   }
-  SNAPSHOT_FILE = paths.snapshotFile
-  LIBRARY_DB_FILE = paths.dbFile
+  // ★★ 先把新库的模型准备好(唯一的 await),再一次性替换全部全局量。
+  //   以前是先改 LIBRARY_DATA_DIR / CURRENT_COVER_DIR / SNAPSHOT_FILE,再 await modelForLibrary:
+  //   那个窗口里任何 IPC 读写都会看到「新库路径 + 旧库模型」的混合态 —— 正是串库的来源。
   // 不关旧连接:每个库的 model 缓存在 mangaModels 里复用,关掉会破坏合并书架
   // ⚠️ 替换全局 Manga 之前,先关掉「没人认领」的旧实例:
   //   启动时会先用 LIBRARY_DB_FILE 建一个 Manga;若某个库的「库数据目录」
@@ -637,15 +694,30 @@ const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}
   if (lib) {
     nextManga = await modelForLibrary(lib.id)
   } else {
-    const byFile = mangaModelsByFile.get(LIBRARY_DB_FILE)
-    nextManga = byFile || prepareMangaModel(LIBRARY_DB_FILE)
-    mangaModelsByFile.set(LIBRARY_DB_FILE, nextManga)
+    const byFile = mangaModelsByFile.get(paths.dbFile)
+    nextManga = byFile || prepareMangaModel(paths.dbFile)
+    mangaModelsByFile.set(paths.dbFile, nextManga)
   }
+  if (!lib) await ensureMangaSchema(nextManga)
+  // 世代复核:有更新的切库已经完成,本次作废(一个全局量都不写)
+  if (epoch !== libraryEpoch) {
+    console.warn(`[libraries] 忽略过期的库切换(期间又切过库):${lib ? lib.name : '(无)'}`)
+    return false
+  }
+  // ↓ 原子区:全是同步赋值,中间不能有 await。
+  //   保证任何时刻看到的 LIBRARY_* / Manga 都属于同一个库,不存在中间态。
+  LIBRARY_DATA_DIR = paths.dataDir
+  LIBRARY_VIEWCACHE_DIR = paths.viewcacheDir
+  CURRENT_COVER_DIR = paths.coverDir
+  SNAPSHOT_FILE = paths.snapshotFile
+  LIBRARY_DB_FILE = paths.dbFile
+  libraryDataMigration = migration
+  Manga = nextManga
+  // ↑ 原子区结束
+  try { fs.mkdirSync(CURRENT_COVER_DIR, { recursive: true }) } catch (e) { /* 稍后生成封面时再试 */ }
   if (prevManga && prevManga !== nextManga && ![...mangaModels.values()].includes(prevManga)) {
     try { prevManga.sequelize.close() } catch (e) { /* 已关就忽略 */ }
   }
-  Manga = nextManga
-  if (!lib) await ensureMangaSchema(Manga)
   console.log(`[libraries] 已切换活动库「${lib ? lib.name : '(无)'}」;库数据目录:${LIBRARY_DATA_DIR}`)
   console.log(`[libraries] 库数据库:${LIBRARY_DB_FILE};扫描快照:${SNAPSHOT_FILE};缩略图缓存:${LIBRARY_VIEWCACHE_DIR}`)
   if (movedFromOldDir.moved.length) console.log(`[libraries] 已把库数据从旧位置搬到新位置:${movedFromOldDir.moved.join('、')}`)
@@ -655,6 +727,7 @@ const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}
   // 0 字节残留清理是逐文件 stat 的重活,只在启动时(ensureCoverDirsMigrated)做。
   // 只处理活动库这一个:切库是高频动作,没必要把所有库都扫一遍。
   prepareCoverDirFor(activeLibraryOf(setting))
+  return true
 }
 ;(async () => {
   // 先建表再补列:全新数据库(无表)时 ALTER 会失败
@@ -826,6 +899,72 @@ let tray
 let screenWidth
 let sendImageLock = false
 
+// ---------- setting.json 落盘:串行队列 + rename 短退避重试 ----------
+// 线上报错:`EPERM: operation not permitted, rename '...setting.json.<pid>.<seq>.tmp' -> '...setting.json'`
+// 两个来源:
+//   ① Windows 上杀毒/搜索索引/同步盘会**短暂**占用目标文件 → rename 当场失败(重试即可);
+//   ② 多个写者并发(连点切库、设置页同时保存、登录切账户)→ 后完成的把先完成的覆盖掉,
+//      文件和内存里的设置不一致。
+// 处理:
+//   · 异步写(applySetting)全部排进一条 Promise 链,**串行**落盘;
+//   · rename 对 EPERM/EBUSY/EACCES 做 3 次指数退避重试,最终失败打明确日志并清理临时文件;
+//   · 同步写(persistSetting / persistSettingNow)不进链 —— 同步函数没法等 Promise,
+//     进链必然死锁;它们靠「唯一临时文件名 + 同步 rename 重试」保证原子性。
+let settingWriteChain = Promise.resolve()
+let settingApplySeq = 0          // 每次 applySetting 进入时领取的序号(到达顺序)
+let settingWriteAppliedSeq = 0   // 已经真正落盘的最大序号(用于丢弃陈旧写入)
+const sleepAsync = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+// 同步 sleep:只服务于 rename 重试,主线程可用,不占 CPU
+const sleepSync = (ms) => {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  } catch (e) {
+    const end = Date.now() + ms
+    while (Date.now() < end) { /* 没有 SharedArrayBuffer 时的兜底忙等 */ }
+  }
+}
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES'])
+const renameAsyncWithRetry = async (tmp, target) => {
+  const delays = [40, 120, 300]
+  for (let i = 0; ; i++) {
+    try {
+      await fs.promises.rename(tmp, target)
+      return true
+    } catch (e) {
+      const code = e && e.code
+      if (!RENAME_RETRY_CODES.has(code) || i >= delays.length) {
+        console.error(`[setting] 落盘失败(${code || 'unknown'}) → ${target};已重试 ${i} 次:`, String((e && e.message) || e))
+        try { await fs.promises.unlink(tmp) } catch (e2) { /* 临时文件清不掉也无害 */ }
+        throw e
+      }
+      await sleepAsync(delays[i])
+    }
+  }
+}
+const renameSyncWithRetry = (tmp, target) => {
+  const delays = [30, 80, 200]
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(tmp, target)
+      return true
+    } catch (e) {
+      const code = e && e.code
+      if (!RENAME_RETRY_CODES.has(code) || i >= delays.length) {
+        console.error(`[setting] 落盘失败(${code || 'unknown'}) → ${target};已重试 ${i} 次:`, String((e && e.message) || e))
+        try { fs.unlinkSync(tmp) } catch (e2) { /* 临时文件清不掉也无害 */ }
+        throw e
+      }
+      sleepSync(delays[i])
+    }
+  }
+}
+// 串行队列:失败也要放行后续任务(否则一次 EPERM 会让之后所有设置都写不进去 = 死锁感)
+const queueSettingWrite = (task) => {
+  const run = settingWriteChain.then(task, task)
+  settingWriteChain = run.then(() => undefined, () => undefined)
+  return run
+}
+
 // ---------- Windows 客户端增强功能 ----------
 // 原子写入 setting.json(与 save-setting 处理器末尾逻辑一致)
 // setting.json 原子写:临时文件必须唯一 —— persistSetting(同步)与 applySetting(异步)可能并发,
@@ -838,7 +977,7 @@ const persistSetting = () => {
   const targetPath = getSettingFilePath()
   const tempPath = settingTmpPath()
   fs.writeFileSync(tempPath, JSON.stringify(forFile, null, '  '), { encoding: 'utf-8' })
-  fs.renameSync(tempPath, targetPath)
+  renameSyncWithRetry(tempPath, targetPath)
 }
 
 // ---------- 设置按账户隔离(同名账户在 Win 与 NAS 上共用同一份) ----------
@@ -862,7 +1001,7 @@ const ensureProfileSetting = async (username) => {
     // 库配置与账户无关:一律以 libraries.json 为准(账户文件里即使残留旧库也不认)
     const libCfg = readLibrariesFile()
     if (libCfg) applyLibraryConfig(obj, libCfg)
-    ensureLibraries(obj, { nameHint: obj.externalLibraryRoot || setting.externalLibraryRoot })
+    ensureLibraries(obj, { nameHint: obj.externalLibraryRoot || setting.externalLibraryRoot, storePath: STORE_PATH })
   } finally {
     setActiveProfile(prev)
   }
@@ -1905,32 +2044,6 @@ process.on('exit', () => {
   if (!WEB_MODE) app.quit()
 })
 
-// base function
-const loadBookListFromBrFile = async () => {
-  try {
-    const buffer = await fs.promises.readFile(path.join(LIBRARY_DATA_DIR, 'bookList.json.br'))
-    const decodeBuffer = await promisify(brotliDecompress)(buffer)
-    return JSON.parse(decodeBuffer.toString())
-  } catch {
-    try {
-      return JSON.parse(await fs.promises.readFile(path.join(LIBRARY_DATA_DIR, 'bookList.json'), { encoding: 'utf-8' }))
-    } catch {
-      return []
-    }
-  }
-}
-
-const loadLegecyBookListFromFile = async () => {
-  const bookList = await loadBookListFromBrFile()
-  try {
-    shell.trashItem(path.join(LIBRARY_DATA_DIR, 'bookList.json.br'))
-    shell.trashItem(path.join(LIBRARY_DATA_DIR, 'bookList.json'))
-  } catch {
-    console.log('Remove Legecy BookList Failed')
-  }
-  return bookList
-}
-
 // ---------- 按「书所属的库」翻译路径(多库 + 跨端) ----------
 // 约定:数据库里的 filepath 统一按「桌面(Windows)形式」保存(= 该库 path 的前缀),
 // 网页端读写时按同一个库的 pathWeb 做双向映射。库按名字归并(见 modules/libraries.js),
@@ -1945,27 +2058,50 @@ const {
 const localizeBookPath = (p) => localizeBookPathIn(p, setting.libraries, IS_WEB_ENV)
 const externalizeBookPath = (p) => externalizeBookPathIn(p, setting.libraries, IS_WEB_ENV)
 
-// 这本书属于哪个库:多库合并书架下,相对路径必须按「它自己那个库」的库根拼
-const libForBook = (book) => {
+// ---------- 「这本书属于哪个库」的唯一判定入口 ----------
+// 判据从强到弱(全部是**证据**,不是猜测):
+//   ① book.libraryId —— 读库时按库写进每一行,最可靠;
+//   ② bookLibraryById 归属索引 —— 前端回传的书对象常常只有 id;
+//   ③ 全库唯一 —— 当前只有一个已生效库时,任何书必然属于它(这是推断,不涉及歧义)。
+// 三条都不成立 → 返回 { lib:null },调用方**必须**自己决定拒绝还是只读兜底。
+// 为什么必须收口:以前三个函数各自 `|| 活动库 || CURRENT_COVER_DIR`,切库后到达的旧请求
+// 就会把封面写进新库目录、把 A 库的路径按 B 库根拼(串库事故的直接来源)。
+const ownerLibraryOfBook = (book) => {
   const libs = runtimeLibs()
-  if (book && book.libraryId) {
-    const hit = libs.find(l => l.id === book.libraryId)
-    if (hit) return hit
+  const id = String((book && book.libraryId) || (book && book.id ? bookLibraryById.get(book.id) : '') || '')
+  if (id) {
+    const hit = libs.find(l => l.id === id)
+    if (hit) return { lib: hit, source: 'id' }
+    // 有 id 但在当前库列表里找不到(库被删了 / 不属于当前框):明确记 id,便于日志定位
+    return { lib: null, source: 'unknown-id', id }
   }
+  const active = libs.filter(l => isLibraryActive(l, IS_WEB_ENV))
+  if (active.length === 1) return { lib: active[0], source: 'single' }
+  return { lib: null, source: 'none' }
+}
+
+// 这本书属于哪个库:多库合并书架下,相对路径必须按「它自己那个库」的库根拼。
+// ⚠ 只允许用在**只读**用途(拼展示路径 / 读文件)。归属不明时退回活动库:
+//   单库场景这是对的;多库场景拼出来的路径可能指向错库,但不会写坏任何数据。
+//   要写盘(生成封面 / 改封面 / 写库)请用 libForBookStrict(),拿不到就拒绝。
+const libForBook = (book) => {
+  const { lib } = ownerLibraryOfBook(book)
+  if (lib) return lib
   return activeLibraryOf(setting) || null
+}
+// 写路径专用:归属不明一律返回 null,由调用方拒绝并记录日志(绝不猜)
+const libForBookStrict = (book, what = '') => {
+  const { lib, source, id } = ownerLibraryOfBook(book)
+  if (lib) return lib
+  console.warn(`[libraries] 无法确定这本书所属的库,已拒绝${what ? '「' + what + '」' : '写操作'}:`
+    + `book=${String((book && book.id) || '')} libraryId=${String((book && book.libraryId) || id || '')} 原因=${source}`)
+  return null
 }
 // 当前「活动 / 正在写库」的那个库(按 setting.library 匹配,匹配不上回退 activeLibraryOf)。
 // ⚠ 只给「切库 / 扫描收尾 / 重建库 / 增量扫描选目标」这类入口用;
 //   扫描过程本身**不读它**(全程用 ctx)。openLibraryForScan() 也只在切库与扫描收尾时调用,
 //   用来把 setting.library 与 Manga / CURRENT_COVER_DIR 等运行时重新对齐到活动库。
-const currentLibrary = () => {
-  const cur = String(setting.library || '').trim()
-  if (cur) {
-    const hit = runtimeLibs().find(l => String(l.path || '').trim() === cur)
-    if (hit) return hit
-  }
-  return activeLibraryOf(setting) || null
-}
+const currentLibrary = () => activeLibraryOf(setting) || null
 
 // 跨端路径翻译(读库后、展示/取图前调用)。两种存储形式都读得懂:
 //   ① 相对路径(当前格式,相对该库根)—— 按「这本书所属的库」的本端库根拼回绝对路径;
@@ -2147,10 +2283,14 @@ const sanitizeFileName = (name) => {
 // 之前一律用全局 CURRENT_COVER_DIR(跟着"活动库"走),合并书架里只要书的库 ≠ 活动库,
 // 封面就会写错目录/找不到 —— 这就是「同一个库在 Win 上没封面、NAS 上有」的根因。
 const coverDirOf = (lib) => libraryRuntimePaths(STORE_PATH, lib).coverDir
-const bookCoverDir = (book) => {
-  const libs = runtimeLibs()
-  const lib = (book && book.libraryId ? libs.find(l => l.id === book.libraryId) : null) || activeLibraryOf(setting)
-  return lib ? coverDirOf(lib) : CURRENT_COVER_DIR
+// 严格版(唯一入口):归属不明返回 null,调用方必须拒绝并记录日志。
+// 封面目录里全是写操作(建占位文件 / 生成 webp / 删旧封面),判错一次就是「封面串库」。
+// ⚠ 第 2 轮起**不再提供**「退回 CURRENT_COVER_DIR」的宽松版本:
+//   它会让「归属不明的书」把封面写进当前活动库(或只是读错目录而误判为已有封面),
+//   所有调用点已改为判定 null 后拒绝/跳过 —— 即「写路径无法确定归属必须拒绝」。
+const bookCoverDirOrNull = (book) => {
+  const { lib } = ownerLibraryOfBook(book)
+  return lib ? coverDirOf(lib) : null
 }
 
 // 封面文件名清洗 + 0 字节残留自愈:
@@ -2268,6 +2408,13 @@ const rememberCoverOwner = (libId, coverPath, id) => {
 // 命中候选后还要确认没被别的书占用(见上面 coverOwnerCache 的注释)。
 const findReusableCover = async (book, coverDir, model, libId) => {
   if (!book || !coverDir) return null
+  // ★归属模型拿不到时**不做复用判断**:getCoverOwners 查不动会返回空 map,
+  //   那样等于「任何同名封面都不属于别人」→ 两本同名书会共用一张封面(用户看到的是串封面)。
+  //   这里直接跳过复用(返回 null),调用方会重新生成一张,数据是对的、只是多解压一次。
+  if (!model) {
+    console.warn(`[cover] 归属模型不可用,跳过同名封面复用(改为重新生成):book=${String(book.id || '')} lib=${String(libId || '')}`)
+    return null
+  }
   try {
     const base = sanitizeFileName(path.basename(String(book.filepath || '').replace(/[\\/]+$/, '')).replace(/\.[^.]+$/, ''))
     const files = getCoverDirIndex(coverDir)
@@ -2353,8 +2500,12 @@ const ensureCoverDirsMigrated = () => {
 // 返回整个对象(而不是只 coverPath)是为了让调用方能复用同一次解压得到的 hash/页数,
 // 修掉「首次浏览时同一本书被解压两遍」。
 const generateCoverByName = async (book, coverDir) => {
-  const dir = coverDir || bookCoverDir(book)
-  const filepath = translateBookPath(book.filepath, 'filepath', libForBook(book))
+  // ★写路径:封面目录 + 库根都必须能确定归属。拿不到就抛(调用方按「没有封面」处理),
+  //   绝不退回 CURRENT_COVER_DIR —— 那样会把 A 库的封面写进 B 库目录。
+  const dir = coverDir || bookCoverDirOrNull(book)
+  const ownerLib = libForBookStrict(book, '生成封面')
+  if (!dir || !ownerLib) throw new Error('unknownLibrary')
+  const filepath = translateBookPath(book.filepath, 'filepath', ownerLib)
   const type = book.type || 'archive'
   const coverName = acquireCoverName(filepath, dir)
   try {
@@ -2457,17 +2608,26 @@ const ensureBookCover = (book, opts = {}) => {
   const verify = !!(opts && opts.verify)
   const job = (async () => {
     try {
-      // 封面目录跟着「这本书所属的库」走,不再是全局的 CURRENT_COVER_DIR
-      const coverDir = bookCoverDir(book)
+      // ★写路径:封面目录跟着「这本书所属的库」走。归属不明就直接拒绝 ——
+      //   退回 CURRENT_COVER_DIR 会把封面写进「此刻正在看的那个库」,是最典型的串库。
+      const coverDir = bookCoverDirOrNull(book)
+      if (!coverDir) {
+        console.warn(`[cover] 无法确定这本书所属的库,拒绝生成封面:book=${String(book.id || '')} libraryId=${String(book.libraryId || '')} filepath=${String(book.filepath || '')}`)
+        return { coverPath: null, info: null }
+      }
       try { fs.mkdirSync(coverDir, { recursive: true }) } catch (e) { /* 稍后生成时再试 */ }
       // 归属校验/复用判断都要用「这本书自己所属库」的模型。放在并发闸门外面,
       // 避免一次全表查询占着名额把封面生成的并发压成 1。
       // 优先按 book.libraryId 取(后台补全只给了 libraryId,没走 rememberBookLibrary)。
+      // ★第 2 轮修正:以前 catch 里 `ownerModel = Manga`(全局模型 = 切库后指向别的库),
+      //   会把「别的库的同名封面」当成自己的复用。现在拿不到就是 null,
+      //   findReusableCover 会跳过复用(重新生成一张),绝不猜。
       let ownerModel = null
       try {
         ownerModel = book.libraryId ? await modelForLibrary(book.libraryId) : await modelForBookId(book.id)
       } catch (e) {
-        ownerModel = Manga
+        ownerModel = null
+        console.warn(`[cover] 取不到这本书的库模型(不做同名复用):book=${String(book.id || '')} — ${String((e && e.message) || e)}`)
       }
       if (book.coverPath) {
         const local = translateBookPath(book.coverPath, 'coverPath', null, coverDir)
@@ -2588,10 +2748,14 @@ ipcMain.handle('regenerate-cover', async (event, id) => {
     book.libraryId = found.libraryId || bookLibraryById.get(id)
     if (book.libraryId) rememberBookLibrary(book)
     // 封面目录必须是「这本书自己所属库」的封面目录(用全局 CURRENT_COVER_DIR 会写错/删错库的封面)
-    const lib = (setting.libraries || []).find(l => l.id === book.libraryId)
-    const coverDir = lib ? coverDirOf(lib) : bookCoverDir(book)
+    // ★写路径:归属不明 → 拒绝(不回退活动库/全局封面目录)
+    const coverDir = bookCoverDirOrNull(book)
+    const ownerLib = libForBookStrict(book, '重新生成封面')
+    if (!coverDir || !ownerLib) {
+      return { ok: false, error: '无法确定这本书属于哪个漫画库,已取消(请先刷新书架)' }
+    }
     try { fs.mkdirSync(coverDir, { recursive: true }) } catch (e) { /* 稍后生成时再报 */ }
-    const localFile = translateBookPath(book.filepath, 'filepath', libForBook(book))
+    const localFile = translateBookPath(book.filepath, 'filepath', ownerLib)
     const type = book.type || 'archive'
 
     // ① 决定最终文件名:
@@ -2666,110 +2830,6 @@ ipcMain.handle('regenerate-cover', async (event, id) => {
 })
 
 let noLibraryNotified = false
-// ---------- 旧版书架迁移:metadata.sqlite 里的 Mangas → 当前「每库一个 database.sqlite」 ----------
-// 背景:老版本把书架行存在 metadata.sqlite 的 Mangas 表里;升级到多库后书架改到每库的 database.sqlite,
-// 老表就变成了孤儿数据 —— 表现是「书架空 / 封面和阅读图片全 404」,而标签评分还在
-// (因为它们在 Metadata 表里,按 hash 存,和书架行解耦)。
-// 迁移按 filepath 前缀把老行分给**各自的库**,只往「空的库数据库」里搬(已有数据的一律不动),
-// 老表整体改名为 Mangas_legacy_v1 保留,不删任何数据。
-let legacyMigrated = false
-const migrateLegacyMangaTable = async () => {
-  if (legacyMigrated) return 0
-  legacyMigrated = true
-  try {
-    // 旧表可能还叫 Mangas(没迁移过),也可能已经被上一次迁移改名成 Mangas_legacy_v1 —— 两种都要认,
-    // 这样「书架库被重建/搬丢」时还能一键补回来(标签评分在 Metadata 里,永远不丢)。
-    const [tbl] = await Metadata.sequelize.query("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('Mangas','Mangas_legacy_v1') ORDER BY CASE name WHEN 'Mangas' THEN 0 ELSE 1 END")
-    if (!tbl || !tbl.length) return 0
-    const legacyTable = tbl[0].name
-    console.log(`[legacy] 发现旧书架表:${legacyTable}`)
-    const [legacyRows] = await Metadata.sequelize.query(`SELECT * FROM ${legacyTable}`)
-    if (!legacyRows || !legacyRows.length) return 0
-
-    // 1) 按 filepath 前缀把老数据分给对应的库(根路径越长越精确)
-    const libs = runtimeLibs()
-      .map(l => ({ id: l.id, name: l.name, root: String(l.path || '').replace(/[\\/]+$/, '') }))
-      .filter(l => l.root)
-      .sort((a, b) => b.root.length - a.root.length)
-    const groups = new Map()
-    for (const r of legacyRows) {
-      const fp = String(r.filepath || '')
-      const owner = libs.find(l => fp === l.root || fp.startsWith(l.root + '/'))
-      const key = owner ? owner.id : '__active__'
-      if (!groups.has(key)) groups.set(key, { rows: [], name: owner ? owner.name : '当前库' })
-      groups.get(key).rows.push(r)
-    }
-
-    let totalInserted = 0
-    const detail = []
-    for (const [key, group] of groups) {
-      let model
-      try {
-        model = key === '__active__' ? Manga : await modelForLibrary(key)
-      } catch (e) {
-        console.error(`[legacy] 打不开库 ${key} 的数据库,跳过:`, String((e && e.message) || e))
-        continue
-      }
-      const [countRows] = await model.sequelize.query('SELECT COUNT(*) AS c FROM Mangas')
-      const existing = Number((countRows && countRows[0] && countRows[0].c) || 0)
-      // 已经有足够多就跳过;少了(上次迁移被打断/部分失败)→ 继续补齐,
-      // INSERT OR IGNORE 只会补缺的那些(按 id 去重),不会重复插入也不会覆盖已有行。
-      if (existing >= group.rows.length) { detail.push(`${group.name}: 已有 ${existing} 本,不迁移`); continue }
-
-      const [shelfCols] = await model.sequelize.query('PRAGMA table_info(Mangas)')
-      const cols = (shelfCols || []).map(r => r.name)
-      const usable = cols.filter(c => Object.prototype.hasOwnProperty.call(group.rows[0], c))
-      if (!usable.length) { detail.push(`${group.name}: 列不兼容,跳过`); continue }
-      const sql = `INSERT OR IGNORE INTO Mangas (${usable.join(',')}) VALUES (${usable.map(() => '?').join(',')})`
-      const BATCH = 300
-      let done = 0
-      for (let i = 0; i < group.rows.length; i += BATCH) {
-        const chunk = group.rows.slice(i, i + BATCH)
-        const t = await model.sequelize.transaction()
-        try {
-          for (const r of chunk) {
-            const vals = usable.map((c) => {
-              const v = r[c]
-              if (v === undefined) return null
-              if (v !== null && typeof v === 'object') return JSON.stringify(v)
-              return v
-            })
-            await model.sequelize.query(sql, { replacements: vals, transaction: t })
-          }
-          await t.commit()
-          done += chunk.length
-        } catch (e) {
-          try { await t.rollback() } catch (_) { /* 忽略 */ }
-          console.error(`[legacy] ${group.name} 第 ${i / BATCH + 1} 批中断:`, String((e && e.message) || e))
-          break
-        }
-      }
-      const [afterRows] = await model.sequelize.query('SELECT COUNT(*) AS c FROM Mangas')
-      const afterCount = Number((afterRows && afterRows[0] && afterRows[0].c) || 0)
-      if (afterCount > 0) {
-        totalInserted += afterCount
-        detail.push(`${group.name}: ${group.rows.length} → ${afterCount} 本`)
-      } else if (done === 0) {
-        detail.push(`${group.name}: 一行都没写进去(列不兼容)`)
-      }
-    }
-    if (totalInserted > 0) {
-      if (legacyTable === 'Mangas') {
-        try { await Metadata.sequelize.query('ALTER TABLE Mangas RENAME TO Mangas_legacy_v1') } catch (e) { /* 改名失败不影响数据 */ }
-      }
-      const msg = `[legacy] 旧版书架已迁移:${detail.join(';')}(老表改名为 Mangas_legacy_v1 保留)`
-      console.log(msg)
-      sendMessageToWebContents(`已迁移旧版书架数据:${detail.join(';')}`)
-    } else if (detail.length) {
-      console.log(`[legacy] 未迁移:${detail.join(';')}`)
-    }
-    return totalInserted
-  } catch (e) {
-    console.error('[legacy] 旧书架迁移失败:', String((e && e.message) || e))
-    return 0
-  }
-}
-
 // 库路径不存在(最常见:容器挂载点和设置里写的路径不一致)→ 明确告诉用户,别默默扫出 0 本
 const warnedMissingLibrary = new Set()
 const warnMissingLibraryPaths = () => {
@@ -2842,8 +2902,6 @@ const flushDeferredPathNormalization = async () => {
 }
 
 const loadBookListFromDatabase = async () => {
-  // 先把旧版书架搬过来(只在书架为空时做一次),再走原来的合并逻辑
-  try { await migrateLegacyMangaTable() } catch (e) { /* 迁移失败不影响书架 */ }
   try { warnMissingLibraryPaths() } catch (e) { /* 忽略 */ }
   // 库数据库里的老格式绝对路径先转成相对路径(每个库只做一次;之后新写入的都是相对路径)
   // ★扫描中的库跳过:它正在被批量写入,这里再开一个 UPDATE 事务只会抢锁。
@@ -2881,14 +2939,27 @@ const loadBookListFromDatabase = async () => {
         console.error(`读取库「${lib.name}」失败:`, String((e && e.message) || e))
         continue
       }
+      let foreign = 0
       for (const row of rows) {
         const b = row.toJSON()
+        // ★ 归属硬校验:相对路径按存储约定就属于本库;绝对路径必须能落回本库根。
+        //   落不回去的(典型是历史遗留的 /library/... 容器路径、别的库的绝对路径)一律不显示,
+        //   也不会被前端保存回本库。在线书(filepath 是 URL)不是磁盘路径,放行。
+        const storedPath = String(b.filepath || '')
+        if (storedPath && isAbsoluteStoredPath(storedPath) && !isUrlLike(storedPath) &&
+            relativeToLibrary(storedPath, lib, IS_WEB_ENV) === null) {
+          foreign++
+          continue
+        }
         b.libraryId = lib.id
         b.libraryName = lib.name
         b.filepath = translateBookPath(b.filepath, 'filepath', lib)
         b.coverPath = translateBookPath(b.coverPath, 'coverPath', null, coverDirOf(lib))
         rememberBookLibrary(b)
         bookList.push(b)
+      }
+      if (foreign) {
+        console.warn(`[libraries] 库「${lib.name}」跳过 ${foreign} 条路径不属于本库的记录(已阻止显示/改写)`)
       }
     }
   } else {
@@ -2900,16 +2971,6 @@ const loadBookListFromDatabase = async () => {
       sendMessageToWebContents('还没有可用的漫画库:请在 设置 → 常用 里「添加库」并选好文件夹')
     }
     bookList = []
-  }
-  if (_.isEmpty(bookList) && boxLibraries().length) {
-    // ⚠️ 这里以前会 saveBookListToDatabase(空数组) —— 那是"读到空就清库",
-    // 现在整表重建必须显式声明(见 saveBookListToDatabase 的 guard)。
-    // 旧版 bookList.json 若确实有内容,才迁移进库(并标记为显式重建,扫描中会被 guard 挡住)。
-    const legacy = await loadLegecyBookListFromFile()
-    if (!_.isEmpty(legacy)) {
-      bookList = legacy
-      await saveBookListToDatabase(bookList, { rebuild: true })
-    }
   }
   // ★ 元数据全表(16436 行,含 tags 这个最大的 JSON 字段,网络盘上 1~3s)。
   //   用户的元数据在一次会话里几乎不变(只有扫描/导入才写),所以切库时没必要重读。
@@ -2969,38 +3030,63 @@ const loadBookListFromDatabase = async () => {
   return bookList
 }
 
-// ⚠️ 整表重建是危险操作:会先 truncate 再写入。
-// 只允许「显式重建库」调用(force-gene-book-list),并且扫描进行中一律拒绝 ——
-// 以前它被「书架读到空」这条路径顺带调用,等于谁都能把库清空。
-const saveBookListToDatabase = async (data, options = {}) => {
-  if (!options.rebuild) {
-    console.error('[guard] 拒绝整表重建:saveBookListToDatabase 只能由显式「重建库」触发')
-    return
+// ★返回给渲染进程的书架,必须反映「响应发出时」的当前库。
+// 读书架要读多个库数据库 + 元数据全表,期间用户完全可能切库;若把发起请求时那个库
+// 的结果直接返回,前端就会把旧库列表摆在新库界面上(数量/内容全错)。
+// 不做协议变更:返回结构仍是数组,服务端发现世代号变了就自己重读一次。
+//
+// ★第 2 轮回归修复(QA 反馈 #5):旧实现重试 3 次后直接 `return loadBookListFromDatabase()`,
+//   这一次既不看世代号也不看库签名 —— 恰好用户还在连点时,交出去的可能又是旧库列表。
+//   现在:① 重试上限提到 10 次;② **每一次**(包括最后一次)都校验世代号 + 库签名;
+//        ③ 10 次都被打断才返回最后一次读到的结果,并明确 warning(前端以「库切换响应」为准)。
+const LOAD_BOOK_LIST_MAX_ATTEMPTS = 10
+const loadBookListForCurrentLibrary = async () => {
+  let lastList = []
+  for (let attempt = 1; attempt <= LOAD_BOOK_LIST_MAX_ATTEMPTS; attempt++) {
+    const epoch = libraryEpoch
+    const key = currentLibraryKey()
+    lastList = await loadBookListFromDatabase()
+    if (epoch === libraryEpoch && key === currentLibraryKey()) return lastList
+    console.warn(`[libraries] 读书架期间发生切库(第 ${attempt}/${LOAD_BOOK_LIST_MAX_ATTEMPTS} 次),按当前库重读书架`)
   }
-  if (isScanning) {
-    console.error('[guard] 拒绝整表重建:扫描进行中')
-    return
-  }
-  console.log(`[guard] 显式重建书库:清空后写入 ${Array.isArray(data) ? data.length : 0} 条`)
-  await Manga.destroy({ truncate: true })
-  // 整表清空 + 重新入库会换一批新 id:归属索引必须整体作废
-  clearCoverOwners()
-  await Manga.bulkCreate(data)
+  // 走到这里说明 10 次都被切库打断(用户一直在连点):不再无限重读,
+  // 但要明确日志 —— 这份结果对应的库上下文已经过期,前端应以库切换响应里的列表为准。
+  console.warn(`[libraries] 连续 ${LOAD_BOOK_LIST_MAX_ATTEMPTS} 次读书架都被切库打断,返回最后一次读取结果(可能短暂陈旧)`)
+  return lastList
 }
 
 const saveBookToDatabase = async (book) => {
-  // 写共享数据库时路径转换为 Windows 格式,保证桌面版可读
-  // coverPath 必须按「这本书自己所属库」的封面目录翻译:用全局 CURRENT_COVER_DIR 时,
-  // 非活动库的封面会被当成"不在封面目录下"而原样写成这台机器的绝对路径(换端/换盘就失效)
+  // ★严格归属校验(切库竞态):book.libraryId 优先,其次用「这本书登记过的库」兜底。
+  //   再找不到就**拒绝写入** —— 绝不退回「当前活动库」。切库后到达的陈旧回调如果
+  //   带着旧库的书对象、却没有库标识,以前 libForBook() 会静默按新活动库折算路径,
+  //   把旧库的相对路径写成新库的路径/schema,库就串了。
+  if (!book || !book.id) throw new Error('[libraries] saveBookToDatabase: 缺少书籍 id,拒绝写入')
+  let libId = String(book.libraryId || bookLibraryById.get(book.id) || '')
+  if (!libId) {
+    // 老前端 / 外部调用可能没带 libraryId:按 id 在「所有已生效库」里找它真正所在的库。
+    // 只在这个罕见分支多几次查询;绝不用「当前活动库」去猜。
+    for (const candidate of runtimeLibs().filter(l => isLibraryActive(l, IS_WEB_ENV))) {
+      const model = await modelForLibraryOrNull(candidate.id)
+      if (!model) continue
+      const hit = await model.findOne({ where: { id: book.id }, attributes: ['id'], raw: true }).catch(() => null)
+      if (hit) { libId = candidate.id; break }
+    }
+  }
+  if (!libId) throw new Error('[libraries] saveBookToDatabase: 无法确定书籍所属库,拒绝写入(防止串库)')
+  const ownerLib = runtimeLibs().find(l => l.id === libId)
+  if (!ownerLib) throw new Error('[libraries] saveBookToDatabase: 库已不存在 ' + libId + ',拒绝写入')
+  // 写共享数据库时路径转换为 Windows / 相对库根格式,保证两端都能读。
+  // filepath / coverPath 一律按「这本书自己所属库」的根与封面目录翻译,
+  // 不碰会被切库改掉的 CURRENT_COVER_DIR / setting.library。
   const extBook = {
     ...book,
-    filepath: toExternalPath(book.filepath, 'filepath', libForBook(book)),
-    coverPath: toExternalPath(book.coverPath, 'coverPath', null, book ? bookCoverDir(book) : undefined)
+    filepath: toExternalPath(book.filepath, 'filepath', ownerLib),
+    coverPath: toExternalPath(book.coverPath, 'coverPath', null, coverDirOf(ownerLib))
   }
-  // 合并书架下每本书自带 libraryId:必须写回它自己所属的库,不然会写脏别的库
   delete extBook.libraryId
   delete extBook.libraryName
-  const target = await modelForLibrary(book.libraryId)
+  const target = await modelForLibrary(libId)
+  // update 带 where id 不会插入新行:这里不可能凭空「新增漫画」
   await target.update(extBook, { where: { id: extBook.id } })
   // 元数据始终写全局 metadata.sqlite
   await Metadata.upsert(extBook)
@@ -3649,8 +3735,12 @@ const runScan = async (ctx) => {
 }
 
 // 依次扫描「当前切换框」里的每个库(用户要求:扫描按钮改成依次扫每个库)
-const runScanAll = async () => {
-  const libs = boxLibraries()
+// ★ libsOverride:由发起扫描的 IPC 在**请求当时**抓一份库列表钉住。
+//   扫描是 setImmediate 后台任务,里面再读 boxLibraries() 会拿到「切库之后的新框」,
+//   于是「点一次扫描 + 切库」变成扫了另一批库;固定下来才不会把结果写错归属。
+const runScanAll = async (libsOverride = null) => {
+  const scanEpoch = libraryEpoch
+  const libs = Array.isArray(libsOverride) ? libsOverride : boxLibraries()
   if (!libs.length) {
     sendMessageToWebContents('没有已生效的漫画库:请先在 设置 → 常用 给库填「库数据存放位置」')
     setProgressBar(-1)
@@ -3691,12 +3781,14 @@ const runScanAll = async () => {
       scanningLibraryId = ''
     }
   }
-  // 扫完把运行时还原到「用户当前的活动库」(不是刚扫完的那个库)。
-  // 幂等:扫描全程没碰全局时这里只是把同样的值再写一次;
-  // 用户中途切过库时,activeLibraryOf(setting) 已经是用户选的那个库,所以是「指回用户正在看的库」。
-  const active = activeLibraryOf(setting)
-  if (active) await openLibraryForScan(active)
-  setting.library = active ? active.path : setting.library
+  // 扫完把运行时对齐到「用户当前的活动库」。
+  // ★扫描期间切过库就**不要**再动全局运行时:最新那次切库已经把 Manga / 路径 / 封面目录
+  //   全部原子地对齐好了,这里再写一次只会用扫描开始时抓到的 active 把新库打回去。
+  //   openLibraryForScan 内部还有一层世代号复核,双保险。
+  if (libraryEpoch === scanEpoch) {
+    const active = activeLibraryOf(setting)
+    if (active) await openLibraryForScan(active)
+  }
 
   // ★扫描结束后补跑「扫描期间被跳过的路径规范化」(见 flushDeferredPathNormalization)
   await flushDeferredPathNormalization()
@@ -3739,7 +3831,7 @@ ipcMain.handle('load-book-list', async (event, scan) => {
   //   未登录时**不读数据库**,直接给空书架(返回结构与正常路径一致:数组)。
   if (!isDesktopAuthed()) return []
   // 离线模式:允许「读取」(书架空着),但绝不允许扫描 —— 扫描会建库/写快照/写封面目录
-  if (scan && rejectIfLibraryOffline('扫描漫画库')) return await loadBookListFromDatabase()
+  if (scan && rejectIfLibraryOffline('扫描漫画库')) return await loadBookListForCurrentLibrary()
   if (scan) {
     if (isScanning) {
       sendMessageToWebContents('扫描正在进行中,已跳过重复扫描')
@@ -3754,10 +3846,11 @@ ipcMain.handle('load-book-list', async (event, scan) => {
       beginScan('开始加载漫画库')
       sendMessageToWebContents('开始加载漫画库')
       // 后台扫描:立即返回当前列表,不阻塞 UI,扫描完成后再通知前端刷新
+      // ★把「这次扫哪些库」当成不可变参数传进去:切库不会让后台任务改扫另一批库。
       setImmediate(async () => {
         let cancelled = false
         try {
-          await runScanAll()
+          await runScanAll(scanTargets)
           cancelled = scanCancelRequested
           endScan(null)
           // 取消时不改 error 字段(否则界面会显示成失败),只把文案说清楚
@@ -3783,7 +3876,7 @@ ipcMain.handle('load-book-list', async (event, scan) => {
       })
     }
   }
-  return await loadBookListFromDatabase()
+  return await loadBookListForCurrentLibrary()
 })
 
 // ---------- 增量扫描(快照式增量对账) ----------
@@ -3855,6 +3948,22 @@ const runIncrementalScan = async (ctx) => {
       seenCand.add(p)
       candidates.push({ filepath: p, type: 'folder' })
     }
+  }
+  // ★与全量扫描同款的归属校验(零 I/O):候选路径必须真的落在**本次扫描的库根**下。
+  //   快照是历史文件,可能来自换了库根/换了库的那台机器;不校验就直接 bulkCreate,
+  //   会把别的库的书压成「相对本库根」的路径写进本库(线上 1.4 万条脏数据就是这么来的)。
+  const rootForCheck = String(scanRoot || '').replace(/[\/]+$/, '')
+  const inScanRoot = (p) => {
+    const abs = String(p || '')
+    return !!rootForCheck && (abs === rootForCheck || abs.startsWith(rootForCheck + '/') || abs.startsWith(rootForCheck + '\\'))
+  }
+  let rejected = 0
+  for (let k = candidates.length - 1; k >= 0; k--) {
+    if (!inScanRoot(candidates[k].filepath)) { candidates.splice(k, 1); rejected++ }
+  }
+  if (rejected) {
+    console.error(`[scan-guard] 增量扫描剔除 ${rejected} 条不属于库「${rootForCheck}」的候选(已阻止写入)`)
+    sendMessageToWebContents(`已跳过 ${rejected} 本不属于当前库「${scanLib.name || rootForCheck}」的书(路径不符,已阻止写入)`)
   }
   sendMessageToWebContents(`从漫画库找到 ${candidates.length} 本待处理漫画(增量扫描)`)
   // 安全阀:大比例目录消失 → 判定漫画库掉线,跳过清理并保留原快照
@@ -3965,7 +4074,7 @@ ipcMain.handle('incremental-scan', async () => {
   // 桌面端未登录:扫描会写库,一律不给(与 load-book-list 的兜底同一套口径)
   if (!isDesktopAuthed()) return []
   // 离线模式:增量扫描会写快照/建库,直接拒
-  if (rejectIfLibraryOffline('增量扫描')) return await loadBookListFromDatabase()
+  if (rejectIfLibraryOffline('增量扫描')) return await loadBookListForCurrentLibrary()
   if (isScanning) {
     sendMessageToWebContents('扫描正在进行中,已跳过重复扫描')
   } else {
@@ -3980,8 +4089,10 @@ ipcMain.handle('incremental-scan', async () => {
     setImmediate(async () => {
       let cancelled = false
       try {
-        // ★ 先把「这次扫哪个库」钉成 ctx,再开始:扫描期间用户切库也不会串库
-        const lib = currentLibrary()
+        // ★ 用请求发起时抓到的库(scanLibNow),不要在 setImmediate 里重新读 currentLibrary():
+        //   后台任务开始时用户可能已经切了库,那时读到的就是另一个库 ——
+        //   而 scanningLibraryId 登记的还是旧库,快照/写库/规范化会互相错位。
+        const lib = scanLibNow || currentLibrary()
         const ctx = await scanContextFor(lib)
         // ★ 不再 openLibraryForScan(lib):ctx 已经带上了这个库的 model/封面目录/快照/缓存目录,
         //   而这里切全局反而会把「用户刚刚切到的库」又打回被扫的库。
@@ -4007,17 +4118,17 @@ ipcMain.handle('incremental-scan', async () => {
       }
     })
   }
-  return await loadBookListFromDatabase()
+  return await loadBookListForCurrentLibrary()
 })
 
 ipcMain.handle('force-gene-book-list', async (event, arg) => {
   // 离线模式:重建库会 truncate 数据库 + 清封面目录,必须拒绝
-  if (rejectIfLibraryOffline('重建漫画库')) return await loadBookListFromDatabase()
+  if (rejectIfLibraryOffline('重建漫画库')) return await loadBookListForCurrentLibrary()
   // 重建库会清空数据库与封面目录,扫描进行中绝不能执行
   // (重建自己也占着 isScanning,所以「连点两次重建」也会在这里被拦住)
   if (isScanning) {
     sendMessageToWebContents('正在扫描漫画库,请等扫描结束后再重建')
-    return await loadBookListFromDatabase()
+    return await loadBookListForCurrentLibrary()
   }
   // ★把「重建哪个库」钉成 ctx,全程只用 ctx.model / ctx.root / ctx.coverDir。
   //   隐患(切库放行之后才出现):重建过程中用户切库 → switchActiveLibraryRuntime 会把全局
@@ -4032,7 +4143,7 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
     console.error('[rebuild] 无法重建漫画库:' + msg)
     sendMessageToWebContents(`重建漫画库失败:${msg}`)
     setProgressBar(-1)
-    return await loadBookListFromDatabase()
+    return await loadBookListForCurrentLibrary()
   }
   const Db = ctx.model
   const rebuildLib = ctx.lib
@@ -4060,7 +4171,7 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
       // 一本都没枚举到 = 路径不可用或选错了库:直接取消,不碰数据库、不碰封面
       sendMessageToWebContents('漫画库为空或不可访问,已取消重建(未改动任何数据)')
       setProgressBar(-1)
-      return await loadBookListFromDatabase()
+      return await loadBookListForCurrentLibrary()
     }
     // 封面懒加载为固定行为:重建库也不生成封面,由用户浏览时按需生成
     await Db.destroy({ truncate: true })
@@ -4123,12 +4234,12 @@ ipcMain.handle('force-gene-book-list', async (event, arg) => {
     scanningLibraryId = ''
     setProgressBar(-1)
   }
-  return await loadBookListFromDatabase()
+  return await loadBookListForCurrentLibrary()
 })
 
 ipcMain.handle('patch-local-metadata', async (event, arg) => {
   // 离线模式:逐本重建封面会写不可达的库封面目录,直接拒(书架原样返回)
-  if (rejectIfLibraryOffline('批量补全元数据/封面')) return await loadBookListFromDatabase()
+  if (rejectIfLibraryOffline('批量补全元数据/封面')) return await loadBookListForCurrentLibrary()
   const bookList = await loadBookListFromDatabase()
   const bookListLength = bookList.length
   await clearFolder(TEMP_PATH)
@@ -4149,14 +4260,20 @@ ipcMain.handle('patch-local-metadata', async (event, arg) => {
       // 用户在阅读时暂停任务,让出 CPU/磁盘
       await waitViewerIdle()
       try {
-        // 已经有可用封面 → 跳过(只补缺失的,不再重复生成)
-        const had = book.coverPath ? translateBookPath(book.coverPath, 'coverPath', null, bookCoverDir(book)) : ''
+        // 占位文件与封面都必须落在「这本书所属库」的封面目录:
+        // 合并书架下活动库 ≠ 书的库时,用 CURRENT_COVER_DIR 会把封面写进别人的目录
+        // ★写路径:归属不明 → 单本跳过并提示,绝不在别人的库目录里建文件
+        const coverDir = bookCoverDirOrNull(book)
+        if (!coverDir) {
+          sendMessageToWebContents(`跳过 ${book.filepath}:无法确定它属于哪个漫画库`)
+          return
+        }
+        // 已经有可用封面 → 跳过(只补缺失的,不再重复生成)。
+        // 这里也用上面算出来的 coverDir:避免「拿活动库的目录去判存在性」而误判成已有封面
+        const had = book.coverPath ? translateBookPath(book.coverPath, 'coverPath', null, coverDir) : ''
         if (had && isUsableCover(had)) return
         let { filepath, type } = book
         if (!type) type = 'archive'
-        // 占位文件与封面都必须落在「这本书所属库」的封面目录:
-        // 合并书架下活动库 ≠ 书的库时,用 CURRENT_COVER_DIR 会把封面写进别人的目录
-        const coverDir = bookCoverDir(book)
         // 封面以漫画名命名(占位防并发)
         const coverName = acquireCoverName(filepath, coverDir)
         try {
@@ -4192,8 +4309,18 @@ ipcMain.handle('patch-local-metadata-by-book', async (event, book) => {
   if (rejectIfLibraryOffline('重新扫描这本漫画')) return {}
   let { filepath, type } = book
   if (!type) type = 'archive'
+  // ★切库后到达的旧请求可能没带 libraryId:用归属索引补齐,
+  //   否则封面占位会落进「新活动库」的目录(串库)。
+  if (!book.libraryId && book.id) book.libraryId = bookLibraryById.get(book.id)
   // 同 patch-local-metadata:占位文件与封面都走「这本书所属库」的封面目录
-  const coverDir = bookCoverDir(book)
+  // ★写路径:归属不明 → 拒绝(返回 {} = 前端什么都不改),绝不在别人的库目录里建文件
+  const coverDir = bookCoverDirOrNull(book)
+  if (!coverDir) {
+    // 记录一条带归属诊断的日志(哪个库 id / 为什么判不出来),再让前端保持原样
+    libForBookStrict(book, '补全元数据/封面')
+    sendMessageToWebContents(`无法确定这本漫画属于哪个库,已跳过:${String(filepath || '')}`)
+    return {}
+  }
   // 封面以漫画名命名(占位防并发)
   const coverName = acquireCoverName(filepath, coverDir)
   try {
@@ -6167,15 +6294,32 @@ ipcMain.handle('open-path', async (event, target) => {
 // 现在:文件名 = 书名-<nanoid(6)>.webp,并把旧的本地封面删掉。
 ipcMain.handle('use-new-cover', async (event, filepath, bookId) => {
   const copyTempCoverPath = path.join(TEMP_PATH, nanoid(8) + path.extname(filepath || '.img'))
-  let dir = CURRENT_COVER_DIR
+  // dir 在下面一定会被重新赋值(要么是这本书所属库的封面目录,要么直接拒绝返回);
+  // 留一个 null 初值是为了让「忘了赋值」变成明显的错误而不是静默写进活动库
+  let dir = null
   let book = null
   try {
     if (bookId) {
       const found = await findBookAcrossLibraries({ id: bookId })
       book = found.row || null
+      // ★必须把「这本书属于哪个库」带回 book:findBookAcrossLibraries 返回的是裸数据库行,
+      //   没有 libraryId。缺了它就无法判断封面该存哪个库 ——
+      //   切库后到达的旧请求就会把封面写进新库目录(串库)。
+      if (book) {
+        book.libraryId = found.libraryId || bookLibraryById.get(bookId)
+        if (book.libraryId) rememberBookLibrary(book)
+      }
     }
-    // 找不到书(旧调用方只传了 filepath)→ 退回活动库的封面目录,保持原行为
-    dir = book ? bookCoverDir(book) : CURRENT_COVER_DIR
+    // ★写路径:必须知道这本书属于哪个库才落盘。
+    //   以前「找不到书就退回 CURRENT_COVER_DIR」= 往「此刻正在看的那个库」里写一张别人的封面,
+    //   切库后再来看就变成「A 库的书显示 B 库的封面」。
+    //   现在:归属不明 → 拒绝并说明原因(前端会把这个 error 提示给用户)。
+    dir = book ? bookCoverDirOrNull(book) : null
+    if (!dir) {
+      const reason = book ? '无法确定这本书属于哪个漫画库' : '没有拿到书籍 id,无法判断封面该存到哪个库'
+      libForBookStrict(book || { id: bookId }, '设为封面')
+      return { ok: false, error: reason + ',已取消(请刷新书架后重试)' }
+    }
     try { fs.mkdirSync(dir, { recursive: true }) } catch (e) { /* 稍后写文件时再报错 */ }
     // 书名去掉书籍扩展名再清洗:title 存的是「xxx.zip」这种完整文件名
     const rawTitle = (book && (book.title_jpn || book.title)) || path.basename(String(filepath || ''), path.extname(String(filepath || '')))
@@ -6340,8 +6484,13 @@ ipcMain.handle('delete-local-book', async (event, filepath) => {
   let info = {}
   // 库里存的是「相对库根的相对路径」,按本端路径查库要先换算成库里那种形式
   const dbPath = toExternalPath(filepath, 'filepath', ownerLibrary)
+  // ★查/删一律用「路径所属的库」自己的模型,不经过 findBookAcrossLibraries。
+  //   后者只搜当前框,找不到时会退回全局 Manga(切库后 = 新库) ——
+  //   旧库的一本书被删,顺带把新库里同路径的记录也 destroy 掉,就是典型的串库。
+  let ownerModel = null
   try {
-    const row = (await findBookAcrossLibraries({ filepath: dbPath })).row
+    ownerModel = await modelForLibrary(ownerLibrary.id)
+    const row = await ownerModel.findOne({ where: { filepath: dbPath }, raw: true })
     if (row) info = { id: row.id, title: row.title, title_jpn: row.title_jpn, tags: row.tags, libraryId: ownerLibrary.id, libraryName: ownerLibrary.name }
     else info = { libraryId: ownerLibrary.id, libraryName: ownerLibrary.name }
   } catch (e) { /* 拿不到不影响删除 */ }
@@ -6360,7 +6509,11 @@ ipcMain.handle('delete-local-book', async (event, filepath) => {
     sendMessageToWebContents('删除 ' + filepath + ' 失败:' + result.error)
     return result
   }
-  try { await (await findBookAcrossLibraries({ filepath: dbPath })).model.destroy({ where: { filepath: dbPath } }) } catch (e) { /* 忽略 */ }
+  // 只从它自己所属库里删记录;拿不到该库模型就明确拒绝(绝不落到当前活动库)
+  try {
+    if (ownerModel) await ownerModel.destroy({ where: { filepath: dbPath } })
+    else console.warn('[libraries] 无法定位所属库模型,跳过数据库记录删除:' + String(filepath))
+  } catch (e) { /* 忽略 */ }
   result.ok = true
   sendMessageToWebContents('已移入回收站:' + (info.title || path.basename(filepath)) + '(可在 设置 → 常用 → 回收站 里恢复)')
   return result
@@ -7205,13 +7358,18 @@ const removeGlobalTag = (cat, name) => {
 }
 const persistSettingNow = () => {
   const p = getSettingFilePath()
-  const tmp = p + '.tmp'
+  // 临时文件名必须唯一(以前固定 .tmp:和异步写并发时会互相抢走临时文件 → ENOENT)
+  const tmp = settingTmpPath()
   fs.writeFileSync(tmp, JSON.stringify(setting, null, '  '), { encoding: 'utf-8' })
-  fs.renameSync(tmp, p)
+  renameSyncWithRetry(tmp, p)
 }
 
 // 应用设置变更并写入本地 setting.json(本地模式 IPC 与远程模式本地代理共用)
 const applySetting = async (receiveSetting) => {
+  // 落盘序号:在**进入时**领取,代表这次写入的「到达顺序」。
+  // 后面排队时用它丢弃「排队期间已被更新设置覆盖」的陈旧写入(否则连点切库时
+  // 先点的设置可能最后落盘,把后点的库覆盖回去)。
+  const writeSeq = ++settingApplySeq
   // 防丢配置(关键):前端启动时可能只回传了部分键(例如 App.vue 只回传 contextMenuOptions),
   // 绝不能把它当成完整配置整份替换 —— 先与内存中的现有设置合并,前端没传的键一律保留原值。
   receiveSetting = { ...setting, ...(receiveSetting || {}) }
@@ -7301,9 +7459,22 @@ const applySetting = async (receiveSetting) => {
   const forFile = { ...fileSetting }
   for (const k of LIBRARY_CONFIG_KEYS) delete forFile[k]
   const targetPath = getSettingFilePath()
-  const tempPath = settingTmpPath()
-  await fs.promises.writeFile(tempPath, JSON.stringify(forFile, null, '  '), { encoding: 'utf-8' })
-  return await fs.promises.rename(tempPath, targetPath)
+  // 序列化一次,排队期间内容不再变化(排队时间可能跨好几次 await)
+  const payload = JSON.stringify(forFile, null, '  ')
+  // ★串行落盘 + rename 重试:
+  //   并发写同一份 setting.json 在 Windows 上会 EPERM/EBUSY;串行后的顺序就是到达顺序,
+  //   再配合 settingWriteAppliedSeq 丢掉「排队期间已被更新设置覆盖」的陈旧写入。
+  return await queueSettingWrite(async () => {
+    if (writeSeq < settingWriteAppliedSeq) {
+      console.log(`[setting] 跳过陈旧落盘(#${writeSeq} < 已落盘 #${settingWriteAppliedSeq})`)
+      return false
+    }
+    const tempPath = settingTmpPath()
+    await fs.promises.writeFile(tempPath, payload, { encoding: 'utf-8' })
+    const ok = await renameAsyncWithRetry(tempPath, targetPath)
+    settingWriteAppliedSeq = Math.max(settingWriteAppliedSeq, writeSeq)
+    return ok
+  })
 }
 
 ipcMain.handle('save-setting', async (event, receiveSetting) => {
@@ -7335,7 +7506,9 @@ const librariesSnapshot = () => ({
     libraryIds: Array.isArray(b.libraryIds) ? [...b.libraryIds] : []
   })),
   activeBoxIndex: Number.isInteger(setting.activeBoxIndex) ? setting.activeBoxIndex : 0,
-  boxLibraryIds: boxLibraries().map(l => l.id)
+  boxLibraryIds: boxLibraries().map(l => l.id),
+  // 纯诊断字段(向后兼容:前端忽略即可)。切库响应带它,前端能识别是不是过期响应。
+  libraryEpoch
 })
 
 ipcMain.handle('get-libraries', async () => librariesSnapshot())
@@ -7377,8 +7550,19 @@ ipcMain.handle('apply-libraries', async (event, arg) => {
       switchBoxes: Array.isArray(payload.switchBoxes) ? payload.switchBoxes : (setting.switchBoxes || []),
       activeBoxIndex: Number.isInteger(payload.activeBoxIndex) ? payload.activeBoxIndex : (setting.activeBoxIndex || 0)
     }
+    // 记录「用户显式删空库」的意图(写进 libraries.json):
+    // 只有「原来确实有库、这次提交成空列表」才算删空 —— 前端在还没拿到库列表时误提交空数组
+    // 不会被误判成删除(否则下次启动再也不会从旧版设置迁移,库就永远回不来了)。
+    {
+      const prevCount = (Array.isArray(setting.libraries) ? setting.libraries : []).length
+      const nextCount = draft.libraries.length
+      if (nextCount > 0) draft.librariesCleared = false
+      else if (prevCount > 0) draft.librariesCleared = true
+      else if (setting.librariesCleared === true) draft.librariesCleared = true
+      else draft.librariesCleared = false
+    }
     // preferList:以 UI 提交的库列表为准,否则旧的 setting.library 会把刚选中的库路径覆盖掉
-    ensureLibraries(draft, { preferList: true, nameHint: setting.externalLibraryRoot })
+    ensureLibraries(draft, { preferList: true, nameHint: setting.externalLibraryRoot, storePath: STORE_PATH })
     const prev = activeLibraryOf(setting)
     const next = activeLibraryOf(draft)
     const activeChanged = !prev || !next || prev.id !== next.id || prev.path !== next.path || (prev.dataPath || '') !== (next.dataPath || '')
@@ -7412,9 +7596,11 @@ ipcMain.handle('apply-libraries', async (event, arg) => {
     }
     const prevDataDir = LIBRARY_DATA_DIR
     replaceCurrentSetting(draft)
+    // ★先原子切运行时,再落盘设置:applySetting 里有 await(写文件),
+    //   放在前面会留下「setting 已是新库、全局 Manga/路径还是旧库」的窗口。
+    if (activeChanged) await switchActiveLibraryRuntime(prev, prevDataDir)
     // 复用 applySetting 的落盘规则(容器模式下 library 会写回 Windows 侧)
     await applySetting({})
-    if (activeChanged) await switchActiveLibraryRuntime(prev, prevDataDir)
     return { ok: true, activeChanged, ...librariesSnapshot() }
   } catch (e) {
     console.error(e)
@@ -7435,9 +7621,13 @@ ipcMain.handle('set-active-library', async (event, id) => {
     const prevDataDir = LIBRARY_DATA_DIR
     if (isScanning) sendMessageToWebContents('扫描在后台继续,已切换库')
     setting.activeLibraryId = lib.id
-    setting.library = lib.path
-    await applySetting({})
+    // ★必须写「本端投影后」的路径。lib 来自未投影的 setting.libraries,
+    //   网页/容器端 lib.path 是 Windows 盘符路径,直接写会让 currentLibrary()
+    //   (按本端路径匹配)认不出活动库,增量扫描等入口就会挑错库。
+    setting.library = localLibraryPath(lib, IS_WEB_ENV)
+    // 同上:先原子切运行时,再落盘,避免中间态
     await switchActiveLibraryRuntime(prev, prevDataDir)
+    await applySetting({})
     return { ok: true, activeChanged: true, ...librariesSnapshot() }
   } catch (e) {
     console.error(e)
@@ -7742,6 +7932,23 @@ ipcMain.handle('get-locale', async (event, arg) => {
 
 ipcMain.handle('copy-image-to-clipboard', async (event, filepath) => {
   clipboard.writeImage(nativeImage.createFromPath(filepath))
+})
+
+// 只返回图片文件的 mtime(毫秒):阅读器切回窗口时用它判断磁盘上的图有没有被换过。
+// 「恢复 .bak」「超分替换原文件」「用户在资源管理器里手动覆盖」都不会通知界面,
+// 只能靠 mtime 发现;这里只 stat 不解码,代价可以忽略。
+ipcMain.handle('image-file-mtime', async (event, filepath) => {
+  try {
+    let p = String(filepath || '')
+    if (!p) return 0
+    p = p.replace(/[?#].*$/, '')
+    if (/^file:\/\//i.test(p)) {
+      p = decodeURIComponent(p.replace(/^file:\/\//i, ''))
+      if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1)
+    }
+    const st = await fs.promises.stat(p).catch(() => null)
+    return st && st.isFile() ? Math.round(st.mtimeMs) : 0
+  } catch (e) { return 0 }
 })
 
 // 图片属性(阅读器右键「属性」):名称 / 大小 / 编码格式 / 分辨率 / 修改时间。
@@ -8599,7 +8806,7 @@ ipcMain.handle('upscale-image', async (event, filepath, options) => {
     const engineOverride = String(opt.engine || '')
     const overrideLocal = engineOverride.startsWith('local:') ? engineOverride.slice(6) : ''
     const overrideApi = engineOverride.startsWith('api:') ? engineOverride.slice(4) : ''
-    const localEngine = overrideLocal || (engineOverride ? '' : String(setting.localUpscaleEngine || ''))
+    let localEngine = overrideLocal || (engineOverride ? '' : String(setting.localUpscaleEngine || ''))
     const apiProfileId = overrideApi || (engineOverride ? '' : String(setting.upscaleApiProfileId || ''))
     const upProf = (Array.isArray(setting.aiApiProfiles) ? setting.aiApiProfiles : []).find(p => p && p.id === apiProfileId)
     let apiUrl = (setting.upscaleApiUrl || '').trim()
@@ -8616,15 +8823,16 @@ ipcMain.handle('upscale-image', async (event, filepath, options) => {
     let engineName = ''      // 文件名里用的引擎短名
     let scaleUsed = 2        // 文件名里用的倍数
 
+    // 用户明确要求:选什么模型就用什么,不猜、不兜底。
+    // 以前没选引擎时会静默走内置 Lanczos(只放大 2 倍 + 锐化),看起来像「超分没效果」;
+    // 现在直接告诉用户去设置里选,不再替用户做决定。
+    if (!localEngine && !apiUrl) {
+      return { ok: false, error: '还没有选择超分模型:请到「设置 → 功能 → 图片超分」里选择要用的模型(本地模型需先下载)' }
+    }
+
     if (localEngine) {
       // 参数来自「本地模型」里该模型自己的设置
       const opts = Object.assign({}, localModels.defaultOptionsOf(localEngine), (setting.localUpscaleOptions || {})[localEngine] || {})
-      // 把原图尺寸带下去:分块策略要按尺寸决定(小图一整块,避免分块错位)
-      try {
-        const m0 = await sharp(filepath, { failOnError: false }).metadata()
-        opts.srcWidth = m0.width || 0
-        opts.srcHeight = m0.height || 0
-      } catch (e) { /* 读不到就按默认分块 */ }
       await localModels.runUpscale(localEngine, filepath, tmpOut, opts)
       engine = 'local:' + localEngine
       engineName = localEngine
@@ -8656,19 +8864,6 @@ ipcMain.handle('upscale-image', async (event, filepath, options) => {
       engine = 'api'
       engineName = 'api'
       scaleUsed = legacyScale
-    } else {
-      // 内置:Lanczos3 放大 2 倍 + 轻度锐化(非 AI)
-      const meta = await sharp(filepath, { failOnError: false }).metadata()
-      const srcW = meta.width || 1000
-      const srcH = meta.height || 1400
-      await sharp(filepath, { failOnError: false })
-        .resize({ width: Math.round(srcW * 2), height: Math.round(srcH * 2), kernel: 'lanczos3', fit: 'fill' })
-        .sharpen({ sigma: 0.8, m1: 0.6, m2: 0.4 })
-        .png()
-        .toFile(tmpOut)
-      engine = 'local-resize'
-      engineName = 'lanczos'
-      scaleUsed = 2
     }
 
     const persisted = await persistUpscaled(filepath, tmpOut, { engineName, scale: scaleUsed, forcePreview: !!opt.previewOnly, modeOverride: opt.saveMode })

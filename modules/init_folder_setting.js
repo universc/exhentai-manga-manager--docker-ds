@@ -197,20 +197,56 @@ const SETTING_PROFILE = STARTUP_PROFILE
 // 理由:库是「这个数据目录」的属性(漫画放哪、库数据放哪),不该跟着账户设置走;
 //       账户只负责"设置"(主题/按钮/显示项等)。首次运行会从现有设置里平滑迁移出来。
 const LIBRARIES_FILE = path.join(STORE_PATH, 'libraries.json')
-const LIBRARY_CONFIG_KEYS = ['libraries', 'activeLibraryId', 'switchBoxes', 'activeBoxIndex']
+// librariesCleared:用户是否「显式把库删空」过。只在 apply-libraries 提交空列表时置 true,
+// 用于区分「用户主动删库」与「旧版配置升级(还没迁移出默认库)」—— 前者绝不能被复活。
+const LIBRARY_CONFIG_KEYS = ['libraries', 'activeLibraryId', 'switchBoxes', 'activeBoxIndex', 'librariesCleared']
+
+// 同步 sleep(毫秒):仅用于 rename 的短退避重试,不参与任何锁。
+// Atomics.wait 是主线程可用的「真睡眠」,比忙等省 CPU。
+const sleepSync = (ms) => {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  } catch (e) {
+    const end = Date.now() + ms
+    while (Date.now() < end) { /* 兜底忙等(没有 SharedArrayBuffer 时) */ }
+  }
+}
+// 原子写落盘的「改名」环节必须重试:Windows 上杀毒/索引器会短暂占用目标文件,
+// 直接 rename 会 EPERM/EBUSY(用户报的 `EPERM: operation not permitted, rename '...tmp' -> '...json'`)。
+// 临时文件名带 pid + 序号,所以重试期间不会被别的写者抢走。
+const renameSyncWithRetry = (tmp, target, label = 'file') => {
+  const DELAYS = [30, 80, 200]
+  for (let i = 0; ; i++) {
+    try {
+      fs.renameSync(tmp, target)
+      return true
+    } catch (e) {
+      const code = e && e.code
+      const retryable = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES'
+      if (!retryable || i >= DELAYS.length) {
+        console.error(`[${label}] 写入失败(${code || 'unknown'}),已重试 ${i} 次:`, String((e && e.message) || e))
+        try { fs.unlinkSync(tmp) } catch (e2) { /* 临时文件清不掉也无害 */ }
+        throw e
+      }
+      sleepSync(DELAYS[i])
+    }
+  }
+}
 const readLibrariesFile = () => {
   try {
     const j = JSON.parse(fs.readFileSync(LIBRARIES_FILE, 'utf-8'))
     return (j && typeof j === 'object') ? j : null
   } catch { return null }
 }
+// 临时文件名序号:进程内唯一,避免两次写盘抢同一个 tmp(抢走就会 ENOENT)
+let librariesWriteSeq = 0
 const writeLibrariesFile = (cfg) => {
   try {
     const out = {}
     for (const k of LIBRARY_CONFIG_KEYS) if (cfg && cfg[k] !== undefined) out[k] = cfg[k]
-    const tmp = LIBRARIES_FILE + '.' + process.pid + '.tmp'
+    const tmp = LIBRARIES_FILE + '.' + process.pid + '.' + (++librariesWriteSeq) + '.tmp'
     fs.writeFileSync(tmp, JSON.stringify(out, null, '  '), 'utf-8')
-    fs.renameSync(tmp, LIBRARIES_FILE)
+    renameSyncWithRetry(tmp, LIBRARIES_FILE, 'libraries')
   } catch (e) { console.log('[libraries] 写 libraries.json 失败:', String((e && e.message) || e)) }
 }
 const extractLibraryConfig = (setting) => {

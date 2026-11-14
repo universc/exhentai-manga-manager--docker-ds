@@ -65,7 +65,8 @@ const isUrlLike = (p) => /^[a-z][a-z0-9+.-]*:\/\//i.test(String(p || ''))
 // 本文件要保持「纯函数、不依赖别的模块」,方便单独跑测试。
 const localLibraryRoot = (lib, isWeb) => {
   if (!lib) return ''
-  const web = isWeb === undefined ? !!process.env.WEB_LIBRARY : !!isWeb
+  // 与 modules/libraries.js 的 localLibraryPath 同口径:WEB_LIBRARY 或 WEB_MODE=1 都算容器端
+  const web = isWeb === undefined ? !!(process.env.WEB_LIBRARY || process.env.WEB_MODE === '1') : !!isWeb
   const desk = String(lib.path || '').trim()
   if (!web) return desk
   return String(lib.pathWeb || '').trim() || desk
@@ -127,7 +128,7 @@ const relByRootTail = (p, lib, isWeb) => relByRootTailWithRoot(p, localLibraryRo
 // 认不出来返回 null —— 调用方保留原值(照旧按绝对路径读),绝不乱改。
 const relForStoredPath = (p, lib, isWeb) => {
   if (!p || !isAbsoluteStoredPath(p)) return null
-  const web = isWeb === undefined ? !!process.env.WEB_LIBRARY : !!isWeb
+  const web = isWeb === undefined ? !!(process.env.WEB_LIBRARY || process.env.WEB_MODE === '1') : !!isWeb
   const byPrefix = relativeToLibrary(p, lib, isWeb)
   if (byPrefix !== null && byPrefix !== '') return { rel: byPrefix, how: 'prefix' }
   const anchors = [
