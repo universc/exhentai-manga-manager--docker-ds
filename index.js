@@ -4558,6 +4558,12 @@ const EH_LOGIN_URL = ehLogin.EH_BASES.forum + '/index.php?act=Login&CODE=00'
 const EH_EX_URL = ehLogin.EH_BASES.ex + '/'
 let ehLoginInFlight = false
 
+// 浏览器内的 User-Agent。
+// ★ 必须伪装成普通 Chrome:Electron 默认 UA 里带 "Electron/26.x",论坛挂在 Cloudflare 后面,
+//   会被直接判成自动化流量 —— 表现就是「正在进行安全验证」反复刷新、永远过不去。
+//   同一个串也用于 HTTP 请求(下面 passwordLogin 用它),保证两条路口径一致。
+const EMU_BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
 // 登录窗口分区的 Cookie 全量(短命窗口,分区里只有我们自己的 Cookie)
 const ehCookieMapOf = async (ses) => {
   const map = {}
@@ -6681,7 +6687,7 @@ ipcMain.handle('wnacg-password-login', async (event, arg) => {
   if (!username || !password) return { ok: false, error: 'empty' }
   const base = 'https://' + host
   const agent = setting.proxy ? ehLogin.agentFor(setting.proxy) : undefined
-  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+  const ua = EMU_BROWSER_UA
   // 简易 cookie 罐:站点在取登录页时下发 PHPSESSID,不带它 POST 一定失败
   const jar = {}
   const absorb = (res) => {
@@ -7379,6 +7385,17 @@ if (!WEB_MODE) {
     let win = null
     try {
       const ses = session.fromPartition(EH_LOGIN_PARTITION)
+      // ★ 登录窗口是**独立分区**(persist:eh-login),不会继承 defaultSession 的代理设置。
+      //   以前这里漏了 —— 主界面走代理、登录窗口却直连,论坛挂在 Cloudflare 后面,
+      //   直连会被判定成可疑流量,于是页面卡在「正在进行安全验证」反复刷新,永远登不上。
+      //   这里显式把同一个代理装到登录分区上。
+      if (setting.proxy) {
+        try {
+          await ses.setProxy({ mode: 'fixed_servers', proxyRules: setting.proxy })
+        } catch (e) { console.error('eh-login setProxy failed', e) }
+      } else {
+        try { await ses.setProxy({ mode: 'system' }) } catch (e) { /* 忽略 */ }
+      }
       // 每次登录都从干净分区开始,避免上一次的登录态让"重新登录"直接跳过
       try { await ses.clearStorageData() } catch (e) { /* 忽略 */ }
       const parent = BrowserWindow.getAllWindows()[0]
@@ -7394,6 +7411,9 @@ if (!WEB_MODE) {
           contextIsolation: true
         }
       })
+      // 伪装成普通 Chrome(见 EMU_BROWSER_UA 的注释):不改的话 Cloudflare 会把窗口
+      // 判成自动化流量,安全验证无限循环。
+      try { win.webContents.setUserAgent(EMU_BROWSER_UA) } catch (e) { /* 忽略 */ }
       let closed = false
       win.on('closed', () => { closed = true })
       const winRef = win
