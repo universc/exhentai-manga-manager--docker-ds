@@ -407,6 +407,9 @@ const downloadOnePage = async ({ url, originalUrl, pageUrl, original = false, sa
 
 module.exports = {
   sanitizeName, extOf, resolveImagePage, downloadFile, runGalleryDownload, downloadOnePage,
+  // 滑动窗口请求节流:紳士漫畫下载(index.js 的 wnacg-download)复用同一套算法,
+  // 免得两处限速行为不一致。
+  createRequestTicker,
   // 文件名位数规则对外暴露:单页重下(index.js 的 eh-download-page-by-index)必须用同一套,
   // 否则「单页重下」会按另一个位数存成第二个文件,整本续传就永远认为这页没下好。
   PAD_MIN, indexPad, buildExistingIndex

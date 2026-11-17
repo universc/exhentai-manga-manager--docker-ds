@@ -1517,6 +1517,8 @@
           <div class="feature-pane" v-show="activeFeature === 'download'">
             <el-row :gutter="8">
               <el-col :span="24">
+                <!-- 下载设置按站点分成两组:EH 的下载器参数 / 紳士漫畫的三线路下载参数,互不影响 -->
+                <div class="download-group-title">{{$t('m.ehDownloadSetting')}}</div>
                 <div class="custom-theme-panel download-setting-panel">
                                 <div class="theme-row theme-row-wide">
                                   <span class="theme-label">{{$t('m.downloadPath')}}</span>
@@ -1594,6 +1596,51 @@
                                 <div class="setting-hint">{{$t('m.downloadRateHint')}}</div>
               
                 </div>
+                <!-- 紳士漫畫下载:阅读(逐页图)/ Server1 / Server2 三条线路共用的参数。
+                     与 EH 分开存,改这里不会动到 EH 下载器的并发与限速。 -->
+                <div class="download-group-title">{{$t('m.wnacgDownloadSetting')}}</div>
+                <div class="custom-theme-panel download-setting-panel">
+                  <div class="theme-row theme-row-wide">
+                    <span class="theme-label">{{$t('m.downloadPath')}}<span class="required-mark" :title="$t('m.wnacgDownloadPathHint')">*</span></span>
+                    <div class="theme-value download-path-value">
+                      <el-input v-model="setting.wnacgDownloadPath" size="small" :placeholder="$t('m.wnacgDownloadPathPlaceholder')" @change="saveSetting">
+                        <template #append><el-button size="small" @click="pickWnacgDownloadPath">{{$t('m.select')}}</el-button></template>
+                      </el-input>
+                    </div>
+                  </div>
+                  <div class="setting-hint">{{$t('m.wnacgDownloadPathHint')}}</div>
+                  <div class="theme-row theme-row-wide">
+                    <span class="theme-label">{{$t('m.downloadConcurrency')}}</span>
+                    <div class="theme-value">
+                      <el-input-number v-model="setting.wnacgDownloadConcurrency" :min="1" :max="10" :step="1" size="small" @change="saveSetting" />
+                    </div>
+                  </div>
+                  <div class="setting-hint">{{$t('m.wnacgDownloadConcurrencyHint')}}</div>
+                  <div class="theme-row theme-row-wide">
+                    <span class="theme-label">{{$t('m.downloadPageRate')}}</span>
+                    <div class="theme-value rate-inputs">
+                      <el-input-number v-model="setting.wnacgDownloadPageRate" :min="0" :max="1000" :step="1" size="small" controls-position="right" @change="saveSetting" />
+                      <span class="rate-sep">{{$t('m.wnacgDownloadPageUnit')}}</span>
+                      <el-input-number v-model="setting.wnacgDownloadPageRateSec" :min="0" :max="3600" :step="5" size="small" controls-position="right" @change="saveSetting" />
+                      <span class="rate-sep">{{$t('m.wnacgDownloadSecUnit')}}</span>
+                    </div>
+                  </div>
+                  <div class="setting-hint">{{$t('m.downloadPageRateHint')}}</div>
+                  <div class="download-subsection-title">{{$t('m.downloadRateTitle')}}</div>
+                  <div class="theme-row theme-row-wide">
+                    <span class="theme-label">{{$t('m.downloadMaxPerPeriod')}}</span>
+                    <div class="theme-value">
+                      <el-input-number v-model="setting.wnacgDownloadMaxPerPeriod" :min="0" :max="20" :step="1" size="small" @change="saveSetting" />
+                    </div>
+                  </div>
+                  <div class="theme-row theme-row-wide">
+                    <span class="theme-label">{{$t('m.downloadPeriodSec')}}</span>
+                    <div class="theme-value">
+                      <el-input-number v-model="setting.wnacgDownloadPeriodSec" :min="0.1" :max="60" :step="0.5" size="small" @change="saveSetting" />
+                    </div>
+                  </div>
+                  <div class="setting-hint">{{$t('m.wnacgDownloadRateHint')}}</div>
+                </div>
               </el-col>
             </el-row>
           </div>
@@ -1647,6 +1694,23 @@
                                   </div>
                                 </div>
                                 <div class="setting-hint">{{$t('m.downloadRemoveAfterMoveHint')}}</div>
+                                <!-- 压缩包解压后移动:勾上后,移动到本地库的压缩包(zip/rar/7z)
+                                     会先解压成文件夹再搬,搬完直接能在阅读器里按目录读。 -->
+                                <div class="download-subsection-title">{{$t('m.archiveExtractOnMoveTitle')}}</div>
+                                <div class="theme-row theme-row-wide">
+                                  <span class="theme-label">{{$t('m.archiveExtractOnMove')}}</span>
+                                  <div class="theme-value">
+                                    <el-switch v-model="setting.archiveExtractOnMove" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="setting-hint">{{$t('m.archiveExtractOnMoveHint')}}</div>
+                                <div class="theme-row theme-row-wide" v-if="setting.archiveExtractOnMove">
+                                  <span class="theme-label">{{$t('m.archiveExtractKeepSource')}}</span>
+                                  <div class="theme-value">
+                                    <el-switch v-model="setting.archiveExtractKeepSource" @change="saveSetting" />
+                                  </div>
+                                </div>
+                                <div class="setting-hint" v-if="setting.archiveExtractOnMove">{{$t('m.archiveExtractKeepSourceHint')}}</div>
                                 <div class="setting-hint">{{$t('m.downloadSettingsHint')}}</div>
             
                 </div>
@@ -1800,6 +1864,58 @@
               <span class="setting-label" style="margin-left:10px">{{$t('m.ehWebpTranscode')}}</span>
             </div>
             <div class="setting-line toolbar-tip">{{$t('m.ehWebpTranscodeHint')}}</div>
+            <!-- 紳士漫畫(wnacg):站点地址 + 在线库开关。站点不需要登录,填个能访问的域名即可 -->
+            <div class="account-divider"></div>
+            <div class="account-section-title">{{$t('m.wnacgSetting')}}</div>
+            <!-- 站点地址(对应 EH 的「登录方式」那一行) -->
+            <div class="setting-line eh-login-bar">
+              <el-input v-model="setting.wnacgHost" class="eh-login-input" style="width: 220px;"
+                        placeholder="www.wnacg.com" @change="onWnacgHostChange">
+                <template #prepend>https://</template>
+              </el-input>
+              <el-button :loading="wnacgTesting" @click="testWnacg">{{$t('m.wnacgTest')}}</el-button>
+              <el-button plain @click="openWnacgSite">{{$t('m.wnacgOpenSite')}}</el-button>
+            </div>
+            <!-- 登录状态(与 EH 一样:左侧标签 + 右侧状态胶囊) -->
+            <div class="setting-line eh-login-bar">
+              <span class="setting-label">{{$t('m.wnacgLoginStatus')}}</span>
+              <el-tag size="small" :type="setting.wnacgCookie ? 'success' : 'info'" effect="plain">
+                {{ setting.wnacgCookie ? $t('m.wnacgLoggedInAs', { name: setting.wnacgUser || '-' }) : $t('m.wnacgNotLoggedIn') }}
+              </el-tag>
+            </div>
+            <!-- 账号密码登录(与 EH 完全同一排:账号 / 密码 / 登录) -->
+            <div class="setting-line eh-login-bar">
+              <el-input v-model="wnacgUsername" size="small" class="eh-login-input"
+                        :placeholder="$t('m.wnacgAccount')" clearable />
+              <el-input v-model="wnacgPassword" size="small" class="eh-login-input" type="password" show-password
+                        :placeholder="$t('m.wnacgPassword')" @keyup.enter="doWnacgLogin" />
+              <el-button type="primary" :loading="wnacgLogging" @click="doWnacgLogin">{{$t('m.wnacgLogin')}}</el-button>
+            </div>
+            <div class="setting-line">
+              <el-button size="small" @click="pasteWnacgCookie">{{$t('m.wnacgPasteCookie')}}</el-button>
+              <el-button size="small" plain @click="copyWnacgCookieCommand">{{$t('m.wnacgCopyCookieCmd')}}</el-button>
+              <el-button v-if="setting.wnacgCookie" size="small" plain @click="clearWnacgCookie">{{$t('m.wnacgCookieClear')}}</el-button>
+            </div>
+            <div class="setting-line toolbar-tip">{{ isDesktopClient ? $t('m.wnacgLoginHint') : $t('m.wnacgLoginHintWeb') }}</div>
+            <div class="setting-hint" style="margin-bottom: 8px">{{$t('m.wnacgCookieHint')}}</div>
+            <!-- Cookie:与 EH 那四项一样的「左侧标签 + 输入框」 -->
+            <div class="setting-line">
+              <el-input v-model="setting.wnacgCookie" @change="saveSetting">
+                <template #prepend><span class="setting-label">Cookie</span></template>
+              </el-input>
+            </div>
+            <!-- 广告:默认加载站点自己的两条广告(只曝光、不可点),不想看可以关掉 -->
+            <div class="setting-line" style="margin-top: 10px;">
+              <el-switch v-model="setting.wnacgDisableAds" @change="saveSetting" />
+              <span class="setting-label" style="margin-left:10px">{{$t('m.wnacgDisableAds')}}</span>
+            </div>
+            <div class="setting-line toolbar-tip">{{$t('m.wnacgDisableAdsHint')}}</div>
+            <div class="advanced-section-title" style="margin-top: 18px;">{{$t('m.wnacgOnline')}}</div>
+            <div class="setting-line">
+              <el-switch v-model="setting.wnacgOnlineEnabled" @change="saveSetting" />
+              <span class="setting-label" style="margin-left:10px">{{$t('m.wnacgOnlineEnable')}}</span>
+            </div>
+            <div class="setting-line toolbar-tip">{{$t('m.wnacgOnlineEnableHint')}}</div>
             <!-- ③ 远程模式(桌面版):连接 NAS 上的网页版/Docker,像网页一样取 NAS 上的漫画。
                  本地模式与远程模式用一条分割线分开。 -->
             <template v-if="showDesktopUI">
@@ -1979,6 +2095,14 @@
       <el-button size="small" type="primary" @click="saveTagNames">{{ $t('m.saveTagNames') }}</el-button>
     </template>
   </el-dialog>
+  <!-- 网页版登录:站点登录页经我们的代理,直接嵌在这里(滑块就在弹窗里拖),不跳浏览器 -->
+  <el-dialog v-model="wnacgLoginDialogVisible" :title="$t('m.wnacgLoginDialogTitle')" width="540px"
+             append-to-body destroy-on-close @closed="stopWnacgLoginPoll">
+    <div class="wnacg-login-frame-wrap">
+      <iframe v-if="wnacgLoginDialogVisible" class="wnacg-login-frame" src="/wnacg-proxy/users-login.html"></iframe>
+    </div>
+    <div class="toolbar-tip" style="margin-top: 8px">{{ $t('m.wnacgLoginDialogHint') }}</div>
+  </el-dialog>
 </template>
 
 <script setup>
@@ -2011,6 +2135,7 @@ import SettingHint from './SettingHint.vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 import { EH_ONLINE_ID, hasEhCookies, parseCookieString } from '../ehOnline.js'
+import { WNACG_ONLINE_ID, wnacgHost, wnacgSectionUrl, parseWnacgList } from '../wnacgOnline.js'
 const appStore = useAppStore()
 const { searchTypeList, setting, bookList, resolvedTranslation, localeFile, tagListRaw, cat2letter,
 } = storeToRefs(appStore)
@@ -2153,6 +2278,17 @@ const pickDownloadPath = async () => {
     const folder = await ipcRenderer.invoke('select-folder', t('m.downloadPath'))
     if (folder) {
       setting.value.downloadPath = folder
+      saveSetting()
+    }
+  } catch (e) { /* 用户取消 */ }
+}
+
+// 紳士漫畫下载文件夹:与 EH 的下载目录分开存(留空时主进程回退到 EH 目录 / 网页版第一个库)
+const pickWnacgDownloadPath = async () => {
+  try {
+    const folder = await ipcRenderer.invoke('select-folder', t('m.wnacgDownloadPath'))
+    if (folder) {
+      setting.value.wnacgDownloadPath = folder
       saveSetting()
     }
   } catch (e) { /* 用户取消 */ }
@@ -2917,6 +3053,16 @@ onMounted(() => {
   ipcRenderer.invoke('load-setting')
     .then(async (res) => {
       setting.value = res
+      // 新增「绅士漫画下载设置」:老配置(或还没重启的后端)没有这些键时补默认值,
+      // 否则设置页里的数字框是空的、开关显示未选中,和主进程实际跑的值对不上。
+      const wnacgDlDefaults = {
+        wnacgDownloadPath: '', wnacgDownloadUseDefault: false,
+        wnacgDownloadConcurrency: 4, wnacgDownloadPageRate: 0, wnacgDownloadPageRateSec: 0,
+        wnacgDownloadMaxPerPeriod: 2, wnacgDownloadPeriodSec: 1
+      }
+      for (const [k, v] of Object.entries(wnacgDlDefaults)) {
+        if (res[k] === undefined) setting.value[k] = v
+      }
       // 网页版:管理员打开设置时加载账户列表与 IP 规则
       loadAccountList()
       loadIpRules()
@@ -3149,7 +3295,9 @@ const activeLibraries = computed(() => libraries.value.filter(l => l.path && Str
 const isLibActive = (lib) => !!(lib && lib.path && String(lib.dataPath || '').trim())
 // 「EH在线」是否已配置(登录 Cookie + 打开开关)
 const ehOnlineAvailable = computed(() => !!setting.value.ehOnlineEnabled && hasEhCookies(setting.value))
-// 「库切换」框里能勾的:真实库(已生效才可选)+ 前端虚拟库「EH在线」(配置好才可选,未配置置灰)
+// 「紳士漫畫」不需要登录:开关打开即可用
+const wnacgOnlineAvailable = computed(() => !!setting.value.wnacgOnlineEnabled)
+// 「库切换」框里能勾的:真实库(已生效才可选)+ 两个前端虚拟库(EH在线 / 紳士漫畫)
 const boxSelectableLibraries = computed(() => {
   const real = libraries.value.map(l => ({
     id: l.id,
@@ -3160,8 +3308,182 @@ const boxSelectableLibraries = computed(() => {
     id: EH_ONLINE_ID,
     label: t('m.ehOnline') + (ehOnlineAvailable.value ? '' : ' ' + t('m.ehOnlineNotConfigured')),
     selectable: ehOnlineAvailable.value
+  }, {
+    id: WNACG_ONLINE_ID,
+    label: t('m.wnacgLibrary') + (wnacgOnlineAvailable.value ? '' : ' ' + t('m.wnacgNotConfigured')),
+    selectable: wnacgOnlineAvailable.value
   }]
 })
+// 登录:桌面版开一个独立分区的登录窗口,登录成功自动把 Cookie 写进设置;
+// 网页版没有窗口可用,提示用户在浏览器登录后把 Cookie 粘到下面。
+const wnacgLogging = ref(false)
+// 账号密码只在内存里:不落盘(和 EH 一样,只保存登录后的 Cookie 与用户名)
+const wnacgUsername = ref(String(setting.value.wnacgUser || ''))
+const wnacgPassword = ref('')
+const doWnacgLogin = async () => {
+  const host = wnacgHost(setting.value)
+  const username = String(wnacgUsername.value || '').trim()
+  const password = String(wnacgPassword.value || '')
+  const applyLogin = (res) => {
+    setting.value.wnacgCookie = res.cookie
+    setting.value.wnacgUser = res.user || username || setting.value.wnacgUser || ''
+    if (res.user) wnacgUsername.value = res.user
+    wnacgPassword.value = ''
+    saveSetting()
+    ElMessage.success(t('m.wnacgLoginOk'))
+  }
+  // ① 先真的用账号密码登一次(桌面版/网页版同一套):不需要滑块就直接成了,不必开窗口
+  if (username && password) {
+    wnacgLogging.value = true
+    try {
+      const r = await ipcRenderer.invoke('wnacg-password-login', { host, username, password })
+      if (r && r.ok && r.cookie) {
+        applyLogin(r)
+        return
+      }
+      // 密码错 / 账号不存在这类「明确失败」:直接报出来,别再让人去手动登
+      if (r && r.error && !['captcha', 'empty', 'verify', 'timeout'].includes(r.error)) {
+        ElMessage.error(t('m.wnacgLoginFail') + ': ' + r.error)
+        return
+      }
+      // captcha:站点要滑块 —— 往下走手动流程
+    } catch (e) { /* 网络问题也往下走手动流程 */ } finally {
+      wnacgLogging.value = false
+    }
+  }
+  // ② 站点要求滑块验证:网页版在本页弹登录窗口(经代理嵌入,滑块在里面拖),
+  //    桌面版弹独立的登录窗口(可自动填表 + 拖滑块)
+  if (isWebMode.value) {
+    // 先把账号密码交给代理会话:登录页载入后会自动填好并点一次「登錄」,
+    // 弹窗里直接就只剩滑块 —— 不用再输一遍
+    try {
+      await fetch('/api/wnacg-proxy/creds', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      })
+    } catch (e) { /* 存不进去也能手动填 */ }
+    wnacgLoginDialogVisible.value = true
+    startWnacgLoginPoll()
+    return
+  }
+  wnacgLogging.value = true
+  try {
+    const res = await ipcRenderer.invoke('wnacg-login', { host, username, password })
+    if (res && res.ok && res.cookie) {
+      applyLogin(res)
+    } else if (res && res.error === 'canceled') {
+      // 用户自己关掉了窗口:不打扰
+    } else {
+      ElMessage.error(t('m.wnacgLoginFail'))
+    }
+  } catch (e) {
+    ElMessage.error(t('m.wnacgLoginFail'))
+  } finally {
+    wnacgLogging.value = false
+  }
+}
+// 粘贴 Cookie:和 EH 的「粘贴 Cookie」一个手感 —— 整段剪贴板文本直接吃进来,
+// 容忍「Cookie: xxx」这种从开发者工具复制出来的前缀,以及换行。
+const pasteWnacgCookie = async () => {
+  let text = ''
+  try { text = await ipcRenderer.invoke('read-text-from-clipboard') } catch (e) { /* 忽略 */ }
+  const raw = String(text || '').trim()
+  const m = /(?:^|\n)\s*cookie\s*[:：]\s*([\s\S]+)/i.exec(raw)
+  const cookie = (m ? m[1] : raw).replace(/\s*\n\s*/g, ' ').trim()
+  if (!cookie || !cookie.includes('=')) {
+    ElMessage.warning(t('m.wnacgCookieNone'))
+    return
+  }
+  setting.value.wnacgCookie = cookie
+  saveSetting()
+  ElMessage.success(t('m.wnacgCookiePasted'))
+}
+// 「复制取 Cookie 命令」:网页版登录只能在浏览器里完成,
+// 这个按钮把 `copy(document.cookie)` 复制到剪贴板 —— 到站点页面按 F12 粘进 Console 回车,
+// 整段 Cookie 就进剪贴板了,回来点「粘贴 Cookie」即可(比手翻开发者工具找 Cookie 快得多)。
+const copyWnacgCookieCommand = async () => {
+  try {
+    await ipcRenderer.invoke('copy-text-to-clipboard', 'copy(document.cookie)')
+    ElMessage.success(t('m.wnacgCopyCookieCmdOk'))
+  } catch (e) {
+    ElMessage.warning(t('m.wnacgCookieNone'))
+  }
+}
+// 网页版登录弹窗:iframe 里登录成功后,Cookie 落在服务端那个代理会话里,
+// 这里定时问一次「登进去了没」,拿到 Cookie 就存设置、关弹窗。
+const wnacgLoginDialogVisible = ref(false)
+let wnacgLoginTimer = null
+const stopWnacgLoginPoll = () => {
+  if (wnacgLoginTimer) clearInterval(wnacgLoginTimer)
+  wnacgLoginTimer = null
+}
+const startWnacgLoginPoll = () => {
+  stopWnacgLoginPoll()
+  let tries = 0
+  wnacgLoginTimer = setInterval(async () => {
+    tries += 1
+    if (tries > 240) { stopWnacgLoginPoll(); return }
+    try {
+      const r = await fetch('/api/wnacg-proxy/status', { credentials: 'include' }).then(x => x.json())
+      if (r && r.loggedIn && r.cookie) {
+        stopWnacgLoginPoll()
+        setting.value.wnacgCookie = r.cookie
+        setting.value.wnacgUser = String(wnacgUsername.value || '').trim() || setting.value.wnacgUser || ''
+        wnacgPassword.value = ''
+        saveSetting()
+        wnacgLoginDialogVisible.value = false
+        ElMessage.success(t('m.wnacgLoginOk'))
+      }
+    } catch (e) { /* 网络抖一下继续轮询 */ }
+  }, 1500)
+}
+const clearWnacgCookie = () => {
+  setting.value.wnacgCookie = ''
+  setting.value.wnacgUser = ''
+  saveSetting()
+  ElMessage.success(t('m.wnacgCookieCleared'))
+}
+
+// 站点域名:去掉协议头与末尾斜杠,存成纯域名(前端所有 URL 都按 https://<host>/ 拼)
+const onWnacgHostChange = () => {
+  setting.value.wnacgHost = wnacgHost(setting.value)
+  saveSetting()
+}
+const openWnacgSite = () => {
+  ipcRenderer.invoke('open-url', 'https://' + wnacgHost(setting.value) + '/')
+}
+// 「测试」:真的取一次列表页,能解析出卡片就算通(顺便验证代理)。
+// 失败时把主进程记下的具体原因(ECONNREFUSED / 超时 / …)一起弹出来 ——
+// 只说「连接失败」会让用户以为站点挂了,实际多半是「设置 → 代理」里的地址不通。
+const wnacgTesting = ref(false)
+const testWnacg = async () => {
+  wnacgTesting.value = true
+  try {
+    const host = wnacgHost(setting.value)
+    const html = await ipcRenderer.invoke('get-ex-webpage', {
+      url: wnacgSectionUrl(setting.value, 'update'),
+      cookie: String(setting.value.wnacgCookie || '')
+    })
+    if (!html) {
+      let why = ''
+      try {
+        const info = await ipcRenderer.invoke('eh-webpage-last-error')
+        why = String((info && info.error) || '')
+      } catch (e) { /* 拿不到原因就只报失败 */ }
+      ElMessage.error(t('m.wnacgTestFail') + (why ? ': ' + why : ''))
+      return
+    }
+    const res = parseWnacgList(html, host)
+    if (res.items.length) ElMessage.success(t('m.wnacgTestOk', { n: res.items.length }))
+    else ElMessage.error(t('m.wnacgTestFail'))
+  } catch (e) {
+    ElMessage.error(t('m.wnacgTestFail') + ': ' + String((e && e.message) || e))
+  } finally {
+    wnacgTesting.value = false
+  }
+}
 const addSwitchBox = () => {
   setting.value.switchBoxes = [...switchBoxes.value, { id: 'box-' + Math.random().toString(16).slice(2, 12), libraryIds: [] }]
   applyLibraries()
@@ -5710,6 +6032,24 @@ defineExpose({
   flex: none
   white-space: nowrap
 
+// 下载设置:EH / 紳士漫畫两组的分组标题(左侧竖线 + 加粗,与面板内的小标题区分开)
+// 绅士漫画「下载文件夹」是必填项:标一个红色星号,和「留空就不下载」的行为对得上
+.required-mark
+  margin-left: 3px
+  color: var(--el-color-danger)
+  font-weight: 700
+
+.download-group-title
+  margin: 16px 0 8px
+  padding-left: 9px
+  border-left: 3px solid var(--el-color-primary)
+  font-size: 14px
+  font-weight: 600
+  line-height: 1.2
+  color: var(--el-text-color-primary)
+  &:first-child
+    margin-top: 2px
+
 .download-setting-panel
   .download-path-value
     flex: 1
@@ -5725,4 +6065,16 @@ defineExpose({
     font-size: 13px
     font-weight: 600
     color: var(--el-text-color-primary)
+// 网页版登录弹窗里的站点登录页
+.wnacg-login-frame-wrap
+  width: 100%
+  height: 620px
+  border-radius: 6px
+  overflow: hidden
+  background: #fff
+.wnacg-login-frame
+  display: block
+  width: 100%
+  height: 100%
+  border: 0
 </style>

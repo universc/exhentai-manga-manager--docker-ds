@@ -64,10 +64,19 @@ const isEhImageHost = (urlOrHost) => {
 // 图片节点一律直连(JHenTai 同口径)。返回 true 表示「这个请求不该挂代理」。
 const shouldBypassProxy = (url) => isEhImageHost(url)
 
+// 代理地址归一化:用户习惯直接填 `127.0.0.1:7890`,而 HttpsProxyAgent 要的是带协议的 URL。
+// 以前不补协议会直接抛 `Invalid URL`(实测:设置里明明填了代理,却一直「连接失败」)。
+const normalizeProxyUrl = (proxy) => {
+  const raw = String(proxy || '').trim()
+  if (!raw) return ''
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return raw
+  return 'http://' + raw
+}
+
 // 代理 agent 缓存:同一个代理地址复用同一个 agent(keep-alive),避免每张图都重建 TLS。
 const agentCache = new Map()
 const agentFor = (proxy) => {
-  const key = String(proxy || '')
+  const key = normalizeProxyUrl(proxy)
   if (!key) return undefined
   let a = agentCache.get(key)
   if (!a) {
@@ -135,6 +144,11 @@ const requestOnce = (url, options = {}) => new Promise((resolveOuter, rejectOute
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.9',
     Referer: options.referer || url
+  }
+  if (options.headers && typeof options.headers === 'object') {
+    for (const [k, v] of Object.entries(options.headers)) {
+      if (v !== undefined && v !== null && v !== '') headers[k] = String(v)
+    }
   }
   if (options.cookie) headers.Cookie = options.cookie
   if (body) {
@@ -749,6 +763,8 @@ module.exports = {
   pageCacheStats,
   // 代理 agent 缓存(index.js 的 get-ex-webpage 要复用它,别再每次 new HttpsProxyAgent)
   agentFor,
+  // 代理地址补协议(host:port → http://host:port)
+  normalizeProxyUrl,
   pickCookies,
   fetchExtraCookies,
   passwordLogin,

@@ -118,7 +118,7 @@ import ContextMenu from '@imengyu/vue3-context-menu'
 
 import { useAppStore } from '../pinia.js'
 import { storeToRefs } from 'pinia'
-import { ensureBookCover, bookImgSrc } from '../utils.js'
+import { ensureBookCover, bookImgSrc, collectionMemberKeys } from '../utils.js'
 import { Loading } from '@element-plus/icons-vue'
 const appStore = useAppStore()
 const { bookList, setting } = storeToRefs(appStore)
@@ -139,9 +139,13 @@ const props = defineProps({
 // 合集成员用的键:聚合条目写入的 ids(id)优先,老数据退回 list(hash)
 const memberKeys = computed(() => {
   const b = props.book || {}
-  if (Array.isArray(b.ids) && b.ids.length) return b.ids
-  if (Array.isArray(b.list) && b.list.length) return b.list
-  return []
+  // 聚合时算好的「全部可能键」并集(本地 hash + 在线 id):最准,优先用
+  if (Array.isArray(b._memberKeys) && b._memberKeys.length) return b._memberKeys
+  // 老数据兜底:ids 与 list 都可能是成员键,合并起来比只取一边更不容易漏
+  const keys = []
+  if (Array.isArray(b.ids)) keys.push(...b.ids)
+  if (Array.isArray(b.list)) keys.push(...b.list)
+  return keys
 })
 
 // 实时成员数组:优先用聚合时 App 挂到条目上的 _members(元素就是 bookList 里那些书的
@@ -152,16 +156,23 @@ const memberKeys = computed(() => {
 const memberBooks = computed(() => {
   const ms = props.book && props.book._members
   if (Array.isArray(ms) && ms.length) return ms.filter(Boolean)
+  // ★ 键必须是字符串且非空:以前直接把 b.id / b.hash 塞进 Map,
+  //   在线书的 hash 是 undefined,一堆成员共用一个 undefined 键互相覆盖,
+  //   于是「按 list 回退」这条路对在线成员永远解析错。
   const byKey = new Map()
   for (const b of bookList.value) {
     if (!b) continue
-    if (b.id != null) byKey.set(b.id, b)
-    if (b.hash != null) byKey.set(b.hash, b)
+    for (const k of collectionMemberKeys(b)) {
+      if (!byKey.has(k)) byKey.set(k, b)
+    }
   }
   const out = []
+  const seen = new Set()
   for (const key of memberKeys.value) {
-    const b = byKey.get(key)
-    if (b) out.push(b)
+    const k = String(key == null ? '' : key)
+    if (!k || seen.has(k)) continue
+    const b = byKey.get(k)
+    if (b && !seen.has(String(b.id || b.hash || ''))) { out.push(b); seen.add(String(b.id || b.hash || '')) }
   }
   return out
 })

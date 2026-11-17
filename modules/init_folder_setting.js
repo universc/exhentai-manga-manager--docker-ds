@@ -316,6 +316,28 @@ const prepareSetting = () => {
     // 否则设置界面里对应输入框是空白的(功能本身会用默认值跑)
     if (setting.scanConcurrency === undefined) setting.scanConcurrency = 4
     if (setting.coverConcurrency === undefined) setting.coverConcurrency = 4
+    // 新增「绅士漫画下载设置」后,老设置文件里没有这些键:补齐默认值,
+    // 否则设置页里的数字框会是空的、开关会显示未选中(实际跑的却是另一套默认值)。
+    const wnacgDlDefaults = {
+      wnacgDownloadPath: '', wnacgDownloadUseDefault: false,
+      wnacgDownloadConcurrency: 4, wnacgDownloadPageRate: 0, wnacgDownloadPageRateSec: 0,
+      wnacgDownloadMaxPerPeriod: 2, wnacgDownloadPeriodSec: 1
+    }
+    for (const [k, v] of Object.entries(wnacgDlDefaults)) {
+      if (setting[k] === undefined) setting[k] = v
+    }
+    // 「压缩包解压后移动」(设置 → 功能 → 文件移动):同样是后加的键,
+    // 老 setting 文件里没有 → 不补的话设置页开关是「未勾选」但后端读到的也是 undefined(等于关),
+    // 用户勾上又没写进去时行为会飘。统一在读取时补齐。
+    const laterDefaults = {
+      archiveExtractOnMove: false,
+      archiveExtractKeepSource: true
+    }
+    for (const [k, v] of Object.entries(laterDefaults)) {
+      if (setting[k] === undefined) setting[k] = v
+    }
+    // 「默认下载线路」已移除:清掉老 setting*.json 里可能残留的键,下次保存设置时不再写回
+    delete setting.wnacgDownloadDefaultMode
     let needSaveSetting = false
     if (setting.imageExplorer === '"C:\\Windows\\explorer.exe"') {
       setting.imageExplorer = _mange_reader
@@ -374,6 +396,38 @@ const prepareSetting = () => {
       ehWebpTranscode: false,
       // 转码质量(50–100),默认 82:实测 q82 只要 23ms,而 q90+mozjpeg 要 62ms 且体积 +95%
       ehWebpTranscodeQuality: 82,
+      // 紳士漫畫(wnacg)在线漫画库:
+      // wnacgHost          = 站点域名(可换成镜像站,如 www.wnacg.ru)
+      // wnacgOnlineEnabled = 是否在库列表/切换库循环里显示「紳士漫畫」这一站
+      // wnacgSection       = 上次选的版块(更新/同人志/…),切回来还停在那一栏
+      wnacgHost: 'www.wnacg.com',
+      wnacgOnlineEnabled: false,
+      wnacgSection: 'update',
+      // wnacgCookie = 登录后的 Cookie(「登录」按钮会自动写入,也可以从浏览器粘贴)。
+      // 只有带它才能看站点对未登录用户隐藏的分类(韩漫 19/20/21/38 就是这种)。
+      wnacgCookie: '',
+      // 登录后从页面读到的用户名(只用于「已登录:xxx」的显示)
+      wnacgUser: '',
+      // wnacgDisableAds = 关掉绅士漫画库顶部的站点广告位(默认 false:广告是站点的收入来源)
+      wnacgDisableAds: false,
+      // 绅士漫画下载(设置 → 功能 → 下载设置 → 绅士漫画下载设置):与 EH 的参数完全分开存。
+      //   wnacgDownloadPath            = 保存目录(空 = 回退 EH 的 downloadPath / 网页版第一个库)
+      //   wnacgDownloadUseDefault      = 不弹目录选择,直接用上面的目录 + 作品标题
+      //   wnacgDownloadConcurrency     = 「下载(阅读)」逐页图的并发数
+      //   wnacgDownloadPageRate(+Sec)  = 每 N 页至少间隔 M 秒;两个 0 = 不限速
+      //   wnacgDownloadMaxPerPeriod/…Sec = 滑动窗口请求节流,0 = 不限
+      wnacgDownloadPath: '',
+      wnacgDownloadUseDefault: false,
+      wnacgDownloadConcurrency: 4,
+      wnacgDownloadPageRate: 0,
+      wnacgDownloadPageRateSec: 0,
+      wnacgDownloadMaxPerPeriod: 2,
+      wnacgDownloadPeriodSec: 1,
+      // 压缩包解压后移动(设置 → 功能 → 文件移动):
+      //   archiveExtractOnMove       = 移动压缩包时先解压成文件夹再搬(默认关,保持老行为)
+      //   archiveExtractKeepSource   = 解压后是否保留原压缩包(默认 true:不替用户删东西)
+      archiveExtractOnMove: false,
+      archiveExtractKeepSource: true,
       // 下载(设置 → 高级 → 下载设置):
       // downloadPath        = 下载到哪个文件夹(空 = 没设置,点下载时提示先去设置)
       // downloadConcurrency = 同时下载几张图(1-10)

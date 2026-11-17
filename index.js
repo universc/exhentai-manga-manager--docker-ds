@@ -81,6 +81,9 @@ const appVersion = pkgJson.buildTime ? (pkgVersion + '+' + pkgJson.buildTime) : 
 // 必须在 app ready 之前注册为 privileged,否则 <img> 不让用。
 const EH_IMG_SCHEME = 'emm-eh'
 const EH_IMG_HOST_RE = /^https:\/\/([^/]+\.)?(hath\.network|ehgt\.org|e-hentai\.org|exhentai\.org)(:\d+)?\//i
+// 紳士漫畫(wnacg)的图床:封面/缩略图都在 *.qy0.ru 这类 CDN 上(实测国内直连不通、走代理正常),
+// 所以同样交给本协议取回,只是不带 EH 的 Cookie、也不做 H@H 换节点。
+const WNACG_IMG_HOST_RE = /^https:\/\/([^/]+\.)?(qy0\.ru|wnacg[0-9a-z.-]*\.(com|ru|org|net|cc|link))(:\d+)?\//i
 
 // ---------- 在线图片:内存缓存 + 有界并发(桌面版 emm-eh 协议用) ----------
 // 与网页版 /api/ex-image 同一套策略:翻回上一页不再重新下载,并发过多不会被 EH 限速打死。
@@ -236,7 +239,11 @@ const settingsByProfile = new Map([[safeProfile(getActiveProfile() || ''), defau
 const currentSettingObj = () => settingsByProfile.get(getActiveProfile()) || defaultSetting
 // index.js 里大量 setting.xxx 读写不用改:Proxy 把它们代理到「当前账户那一份」
 let setting = new Proxy({}, {
-  get: (_, key) => currentSettingObj()[key],
+  // 代理地址统一补成 http://host:port 再交出去:用户常直接填 `127.0.0.1:7890`,
+  // 而 HttpsProxyAgent 拿到不带协议的串会抛 Invalid URL(表现为「填了代理却连接失败」)。
+  get: (_, key) => key === 'proxy'
+    ? ehLogin.normalizeProxyUrl(currentSettingObj()[key])
+    : currentSettingObj()[key],
   set: (_, key, value) => { currentSettingObj()[key] = value; return true },
   deleteProperty: (_, key) => { delete currentSettingObj()[key]; return true },
   has: (_, key) => key in currentSettingObj(),
@@ -1631,7 +1638,12 @@ const createWindow = () => {
   } else if (app.isPackaged) {
     win.loadFile('dist/index.html')
   } else {
-    win.loadURL('http://localhost:5374')
+    // 开发模式:加载 Vite dev server(热更新)。
+    // npm run dev:desktop 会先把这个服务拉起来再启动 Electron;
+    // 直接 npm start 而没开 vite 时会白屏 —— 给一句明确的提示,而不是让人对着白屏猜。
+    win.loadURL('http://localhost:5374').catch(() => {
+      console.error('[dev] 连不上 Vite( http://localhost:5374 )。请用 npm run dev:desktop 启动,或先另开一个终端跑 npm run dev。')
+    })
   }
   win.setMenuBarVisibility(false)
   win.setAutoHideMenuBar(true)
@@ -1642,8 +1654,14 @@ const createWindow = () => {
   win.webContents.on('did-finish-load', () => {
     const name = require('./package.json').name
     const version = appVersion
-    win.setTitle(remoteServer ? `${name} ${version} | NAS: ${remoteServer}` : name + ' ' + version)
+    // 开发模式标题带标记:一眼看得出「这开的是源码 + 热更新」,不是装好的正式版
+    const devTag = app.isPackaged ? '' : ' [dev·HMR]'
+    win.setTitle(remoteServer ? `${name} ${version}${devTag} | NAS: ${remoteServer}` : name + ' ' + version + devTag)
     // 远程模式的自动登录已由本地代理(startRemoteProxy)完成
+    // 开发模式自动开 DevTools(脚本传 --devtools 才会开;npm start 不受影响)
+    if (!app.isPackaged && process.argv.includes('--devtools')) {
+      try { win.webContents.openDevTools({ mode: 'detach' }) } catch (e) { /* 忽略 */ }
+    }
   })
   win.once('ready-to-show', () => {
     // 开机自启动(带 --autostart 参数)时默认不打扰:按设置最小化或驻留托盘
@@ -1713,7 +1731,8 @@ if (!WEB_MODE) {
             // referer 由前端带过来:必须是「图片所在的 /s/<hash>/<gid>-<n> 页」。
             // EH 的 H@H 节点会校验收图来源;用站点根当 referer 更容易被拒。
             const pageRef = reqUrl.searchParams.get('r') || 'https://e-hentai.org/'
-            if (!EH_IMG_HOST_RE.test(raw)) return new Response('bad url', { status: 400 })
+            const isEhImg = EH_IMG_HOST_RE.test(raw)
+            if (!isEhImg && !WNACG_IMG_HOST_RE.test(raw)) return new Response('bad url', { status: 400 })
             // 缓存命中:①内存(同一会话最快)②磁盘(跨重启/跨会话,key 已抹掉 keystamp)
             // ★ Cache-Control 从 no-store 改成 private,max-age:让 Chromium 自己也能留住,
             //   来回滚动/翻回上一页时连协议处理都不用进(no-store 等于把浏览器缓存整个扔掉)。
@@ -1787,7 +1806,7 @@ if (!WEB_MODE) {
               // 两轮:第一轮原地址;第二轮(仅 403/429/509/限速页)回图片页换节点
               for (let attempt = 0; attempt < 2; attempt++) {
                 let target = raw
-                if (attempt >= 1) {
+                if (attempt >= 1 && isEhImg) {
                   // 必须回到「图片页」读 return nl('...') 才能真正换节点(?nl 拼到图片 URL 上无效)
                   try {
                     const fresh = await ehLogin.resolvePageImageInfo(pageRef, {
@@ -1803,7 +1822,7 @@ if (!WEB_MODE) {
                   lastErr = e
                   const st = Number((e && e.status) || 0)
                   // 只有「被 EH 挡住」(403/429/509)才值得换节点;网络层全挂就到此为止
-                  if (attempt === 0 && (st === 403 || st === 429 || st === 509)) continue
+                  if (isEhImg && attempt === 0 && (st === 403 || st === 429 || st === 509)) continue
                   break
                 }
                 try {
@@ -1866,7 +1885,7 @@ if (!WEB_MODE) {
                     lastErr = new Error('not-image:' + ctype.slice(0, 30))
                     dropStream(r)
                     // 200 但回 HTML = 限速页 / 删图页:换一个 H@H 节点再试一轮
-                    if (attempt === 0) continue
+                    if (isEhImg && attempt === 0) continue
                     break
                   }
                   // ★ 关键改造:边收边转,而不是等整包收完再回 Response。
@@ -4461,6 +4480,38 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
 
 // 最近一次 get-ex-webpage 的失败原因(供前端在拿到 null 之后问「为什么」并给出可读提示)。
 // 没有失败过就回 null;同一次失败可以被多次读取。
+// 通用「表单提交」通道:给站点自己的弹窗表单用(目前只有绅士漫画的「加入書架」)。
+// 前端先用 get-ex-webpage 取弹窗页、把 form 的 action/method/字段原样解析出来,再交给这里提交 ——
+// 这样站点改字段也不用改主进程代码,也不用手写猜测的接口地址。
+ipcMain.handle('post-ex-form', async (event, arg) => {
+  const { url, method, fields, cookie, referer } = arg || {}
+  try {
+    if (!url) return null
+    const agent = setting.proxy ? ehLogin.agentFor(setting.proxy) : undefined
+    const m = String(method || 'POST').toUpperCase()
+    const headers = {
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'X-Requested-With': 'XMLHttpRequest'
+    }
+    if (referer) headers.Referer = referer
+    if (cookie) headers.Cookie = cookie
+    const body = new URLSearchParams(fields || {}).toString()
+    const opt = { method: m, headers, agent, redirect: 'follow' }
+    let target = url
+    if (m === 'GET') {
+      if (body) target = url + (url.includes('?') ? '&' : '?') + body
+    } else {
+      opt.body = body
+    }
+    const res = await fetch(target, opt)
+    return await res.text()
+  } catch (e) {
+    console.error('post-ex-form failed', e)
+    setEhWebpageError(url, e)
+    return null
+  }
+})
+
 ipcMain.handle('eh-webpage-last-error', async () => ({ ok: !!lastEhWebpageError, ...(lastEhWebpageError || {}) }))
 
 ipcMain.handle('post-data-ex', async (event, { url, data }) => {
@@ -4501,6 +4552,8 @@ ipcMain.handle('post-data-ex', async (event, { url, data }) => {
 //      轮询该分区的 Cookie;拿到 ipb_member_id + ipb_pass_hash 后再访问一次 exhentai.org 取 igneous,
 //      最后用论坛 showuser 页取用户名,连同四项 Cookie 一起回给前端写进设置。
 const EH_LOGIN_PARTITION = 'persist:eh-login'
+// 紳士漫畫登录窗口的独立分区(与 EH 分开,互不影响)
+const WNACG_LOGIN_PARTITION = 'persist:wnacg-login'
 const EH_LOGIN_URL = ehLogin.EH_BASES.forum + '/index.php?act=Login&CODE=00'
 const EH_EX_URL = ehLogin.EH_BASES.ex + '/'
 let ehLoginInFlight = false
@@ -5303,6 +5356,574 @@ const restoreDownloads = () => {
 }
 restoreDownloads()
 
+// ---------- 紳士漫畫下载任务 ----------
+// 和 EH 共用「下载记录」右栏:同一条 eh-download-progress 广播 + eh-download-records 拉取,
+// 前端的圆环 / 细进度条 / 状态文案全部复用,不再往界面弹百分比消息。
+// 记录单独存一份,不能塞进 downloads.json —— 否则 EH 的暂停/续传/移动/重下会误操作
+// 这些任务(紳士漫畫是逐页图或整本 zip,没有 EH 那种任务队列)。
+const wnacgDownloadTasks = new Map()
+// 作业表:rec.id → { state: { stopped }, promise }。
+// 记录(rec)是**数据**,作业(job)是**谁在跑** —— 暂停/继续只在这张表上打标记,
+// 所以不需要跨进程保持一个活着的 Promise,后端重启也不会留下幽灵任务。
+const wnacgJobs = new Map()
+// ---------- Server 1 / Server 2 的串行闸门 ----------
+// 站点对「同时拉整本压缩包」限得很死:同时开 2 个以上 Server 下载,后面的基本都会失败
+// (503 / 连接被重置)。所以 zip 线路做成**全局一次只跑一个**:
+// 前一个跑完(成功或失败)才放行下一个,按入队顺序排。
+// 阅读线路不走这里 —— 它是逐页图,不占这条通道(用户明确要求「阅读不做限制」)。
+let wnacgZipBusy = false
+const wnacgZipWaiters = []
+const acquireWnacgZipSlot = (label) => new Promise((resolve) => {
+  const who = String(label || '').slice(0, 24)
+  const tryRun = () => {
+    if (wnacgZipBusy) return false
+    wnacgZipBusy = true
+    console.log('[wnacg-zip] 开始:' + who)
+    resolve(() => {
+      wnacgZipBusy = false
+      console.log('[wnacg-zip] 结束:' + who)
+      const next = wnacgZipWaiters.shift()
+      if (next) next()
+    })
+    return true
+  }
+  if (tryRun()) return
+  // 排在别人后面:先把「排队中」告诉界面,用户在任务记录里看得出来在等
+  console.log('[wnacg-zip] 排队等待:' + who)
+  const waiter = () => {
+    if (tryRun()) return
+    wnacgZipWaiters.push(waiter)
+  }
+  wnacgZipWaiters.push(waiter)
+  try { sendMessageToWebContents('等待前一个 Server 下载完成:' + who) } catch (e) { /* 忽略 */ }
+})
+const wnacgDownloadStoreFile = () => path.join(STORE_PATH, 'wnacg-downloads.json')
+const wnacgTagsObj = (t) => ((t && t.tags && typeof t.tags === 'object' && !Array.isArray(t.tags)) ? t.tags : {})
+const publicWnacgTask = (t) => ({
+  id: t.id, url: t.url, title: t.title,
+  cover: t.cover || '', coverPath: t.coverPath || '',
+  source: 'wnacg', mode: t.mode || 'read', modeLabel: t.modeLabel || '',
+  original: false,
+  // 站点标签随任务一起带上:下载记录里直接显示,移到本地库时写进书库
+  tags: wnacgTagsObj(t), category: t.category || '', titleJpn: t.titleJpn || '', rating: Number(t.rating) || 0,
+  // saveDir 是设置里的下载根目录;dirTo 是用户这次真正放文件的那一层(相对路径解析以此为准)
+  saveDir: t.saveDir || '', dirTo: t.dirTo || '', dir: t.dir || '', filePath: t.filePath || '',
+  total: Number(t.total) || 0, done: Number(t.done) || 0, failed: Number(t.failed) || 0,
+  bytes: Number(t.bytes) || 0, status: t.status || 'downloading',
+  error: t.error || '', percent: Number(t.percent) || 0,
+  // phase:下载阶段标记(预留给分阶段的海报)—— 目前站点下载不会写它
+  phase: t.phase || '', linkCount: 0, movedTo: t.movedTo || '', retryCount: 0, nextRetryAt: 0,
+  createdAt: t.createdAt || Date.now(), finishedAt: t.finishedAt || 0
+})
+const wnacgDownloadList = () => Array.from(wnacgDownloadTasks.values())
+  .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map(publicWnacgTask)
+const persistWnacgDownloads = () => {
+  try {
+    fs.writeFileSync(wnacgDownloadStoreFile(), JSON.stringify(wnacgDownloadList().slice(0, DOWNLOAD_RECORD_LIMIT), null, 1))
+  } catch (e) { /* 写不了就只留内存里 */ }
+}
+const restoreWnacgDownloads = () => {
+  try {
+    const raw = JSON.parse(fs.readFileSync(wnacgDownloadStoreFile(), 'utf-8'))
+    if (!Array.isArray(raw)) return
+    for (const t of raw) {
+      if (!t || !t.id) continue
+      // 老记录没有 dirTo:用旧的 dir / filePath 推回来,保持字段齐全(旧记录的反向兼容)
+      const legacyDir = t.dirTo || t.dir || ''
+      const legacyFile = t.filePath || ''
+      const dirTo = legacyDir || (legacyFile ? path.dirname(legacyFile) : '')
+      wnacgDownloadTasks.set(t.id, {
+        ...t,
+        source: 'wnacg',
+        dirTo,
+        tags: wnacgTagsObj(t),
+        // 后端重启时还挂在「下载中」的任务不可能还在跑
+        status: t.status === 'downloading' ? 'failed' : t.status,
+        error: t.status === 'downloading' ? '下载中断(程序已重启)' : (t.error || '')
+      })
+    }
+  } catch (e) { /* 没有记录文件 */ }
+}
+restoreWnacgDownloads()
+// 清理历史遗留的重复任务:同一个作品 + 同一条线路只留一条。
+// 以前 id 带时间戳,连点几次下载就会攒下好几条一模一样的记录(还各自往同一目录写文件)。
+// 保留规则:优先「已完成」> 「下载中/暂停/失败」> 最早创建的那条,其余删掉。
+const dedupeWnacgDownloads = () => {
+  try {
+    const groups = new Map()
+    for (const t of wnacgDownloadTasks.values()) {
+      const m = /photos-index-aid-(\d+)\.html/i.exec(String(t.url || ''))
+      const key = (m ? m[1] : String(t.url || t.id)) + '|' + String(t.mode || '')
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push(t)
+    }
+    let removed = 0
+    for (const list of groups.values()) {
+      if (list.length <= 1) continue
+      list.sort((a, b) => {
+        const rank = (x) => (x.status === 'done' ? 0 : (x.status === 'downloading' ? 1 : 2))
+        return (rank(a) - rank(b)) || ((a.createdAt || 0) - (b.createdAt || 0))
+      })
+      for (const t of list.slice(1)) { wnacgDownloadTasks.delete(t.id); removed += 1 }
+    }
+    if (removed) {
+      persistWnacgDownloads()
+      console.log('[wnacg] 已清理重复下载记录', removed, '条')
+    }
+  } catch (e) { /* 清理失败不影响启动 */ }
+}
+dedupeWnacgDownloads()
+// 每推一次进度都广播;落盘节流(逐页下载会推几百条事件,不能每页都写一次 JSON)。
+// 状态一变(下载中 → 完成/失败)立即写,保证刷新页面 / 重启后端看到的都是最终状态。
+let lastWnacgPersist = 0
+const emitWnacgTask = (t) => {
+  if (!t) return
+  // 记录可能已经被删(仅删除记录 / 删除记录和文件):删了就别再推,
+  // 否则前端一 upsert 就把它塞回右栏,表现就是「删了又自己出现」。
+  if (wnacgDownloadTasks.get(t.id) !== t) return
+  emitToRenderer('eh-download-progress', publicWnacgTask(t))
+  const now = Date.now()
+  if (t.status !== 'downloading' || now - lastWnacgPersist > 500) {
+    lastWnacgPersist = now
+    persistWnacgDownloads()
+  }
+}
+// 右栏 X「仅删除记录」:紳士漫畫记录走自己的 Map,不动 EH 的 downloads.json
+ipcMain.handle('wnacg-download-remove', async (event, arg) => {
+  const id = String((arg && arg.id) || '')
+  const t = id ? wnacgDownloadTasks.get(id) : null
+  // 先让正在跑的作业停手,再摘记录 —— 否则它收尾时会把这条记录又推回右栏
+  const job = id ? wnacgJobs.get(id) : null
+  if (job && job.state) job.state.stopped = true
+  if (id && wnacgDownloadTasks.delete(id)) {
+    persistWnacgDownloads()
+    emitToRenderer('eh-download-removed', { id })
+  }
+  if (t) removeWnacgCoverFile(t)
+  return { ok: true }
+})
+
+// 一张任务真正下出来的东西在哪(要删/要移的都只是它,绝不动用户选的目录本身):
+//   · 阅读线路:整本文件夹,记在 dir(succeed 里从 folder 填进来)
+//   · Server1/2:单个 zip,记在 filePath
+// ⚠ 千万不能拿 dirTo 当目标:dirTo 是「用户选的保存位置」那一层,
+//   拿它去 move/rm 等于把整个下载文件夹搬走或删掉。
+const wnacgArtifactOf = (t) => {
+  if (!t) return ''
+  const p = t.mode === 'read'
+    ? String(t.dir || t.filePath || '').trim()
+    : String(t.filePath || t.dir || '').trim()
+  if (!p) return ''
+  // 只有真正落在保存目录**之内**的路径才认(下载目录本身不算)
+  const base = String(t.saveDir || '').trim()
+  if (!base) return ''
+  const abs = path.resolve(p)
+  const b = path.resolve(base)
+  if (abs === b) return ''
+  if (!abs.startsWith(b + path.sep)) return ''
+  return abs
+}
+
+// 清掉这张本地封面缓存(逐页图任务会把第一页当封面;第一页在下载目录里,这里只删缓存副本)
+const removeWnacgCoverFile = (t) => {
+  try {
+    const cover = String((t && t.coverPath) || '').trim()
+    if (!cover) return
+    const abs = path.resolve(cover)
+    const base = String((t && t.saveDir) || '').trim()
+    const b = base ? path.resolve(base) : ''
+    // 封面可能就是下载目录里的第一页:那是用户要留的图,不能删
+    if (b && (abs === b || abs.startsWith(b + path.sep))) return
+    fs.rmSync(abs, { force: true })
+  } catch (e) { /* 忽略 */ }
+}
+
+// 右栏垃圾桶「删除记录和文件」+ 暂停 / 继续 / 重下:都走这一个通道
+ipcMain.handle('wnacg-download-action', async (event, arg) => {
+  const id = String((arg && arg.id) || '')
+  const action = String((arg && arg.action) || '')
+  const t = id ? wnacgDownloadTasks.get(id) : null
+  if (!t) return { ok: false, error: 'notFound' }
+
+  if (action === 'pause') {
+    const job = wnacgJobs.get(id)
+    if (job && job.state) job.state.stopped = true
+    // 作业可能还没开始跑(刚建记录)、或者已经跑完:直接落成 paused
+    if (!job) {
+      t.status = 'paused'
+      t.error = ''
+      emitWnacgTask(t)
+    }
+    return { ok: true, task: publicWnacgTask(t) }
+  }
+
+  if (action === 'resume') {
+    if (t.status === 'done') return { ok: true, task: publicWnacgTask(t) }
+    if (t.movedTo) return { ok: false, error: 'alreadyMoved' }
+    // 已经在跑:只清掉停止标记,循环会自己接着走
+    const job = wnacgJobs.get(id)
+    if (job) {
+      job.state.stopped = false
+      t.status = 'downloading'
+      t.error = ''
+      emitWnacgTask(t)
+      return { ok: true, task: publicWnacgTask(t) }
+    }
+    // 没在跑(暂停 / 失败 / 后端重启):重新起一个作业,已下好的页按文件名跳过
+    t.status = 'downloading'
+    t.error = ''
+    t.finishedAt = 0
+    emitWnacgTask(t)
+    runWnacgJob(t, { resume: true }).catch(() => {})
+    return { ok: true, task: publicWnacgTask(t) }
+  }
+
+  if (action === 'restart') {
+    const job = wnacgJobs.get(id)
+    if (job && job.state) job.state.stopped = true
+    const artifact = wnacgArtifactOf(t)
+    if (artifact) {
+      try { fs.rmSync(artifact, { recursive: true, force: true }) } catch (e) { /* 忽略 */ }
+    }
+    t.done = 0
+    t.failed = 0
+    t.bytes = 0
+    t.total = 0
+    t.percent = 0
+    t.error = ''
+    t.dir = ''
+    t.filePath = ''
+    t.coverPath = ''
+    t.finishedAt = 0
+    t.status = 'downloading'
+    emitWnacgTask(t)
+    // 等旧作业真的退出再起新的,否则两个循环会同时往一个目录写
+    const start = () => runWnacgJob(t).catch(() => {})
+    if (job) job.promise.then(start, start)
+    else setTimeout(start, 0)
+    return { ok: true, task: publicWnacgTask(t) }
+  }
+
+  if (action === 'delete' || action === 'deleteWithFiles') {
+    const job = wnacgJobs.get(id)
+    if (job && job.state) job.state.stopped = true
+    wnacgDownloadTasks.delete(id)
+    persistWnacgDownloads()
+    emitToRenderer('eh-download-removed', { id })
+    removeWnacgCoverFile(t)
+    if (action === 'deleteWithFiles') {
+      if (t.movedTo) return { ok: false, error: 'alreadyMoved' } // 已进书库:删文件请走书架
+      const artifact = wnacgArtifactOf(t)
+      if (artifact) {
+        try { fs.rmSync(artifact, { recursive: true, force: true }) } catch (e) { /* 文件被占用/已不存在:忽略 */ }
+      }
+    }
+    return { ok: true }
+  }
+
+  return { ok: false, error: 'badAction' }
+})
+
+// 把一条已完成的紳士漫畫任务移进本地库 / 任意文件夹。
+// 与 EH 的 runMoveDownloads 分开写:那边只认 downloadTasks,而且只搬目录;
+// 这里还要支持「Server1/2 下回来的单个 zip」,搬完同样要在库里登记 + 生成封面。
+const wnacgMoveTasks = async (ids, targetRoot, opts = {}) => {
+  if (rejectIfLibraryOffline('移动下载到漫画库')) {
+    return { ok: false, error: 'libraryOffline', results: (ids || []).map(id => ({ id, ok: false, error: 'libraryOffline' })) }
+  }
+  const removeAfterMove = opts.removeAfterMove !== false && !!setting.downloadRemoveAfterMove
+  targetRoot = path.resolve(String(targetRoot || '').trim())
+  try { fs.mkdirSync(targetRoot, { recursive: true }) } catch (e) { /* 已存在或建不了,后面逐个报错 */ }
+  const results = []
+  for (const id of ids) {
+    const rec = wnacgDownloadTasks.get(id)
+    if (!rec) { results.push({ id, ok: false, error: 'notFound' }); continue }
+    if (rec.status === 'downloading') { results.push({ id, ok: false, error: 'downloading' }); continue }
+    if (rec.movedTo) { results.push({ id, ok: false, error: 'alreadyMoved' }); continue }
+    // 源路径 = 这条任务真正下出来的那一件(整本文件夹 / 单个 zip),不是用户选的目录本身
+    const src = wnacgArtifactOf(rec)
+    if (!src || !fs.existsSync(src)) { results.push({ id, ok: false, error: 'noDir' }); continue }
+    try {
+      // ★压缩包解压后移动:站点 Server1/2 下回来的是单个 zip,勾上后解压成文件夹再搬
+      let dest = ''
+      if (ARCHIVE_EXT_OF(src) && setting.archiveExtractOnMove) {
+        const re = await moveArchiveExtracted(src, targetRoot, { removeSource: !setting.archiveExtractKeepSource })
+        dest = re.dest
+      } else {
+        const baseName = path.basename(src)
+        dest = path.join(targetRoot, baseName)
+        for (let i = 2; fs.existsSync(dest); i++) dest = path.join(targetRoot, baseName + ' (' + i + ')')
+        try {
+          await fs.promises.rename(src, dest)
+        } catch (e) {
+          // 跨盘(下载目录和库不在同一个卷)走复制+删除
+          if (e.code === 'EXDEV' || e.code === 'EPERM') {
+            await fs.promises.cp(src, dest, { recursive: true })
+            await fs.promises.rm(src, { recursive: true, force: true })
+          } else throw e
+        }
+      }
+      // 迁移数据:目标在某个本地库内 → 在库里登记(标签/分类一并写进去)+ 生成封面
+      let bookId = null
+      const lib = libraryForPath(dest)
+      if (lib) {
+        try {
+          const model = await modelForLibrary(lib.id)
+          const isDir = fs.statSync(dest).isDirectory()
+          const type = isDir ? 'folder' : (archiveTypeOf(dest) || 'zip')
+          bookId = nanoid()
+          const tags = wnacgTagsObj(rec)
+          const pageCount = isDir ? (rec.total || countFolderImages(dest) || null) : (rec.total || null)
+          await model.create({
+            id: bookId,
+            title: rec.title || path.basename(dest),
+            title_jpn: rec.titleJpn || '',
+            coverPath: null,
+            hash: null,
+            filepath: toExternalPath(dest, 'filepath', lib),
+            type,
+            pageCount,
+            filecount: pageCount,
+            bundleSize: null,
+            mtime: new Date().toJSON(),
+            coverHash: null,
+            status: Object.keys(tags).length ? 'tagged' : 'non-tag',
+            exist: true,
+            date: Date.now(),
+            category: rec.category || '',
+            url: rec.url || '',
+            rating: Number(rec.rating) || 0,
+            tags
+          })
+          bookLibraryById.set(bookId, lib.id)
+          try {
+            const coverDir = coverDirOf(lib)
+            fs.mkdirSync(coverDir, { recursive: true })
+            const cover = await generateCoverByName({ id: bookId, filepath: dest, type, libraryId: lib.id }, coverDir)
+            if (cover) {
+              const extCover = toExternalPath(cover.coverPath, 'coverPath', null, coverDir)
+              await model.update({ coverPath: extCover }, { where: { id: bookId } })
+            }
+          } catch (e2) { /* 封面生成失败不影响移动 */ }
+        } catch (e3) {
+          sendMessageToWebContents('移动到库内登记失败:' + ((e3 && e3.message) || e3))
+        }
+      }
+      rec.movedTo = dest
+      // ⚠ 这里**不能**再写 rec.dirTo:dirTo 是「下载根目录那一层」的基准,
+      //   移动之后改写它,下次续传就会在目标路径下再拼一次书名(书名/书名 套娃)。
+      //   移动后的真实位置记在 movedTo + dir 里,足够预览/阅读用了。
+      rec.dir = dest
+      if (removeAfterMove) {
+        wnacgDownloadTasks.delete(id)
+        persistWnacgDownloads()
+        emitToRenderer('eh-download-removed', { id })
+      } else {
+        persistWnacgDownloads()
+        emitToRenderer('eh-download-progress', publicWnacgTask(rec))
+      }
+      results.push({ id, ok: true, dest, bookId, inLibrary: !!lib, removed: removeAfterMove })
+    } catch (e) {
+      results.push({ id, ok: false, error: String((e && e.message) || e) })
+    }
+  }
+  return { ok: true, results }
+}
+
+// 老记录补标签:早期版本的站点任务只存了空 tags(用户看到的就是「没有显示标签」)。
+// 这里在「读记录」时顺手补一次,每进程每本只试一次;失败就算了下回再说。
+const wnacgTagBackfillTried = new Set()
+const backfillWnacgTags = (t) => {
+  try {
+    if (!t || t.source !== 'wnacg') return
+    if (wnacgTagsObj(t) && Object.keys(wnacgTagsObj(t)).length) return
+    if (wnacgTagBackfillTried.has(t.id)) return
+    wnacgTagBackfillTried.add(t.id)
+    const m = /photos-index-aid-(\d+)\.html/i.exec(String(t.url || ''))
+    if (!m) return
+    const host = String(setting.wnacgHost || 'www.wnacg.com').replace(/^https?:\/\//i, '').replace(/\/+$/, '')
+    const base = 'https://' + host
+    ehLogin.request(base + '/photos-index-aid-' + m[1] + '.html', {
+      proxy: setting.proxy, cookie: String(setting.wnacgCookie || ''), referer: base + '/', raw: true, timeout: 20000, retries: 1
+    }).then(r => parseWnacgDetailBrief(String((r && r.buffer) || '')))
+      .then(async detail => {
+        if (!detail || !detail.ok) return
+        if (wnacgDownloadTasks.get(t.id) !== t) return
+        if (detail.category && !t.category) t.category = detail.category
+        if (detail.pageCount && !t.total) t.total = detail.pageCount
+        if (!detail.tags.length) return
+        const index = await wnacgBuildTagIndex()
+        const classified = wnacgClassifyTags({ tag: detail.tags }, index)
+        if (!Object.keys(classified).length) return
+        if (wnacgDownloadTasks.get(t.id) !== t) return
+        t.tags = classified
+        registerGlobalTags(classified)
+        persistWnacgDownloads()
+        emitToRenderer('eh-download-progress', publicWnacgTask(t))
+      })
+      .catch(() => { /* 代理/网络不通就下次再说 */ })
+  } catch (e) { /* 忽略 */ }
+}
+
+// 绅士漫画任务的「移动」入口:与 EH 的 move-downloads 分开注册,免得两套 Map 混在一起判断
+ipcMain.handle('wnacg-download-move', async (event, arg) => {
+  const ids = Array.isArray(arg && arg.ids) ? arg.ids.map(String) : []
+  if (!ids.length) return { ok: false, error: 'noIds' }
+  if (!(arg && arg.target)) return { ok: false, error: 'noTarget' }
+  return wnacgMoveTasks(ids, arg.target, { removeAfterMove: arg.removeAfterMove })
+})
+
+// ---------- 紳士漫畫标签归类 ----------
+// 站点详情页的标签**没有命名空间**(只有一串 a.tagshow),而本应用的书库是按类别分组的。
+// 用户的规矩:已经在库里出现过的标签 → 原样写进它**已有的类别**;从没见过的新标签 → 写进「标签」这个类别。
+// 这样不会把「泳裝」这类老标签复制到新类别里,也不会让新标签散落到 character/female 之类猜出来的分组。
+const WNACG_NEW_TAG_CAT = '标签'
+// 内置类别键 + 中文显示名(与渲染端 utils.js 的 DEFAULT_CAT_NAMES 同口径),
+// 用来判断「站点标签里括号中的那一截」是不是一个类别提示,而不是作品名。
+const WNACG_CAT_HINTS = {
+  language: ['language', '语言', '語言'],
+  parody: ['parody', '作品', '原作'],
+  character: ['character', '角色'],
+  group: ['group', '社团', '社團', '团队', '團隊'],
+  artist: ['artist', '作者', '艺术家', '藝術家'],
+  male: ['male', '男性'],
+  female: ['female', '女性'],
+  mixed: ['mixed', '混合'],
+  other: ['other', '其他', '其它'],
+  cosplayer: ['cosplayer', 'cosplay'],
+  location: ['location', '地点', '地點'],
+}
+// 一个类别的全部写法(自身 + 同组别名),一律小写。
+// ⚠ 只用来「认得出这是同一个类别」,**绝不改写类别的写法** ——
+//   书库里存的可能是「角色」也可能是 character,改写会把同一个类别劈成两组。
+const wnacgCatAliasList = (cat) => {
+  const raw = String(cat == null ? '' : cat).trim()
+  if (!raw) return []
+  const out = new Set([raw.toLowerCase()])
+  for (const aliases of Object.values(WNACG_CAT_HINTS)) {
+    if (!aliases.some(a => a.toLowerCase() === raw.toLowerCase())) continue
+    for (const a of aliases) out.add(a.toLowerCase())
+  }
+  return [...out]
+}
+// 在两份「已有标签」里找同名标签(忽略大小写):
+//   ① [分类::标签] → 标签 的索引来自 metadata.sqlite 的全量标签(书库里真实出现过的)
+//   ② plain 索引额外含 setting.globalTags(「新增标签」建出来、还没挂到任何书上的)
+const wnacgBuildTagIndex = () => {
+  // byKey: 「类别写法##标签」→ { cat, tag }(任何同义写法都登记一遍,便于按站点命名空间查)
+  // plain: 标签名 → { cat, tag }(用户要的「写入已有标签」就看这一张)
+  const byKey = new Map()
+  const plain = new Map()
+  const add = (cat, name) => {
+    const rawCat = String(cat == null ? '' : cat).trim()
+    const tag = String(name == null ? '' : name).trim()
+    if (!rawCat || !tag) return
+    for (const alias of wnacgCatAliasList(rawCat)) {
+      const lk = alias + '##' + tag.toLowerCase()
+      // 已经登记过别的写法就保留先到的(书库优先、后到的全局标签不覆盖)
+      if (!byKey.has(lk)) byKey.set(lk, { cat: rawCat, tag })
+    }
+    const lt = tag.toLowerCase()
+    if (!plain.has(lt)) plain.set(lt, { cat: rawCat, tag })
+  }
+  // ① 先放书库里真实出现过的标签(优先级最高:用户要「写入已有标签中」)
+  return Metadata.findAll({ attributes: ['tags'] }).then(rows => {
+    for (const row of rows) {
+      const tags = row && row.tags
+      if (!tags || typeof tags !== 'object') continue
+      for (const [cat, arr] of Object.entries(tags)) {
+        if (!Array.isArray(arr)) continue
+        for (const name of arr) add(cat, name)
+      }
+    }
+    // ② 再用「全局标签」补齐还没挂到任何书上的(新增标签先登记在设置里)
+    const gs = (setting && setting.globalTags && typeof setting.globalTags === 'object') ? setting.globalTags : {}
+    for (const [cat, arr] of Object.entries(gs)) {
+      if (Array.isArray(arr)) for (const name of arr) add(cat, name)
+    }
+    return { byKey, plain }
+  }).catch(() => {
+    const gs = (setting && setting.globalTags && typeof setting.globalTags === 'object') ? setting.globalTags : {}
+    for (const [cat, arr] of Object.entries(gs)) {
+      if (Array.isArray(arr)) for (const name of arr) add(cat, name)
+    }
+    return { byKey, plain }
+  })
+}
+// 把站点标签表整理成本应用的书库标签表:{ 类别: [标签] }
+const wnacgClassifyTags = (rawTags, index) => {
+  const byKey = (index && index.byKey) || new Map()
+  const plain = (index && index.plain) || new Map()
+  const out = {}
+  // 写入时用**书库里原本的写法**(上面查到的 cat 原样带回),没有才用「标签」
+  const push = (cat, name) => {
+    const rawCat = String(cat == null ? '' : cat).trim() || WNACG_NEW_TAG_CAT
+    const tag = String(name == null ? '' : name).trim()
+    if (!tag) return
+    if (!out[rawCat]) out[rawCat] = []
+    // 去重忽略大小写(与标签列表口径一致:Glasses 与 glasses 是同一个标签)
+    if (!out[rawCat].some(x => x.toLowerCase() === tag.toLowerCase())) out[rawCat].push(tag)
+  }
+  const seen = new Set()
+  const visit = (cat, value) => {
+    if (Array.isArray(value)) {
+      for (const name of value) visit(cat, name)
+      return
+    }
+    if (value && typeof value === 'object') return
+    const tag = String(value == null ? '' : value).trim()
+    if (!tag) return
+    const lt = tag.toLowerCase()
+    // 同一个标签只归一次(站点 tag 表里可能重复)
+    if (seen.has(lt)) return
+    seen.add(lt)
+    const rawCat = String(cat == null ? '' : cat).trim()
+    // ① 站点自己给了命名空间(EH 风格)且这个标签确实在该类别里 → 用站点给的
+    if (rawCat && rawCat.toLowerCase() !== WNACG_NEW_TAG_CAT.toLowerCase()) {
+      for (const alias of wnacgCatAliasList(rawCat)) {
+        const hitKey = byKey.get(alias + '##' + lt)
+        if (hitKey) { push(hitKey.cat, hitKey.tag); return }
+      }
+    }
+    // ② 库里出现过同名标签 → 写进它**已有的类别**(保持原来的写法,不新建同义分组)
+    const hit = plain.get(lt)
+    if (hit) { push(hit.cat, hit.tag); return }
+    // ③ 从没见过的新标签 → 「标签」类别
+    push(WNACG_NEW_TAG_CAT, tag)
+  }
+  for (const [cat, arr] of Object.entries(rawTags || {})) visit(cat, arr)
+  return out
+}
+
+// 把新出现的标签登记成「全局标签」:不挂在任何书上也能在标签设置里看到(与 add-global-tag 同一份数据)
+const registerGlobalTags = (tags) => {
+  try {
+    if (!tags || typeof tags !== 'object') return 0
+    let changed = 0
+    if (!setting.globalTags || typeof setting.globalTags !== 'object') setting.globalTags = {}
+    for (const [cat, arr] of Object.entries(tags)) {
+      if (!Array.isArray(arr) || !arr.length) continue
+      const cur = Array.isArray(setting.globalTags[cat]) ? setting.globalTags[cat].slice() : []
+      const lower = new Set(cur.map(v => String(v).toLowerCase()))
+      let dirty = false
+      for (const name of arr) {
+        const tag = String(name == null ? '' : name).trim()
+        if (!tag) continue
+        if (lower.has(tag.toLowerCase())) continue
+        cur.push(tag)
+        lower.add(tag.toLowerCase())
+        // 登记「前端还没确认这个新增」,防止它随后整份保存时把它冲掉
+        notePendingGlobalTag(cat, tag)
+        dirty = true
+        changed += 1
+      }
+      if (dirty && (cur.length || setting.globalTags[cat])) setting.globalTags[cat] = cur
+    }
+    if (changed) persistSettingNow()
+    return changed
+  } catch (e) { return 0 }
+}
+
 const runDownloadJob = (rec) => {
   // ★ 运行锁:同一条记录同一时刻只允许一个 worker。
   //   以前「暂停 → 立刻继续」会同时跑两个 worker —— 旧 worker 只在页边界检查 state.stopped,
@@ -5524,7 +6145,25 @@ ipcMain.handle('eh-download-records', async () => {
     const fixed = Math.max(Number(t.total) || 0, (Number(t.done) || 0) + (Number(t.failed) || 0), Number(t.pageCount) || 0)
     if (fixed !== t.total) { t.total = fixed }
   }
-  return { ok: true, tasks: downloadList() }
+  // 老记录(当时还没做「标签随下载一起抓」)顺手补一次标签,右栏才显示得出来
+  for (const t of wnacgDownloadTasks.values()) backfillWnacgTags(t)
+  // 逐页图记录:dir 可能指向套娃目录的外层(历史 bug),那一层没图 → 阅读器打开是空白。
+  // 这里在返回记录前自愈一次,面板/预览/阅读器拿到的都是「真正有图片的那一层」。
+  let healed = false
+  for (const t of wnacgDownloadTasks.values()) {
+    if (!t || t.mode !== 'read' || t.movedTo) continue
+    if (!fs.existsSync(String(t.dir || ''))) {
+      // 记录里的目录已经不在了(被移动/被整理掉):按 saveDir + 书名 重新算一遍
+      const guess = wnacgFolderOf(t)
+      if (guess && fs.existsSync(guess)) { t.dir = guess; healed = true }
+    } else {
+      const best = wnacgBestImageDir(t.dir)
+      if (best && best !== t.dir) { t.dir = best; healed = true }
+    }
+  }
+  if (healed) persistWnacgDownloads()
+  // 紳士漫畫的记录一起回:前端打开/刷新右栏时也能看到(进度事件之外的一条兜底路径)
+  return { ok: true, tasks: downloadList().concat(wnacgDownloadList()) }
 })
 
 // 诊断用:完整跑一次下载(到临时目录),把过程与错误原样带出来
@@ -5585,17 +6224,20 @@ ipcMain.handle('eh-download-files', async (event, arg) => {
   // 任务状态:用来区分「这一页还没轮到」和「这一页试过但失败了」,
   // 预览里前者显示等待,后者显示失败(用户要的「没好的就显示进度」)。
   const taskId = String((arg && arg.id) || '')
-  const task = taskId ? downloadTasks.get(taskId) : null
+  // 绅士漫画记录在另一个 Map 里:不认这一条的话,它的预览永远是「没有可预览的页」
+  const wnacgTask = taskId ? wnacgDownloadTasks.get(taskId) : null
+  const task = taskId ? (downloadTasks.get(taskId) || wnacgTask) : null
   // 全程按「任务已知的总页数」出定长数组:目录里只有前 7 张时也要有 8、9 两格占位,
   // 这样预览永远是「整本的样子」,不会因为还没下到而缺一块(用户反馈的问题)。
   const count = total
   const skeleton = Array.from({ length: count }, () => null)
-  if (!dir) return { ok: true, files: skeleton, total: count, task: task ? publicDownload(task) : null }
+  const taskJson = () => (wnacgTask ? publicWnacgTask(wnacgTask) : (task ? publicDownload(task) : null))
+  if (!dir) return { ok: true, files: skeleton, total: count, task: taskJson() }
   let names = []
   try {
     names = fs.readdirSync(dir)
   } catch (e) {
-    return { ok: true, files: skeleton, total: count, task: task ? publicDownload(task) : null }
+    return { ok: true, files: skeleton, total: count, task: taskJson() }
   }
   const byIndex = new Map()
   for (const name of names) {
@@ -5612,7 +6254,7 @@ ipcMain.handle('eh-download-files', async (event, arg) => {
   const maxIndex = byIndex.size ? Math.max(...byIndex.keys()) + 1 : 0
   const finalCount = Math.max(count, maxIndex)
   const files = Array.from({ length: finalCount }, (_, i) => byIndex.get(i) || null)
-  return { ok: true, files, total: finalCount, task: task ? publicDownload(task) : null }
+  return { ok: true, files, total: finalCount, task: taskJson() }
 })
 
 // 删掉某条下载记录留下的封面缓存文件。
@@ -5774,6 +6416,9 @@ ipcMain.handle('eh-download-clear', async () => {
   }
   downloadTasks.clear()
   persistDownloads()
+  // 紳士漫畫记录也在同一个右栏里:「清空记录」必须一起清,否则重启后端又冒出来
+  wnacgDownloadTasks.clear()
+  persistWnacgDownloads()
   // 封面缓存跟着清掉(不然以后按旧 id 补封面还能把图写回来)
   for (const t of cleared) removeDownloadCoverFiles(t)
   // 广播一次「已整体清空」:前端据此清空列表 + 记时间戳,
@@ -5895,18 +6540,27 @@ const runMoveDownloads = async (ids, targetRoot, opts = {}) => {
     const src = rec.dir ? path.resolve(rec.dir) : ''
     if (!src || !fs.existsSync(src)) { results.push({ id, ok: false, error: 'noDir' }); continue }
     try {
-      // 目标同名就加 (2)(3)…
-      const baseName = path.basename(src)
-      let dest = path.join(targetRoot, baseName)
-      for (let i = 2; fs.existsSync(dest); i++) dest = path.join(targetRoot, baseName + ' (' + i + ')')
-      try {
-        await fs.promises.rename(src, dest)
-      } catch (e) {
-        // 跨盘(下载目录和库不在同一个卷)走复制+删除
-        if (e.code === 'EXDEV' || e.code === 'EPERM') {
-          await fs.promises.cp(src, dest, { recursive: true })
-          await fs.promises.rm(src, { recursive: true, force: true })
-        } else throw e
+      // ★压缩包解压后移动(设置 → 功能 → 文件移动):勾上后先解压成文件夹,再搬文件夹
+      let dest = ''
+      let extracted = false
+      if (ARCHIVE_EXT_OF(src) && setting.archiveExtractOnMove) {
+        const r2 = await moveArchiveExtracted(src, targetRoot, { removeSource: !setting.archiveExtractKeepSource })
+        dest = r2.dest
+        extracted = true
+      } else {
+        // 目标同名就加 (2)(3)…
+        const baseName = path.basename(src)
+        dest = path.join(targetRoot, baseName)
+        for (let i = 2; fs.existsSync(dest); i++) dest = path.join(targetRoot, baseName + ' (' + i + ')')
+        try {
+          await fs.promises.rename(src, dest)
+        } catch (e) {
+          // 跨盘(下载目录和库不在同一个卷)走复制+删除
+          if (e.code === 'EXDEV' || e.code === 'EPERM') {
+            await fs.promises.cp(src, dest, { recursive: true })
+            await fs.promises.rm(src, { recursive: true, force: true })
+          } else throw e
+        }
       }
       // 迁移数据:目标在某个本地库内 → 在库里登记(标签/分类/日文标题/评分一并写进去)+ 生成封面
       let bookId = null
@@ -5925,6 +6579,7 @@ const runMoveDownloads = async (ids, targetRoot, opts = {}) => {
             coverPath: null,
             hash: null,
             filepath: toExternalPath(dest, 'filepath', lib),
+            // 解压后一律是目录;没解压时保持原来的 folder 行为(EH 下载本来就是目录)
             type: 'folder',
             pageCount,
             filecount: pageCount,
@@ -6008,12 +6663,715 @@ const onDownloadFinished = (rec) => {
   } catch (e) { /* 定时器里别抛 */ }
 }
 
+// 紳士漫畫登录(纯 HTTP)与下载:桌面版 / 网页版都要用,必须顶层注册,
+// 不能放进下面那个只在桌面版执行的 if (!WEB_MODE) 块里(否则网页版报「未知的 IPC 通道」)。
+// arg = { username, password }(可选):给了就自动填表提交,不给就等用户在窗口里自己登录。
+// 为什么要走窗口而不是直接 POST 账号密码:EH 论坛现在有两层 Cloudflare ——
+// ①整页的人机挑战(裸 HTTP 请求一律 403 "Just a moment...");②登录表单上的 Turnstile 验证码。
+// 真浏览器窗口两样都能自动过(实测:窗口里提交后 Cloudflare 自己出 token,登录成功),
+// 所以桌面端一律用窗口;纯 HTTP 那条(eh-password-login)只在网页版兜底。
+// 账号密码直登(桌面版与网页版都能用):POST 站点的 /users-check_login.html。
+// ⚠ 站点对「新会话」会强制滑块验证(返回 ret:false + 「請先完成滑塊驗證」),
+//   那种情况只能走「开窗口手动登录 / 粘贴 Cookie」,这里把原因如实抛给前端。
+ipcMain.handle('wnacg-password-login', async (event, arg) => {
+  const host = String((arg && arg.host) || setting.wnacgHost || 'www.wnacg.com')
+    .replace(/^https?:\/\//i, '').replace(/\/+$/, '')
+  const username = String((arg && arg.username) || '').trim()
+  const password = String((arg && arg.password) || '')
+  if (!username || !password) return { ok: false, error: 'empty' }
+  const base = 'https://' + host
+  const agent = setting.proxy ? ehLogin.agentFor(setting.proxy) : undefined
+  const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+  // 简易 cookie 罐:站点在取登录页时下发 PHPSESSID,不带它 POST 一定失败
+  const jar = {}
+  const absorb = (res) => {
+    for (const c of (res.headers.raw()['set-cookie'] || [])) {
+      const kv = String(c).split(';')[0]
+      const i = kv.indexOf('=')
+      if (i > 0) jar[kv.slice(0, i).trim()] = kv.slice(i + 1).trim()
+    }
+  }
+  const cookieHeader = () => Object.entries(jar).map(([k, v]) => k + '=' + v).join('; ')
+  try {
+    const page = await fetch(base + '/users-login.html', { headers: { 'User-Agent': ua }, agent })
+    absorb(page)
+    await page.text().catch(() => '')
+    const body = new URLSearchParams({
+      login_name: username,
+      login_pass: password,
+      normal: '1',
+      remember_pass: '1'
+    }).toString()
+    const res = await fetch(base + '/users-check_login.html', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        Referer: base + '/users-login.html',
+        'User-Agent': ua,
+        Cookie: cookieHeader()
+      },
+      body,
+      agent
+    })
+    absorb(res)
+    const text = await res.text().catch(() => '')
+    let json = null
+    try { json = JSON.parse(text) } catch (e) { /* 不是 JSON 就按文本判断 */ }
+    if (json && json.ret) {
+      // 真的要验一下:书架页不再是登录框才算登进去
+      const check = await fetch(base + '/users-users_fav.html', {
+        headers: { Cookie: cookieHeader(), 'User-Agent': ua },
+        agent
+      })
+      absorb(check)
+      const html = await check.text().catch(() => '')
+      if (html && !/users-check_login/.test(html)) {
+        return { ok: true, cookie: cookieHeader(), user: username }
+      }
+      return { ok: false, error: 'verify' }
+    }
+    const why = (json && json.html) ? String(json.html) : String(text || '').slice(0, 120)
+    if (/滑塊|滑块|captcha|驗證|验证/i.test(why)) return { ok: false, error: 'captcha', message: why }
+    return { ok: false, error: why || 'failed' }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+// ---------- 紳士漫畫下載:阅读(整页图) / Server1(worker 签发) / Server2(备用直链) ----------
+// · 阅读    = 下拉阅读的图片源:/photos-item-aid-<aid>.html 一次给全,逐页存图
+// · Server1 = 下载页「點擊下載 (Server 1)」:POST https://d1.wcdn.date/api/generate-link 签发直链
+// · Server2 = 下载页「備用線路 (Server 2)」:页面里现成的 //dl1.wn01.download/…zip 直链
+const WNACG_DL_SANITIZE = (s) => String(s || '').replace(/[\\/:*?"<>|\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+
+// ---------- 站点详情页解析(主进程用正则,没有 DOMParser) ----------
+// 只取下载真正需要的四项:标题 / 分类 / 页数 / 标签。标签是用户这次要求的重点:
+// 站点详情页的 a.tagshow 没有命名空间,归类交给 wnacgClassifyTags。
+const decodeHtmlEntities = (s) => {
+  const src = String(s == null ? '' : s)
+  if (!src) return ''
+  return src
+    .replace(/&#x([0-9a-fA-F]+);/g, (m, h) => { try { return String.fromCodePoint(parseInt(h, 16)) } catch (e) { return m } })
+    .replace(/&#(\d+);/g, (m, d) => { try { return String.fromCodePoint(Number(d)) } catch (e) { return m } })
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+}
+const stripTags = (s) => decodeHtmlEntities(String(s || '').replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim()
+const parseWnacgDetailBrief = (html) => {
+  const out = { ok: false, title: '', category: '', pageCount: 0, tags: [] }
+  const src = String(html || '')
+  if (!src || !/photos-index-aid-|addtags|uwconn/i.test(src)) return out
+  out.ok = true
+  const h2 = /<h2[^>]*>([\s\S]*?)<\/h2>/i.exec(src)
+  if (h2) out.title = stripTags(h2[1])
+  for (const m of src.matchAll(/<label[^>]*>([\s\S]*?)<\/label>/gi)) {
+    const text = stripTags(m[1])
+    const mm = /^(分類|分类|頁數|页数)[:：]\s*(.*)$/.exec(text)
+    if (!mm) continue
+    if (/^(分類|分类)$/.test(mm[1])) out.category = mm[2].trim()
+    else out.pageCount = Number((/(\d+)/.exec(mm[2]) || [])[1]) || 0
+  }
+  // 标签:站点把整段放在 <div class="addtags">…</div>,每个标签是一个 a.tagshow
+  const block = /<div[^>]*class="[^"]*addtags[^"]*"[^>]*>([\s\S]*?)<\/div>/i.exec(src)
+  const scope = block ? block[1] : ''
+  const tags = []
+  for (const m of scope.matchAll(/<a[^>]*class="[^"]*tagshow[^"]*"[^>]*>([\s\S]*?)<\/a>/gi)) {
+    const name = stripTags(m[1])
+    if (name) tags.push(name)
+  }
+  out.tags = [...new Set(tags)]
+  return out
+}
+
+// 保存目录:绅士漫画下载只认设置里「下载文件夹」这一个来源。
+// 没填就直接拒绝(前端提示去设置里填),**绝不回退**到 EH 下载目录 / 第一个库目录 ——
+// 网页版库盘常离线,自动回退会把文件写到一个根本不存在的 Y:\ 之类,还下到了用户没指定的地方。
+// ① 预检:设置里的下载文件夹必须填、且能建出来。这一步**不弹任何窗**,
+//   所以可以先建任务记录(用户要求:一点下载,右栏立刻出现一条),再来选目录。
+const wnacgPreflightDir = (cfg) => {
+  const root = String(cfg.path || '').trim()
+  if (!root) return { error: 'needPath' }
+  try { fs.mkdirSync(root, { recursive: true }) } catch (e) {
+    return { error: 'badPath', message: String((e && e.message) || e) }
+  }
+  return { dir: root }
+}
+// ② 落到哪一层:**永远**是设置里的「下载文件夹」。
+// ★用户要求:右键下载 = 直接开始,不要弹「选择保存位置」。
+//   以前桌面版只要没勾「使用默认下载地址和名称」,每次下载都先弹一个系统目录选择框,
+//   点一下下载要先关一个窗口才能开始 —— 现在这个分支整个删掉了。
+//   想换目录就去 设置 → 功能 → 下载设置 → 绅士漫画下载设置 改一次,之后一直用它。
+const wnacgPickDir = async (cfg) => {
+  const root = String(cfg.path || '').trim()
+  if (!root) return { error: 'needPath' }
+  return { dir: root }
+}
+
+// ---------- 紳士漫畫下载的「作业」层 ----------
+// 作业表本身在文件上方的「下载任务」那一节声明(wnacgJobs),这里只放跑作业的函数。
+
+// 读设置里那一组绅士漫画下载参数(与 EH 下载器完全分开)
+const wnacgDownloadCfg = () => {
+  const s = currentSettingObj()
+  return {
+    path: String(s.wnacgDownloadPath || '').trim(),
+    // useDefault 已废弃:下载永远直接用上面这个目录(见 wnacgPickDir)
+    useDefault: true,
+    concurrency: Math.max(1, Math.min(Number(s.wnacgDownloadConcurrency) || 4, 10)),
+    pageRate: Math.max(0, Number(s.wnacgDownloadPageRate) || 0),
+    pageRateSec: Math.max(0, Number(s.wnacgDownloadPageRateSec) || 0),
+    maxPerPeriod: s.wnacgDownloadMaxPerPeriod === undefined ? 2 : Math.max(0, Number(s.wnacgDownloadMaxPerPeriod) || 0),
+    periodSec: Math.max(0.1, Number(s.wnacgDownloadPeriodSec) || 1)
+  }
+}
+
+// 逐页图任务的目标文件夹:**永远**用「下载根目录 + 书名」算出来。
+// ⚠ 不能用 rec.dirTo:它在「移动 / 上次选过目录」之后会被改写成别的层,
+//   再拿它去 path.join(title) 就会变成 书名/书名 这种套娃目录
+//   (实际踩过:图片全在内层,阅读器打开外层看到空白)。
+//   saveDir 是下载根目录,只会跟着设置变,是这条链路上唯一稳定的基准。
+const wnacgFolderOf = (rec, title) => {
+  const base = String((rec && rec.saveDir) || '').trim()
+  const name = WNACG_DL_SANITIZE(title || (rec && rec.title) || '')
+  if (!base) return ''
+  // 没有书名就退回记录里已经定好的那一层(至少能继续跑,不会写到根目录下)
+  if (!name) return String((rec && rec.dirTo) || base)
+  return path.join(base, name)
+}
+
+// 目录自愈:记录里的 dir 可能指向「套娃目录的外层」(历史 bug 留下的),
+// 那一层可能只有零星几页、甚至一张图都没有 —— 阅读器打开就是空白。
+// 这里从记录的那个目录往下找一层:哪一层的图片最多就用哪一层。
+//   只往下看一层:再深就是用户自己的目录结构了,不该乱猜。
+const wnacgBestImageDir = (dir) => {
+  const IMG_RE = /\.(jpe?g|png|webp|gif|bmp|avif|jxl|tiff?)$/i
+  const countIn = (p) => {
+    try { return fs.readdirSync(p).filter(f => IMG_RE.test(f)).length } catch (e) { return 0 }
+  }
+  const root = String(dir || '').trim()
+  if (!root) return ''
+  const own = countIn(root)
+  let best = { dir: root, n: own }
+  try {
+    for (const name of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!name.isDirectory()) continue
+      const child = path.join(root, name.name)
+      const n = countIn(child)
+      if (n > best.n) best = { dir: child, n }
+    }
+  } catch (e) { /* 目录读不了就用原值 */ }
+  return best.n > 0 ? best.dir : root
+}
+
+// 这条任务已经下好了哪些页(按 001.jpg 这种序号文件名判断)—— 断点续传的依据
+const wnacgExistingPages = (folder) => {
+  const out = new Set()
+  try {
+    for (const name of fs.readdirSync(folder)) {
+      const m = /^(\d+)\.[a-z0-9]+$/i.exec(name)
+      if (!m) continue
+      try { if (fs.statSync(path.join(folder, name)).size > 0) out.add(Number(m[1]) - 1) } catch (e) { /* 忽略 */ }
+    }
+  } catch (e) { /* 目录还不存在 */ }
+  return out
+}
+
+// 真正的下载循环。rec 必须是已经放进 wnacgDownloadTasks 的那条记录。
+// opts.resume:继续下载(跳过已存在的页);不传就是从头下一遍(但同样不会重下已完成的页)。
+const runWnacgJob = (rec, opts = {}) => {
+  if (wnacgJobs.has(rec.id)) return wnacgJobs.get(rec.id).promise
+  const state = { stopped: false }
+  const runMode = rec.mode
+  const cfg = wnacgDownloadCfg()
+  const host = String(setting.wnacgHost || 'www.wnacg.com').replace(/^https?:\/\//i, '').replace(/\/+$/, '')
+  const base = 'https://' + host
+  const m = /photos-index-aid-(\d+)\.html/i.exec(String(rec.url || ''))
+  const aid = m ? m[1] : ''
+  const proxy = setting.proxy
+  const cookie = String(setting.wnacgCookie || '')
+
+  // 「这条记录还算数吗」:被删 / 被重新下过(同 id 换了对象)就立刻收手
+  const alive = () => wnacgDownloadTasks.get(rec.id) === rec
+  const stopRequested = () => state.stopped || !alive()
+
+  const fail = (error, extra) => {
+    if (alive()) {
+      rec.status = 'failed'
+      rec.error = String(error || '')
+      rec.finishedAt = Date.now()
+      if (extra && extra.saved !== undefined) rec.done = Number(extra.saved) || 0
+      if (extra && extra.folder) rec.filePath = extra.folder
+      emitWnacgTask(rec)
+    }
+    return { ok: false, error: String(error || ''), ...(extra || {}) }
+  }
+  const succeed = (extra) => {
+    if (alive()) {
+      rec.status = 'done'
+      rec.done = rec.total || 0
+      rec.percent = 100
+      rec.finishedAt = Date.now()
+      if (extra && extra.folder) {
+        rec.filePath = extra.folder
+        // 逐页图是目录,可以点封面预览;zip 是单文件,不要把文件路径当目录给预览器
+        if (runMode === 'read') rec.dir = extra.folder
+      }
+      emitWnacgTask(rec)
+    }
+    return { ok: true, ...(extra || {}), task: alive() ? publicWnacgTask(rec) : null }
+  }
+  // 暂停:循环在页边界看到 stopped 就收尾,状态落成 paused(不是 failed)
+  const paused = (extra) => {
+    if (alive()) {
+      rec.status = 'paused'
+      rec.error = ''
+      rec.finishedAt = 0
+      if (extra && extra.saved !== undefined) rec.done = Number(extra.saved) || 0
+      emitWnacgTask(rec)
+    }
+    return { ok: true, paused: true, ...(extra || {}), task: alive() ? publicWnacgTask(rec) : null }
+  }
+
+  const report = (done, total, extra) => {
+    if (!alive()) return
+    rec.total = Number(total) || 0
+    rec.done = Number(done) || 0
+    if (extra && extra.percent !== undefined) rec.percent = Math.min(100, Math.max(0, Math.round(extra.percent)))
+    else rec.percent = rec.total ? Math.round((rec.done / rec.total) * 100) : 0
+    if (extra && extra.bytes) rec.bytes = extra.bytes
+    if (extra && extra.coverPath) rec.coverPath = extra.coverPath
+    if (extra && extra.dir) rec.dir = extra.dir
+    rec.status = 'downloading'
+    rec.error = ''
+    emitWnacgTask(rec)
+  }
+
+  const job = (async () => {
+    if (!aid) return fail('badUrl')
+    try {
+      // 滑动窗口请求节流(与 EH 下载器同一套算法):取图片列表 / 下载页 / 签发直链 / 每张图都算一次
+      const reqTick = ehDownload.createRequestTicker(cfg.maxPerPeriod, cfg.periodSec)
+      const tick = async () => { if (reqTick) await reqTick.acquire() }
+      // 页数限速:每 N 页至少间隔 M 秒;两个 0 = 不限
+      const pageLimiter = (cfg.pageRate > 0 && cfg.pageRateSec > 0) ? { n: 0, until: 0 } : null
+      const pageTick = async () => {
+        if (!pageLimiter) return
+        pageLimiter.n += 1
+        if (pageLimiter.n >= cfg.pageRate) {
+          const wait = pageLimiter.until - Date.now()
+          if (wait > 0) await new Promise(r => setTimeout(r, Math.min(wait, 60000)))
+          pageLimiter.n = 0
+          pageLimiter.until = Date.now() + cfg.pageRateSec * 1000
+        }
+      }
+
+      if (runMode === 'read') {
+        // 下拉阅读的图片列表(一次给全,带防盗链 token)
+        await tick()
+        const r = await ehLogin.request(base + '/photos-item-aid-' + aid + '.html', { proxy, cookie, referer: base + '/', raw: true, timeout: 20000, retries: 1 })
+        const js = (r.buffer || Buffer.from('')).toString('utf8')
+        const mu = /"page_url"\s*:\s*\[([\s\S]*?)\]/.exec(js)
+        const urls = mu ? (mu[1].match(/"((?:[^"\\]|\\.)*)"/g) || []).map(s => s.slice(1, -1)).filter(u => /^https?:\/\//i.test(u)) : []
+        if (!urls.length) return fail('noImages')
+        const folder = wnacgFolderOf(rec) || path.join(rec.saveDir, rec.title)
+        fs.mkdirSync(folder, { recursive: true })
+        // 记录里的 dir 一定要指向**真正放图片的那一层**,阅读器/预览都按它找文件
+        rec.dir = folder
+        // 断点续传:目录里已经存在的页直接跳过(继续下载不会把 36 页重下一遍)。
+        // ⚠ 已存在的页里可能有超出本次图片列表的多余页,只统计「这一本确实有效的页」,
+        //   否则会出现 done 比 total 还大、或者数着数着往回掉。
+        const haveRaw = wnacgExistingPages(folder)
+        const have = new Set([...haveRaw].filter(i => i >= 0 && i < urls.length))
+        let done = have.size
+        report(done, urls.length, { dir: folder })
+        // 按设置里的「同时下载数」并发抓图;文件名按原顺序编号,并发不影响页序。
+        let next = 0
+        let failed = null
+        const worker = async () => {
+          for (;;) {
+            if (failed) return
+            if (stopRequested()) return
+            const i = next++
+            if (i >= urls.length) return
+            if (have.has(i)) continue
+            const ext = (/\.(\w{3,5})(?:\?|$)/.exec(urls[i]) || [, 'webp'])[1]
+            const fp = path.join(folder, String(i + 1).padStart(3, '0') + '.' + ext)
+            let lastErr = null
+            for (let t = 0; t < 2; t++) {
+              if (stopRequested()) return
+              try {
+                await tick()
+                await ehDownload.downloadFile(urls[i], fp, { proxy, cookie, referer: base + '/' })
+                lastErr = null
+                break
+              } catch (e) { lastErr = e }
+            }
+            // 用户在下载途中点了暂停:这一页的结果不再计入(下次继续会重下它)
+            if (stopRequested()) return
+            if (lastErr) {
+              if (!failed) failed = { i, err: lastErr }
+              return
+            }
+            done += 1
+            // 第一页落盘就拿来当封面,不用再联网抓
+            report(done, urls.length, done === 1 ? { coverPath: fp } : undefined)
+            await pageTick()
+          }
+        }
+        const workers = Math.min(cfg.concurrency, urls.length)
+        await Promise.all(Array.from({ length: workers }, () => worker()))
+        // 暂停优先于失败:用户主动停的,不该被标成「失败」
+        if (state.stopped) return paused({ saved: done })
+        if (!alive()) return { ok: false, error: 'removed' }
+        if (failed) return fail('第 ' + (failed.i + 1) + ' 页: ' + String((failed.err && failed.err.message) || failed.err), { saved: done, folder })
+        return succeed({ folder, saved: done, total: urls.length })
+      }
+
+      // ★Server 1 / Server 2 串行闸门:同一时刻只允许一个整本压缩包在下载。
+      //   站点限得很死,并发两个以上后面的必然失败(503 / 连接重置)。
+      //   排队期间状态仍是 downloading,界面能看到「等前一个完成」。
+      //   阅读线路不走这里(用户要求不做限制)。
+      const releaseZipSlot = await acquireWnacgZipSlot(rec.title)
+      try {
+        // server1 / server2:先抓站点下载页
+        await tick()
+        const r = await ehLogin.request(base + '/download-index-aid-' + aid + '.html', { proxy, cookie, referer: base + '/', raw: true, timeout: 20000, retries: 1 })
+        const html = (r.buffer || Buffer.from('')).toString('utf8')
+        const fk = /FILE_KEY:\s*"([^"]+)"/.exec(html)
+        const fn = /FILE_NAME:\s*"([^"]+)"/.exec(html)
+        const s2 = /href="(\/\/dl[^"]+\.zip[^"]*)"/.exec(html)
+        let dlUrl = ''
+        let fileName = rec.title + '.zip'
+        if (runMode === 'server2') {
+          if (!s2) return fail('noServer2')
+          dlUrl = 'https:' + s2[1]
+          const nm = /[?&]n=([^&]*)/.exec(dlUrl)
+          if (nm && nm[1]) fileName = decodeURIComponent(nm[1])
+        } else {
+          if (!fk) return fail('noServer1')
+          const api = /WORKER_API:\s*"([^"]+)"/.exec(html)
+          if (!api) return fail('noWorkerApi')
+          try {
+            await tick()
+            const res = await fetch(api[1], {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ file_key: fk[1], file_name: (fn && fn[1]) || fileName }),
+              agent: proxy ? ehLogin.agentFor(proxy) : undefined
+            })
+            const data = await res.json()
+            if (!data || !data.url) return fail('worker: ' + JSON.stringify(data).slice(0, 140))
+            dlUrl = data.url
+          } catch (e) {
+            return fail('worker: ' + String((e && e.message) || e))
+          }
+          if (fn && fn[1]) fileName = fn[1]
+        }
+        // zip 落到「下载根目录」下(saveDir 才是稳定基准,dirTo 可能已被移动改写)
+        const zipBase = String(rec.saveDir || rec.dirTo || '').trim()
+        const filePath = path.join(zipBase, WNACG_DL_SANITIZE(fileName) || fileName)
+        // zip 是单文件:已经下完过(大小和上次一致)就别重下
+        if (opts.resume) {
+          try {
+            const st = fs.statSync(filePath)
+            if (st.size > 0 && rec.bytes && st.size === rec.bytes) return succeed({ folder: filePath, saved: 1, total: 1 })
+          } catch (e) { /* 没下完过 */ }
+        }
+        report(0, 1, { percent: 0 })
+        // zip 可能几百 MB:流式落盘,不整包进内存;流过的字节实时写进任务记录
+        await tick()
+        if (stopRequested()) return paused()
+        const res2 = await fetch(dlUrl, {
+          agent: proxy ? ehLogin.agentFor(proxy) : undefined,
+          headers: { Referer: base + '/' }
+        })
+        if (!res2.ok) return fail('http ' + res2.status)
+        const contentLen = Number(res2.headers && res2.headers.get('content-length')) || 0
+        let received = 0
+        let lastPct = -1
+        await new Promise((resolve, reject) => {
+          const out = fs.createWriteStream(filePath)
+          if (res2.body && typeof res2.body.on === 'function') {
+            res2.body.on('data', (chunk) => {
+              // 暂停:停止收流,写一半的文件留着(下次继续会重下这个 zip)
+              if (stopRequested()) { try { res2.body.destroy() } catch (e) { /* 忽略 */ } return }
+              received += chunk.length
+              const pct = contentLen ? Math.floor((received / contentLen) * 100) : 0
+              // 每 1% 推一次,不会像逐页事件那样刷屏;没有 content-length 就只记字节数
+              if (pct >= lastPct + 1) { lastPct = pct; report(0, 1, { percent: pct, bytes: received }) }
+            })
+          }
+          res2.body.pipe(out)
+          res2.body.on('error', reject)
+          out.on('error', reject)
+          out.on('finish', resolve)
+        })
+        if (state.stopped) return paused()
+        rec.bytes = received
+        return succeed({ folder: filePath, saved: 1, total: 1 })
+
+      } finally {
+        releaseZipSlot()
+      }
+    } catch (e) {
+      if (state.stopped) return paused()
+      return fail(String((e && e.message) || e))
+    } finally {
+      // 只删「自己注册的那一条」:同 id 可能已被新作业顶替(重下),别把新的登记抹掉。
+      const cur = wnacgJobs.get(rec.id)
+      if (cur && cur.promise === job) wnacgJobs.delete(rec.id)
+    }
+  })()
+  wnacgJobs.set(rec.id, { state, promise: job })
+  return job
+}
+
+ipcMain.handle('wnacg-download', async (event, arg) => {
+  const { book } = arg || {}
+  let rec = null
+  try {
+    const cfg = wnacgDownloadCfg()
+    // 线路只能由右键菜单明确指定;兼容旧前端传来的 'default',兜底为逐页图那条
+    const mode = ['read', 'server1', 'server2'].includes(arg && arg.mode) ? arg.mode : 'read'
+    // 目录必填:放在最前面拦,没填就一个请求都不发,也不碰站点
+    const pre = wnacgPreflightDir(cfg)
+    if (pre.error === 'needPath') return { ok: false, error: 'needPath' }
+    if (pre.error === 'badPath') {
+      return { ok: false, error: '下载目录不可用: ' + cfg.path + ' (' + pre.message + ');请到 设置 → 功能 → 下载设置 → 绅士漫画下载设置 换一个可写目录' }
+    }
+    const host = String(setting.wnacgHost || 'www.wnacg.com').replace(/^https?:\/\//i, '').replace(/\/+$/, '')
+    const base = 'https://' + host
+    const m = /photos-index-aid-(\d+)\.html/i.exec(String((book && book.url) || ''))
+    if (!m) return { ok: false, error: 'badUrl' }
+    const aid = m[1]
+    const title = WNACG_DL_SANITIZE((book && book.title) || ('wnacg-' + aid))
+    const modeLabel = { read: '阅读', server1: 'Server 1', server2: 'Server 2' }[mode] || mode
+
+    // ★去重:同一个作品 + 同一条线路,同一时刻只允许一条任务。
+    //   以前 id 里带 Date.now(),每点一次下载就是新记录 —— 连着点几下(或没注意到已经在下)
+    //   就会冒出好几条一模一样的任务,同时往同一个目录写同一批文件。
+    //   现在先找「还活着」的同 aid 同线路记录:
+    //     · 正在下载 → 直接复用(不再新建,也不会重复写盘)
+    //     · 已暂停/失败 → 把它重新跑起来(等于「继续」)
+    //     · 已完成    → 已经下过了,不再重复创建
+    const dupId = Array.from(wnacgDownloadTasks.values()).find(t =>
+      t && t.mode === mode && !t.movedTo &&
+      /photos-index-aid-(\d+)\.html/i.exec(String(t.url || ''))?.[1] === aid
+    )
+    if (dupId) {
+      // 已经下完:什么都不做,只把这条记录再广播一次(前端会按 id 覆盖,不会多一条)
+      if (dupId.status === 'done') {
+        emitWnacgTask(dupId)
+        return { ok: true, duplicate: true, task: publicWnacgTask(dupId) }
+      }
+      // 正在跑:同样直接返回,提示「已在下」
+      if (dupId.status === 'downloading' && wnacgJobs.has(dupId.id)) {
+        emitWnacgTask(dupId)
+        return { ok: true, duplicate: true, running: true, task: publicWnacgTask(dupId) }
+      }
+      // 暂停 / 失败 / 没在跑:就地续传,不新建记录
+      dupId.status = 'downloading'
+      dupId.error = ''
+      dupId.finishedAt = 0
+      emitWnacgTask(dupId)
+      runWnacgJob(dupId, { resume: true }).catch(() => {})
+      return { ok: true, duplicate: true, resumed: true, task: publicWnacgTask(dupId) }
+    }
+
+    // 建任务记录并立刻广播:右键点下去,右栏「下载记录」马上出现一条「下载中」
+    // ★用户要求:任务记录里要**立刻**出现 —— 所以这一步放在抓标签之前,
+    //   连「选择保存位置」的弹窗也在它前面,点下去就能看到这张卡。
+    rec = {
+      id: 'wnacg-' + aid + '-' + mode + '-' + Date.now(),
+      url: String((book && book.url) || ''),
+      title, cover: String((book && book.cover) || ''),
+      mode, modeLabel,
+      // saveDir / dirTo 都是设置里那个下载文件夹(写文件、删除边界都以它为准)。
+      // 转绝对路径:记录会活到重启之后,相对路径换了工作目录就找不到了。
+      saveDir: cfg.path ? path.resolve(cfg.path) : '', dirTo: path.resolve(pre.dir), dir: '', filePath: '',
+      total: 0, done: 0, failed: 0, bytes: 0, percent: 0,
+      // 先把前端手上有的标签收下(在线列表/详情页已经解析过),抓不到详情也不至于一条标签都没有
+      tags: wnacgTagsObj(book),
+      category: String((book && (book.categoryName || book.category)) || ''),
+      titleJpn: '', rating: 0,
+      status: 'downloading', error: '',
+      createdAt: Date.now(), finishedAt: 0
+    }
+    wnacgDownloadTasks.set(rec.id, rec)
+    emitWnacgTask(rec)
+
+    // 目录已经在上面 wnacgPreflightDir 里定好了(就是设置里的下载文件夹),
+    // **不再弹「选择保存位置」** —— 右键点下载就立刻开始,进度全部进右栏「任务记录」。
+    const picked = await wnacgPickDir(cfg)
+    if (picked.error) {
+      wnacgDownloadTasks.delete(rec.id)
+      persistWnacgDownloads()
+      emitToRenderer('eh-download-removed', { id: rec.id })
+      return { ok: false, error: 'needPath' }
+    }
+    rec.dirTo = path.resolve(picked.dir)
+
+    const proxy = setting.proxy
+    const cookie = String(setting.wnacgCookie || '')
+    // 标签随任务一起下载(用户要求):抓一次详情页,把 a.tagshow 那一串取回来。
+    //   · 已经在库里出现过的标签 → 写进它**已有的类别**
+    //   · 从未出现过的新标签      → 写进「标签」这个类别
+    // 归类结果同时登记成「全局标签」,标签设置里立刻能看到。
+    // 这一步失败不影响下载本身(拿不到就保留前端带上来的那份)。
+    try {
+      const detail = await ehLogin.request(base + '/photos-index-aid-' + aid + '.html', {
+        proxy, cookie, referer: base + '/', raw: true, timeout: 20000, retries: 1
+      }).then(r2 => parseWnacgDetailBrief(String((r2 && r2.buffer) || ''))).catch(() => null)
+      if (detail && detail.ok) {
+        if (detail.title && !String((book && book.title) || '').trim()) rec.title = WNACG_DL_SANITIZE(detail.title)
+        if (detail.category && !rec.category) rec.category = detail.category
+        if (detail.pageCount && !rec.total) rec.total = detail.pageCount
+        if (detail.tags.length) {
+          const index = await wnacgBuildTagIndex()
+          const classified = wnacgClassifyTags({ tag: detail.tags }, index)
+          if (Object.keys(classified).length) {
+            rec.tags = classified
+            registerGlobalTags(classified)
+          }
+        }
+        emitWnacgTask(rec)
+      }
+    } catch (e) { /* 标签拿到多少算多少,绝不影响下载 */ }
+
+    return await runWnacgJob(rec)
+  } catch (e) {
+    if (rec) {
+      rec.status = 'failed'
+      rec.error = String((e && e.message) || e)
+      rec.finishedAt = Date.now()
+      emitWnacgTask(rec)
+    }
+    return { ok: false, error: String((e && e.message) || e) }
+  }
+})
+
+// ↓ 以下 handler 要开 Electron BrowserWindow / 用真实 session,网页版没有,只在桌面版注册
 if (!WEB_MODE) {
-  // arg = { username, password }(可选):给了就自动填表提交,不给就等用户在窗口里自己登录。
-  // 为什么要走窗口而不是直接 POST 账号密码:EH 论坛现在有两层 Cloudflare ——
-  // ①整页的人机挑战(裸 HTTP 请求一律 403 "Just a moment...");②登录表单上的 Turnstile 验证码。
-  // 真浏览器窗口两样都能自动过(实测:窗口里提交后 Cloudflare 自己出 token,登录成功),
-  // 所以桌面端一律用窗口;纯 HTTP 那条(eh-password-login)只在网页版兜底。
+  // ---------- 紳士漫畫(wnacg)登录窗口 ----------
+  // 站点登录带滑块验证码,没法像 EH 那样直接 POST 表单;这里开一个独立分区的窗口让用户自己登,
+  // 登录成功后把该分区的 Cookie 拼成请求头写进设置(之后取列表/详情都带上)。
+  ipcMain.handle('wnacg-login', async (event, arg) => {
+    // 网页版没有 BrowserWindow:交给前端提示"在浏览器登录后粘贴 Cookie"
+    if (WEB_MODE) return { ok: false, error: 'webMode' }
+    const host = String((arg && arg.host) || setting.wnacgHost || 'www.wnacg.com')
+      .replace(/^https?:\/\//i, '').replace(/\/+$/, '')
+    const base = 'https://' + host
+    let win = null
+    try {
+      const ses = session.fromPartition(WNACG_LOGIN_PARTITION)
+      // 每次登录都从干净分区开始:否则上次的登录态会让窗口直接跳过登录页
+      try { await ses.clearStorageData() } catch (e) { /* 忽略 */ }
+      win = new BrowserWindow({
+        width: 980,
+        height: 800,
+        title: '登录 紳士漫畫',
+        parent: BrowserWindow.getAllWindows()[0] || undefined,
+        autoHideMenuBar: true,
+        webPreferences: {
+          partition: WNACG_LOGIN_PARTITION,
+          nodeIntegration: false,
+          contextIsolation: true
+        }
+      })
+      const winRef = win
+      let closed = false
+      win.on('closed', () => { closed = true })
+      const cookieHeader = async () => {
+        const list = await ses.cookies.get({ url: base + '/' })
+        return list.map(c => c.name + '=' + c.value).join('; ')
+      }
+      const username = String((arg && arg.username) || '')
+      const password = String((arg && arg.password) || '')
+      // 填表并点一次「登錄」:站点登录带滑块验证码,点了之后验证码会自己弹在窗口里,
+      // 用户拖一下滑块就能过 —— 我们不模拟滑块,只负责把账号密码填好、把按钮点下去。
+      const autoFillAndSubmit = async () => {
+        for (let i = 0; i < 60 && !closed; i++) {
+          await new Promise(r => setTimeout(r, 1000))
+          let state = null
+          try {
+            state = await winRef.webContents.executeJavaScript(`(() => {
+              const u = document.querySelector('input[name=login_name]')
+              const p = document.querySelector('input[name=login_pass]')
+              return { form: !!(u && p), filled: !!(u && u.value) }
+            })()`)
+          } catch (e) { continue }
+          if (!state || !state.form) continue
+          if (state.filled) return   // 用户自己已经在填了,别插手
+          let done = false
+          try {
+            done = await winRef.webContents.executeJavaScript(`(() => {
+              // 表单在 HTML 里,但 Mui.form 要等 common.js 加载完:没就绪就再等一轮,
+              // 否则点了按钮也不会发请求(用户看到的就是「点了登录没反应」)。
+              if (typeof Mui === 'undefined' || !Mui.form) return false
+              const u = document.querySelector('input[name=login_name]')
+              const p = document.querySelector('input[name=login_pass]')
+              if (!u || !p) return false
+              u.value = ${JSON.stringify(username)}
+              p.value = ${JSON.stringify(password)}
+              const btn = document.querySelector('#login_form input[type=submit]')
+              if (btn) btn.click()
+              return true
+            })()`)
+          } catch (e) { /* 页面可能正在跳转 */ }
+          if (done) return
+        }
+      }
+      return await new Promise((resolve) => {
+        const deadline = Date.now() + 5 * 60 * 1000
+        let done = false
+        const finish = (payload) => { if (!done) { done = true; resolve(payload) } }
+        const tick = async () => {
+          if (done) return
+          // 用户自己关掉窗口:有 Cookie 就当成功(他们可能已经登过了)
+          if (closed) {
+            const c = await cookieHeader().catch(() => '')
+            return finish(c ? { ok: true, cookie: c } : { ok: false, error: 'canceled' })
+          }
+          if (Date.now() > deadline) return finish({ ok: false, error: 'timeout' })
+          let state = null
+          try {
+            state = await winRef.webContents.executeJavaScript(`(() => {
+              const body = document.body ? document.body.innerText : ''
+              const p = document.querySelector('#settings_person')
+              const box = p ? p.innerText.trim() : ''
+              // 未登录时这一块是「註冊 | 登錄」;登录后换成了用户名/退出等入口
+              const guest = /登錄|登录|註冊|注册/.test(box)
+              const member = /退出|登出|用戶中心|用户中心|我的書架|我的书架/.test(body)
+              // 用户名:优先用户中心那条链接,没有就取「xxx | 退出」的前半段(只用于界面显示)
+              const link = p ? (p.querySelector('a[href*="users-index"]') || p.querySelector('a[href*="users-"]')) : null
+              const user = link ? (link.textContent || '').trim() : box.split(/[|｜]/)[0].trim()
+              return { guest, member, box: box.slice(0, 40), user: user.slice(0, 40) }
+            })()`)
+          } catch (e) { /* 页面还在加载 */ }
+          if (state && (state.member || (state.box && !state.guest))) {
+            const c = await cookieHeader().catch(() => '')
+            if (c) {
+              try { winRef.close() } catch (e) { /* 忽略 */ }
+              return finish({ ok: true, cookie: c, user: (state && state.user) || '' })
+            }
+          }
+          setTimeout(tick, 1500)
+        }
+        winRef.loadURL(base + '/users-login.html').catch(() => { /* 网络失败交给超时 */ })
+        if (username && password) autoFillAndSubmit()
+        setTimeout(tick, 2000)
+      })
+    } catch (e) {
+      try { if (win) win.close() } catch (_) { /* 忽略 */ }
+      return { ok: false, error: String((e && e.message) || e) }
+    }
+  })
+
   ipcMain.handle('eh-login', async (event, arg) => {
     const { username, password } = arg || {}
     if (ehLoginInFlight) return { ok: false, error: 'busy' }
@@ -6690,6 +8048,81 @@ ipcMain.handle('trash-log', async () => {
   return { ok: true, list: out.slice(0, 200), logFile: LEGACY_DELETE_LOG }
 })
 
+// ---------- 压缩包解压后移动(设置 → 功能 → 文件移动) ----------
+// 用户要的语义:把一个压缩包漫画(zip / rar / 7z)移到目标位置时,
+// 不是搬那个包,而是**先解压成同名文件夹,把文件夹搬过去**。
+// 这样搬完就能当普通目录漫画读(目录模式比压缩包模式快很多,也能改文件名/单页删除)。
+// 图片扩展名(判断压缩包条目是不是漫画页)
+const IMAGE_NAME_RE = /\.(jpe?g|png|webp|gif|bmp|avif|jxl|tiff?)$/i
+const ARCHIVE_EXT_OF = (p) => {
+  const ext = path.extname(String(p || '')).toLowerCase()
+  return ['.zip', '.rar', '.7z', '.cbz', '.cbr', '.cb7'].includes(ext) ? ext : ''
+}
+// 把压缩包解到 destDir(不存在就建)。返回解出来的图片数。
+// zip 优先用 adm-zip(纯 JS,不依赖外部 7z);rar / 7z 走随包的 7z.exe。
+// ⚠ 随包的 resources/extraResources/7z.exe 在某些发行包里是坏的(PE 头不是有效 Machine),
+//   这时 7z 会抛 spawn UNKNOWN —— 所以 zip 这条最常见的情况必须有纯 JS 兜底,
+//   否则「解压后移动」对 zip 直接不可用。
+const extractArchiveInto = async (archivePath, destDir) => {
+  await fs.promises.mkdir(destDir, { recursive: true })
+  const ext = ARCHIVE_EXT_OF(archivePath)
+  if (ext === '.zip' || ext === '.cbz') {
+    try {
+      const AdmZip = require('adm-zip')
+      const zip = new AdmZip(archivePath)
+      const entries = zip.getEntries().filter(e => !e.isDirectory && IMAGE_NAME_RE.test(e.entryName))
+      if (!entries.length) throw new Error('压缩包里没有图片')
+      zip.extractAllTo(destDir, true)
+      return entries.length
+    } catch (e) {
+      // adm-zip 读不了(加密 zip / 非标准包)再退回 7z
+    }
+  }
+  // 先列一份清单:压缩包里可能带一层顶级目录,或者是散图 —— 两种都要处理
+  const names = await listArchiveImages(archivePath)
+  if (!names.length) throw new Error('压缩包里没有图片')
+  await extractArchiveFiles(archivePath, names, destDir)
+  return names.length
+}
+// 解压 → 搬走 → (可选)删源。
+// 返回 { ok, dest, toExtracted } ;失败抛异常由调用方转成用户提示。
+const moveArchiveExtracted = async (archivePath, targetDir, opts = {}) => {
+  const baseName = path.basename(archivePath, path.extname(archivePath))
+  // 解压到「压缩包所在目录」下的临时文件夹,搬完再删 —— 直接解到目标盘上会跨盘写两遍
+  const tmpDir = path.join(path.dirname(archivePath), '.emm-extract-' + nanoid(8))
+  try {
+    const count = await extractArchiveInto(archivePath, tmpDir)
+    // 压缩包内若自带一层顶级目录(常见:包名/图片),去掉这一层,别让合集里多套一级
+    let srcDir = tmpDir
+    try {
+      const entries = await fs.promises.readdir(tmpDir, { withFileTypes: true })
+      const dirs = entries.filter(e => e.isDirectory())
+      const files = entries.filter(e => e.isFile())
+      if (dirs.length === 1 && files.length === 0) srcDir = path.join(tmpDir, dirs[0].name)
+    } catch (e) { /* 读不了就用堆目录 */ }
+    // ★目标目录必须先建出来:rename 的**目标父目录**不存在会报 ENOENT
+    //   (以前只在 move-local-book 里建过,直接复用 moveArchiveExtracted 的调用方就没有)
+    await fs.promises.mkdir(targetDir, { recursive: true })
+    let dest = path.join(targetDir, baseName)
+    for (let i = 2; fs.existsSync(dest); i++) dest = path.join(targetDir, baseName + ' (' + i + ')')
+    try {
+      await fs.promises.rename(srcDir, dest)
+    } catch (e) {
+      if (e.code === 'EXDEV' || e.code === 'EPERM') {
+        await fs.promises.cp(srcDir, dest, { recursive: true })
+        await fs.promises.rm(srcDir, { recursive: true, force: true })
+      } else throw e
+    }
+    // 默认保留原压缩包(不替用户删东西);显式要求删除才删
+    if (opts.removeSource) {
+      try { await fs.promises.rm(archivePath, { force: true }) } catch (e) { /* 删不掉不算失败 */ }
+    }
+    return { ok: true, dest, count, toExtracted: true }
+  } finally {
+    try { await fs.promises.rm(tmpDir, { recursive: true, force: true }) } catch (e) { /* 忽略 */ }
+  }
+}
+
 ipcMain.handle('move-local-book', async (event, oldPath, folderArr) => {
   try {
     const pathSep = require('path').sep
@@ -6697,6 +8130,16 @@ ipcMain.handle('move-local-book', async (event, oldPath, folderArr) => {
     const ownerRoot = (libraryForPath(oldPath) || { path: setting.library }).path
     const newFilePath = path.join(path.dirname(ownerRoot), folderPath, path.basename(oldPath))
     if (oldPath !== newFilePath) {
+      // ★压缩包解压后移动(设置 → 功能 → 文件移动 → 压缩包解压后移动):
+      //   勾上后不是搬这个包,而是解压成同名文件夹再搬过去。
+      const ext = ARCHIVE_EXT_OF(oldPath)
+      if (ext && setting.archiveExtractOnMove) {
+        const targetDir = path.dirname(newFilePath)
+        await fs.promises.mkdir(targetDir, { recursive: true })
+        const r = await moveArchiveExtracted(oldPath, targetDir, { removeSource: !setting.archiveExtractKeepSource })
+        sendMessageToWebContents(`已解压并移动 ${oldPath} 到 ${r.dest} (${r.count} 张)`)
+        return r.dest
+      }
       await fs.promises.rename(oldPath, newFilePath)
       sendMessageToWebContents(`已将 ${oldPath} 移动到 ${newFilePath}`)
       return newFilePath
@@ -7373,6 +8816,8 @@ const applySetting = async (receiveSetting) => {
   // 防丢配置(关键):前端启动时可能只回传了部分键(例如 App.vue 只回传 contextMenuOptions),
   // 绝不能把它当成完整配置整份替换 —— 先与内存中的现有设置合并,前端没传的键一律保留原值。
   receiveSetting = { ...setting, ...(receiveSetting || {}) }
+  // 保存时就把代理补成完整 URL:字段里显示什么,下游(Electron setProxy / 模型下载 / 页面请求)就用什么
+  receiveSetting.proxy = ehLogin.normalizeProxyUrl(receiveSetting.proxy)
   // 「全局标签」并发保护:把 add-global-tag 刚写入、前端还没带回来的新增标签补上,
   // 否则前端整份回传会把它覆盖掉(表现正是「加完立刻消失」)。
   // 只补「未确认的新增」,不做无脑并集 —— 否则用户主动删除的标签会被旧值并回来。

@@ -455,6 +455,7 @@ import { useI18n } from 'vue-i18n'
 import { Close, Loading, ZoomIn, ZoomOut, Lock, Unlock, Picture, Grid, Memo } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ehImageSrc } from '../ehOnline.js'
+import { wnacgImageSrc, parseWnacgReader, wnacgAidOf } from '../wnacgOnline.js'
 import ViewerPagePlaceholder from './ViewerPagePlaceholder.vue'
 import ContextMenu from '@imengyu/vue3-context-menu'
 import { attachInertiaScroll } from '../inertia-scroll.js'
@@ -2412,6 +2413,70 @@ const backgroundFillOnlineLinks = (token, url, pageFrom, linkFrom) => {
 }
 
 const openOnlineBook = async (book, startIndex = null) => {
+  // 绅士漫画:图片列表在 /photos-item-aid-<aid>.html 里**一次给全**(下拉阅读的数据源,
+  // 带防盗链 token 的最终图片地址),不走 EH 的「逐页解析」管线 ——
+  // 拉一次列表,把每页的代理地址(emm-eh://,与封面同一套)直接铺进阅读器。
+  if (book && book.site === 'wnacg') {
+    const token = ++viewerLoadToken.value
+    bookDetail.value = book
+    emit('updateWindowTitle', book)
+    isComicReadDisplay.value = false
+    readyDestroyViewer.value = false
+    onlineResolveQueue.length = 0
+    onlineResolveRunningBySession.delete(token)
+    onlineJumpTargetId = null
+    receiveThumbnailList.value = []
+    pendingImages.length = 0
+    pendingThumbnails.length = 0
+    currentImageIndex.value = 0
+    viewerImageFailed.value = {}
+    viewerImageReady.value = {}
+    loadedProgress.value = {}
+    pendingProgress.clear()
+    showViewerLoading(t('m.ehOnlineOpening'))
+    try {
+      const aid = wnacgAidOf(book.url)
+      const host = String(book.url || '').replace(/^https?:\/\//i, '').split('/')[0]
+      if (!aid) throw new Error('badUrl')
+      const html = await ipcRenderer.invoke('get-ex-webpage', {
+        url: 'https://' + host + '/photos-item-aid-' + aid + '.html',
+        cookie: String(setting.value.wnacgCookie || '')
+      })
+      if (token !== viewerLoadToken.value) return
+      const { urls, sizes } = parseWnacgReader(html || '')
+      if (!urls.length) throw new Error('noImages')
+      const n = urls.length
+      // 地址已是最终形态(无需 EH 那样的逐页解析),resolving=false 直接进入「图片加载中」
+      viewerImageList.value = urls.map((u, i) => ({
+        id: 'wnacg-online-' + i,
+        filepath: wnacgImageSrc(u, book.url),
+        width: (sizes[i] && sizes[i][0]) || 1200,
+        height: (sizes[i] && sizes[i][1]) || 1700,
+        total: n,
+        online: true,
+        resolving: false,
+        failed: false,
+        __index: i
+      }))
+      totalPage.value = n
+      hideViewerLoading()
+      drawerVisibleViewer.value = true
+      const startIdx = (startIndex != null && startIndex > 0) ? Number(startIndex) : 0
+      const target = viewerImageList.value[Math.min(startIdx, n - 1)]
+      if (target) {
+        currentImageId.value = target.id
+        nextTick(() => {
+          if (imageStyleType.value === 'scroll') scrollToImageElement(target.id)
+          else jumpToImageId(target.id)
+        })
+      }
+    } catch (e) {
+      console.error(e)
+      hideViewerLoading()
+      if (token === viewerLoadToken.value) ElMessage.warning(t('m.wnacgReadFail'))
+    }
+    return
+  }
   const token = ++viewerLoadToken.value
   bookDetail.value = book
   emit('updateWindowTitle', book)
@@ -3505,31 +3570,35 @@ const attachViewerInertia = () => {
 const onMangaImageContextMenu = (e, image) => {
   e.preventDefault()
   // EH在线 的页:本地那套(复制图片/设封面/重命名/超分/OCR/删除)对它没意义,
-  // 只给「下载本页 / 下载本页(原图)」(与 JHenTai 在线阅读的下载动作对应)
+  // 只给「下载本页 /(EH 才有)下载本页(原图) / 复制图片地址」——
+  // 与 JHenTai 在线阅读的下载动作对应
   if (image && image.online) {
     const book = bookDetail.value || {}
     const pageName = (book.title || 'eh') + ' - ' + (viewerImageList.value.findIndex(x => x.id === image.id) + 1)
-    ContextMenu.showContextMenu({
-      x: e.x,
-      y: e.y,
-      items: [
-        {
-          id: 'downloadPage',
-          label: t('m.downloadPage'),
-          onClick: () => emit('downloadPage', { url: image.rawUrl, originalUrl: image.originalUrl, pageUrl: image.pageUrl, original: false, name: pageName })
-        },
-        {
-          id: 'downloadPageOriginal',
-          label: t('m.downloadPageOriginal'),
-          onClick: () => emit('downloadPage', { url: image.rawUrl, originalUrl: image.originalUrl, pageUrl: image.pageUrl, original: true, name: pageName })
-        },
-        {
-          id: 'copyImageUrl',
-          label: t('m.downloadCopyImageUrl'),
-          onClick: () => ipcRenderer.invoke('copy-text-to-clipboard', image.rawUrl || '')
-        }
-      ]
-    })
+    const items = [
+      {
+        id: 'downloadPage',
+        label: t('m.downloadPage'),
+        onClick: () => emit('downloadPage', { url: image.rawUrl, originalUrl: image.originalUrl, pageUrl: image.pageUrl, original: false, name: pageName })
+      },
+      {
+        id: 'copyImageUrl',
+        label: t('m.downloadCopyImageUrl'),
+        onClick: () => ipcRenderer.invoke('copy-text-to-clipboard', image.rawUrl || '')
+      }
+    ]
+    // 绅士漫画(wnacg):站点只有一份图,**没有「原图 / 普通图」之分** ——
+    // 「原图」是 EH 的概念(EH 会把 resize 过的小图和原图分开给地址)。
+    // 用户要求:在绅士漫画的阅读器里删掉「下载本页(原图)」这一项。
+    const isWnacg = !!(book && book.site === 'wnacg')
+    if (!isWnacg) {
+      items.splice(1, 0, {
+        id: 'downloadPageOriginal',
+        label: t('m.downloadPageOriginal'),
+        onClick: () => emit('downloadPage', { url: image.rawUrl, originalUrl: image.originalUrl, pageUrl: image.pageUrl, original: true, name: pageName })
+      })
+    }
+    ContextMenu.showContextMenu({ x: e.x, y: e.y, items })
     return
   }
   const items = [

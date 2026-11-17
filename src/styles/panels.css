@@ -226,6 +226,18 @@
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+/* 长文本字段(绅士漫画的简介):不能单行省略,要能整段折行看全。
+   以前复用上面那条 .v 规则 → 简介被截成一行加省略号,后面全看不见。 */
+.detail-panel .detail-info-row .v.is-multiline {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    overflow: visible;
+    text-overflow: clip;
+    line-height: 1.55;
+    max-height: 220px;
+    overflow-y: auto;
+}
 .detail-panel .detail-actions {
     display: flex;
     flex-wrap: wrap;
@@ -234,6 +246,22 @@
 .detail-panel .detail-actions .detail-act {
     margin: 0;
 }
+/* 绅士漫画的三个下载按钮:侧栏窄,按钮文字本身也长(下载(Server 1))。
+   不换行、放不下就省略号;左对齐,和其它动作按钮同一套外观。 */
+.detail-panel .detail-actions .detail-act-wnacg {
+    height: auto;
+    min-height: 24px;
+    padding: 3px 8px;
+    line-height: 1.35;
+    white-space: nowrap;
+    text-align: left;
+    justify-content: flex-start;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* ⚠ 侧栏的三颗下载按钮**不做人工换行**(用户要求:位置不用改):
+   让它们跟其它动作按钮一样走 .detail-actions 的自然 flex-wrap 排列,
+   不指定谁独占一排、也不对半切。这里只保留「文字长时不撑破」这一条。 */
 .detail-panel .detail-tags {
     display: flex;
     flex-direction: column;
@@ -648,6 +676,30 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+    /* ★任务多了要能滚:面板本身是 overflow:hidden(高度钉死 100vh),
+       列表以前没有 flex/overflow 约束 —— 条目一多就被直接裁掉,而且没有滚动条,
+       下面的任务根本够不着。现在列表吃掉剩余高度并自己滚。 */
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 4px;
+    /* 惯性滚动由全局 attachInertiaScroll 接管,这里只保证滚动条本身可见可用 */
+    scrollbar-width: thin;
+}
+/* 滚动条:WebKit 微调一下,别太宽、别太亮,和面板底色协调 */
+.download-panel .download-list::-webkit-scrollbar {
+    width: 8px;
+}
+.download-panel .download-list::-webkit-scrollbar-thumb {
+    background: var(--emm-gray-300);
+    border-radius: 4px;
+}
+.download-panel .download-list::-webkit-scrollbar-thumb:hover {
+    background: var(--emm-text-4);
+}
+.download-panel .download-list::-webkit-scrollbar-track {
+    background: transparent;
 }
 .download-panel .download-hint {
     padding: 6px 8px;

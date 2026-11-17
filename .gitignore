@@ -57,3 +57,6 @@ electron_err.txt
 # 打包临时目录
 out-build
 .build-tmp*
+
+# Vite 依赖预构建缓存(dev 模式)
+.vite-cache/

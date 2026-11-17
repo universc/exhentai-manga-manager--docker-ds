@@ -63,7 +63,7 @@
       <!-- 真的生成不出来才显示「加载失败」。<img> 仍然留在下面继续加载,
            后台稍后补出封面时会自己换回来。 -->
       <div class="cover-failed" v-if="coverFailed">{{ $t('m.coverLoadFailed') }}</div>
-      <el-tag class="book-card-language" size="small" v-if="book.historyTime || !viewSetting.hideReadCount"
+      <el-tag class="book-card-language" size="small" v-if="(book.historyTime || !viewSetting.hideReadCount) && !(book.site === 'wnacg' && !languageBadgeText(book))"
         :type="isChineseTranslatedManga(book) ? 'danger' : 'info'"
         @click="onReadCountClick"
       >{{ book.historyTime ? historyTimeText : (book.online ? languageBadgeText(book) : book.readCount) }}</el-tag>
@@ -93,7 +93,7 @@
         effect="plain"
         :style="tag.color ? { color: tag.color, borderColor: tag.color } : null"
         size="small"
-      >{{ tagDisplayPrefix(setting, resolvedTranslation, tag.cat, tag.tag) }}:{{ tagDisplayName(setting, resolvedTranslation, resolveCatKey(tag.cat), tag.tag) }}</el-tag>
+      >{{ (book.site === 'wnacg' ? '' : tagDisplayPrefix(setting, resolvedTranslation, tag.cat, tag.tag) + ':') + tagDisplayName(setting, resolvedTranslation, resolveCatKey(tag.cat), tag.tag) }}</el-tag>
     </div>
     <div class="book-card-footer">
       <el-button-group class="outer-read-button-group" v-if="!viewSetting.hideReadButton">
@@ -102,14 +102,23 @@
       </el-button-group>
       <!-- 这个「标签」格:有类别就显示所属类别(如 Misc / Western),没有才显示 tagged / non-tag 状态;悬停可看真实状态 -->
       <el-tag
-        v-if="!viewSetting.hideNonTag"
+        v-if="!viewSetting.hideNonTag && !(book.site === 'wnacg' && !book.category)"
         class="book-status-tag"
         effect="plain"
         :type="book.status === 'non-tag' ? 'info' : book.status === 'tagged' ? 'success' : 'warning'"
         :title="book.status"
         @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
       >{{ galleryCategoryName(book.category, $t) || book.status }}</el-tag>
-      <el-rate v-if="!viewSetting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
+      <!-- 绅士漫画的合集:在「同人志」右边单独标一个「合集」(用户要求)。
+           站点分类是 同人誌／漢化／合集,只看第一段会把这个信息丢掉。 -->
+      <el-tag
+        v-if="!viewSetting.hideNonTag && book.site === 'wnacg' && book.isSeries"
+        class="book-status-tag book-series-tag"
+        effect="plain"
+        type="warning"
+        :title="$t('m.seriesBadge')"
+      >{{ $t('m.seriesBadge') }}</el-tag>
+      <el-rate v-if="!viewSetting.hideRating && book.site !== 'wnacg'" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
     </div>
     </template>
     <!-- ================= 填充封面布局(设置 → 显示选项「填充封面」打开后) ================= -->
@@ -205,7 +214,14 @@
             :title="book.status"
             @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
           >{{ galleryCategoryName(book.category, $t) || book.status }}</el-tag>
-          <el-rate v-if="!viewSetting.hideRating" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
+          <!-- 填充封面布局里的「合集」标记 -->
+          <el-tag
+            v-if="!viewSetting.hideNonTag && book.site === 'wnacg' && book.isSeries"
+            class="fill-badge book-series-tag"
+            type="warning"
+            :title="$t('m.seriesBadge')"
+          >{{ $t('m.seriesBadge') }}</el-tag>
+          <el-rate v-if="!viewSetting.hideRating && book.site !== 'wnacg'" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange"/>
         </div>
       </div>
     </template>
@@ -253,6 +269,10 @@ const LANG_ZH_CHAR = {
   TE: '泰卢固', ML: '马拉雅拉姆', KN: '卡纳达', MR: '马拉地', GU: '古吉拉特', PA: '旁遮普'
 }
 const languageBadgeText = (book) => {
+  // 绅士漫画:汉化→汉,日语→日,English→英,其余分类没有语言,角标直接不显示
+  if (book && book.site === 'wnacg') {
+    return { han: '汉', ja: '日', en: '英' }[book.wnacgLang] || ''
+  }
   const code = onlineLanguageCode(book) || 'EH'
   if (String(locale.value || '').toLowerCase().startsWith('zh')) return LANG_ZH_CHAR[code] || code
   return code
@@ -1058,4 +1078,10 @@ onUnmounted(() => {
     // 填充封面:保留标题浮层,字号与上面一致
     &.fill-cover .fill-title
       font-size: calc(12px * var(--emm-card-zoom, 1))
+
+/* 绅士漫画的「合集」角标:紧跟在分类标签右边,用暖色区分 */
+.book-series-tag {
+  --el-tag-border-color: var(--el-color-warning-light-5);
+  flex: none;
+}
 </style>

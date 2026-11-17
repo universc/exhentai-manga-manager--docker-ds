@@ -932,6 +932,35 @@ const parsePageSizes = (raw) => {
 
 // ---------- 恢复全部默认 ----------
 // 界面/功能类设置的默认值(账户 Cookie、库路径、代理等个人数据保留不清除)
+// ---------- 合集成员键(本地 / 在线统一口径) ----------
+// 背景:合集一直用「书.hash」当成员键,而**在线书(绅士漫画 / EH 在线)根本没有 hash**。
+// 结果是在线书加进合集时,键被写成 undefined:
+//   · collection.list 里多出一个 "undefined" / 空串,真正的成员关系没记住;
+//   · 聚合时 bookMap.get(undefined) 查不到,合集卡上的成员数、封面、页数全按 0 算;
+//   · 卡片/抽屉按 hash 扫 bookList,在线成员永远命中不了 → 点开合集看不见它。
+// 这里统一成:有 hash 用 hash(老数据完全不变),否则用 id。
+// 在线书的 id 形如 `wnacg:404797` / `eh:1234567`,天然唯一且稳定,适合当键。
+const collectionMemberKey = (book) => {
+  if (!book) return ''
+  const h = book.hash != null && String(book.hash).trim()
+  if (h) return String(h)
+  const id = book.id != null && String(book.id).trim()
+  return id ? id : ''
+}
+
+// 一本书可能被用什么键记在 collection.list 里:
+// 新数据是 collectionMemberKey,老数据可能只有 hash 或只有 id。
+// 匹配时两个都要试,避免「同一本书存了两种键」查不到。
+const collectionMemberKeys = (book) => {
+  if (!book) return []
+  const out = new Set()
+  const h = book.hash != null && String(book.hash).trim()
+  if (h) out.add(String(h))
+  const id = book.id != null && String(book.id).trim()
+  if (id) out.add(String(id))
+  return [...out]
+}
+
 const defaultUiSettings = () => ({
   pageSize: 42,
   loadOnStart: false,
@@ -1233,4 +1262,7 @@ export {
   formatTagWithSets,
   parsePageSizes,
   defaultUiSettings,
+  // 合集成员键(本地 / 在线统一口径)
+  collectionMemberKey,
+  collectionMemberKeys,
 }

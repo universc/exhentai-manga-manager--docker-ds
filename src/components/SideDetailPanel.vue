@@ -20,8 +20,9 @@
             <img v-if="coverSrc" :src="coverSrc" class="detail-cover" />
             <div v-else class="detail-cover detail-cover-empty"></div>
           </div>
-          <!-- 评分:可点击编辑(半星步进),改完立即写库 -->
+          <!-- 评分:可点击编辑(半星步进),改完立即写库;绅士漫画没有评分体系,不显示 -->
           <el-rate
+            v-if="!isWnacg"
             class="detail-rate"
             :model-value="rateValue"
             size="small"
@@ -60,15 +61,43 @@
             <!-- 以下都是「次要信息」:面板被拖窄(<300px)时由 .is-narrow 规则隐藏,页数始终保留 -->
             <div class="detail-info-row is-minor" v-if="book.online">
               <span class="k">{{ $t('m.ehOnlineUploader') }}</span>
-              <span class="v" :title="book.uploader">{{ book.uploader || '—' }}</span>
+              <!-- 绅士漫画:点上传者 → 主界面切到他的投稿列表 -->
+              <span v-if="isWnacg" class="v wnacg-uploader-link" :title="book.uploader || $t('m.wnacgOpenUploader')"
+                    @click.stop="book.uploaderUrl && emit('open-uploader', book)">{{ book.uploader || '—' }}</span>
+              <span v-else class="v" :title="book.uploader">{{ book.uploader || '—' }}</span>
             </div>
-            <div class="detail-info-row is-minor" v-if="book.online">
+            <div class="detail-info-row is-minor" v-if="book.online && !isWnacg">
               <span class="k">{{ $t('m.sideDetailLanguage') }}</span>
               <span class="v" :title="book.language">{{ book.language || '—' }}</span>
             </div>
-            <div class="detail-info-row is-minor" v-if="book.online">
+            <div class="detail-info-row is-minor" v-if="book.online && !isWnacg">
               <span class="k">{{ $t('m.sideDetailSize') }}</span>
               <span class="v">{{ book.size || '—' }}</span>
+            </div>
+            <!-- 绅士漫画:按站点详情页的字段来(分類 / 收藏 / 編號 / 閱讀狀態 / 簡介) -->
+            <div class="detail-info-row is-minor" v-if="isWnacg">
+              <span class="k">{{ $t('m.wnacgSideCategory') }}</span>
+              <span class="v">{{ book.category || '—' }}</span>
+            </div>
+            <div class="detail-info-row is-minor" v-if="isWnacg">
+              <span class="k">{{ $t('m.wnacgSideFav') }}</span>
+              <span class="v">{{ book.favProbed
+                ? ((book.inShelf ? $t('m.wnacgInShelf') : $t('m.wnacgNotInShelf')) + (book.favCount != null ? ' · ' + book.favCount : ''))
+                : (book.favCount != null ? book.favCount : '—') }}</span>
+            </div>
+            <div class="detail-info-row is-minor" v-if="isWnacg">
+              <span class="k">{{ $t('m.wnacgSideNumber') }}</span>
+              <span class="v">{{ book.number || '—' }}</span>
+            </div>
+            <div class="detail-info-row is-minor" v-if="isWnacg">
+              <span class="k">{{ $t('m.wnacgSideReadState') }}</span>
+              <span class="v">{{ book.readState || '—' }}</span>
+            </div>
+            <!-- 合集(多话作品):站点把同一部作品的各话挂在同一个 aid 下,
+                 详情页用 div.sr_compact 列出。这里按本地合集卡片的样子列出来。 -->
+            <div class="detail-info-row is-minor" v-if="isWnacg && seriesChapters.length">
+              <span class="k">{{ $t('m.wnacgSideSeries') }}</span>
+              <span class="v">{{ seriesChapters.length }} {{ $t('m.wnacgSeriesUnit') }}<template v-if="seriesStatus"> · {{ seriesStatus }}</template></span>
             </div>
             <div class="detail-info-row" v-if="book.posted">
               <span class="k">{{ $t('m.sideDetailPosted') }}</span>
@@ -104,9 +133,9 @@
         </template>
         <!-- 在线画廊 -->
         <template v-else-if="book && book.online">
-          <el-button v-if="!viewerRole" class="detail-act" size="small" :icon="Download" @click="$emit('download-gallery', { book, original: false })">{{ $t('m.download') }}</el-button>
-          <!-- 种子:JHenTai 同款回形针图标;数量直接跟在按钮后面 -->
-          <el-button class="detail-act" size="small" :icon="MdAttach" @click="$emit('open-torrents', book)">{{ $t('m.torrent') }}<template v-if="book.torrentCount != null"> {{ book.torrentCount }}</template></el-button>
+          <el-button v-if="!viewerRole && book.site !== 'wnacg'" class="detail-act" size="small" :icon="Download" @click="$emit('download-gallery', { book, original: false })">{{ $t('m.download') }}</el-button>
+          <!-- 种子:JHenTai 同款回形针图标;数量直接跟在按钮后面(绅士漫画没有种子) -->
+          <el-button v-if="book.site !== 'wnacg'" class="detail-act" size="small" :icon="MdAttach" @click="$emit('open-torrents', book)">{{ $t('m.torrent') }}<template v-if="book.torrentCount != null"> {{ book.torrentCount }}</template></el-button>
           <el-button class="detail-act" size="small" :icon="Star" @click="$emit('favorite', book)">{{ book.favcat == null ? $t('m.favorite') : $t('m.favoriteRemoveOption') }}</el-button>
           <el-button class="detail-act" size="small" :icon="Link" @click="openInBrowser">{{ $t('m.ehOnlineOpen') }}</el-button>
           <!-- H@H 归档下载(照 JHenTai 详情页的 H@H 按钮) -->
@@ -126,6 +155,25 @@
         <!-- 评论开关:两个来源都有评论(EH 在线 / 本地库),所以放在两块之外,始终可用。
              合集没有评论,不显示 -->
         <el-button v-if="!isCollection" class="detail-act" size="small" :icon="ChatDotSquare" @click="toggleSideComments">{{ sideCommentsOn ? $t('m.hideComment') : $t('m.showComment') }}</el-button>
+        <!-- 绅士漫画:三条线路各一颗按钮(用户要求:放在「隐藏评论」**后面**)。
+             也放在这块之外:它只对站点书显示,但位置要固定在动作区末尾,
+             不能随「在线 / 本地 / 合集」三分支的排布漂移。
+             走自然流式排列,和上面那些动作按钮同一套换行规则。 -->
+        <!-- ⚠ 按书类型分开,不要一律对待:
+             · 普通单本:原来的三个下载按钮(阅读 / Server 1 / Server 2);
+             · 合集(多话作品):一个「下载」,点开弹多选(选哪几话 + 线路)。 -->
+        <template v-if="!viewerRole && book && book.online && book.site === 'wnacg' && !isSeries">
+          <el-button class="detail-act detail-act-wnacg" size="small" :icon="Download" @click="$emit('download-wnacg', { book, mode: 'read' })">{{ $t('m.wnacgDlRead') }}</el-button>
+          <el-button class="detail-act detail-act-wnacg" size="small" :icon="Download" @click="$emit('download-wnacg', { book, mode: 'server1' })">{{ $t('m.wnacgDlServer1') }}</el-button>
+          <el-button class="detail-act detail-act-wnacg" size="small" :icon="Download" @click="$emit('download-wnacg', { book, mode: 'server2' })">{{ $t('m.wnacgDlServer2') }}</el-button>
+        </template>
+        <el-button
+          v-if="!viewerRole && book && book.online && book.site === 'wnacg' && isSeries"
+          class="detail-act detail-act-wnacg"
+          size="small"
+          :icon="Download"
+          @click="onSeriesDownloadBtn('read')"
+        >{{ $t('m.download') }}</el-button>
       </div>
       <!-- 标签分组:点一个标签 = 按它搜(JHenTai 详情页点标签也是这个动作)
            合集在编辑态时换成「每个类别一个多选框」:改动即时下发到全部成员 -->
@@ -195,6 +243,13 @@
         </template>
         <div class="detail-tags-empty" v-else>{{ $t('m.sideDetailNoTags') }}</div>
       </div>
+      <!-- 绅士漫画:简介放在标签下方(用户要求) -->
+
+      <!-- 简介是长文本:走 is-multiline(整段折行、可滚动),不能套用单行省略的 .v -->
+      <div class="detail-info-row is-summary" v-if="isWnacg && book.summary">
+        <span class="k">{{ $t('m.wnacgSideSummary') }}</span>
+        <span class="v is-multiline" :title="book.summary">{{ book.summary }}</span>
+      </div>
       <!-- 评论:照 JHenTai 的 EHComment 排布 ——
            头(作者 + 时间)/ 正文(详情页里最多 5 行省略)/ 尾(评分 + 评分明细 + 编辑时间) -->
       <!-- 评论:照 JHenTai details_page 的横排评论区 ——
@@ -231,6 +286,27 @@
           <el-icon class="is-loading" :size="16"><Loading /></el-icon>
         </div>
         <div class="detail-preview-error" v-else>{{ $t('m.sideDetailTextPreviewEmpty') }}</div>
+      </div>
+      <!-- 绅士漫画的合集(多话作品):**和本地合集一样的预览图网格**。
+           每话一张卡:封面 + 话号;点封面 = 阅读那一话;右键 = 下载 / 阅读 / 浏览器打开。 -->
+      <div class="detail-preview" v-else-if="isSeries">
+        <div class="detail-preview-grid" v-if="seriesViews.length" :style="{ '--cell': PREVIEW_W + 'px' }">
+          <div
+            v-for="sv in seriesViews"
+            :key="'sv' + sv.id"
+            class="detail-preview-item detail-collection-member detail-series-card"
+            :class="{ 'is-current': sv.isCurrent }"
+            :title="sv.order + ' ' + sv.title + (sv.pageCount ? ' · ' + sv.pageCount + 'P' : '')"
+            @click="onSeriesChapterClick(sv)"
+            @contextmenu.prevent="onSeriesChapterContextMenu($event, sv)"
+          >
+            <img v-if="sv.coverPath" :src="wnacgImageSrc(sv.coverPath, sv.url)" loading="lazy" decoding="async" />
+            <div v-else class="detail-preview-pending"></div>
+            <!-- 话号角标:压在封面左下角(当前这一话用主色) -->
+            <span class="detail-series-badge" :class="{ 'is-current': sv.isCurrent }">{{ sv.order }}</span>
+          </div>
+        </div>
+        <div v-else class="detail-preview-error">{{ $t('m.collectionEmptyBooks') }}</div>
       </div>
       <!-- 合集:没有「页」这个概念,这里显示成员的封面网格(点一下打开那一本的详细界面) -->
       <div class="detail-preview" v-else-if="isCollection">
@@ -302,6 +378,14 @@
       </div>
     </div>
     <EmptyState v-else class="detail-empty" :title="$t('m.sideDetailEmpty')" />
+    <!-- 绅士漫画合集:选要下载的章节(可多选) -->
+    <SeriesDownloadPicker
+      v-model="seriesDlVisible"
+      :chapters="seriesDlChapters"
+      :preset-selected="seriesDlPreset"
+      :preset-mode="seriesDlPresetMode"
+      @confirm="(payload) => emit('download-series', payload)"
+    />
   </div>
 </template>
 
@@ -318,6 +402,8 @@ import { MdRefresh } from '@vicons/ionicons4'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, collectGalleryThumbs } from '../ehOnline.js'
+import { isWnacgUrl, parseWnacgDetail, mergeWnacgDetail, collectWnacgThumbs, wnacgHtmlLooksBroken, wnacgIsDeletedPage, parseWnacgFavDialog, wnacgAidOf, parseWnacgComments, parseWnacgChapterCover, wnacgImageSrc } from '../wnacgOnline.js'
+import SeriesDownloadPicker from './SeriesDownloadPicker.vue'
 import { catDisplayName, toAssetUrl, bookImgSrc, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName, sortContextMenuItems, isContextMenuItemEnabled, resolveCatKey } from '../utils.js'
 import { addTagToBlacklist, setBlacklistEnabled } from '../ehFilter.js'
 // 统一空态（P0-08）：侧栏没有选中漫画时的提示
@@ -331,6 +417,12 @@ const props = defineProps({
 })
 const emit = defineEmits([
   'close', 'update:width', 'read', 'download-gallery', 'open-torrents', 'favorite',
+  // 绅士漫画:侧栏里的三个下载按钮(阅读 / Server 1 / Server 2)
+  'download-wnacg',
+  // 绅士漫画合集:多选下载 / 点一话直接阅读
+  'download-series', 'read-url',
+  // 绅士漫画:点上传者 → 主界面切到他的投稿列表
+  'open-uploader',
   'search-from-tag', 'refresh-list',
   // 本地库:与「详细界面」同一套操作
   'open-book-detail', 'get-metadata', 'toggle-hidden', 'rescan', 'delete-book', 'toggle-comments',
@@ -403,6 +495,22 @@ const comments = ref([])
 const loadComments = async (b) => {
   comments.value = []
   if (!b || !b.online || !b.url) return
+  // 绅士漫画:评论在独立页 /comment-index-aid-<aid>.html(阅读器右下角「評論」按钮的地址),
+  // 服务端能直接抓到完整列表 —— 解析成 EH 评论卡的形状(作者/时间/正文/赞数,楼中楼拍平)。
+  // 只带 wnacg 自己的 Cookie,绝不把 EH 的登录凭据发过去。
+  if (isWnacgUrl(b.url)) {
+    const aid = wnacgAidOf(b.url)
+    if (!aid) return
+    try {
+      const host = String(b.url).replace(/^https?:\/\//i, '').split('/')[0]
+      const html = await ipcRenderer.invoke('get-ex-webpage', {
+        url: 'https://' + host + '/comment-index-aid-' + aid + '.html',
+        cookie: String(setting.value.wnacgCookie || '')
+      })
+      comments.value = parseWnacgComments(html || '')
+    } catch (e) { comments.value = [] }
+    return
+  }
   // ⚠ 这里原本有一个 `setting.showComment === false` 的提前返回 ——
   //   那个开关是「详细界面(大弹窗)里要不要显示评论栏」,和侧边详情是两个独立界面。
   //   结果用户关掉大弹窗的评论后,侧边详情也一条评论都不显示。
@@ -510,6 +618,77 @@ const commentHtml = (c) => {
     (_m, pre, url) => pre + '<a href="' + escapeHtml(url) + '" data-ext="1">' + escapeHtml(url) + '</a>')
   return out
 }
+// ---------- 绅士漫画合集:每话卡片的点击 / 右键 ----------
+// 点封面 = 进入**那一话的详细界面**(用户要求:不再直接开读);
+// 右键 = 下载 / 阅读 / 在浏览器中打开(「阅读」还在右键里)。
+const onSeriesChapterClick = (sv) => {
+  const b = seriesChapterBook(sv)
+  if (b) emit('open-book-detail', b)
+}
+// 一话 → 「书」的形状(与 wnacgToBook 同口径):侧边详情/详细界面都直接认这套。
+const seriesChapterBook = (sv) => {
+  if (!sv || !sv.url) return null
+  const cur = book.value || {}
+  const aid = /photos-index-aid-(\d+)\.html/i.exec(String(sv.url))
+  const chid = sv.chid || (aid ? aid[1] : '')
+  const cover = sv.coverPath || ''
+  return {
+    id: 'wnacg:' + (chid || sv.url),
+    online: true,
+    url: sv.url,
+    type: 'online',
+    filepath: sv.url,
+    title: sv.title || sv.order || '',
+    title_jpn: '',
+    title_cn: '',
+    category: cur.category || '',
+    coverPath: cover ? wnacgImageSrc(cover, sv.url) : '',
+    pageCount: sv.pageCount != null ? sv.pageCount : null,
+    filecount: sv.pageCount != null ? sv.pageCount : null,
+    rating: 0,
+    tags: {},
+    status: 'tagged',
+    site: 'wnacg',
+    posted: sv.posted || '',
+    mark: false,
+    readCount: 0,
+    readUrl: sv.readUrl || sv.url,
+  }
+}
+const onSeriesChapterContextMenu = (e, sv) => {
+  if (!sv || !sv.url) return
+  // 用户要求:预览图右键给**三个下载按钮**(阅读 / Server 1 / Server 2),
+  // 单话直接下,不走多选弹窗(多选是合集整体下载按钮的活)。
+  const items = [
+    {
+      id: 'dlRead',
+      label: t('m.wnacgDlRead'),
+      onClick: () => emit('download-series', { chapters: [sv], mode: 'read' }),
+    },
+    {
+      id: 'dlS1',
+      label: t('m.wnacgDlServer1'),
+      onClick: () => emit('download-series', { chapters: [sv], mode: 'server1' }),
+    },
+    {
+      id: 'dlS2',
+      label: t('m.wnacgDlServer2'),
+      onClick: () => emit('download-series', { chapters: [sv], mode: 'server2' }),
+    },
+    {
+      id: 'read',
+      label: t('m.read'),
+      onClick: () => emit('read-url', { url: sv.readUrl || sv.url, title: sv.title }),
+    },
+    {
+      id: 'browser',
+      label: t('m.openInBrowser'),
+      onClick: () => ipcRenderer.invoke('open-url', sv.url),
+    },
+  ]
+  ContextMenu.showContextMenu({ x: e.x, y: e.y, items })
+}
+
 // 评论里的链接点击:EH 链接用软件内部跳转,其它用系统浏览器
 const onCommentClick = (e) => {
   const a = e && e.target && e.target.closest ? e.target.closest('a[data-ext]') : null
@@ -687,6 +866,23 @@ const ensureOnlineThumbs = async () => {
   onlineThumbsRunning = true
   const token = ++onlineThumbsToken
   const host = String(b.url || '').replace(/^https?:\/\//i, '').split('/')[0]
+  if (isWnacgUrl(b.url)) {
+    try {
+      await collectWnacgThumbs({
+        first: th, nextUrl: b.thumbsNextUrl || '', pageCount: want, host,
+        fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie: String(setting.value.wnacgCookie || '') }),
+        shouldStop: () => token !== onlineThumbsToken,
+        onUpdate: (thumbs) => {
+          if (token !== onlineThumbsToken) return
+          b.thumbnails = thumbs
+          syncOnlinePreview()
+        }
+      })
+    } catch (e) { /* 某一页拉不到就算了 */ } finally {
+      if (token === onlineThumbsToken) onlineThumbsRunning = false
+    }
+    return
+  }
   try {
     await collectGalleryThumbs({
       url: b.url, host, pageCount: want, first: th,
@@ -851,6 +1047,106 @@ onBeforeUnmount(() => { if (previewObserver) previewObserver.disconnect() })
 const tagName = (cat, tag) => tagDisplayName(setting.value, appStore.resolvedTranslation, cat, tag)
 
 const book = computed(() => (bookDetail.value && bookDetail.value.id) ? bookDetail.value : {})
+// 绅士漫画的书:详情字段/按钮都按站点来(没有种子/评分/大小)
+const isWnacg = computed(() => !!(book.value && book.value.site === 'wnacg'))
+// ---------- 绅士漫画的合集(多话作品) ----------
+// 用户要求:**和本地合集一模一样** —— 预览图网格 + 每本一张卡,而不是文字目录。
+// 章节数据来自站点详情页的 div.sr_compact(wnacgOnline.parseWnacgDetail 解析)。
+const seriesChapters = computed(() => {
+  const s = book.value && book.value.series
+  return (s && Array.isArray(s.chapters)) ? s.chapters : []
+})
+const seriesStatus = computed(() => (book.value && book.value.series && book.value.series.status) || '')
+// 这是一个「合集」(多话作品)而不是普通单本
+const isSeries = computed(() => isWnacg.value && !isCollection.value && seriesChapters.value.length > 1)
+// 当前这一本在合集里是第几话(按 URL 里的 aid 反查),用于高亮
+const currentChapterIndex = computed(() => {
+  const u = String((book.value && book.value.url) || '')
+  const aid = (/:\/\/photos-index-aid-(\d+)\.html/.exec(u) || [])[1] || ''
+  if (!aid) return -1
+  return seriesChapters.value.findIndex(c => String(c.url || '').indexOf('aid-' + aid + '.html') >= 0)
+})
+// 每话的封面:合集页本身只有文字,封面要挨个去那一话的详情页取。
+// 按 chid 缓存(切来切去不重复请求);只对确实是合集的书触发。
+const chapterCovers = ref({})
+const chapterCoverLoading = ref(false)
+const loadChapterCovers = async (chapters) => {
+  if (!chapters || chapters.length < 2) return
+  const todo = chapters.filter(c => c && c.chid && !chapterCovers.value[c.chid])
+  if (!todo.length) return
+  chapterCoverLoading.value = true
+  try {
+    // 并发 3:站点对并发不友好,3 条大约 1~2 秒能拉完 5 话
+    const queue = todo.slice()
+    const worker = async () => {
+      for (;;) {
+        const c = queue.shift()
+        if (!c) return
+        try {
+          const html = await ipcRenderer.invoke('get-ex-webpage', { url: c.url, cookie: String(setting.value.wnacgCookie || '') })
+          const cover = parseWnacgChapterCover(html || '', String(c.url).replace(/^https?:\/\//i, '').split('/')[0])
+          if (cover) chapterCovers.value = { ...chapterCovers.value, [c.chid]: cover }
+        } catch (e) { /* 单话失败不影响其它 */ }
+      }
+    }
+    await Promise.all([worker(), worker(), worker()])
+  } finally {
+    chapterCoverLoading.value = false
+  }
+}
+// 合集就位 / 换书时把封面拉一遍
+watch(
+  () => [isSeries.value, seriesChapters.value.map(c => c.chid).join(',')],
+  () => { if (isSeries.value) loadChapterCovers(seriesChapters.value) },
+  { immediate: true }
+)
+// 给网格用的视图模型:和本地合集成员卡同一个结构(cell 里有 coverPath / title)
+// 多选下载弹窗的状态
+const seriesDlVisible = ref(false)
+const seriesDlChapters = ref([])
+const seriesDlPreset = ref([])
+const seriesDlPresetMode = ref('read')
+// 下载按钮:合集 -> 弹「选要下载的漫画(可多选)」;普通单本 -> 直接下
+// 下载按钮:合集和单本**都**弹多选弹窗(单本只有一条,顺便在那里选线路)
+const onSeriesDownloadBtn = (mode) => {
+  openSeriesDownload([], mode)
+}
+// 打开多选下载:chapters 用带封面的视图模型(漫画选择器要显示预览图)
+const openSeriesDownload = (presetChids, mode) => {
+  const src = isSeries.value
+    ? seriesViews.value
+    : [{
+        // 单本:只有一条,但它也是选线路的地方
+        chid: 'single',
+        order: '',
+        title: (book.value && book.value.title) || '',
+        url: (book.value && book.value.url) || '',
+        readUrl: (book.value && book.value.url) || '',
+        pageCount: (book.value && book.value.pageCount) || null,
+        posted: '',
+        coverPath: (book.value && book.value.coverPath) || '',
+      }]
+  seriesDlChapters.value = src.map(v => ({
+    chid: v.chid, order: v.order, title: v.title, url: v.url,
+    pageCount: v.pageCount, posted: v.posted, coverPath: v.coverPath,
+  }))
+  seriesDlPreset.value = Array.isArray(presetChids) ? presetChids : []
+  seriesDlPresetMode.value = mode || 'read'
+  seriesDlVisible.value = true
+}
+const seriesViews = computed(() => seriesChapters.value.map((c, i) => ({
+  id: c.chid || ('ch' + i),
+  chid: c.chid,
+  index: i,
+  order: c.order,
+  title: c.title,
+  url: c.url,
+  readUrl: c.readUrl || c.url,
+  pageCount: c.pageCount,
+  posted: c.posted,
+  coverPath: chapterCovers.value[c.chid] || '',
+  isCurrent: i === currentChapterIndex.value,
+})))
 // ---------- 合集(聚合条目) ----------
 // 合集不是磁盘上的文件:没有页预览、没有评论、不能改「整组评分」,
 // 页数/阅读次数/大小一律取聚合字段(与书架卡片、详细界面同一个口径)。
@@ -980,7 +1276,7 @@ const tagGroups = computed(() => {
     // category 键在本地书里也可能出现(用户自建类别),原样展示即可
     return {
       cat,
-      label: categoryDisplayName(setting.value, translated, cat) || cat,
+      label: cat === 'tag' ? t('m.tag') : (categoryDisplayName(setting.value, translated, cat) || cat),
       tags: Array.isArray(tags_) ? tags_ : []
     }
   }).filter(g => g.tags.length)
@@ -1377,6 +1673,62 @@ const refreshDetail = async () => {
   const b = book.value
   if (!b || !b.online || !b.url) return
   detailLoading.value = true
+  // 紳士漫畫:详情页一套独立字段(分类/页数/标签/简介/全页缩略图)
+  if (isWnacgUrl(b.url)) {
+    try {
+      const host = String(b.url).replace(/^https?:\/\//i, '').split('/')[0]
+      let html = await ipcRenderer.invoke('get-ex-webpage', { url: b.url, cookie: String(setting.value.wnacgCookie || '') })
+      // Cookie 失效时站点回一个没正文的壳页:匿名重试一次(详情页游客也能看)
+      if (html && wnacgHtmlLooksBroken(html)) {
+        html = await ipcRenderer.invoke('get-ex-webpage', { url: b.url, cookie: '' })
+      }
+      // 作品已被站点删除:匿名重试也是同一句「漫畫不存在」,直接说明
+      if (html && wnacgIsDeletedPage(html)) {
+        ElMessage.warning(t('m.wnacgDeleted'))
+        return
+      }
+      const detail = html ? parseWnacgDetail(html, host) : null
+      if (detail && detail.ok) {
+        Object.assign(bookDetail.value, mergeWnacgDetail(bookDetail.value, detail))
+        // 收藏状态:站点不在详情页给收藏数,唯一能回答「收了没」的是「加入書架」弹窗 ——
+        // 已收藏回「你已經收藏過了」,没收藏回表单。探一次(1KB 小请求),
+        // 结果写回 book 和 bookDetail:收藏格有值,列表卡片的星标也跟着点亮/熄灭。
+        if (!bookDetail.value.inShelf) {
+          try {
+            const aid = wnacgAidOf(b.url)
+            if (aid && String(setting.value.wnacgCookie || '')) {
+              const dlgHtml = await ipcRenderer.invoke('get-ex-webpage', {
+                url: 'https://' + host + '/users-addfav-id-' + aid + '.html',
+                cookie: String(setting.value.wnacgCookie || '')
+              })
+              const dlg = parseWnacgFavDialog(dlgHtml || '', host)
+              // 只有「认得出」的回应才算数(登录框=未登录拿不到;壳页=作品已删,别乱说)
+              if (dlg.needLogin || dlg.already || dlg.removeUrl || dlg.form) {
+                const inShelf = !!(dlg.already || dlg.removeUrl)
+                bookDetail.value.inShelf = inShelf
+                bookDetail.value.favProbed = true
+                if (book.value) {
+                  book.value.inShelf = inShelf
+                  book.value.favcat = inShelf ? 0 : null
+                }
+              }
+            }
+          } catch (e) { /* 探不到就保持原样 */ }
+        }
+        if ((detail.thumbnails || []).length) {
+          previewItems.value = detail.thumbnails.map(th => ({ sprite: spriteStyleOf(th) }))
+          ensureOnlineThumbs()
+        }
+      } else {
+        ElMessage.warning(t('m.wnacgFailed'))
+      }
+    } catch (e) {
+      ElMessage.warning(t('m.wnacgFailed'))
+    } finally {
+      detailLoading.value = false
+    }
+    return
+  }
   try {
     const cookie = ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star']
       .map(k => k + '=' + (setting.value[k] || ''))

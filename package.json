@@ -12,6 +12,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:desktop": "node scripts/dev-desktop.js",
     "build": "vite build",
     "preview": "vite preview",
     "start": "chcp 65001 && electron .",
@@ -114,5 +115,5 @@
     "vue-i18n": "^9.2.2",
     "vuedraggable": "^4.1.0"
   },
-  "buildTime": "20261115-0143"
+  "buildTime": "20261117-2232"
 }

@@ -111,6 +111,192 @@ const requireLogin = (req, res, next) => {
   next()
 }
 
+// ---------- 绅士漫画登录页代理(网页版:在本页里完成登录) ----------
+// 站点登录强制滑块验证码,服务端直接 POST 过不去;这里把站点登录页**经我们自己的代理**塞进 iframe:
+// 用户在页面里自己拖滑块,登录后的 Cookie 落在这个代理会话里,再由前端取走存进设置。
+// 每个浏览器一个 jar(用 HttpOnly cookie 认人),多开也不会串。
+const WNACG_PROXY_PATH = '/wnacg-proxy/'
+const WNACG_PROXY_TOKEN_COOKIE = 'emm_wnacg_proxy'
+const wnacgProxyJars = new Map()
+
+const wnacgProxyHost = () => {
+  const s = (typeof getSetting === 'function' ? getSetting() : {}) || {}
+  return String(s.wnacgHost || 'www.wnacg.com').replace(/^https?:\/\//i, '').replace(/\/+$/, '')
+}
+const wnacgProxySessionOf = (req, res) => {
+  const known = parseCookies(req)[WNACG_PROXY_TOKEN_COOKIE]
+  let token = known && wnacgProxyJars.has(known) ? known : ''
+  if (!token) {
+    token = Math.random().toString(36).slice(2) + Date.now().toString(36)
+    wnacgProxyJars.set(token, new Map())
+    res.append('Set-Cookie', `${WNACG_PROXY_TOKEN_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax`)
+  }
+  return { token, jar: wnacgProxyJars.get(token) }
+}
+const wnacgProxyJarOf = (req, res) => wnacgProxySessionOf(req, res).jar
+
+// 用户在设置里填过的账号密码:临时存在这个会话上(5 分钟),
+// 登录页 iframe 载入后自己取回来填好 —— 不用再输一遍。
+const wnacgProxyCreds = new Map()
+const WNACG_PROXY_CREDS_TTL = 5 * 60 * 1000
+const wnacgProxyCredsGet = (token) => {
+  const c = wnacgProxyCreds.get(token)
+  if (!c) return null
+  if (Date.now() - c.at > WNACG_PROXY_CREDS_TTL) { wnacgProxyCreds.delete(token); return null }
+  return c
+}
+const wnacgProxyCookieHeader = (jar) => [...jar.entries()].map(([k, v]) => k + '=' + v).join('; ')
+const wnacgProxyAbsorb = (jar, upstream) => {
+  for (const c of ((upstream && upstream.setCookies) || [])) {
+    const kv = String(c).split(';')[0]
+    const i = kv.indexOf('=')
+    if (i > 0) jar.set(kv.slice(0, i).trim(), kv.slice(i + 1).trim())
+  }
+}
+// 站点页面里的根路径(/themes/…、/users-…、'/index.php…')要改到代理前缀下,
+// 否则 CSS/JS/XHR 全打到我们自己的根上,登录页会是个没样式的空壳。
+const wnacgProxyRewrite = (text) => String(text)
+  .replace(/(\b(?:href|src|action)=["'])\/(?!\/)/g, '$1' + WNACG_PROXY_PATH)
+  .replace(/url\(\s*\/(?!\/)/g, 'url(' + WNACG_PROXY_PATH)
+  .replace(/(["'])\/(index\.php|users-|albums|photos-|themes\/|statics\/|favicon\.ico|feed\.html)/g, '$1' + WNACG_PROXY_PATH + '$2')
+
+// 塞进代理后的登录页:取回刚才存的账号密码填进表单,然后替用户点一下「登錄」,
+// 这样弹窗里出现的下一步就是滑块,而不是又让你输一遍账号密码。
+const WNACG_AUTOFILL = `<script>(function () {
+  var n = 0
+  function fill(c) {
+    var f = document.getElementById('login_form')
+    if (!f) return false
+    var u = f.querySelector('input[name="login_name"]')
+    var p = f.querySelector('input[name="login_pass"]')
+    if (!u || !p) return false
+    if (c.username && !u.value) u.value = c.username
+    if (c.password && !p.value) p.value = c.password
+    return true
+  }
+  fetch('/api/wnacg-proxy/creds', { credentials: 'include' })
+    .then(function (r) { return r.json() })
+    .then(function (d) {
+      if (!d || !d.ok || !d.username) return
+      var t = setInterval(function () {
+        n += 1
+        if (fill(d)) {
+          clearInterval(t)
+          setTimeout(function () {
+            var b = document.querySelector('#login_form input[name="submit"]')
+            if (b) b.click()
+          }, 300)
+        } else if (n > 40) { clearInterval(t) }
+      }, 250)
+    })
+    .catch(function () {})
+})()</script>`
+
+const rawBodyOf = (req) => new Promise((resolve) => {
+  const chunks = []
+  req.on('data', (c) => chunks.push(c))
+  req.on('end', () => resolve(Buffer.concat(chunks)))
+  req.on('error', () => resolve(Buffer.alloc(0)))
+})
+
+app.use(WNACG_PROXY_PATH, requireLogin, async (req, res) => {
+  // ★必须包进「该账户」的上下文:代理 / 站点域名都存在账户自己的设置里,
+  //   直接 getSetting() 拿到的是默认配置(没有代理)→ 一进代理就 fetch failed。
+  return withAccount(profileNameOf(sessionOf(req)), async () => {
+  const host = wnacgProxyHost()
+  const jar = wnacgProxyJarOf(req, res)
+  const rest = req.originalUrl.slice(WNACG_PROXY_PATH.length - 1)
+  const target = 'https://' + host + rest
+  try {
+    // 出网统一走 ehLogin.request:它按域名决定直连/代理,并且已经处理了重定向与 Set-Cookie。
+    // (这里不能用全局 fetch:它认不了 HttpsProxyAgent,直连站点必失败。)
+    let form = null
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const raw = await rawBodyOf(req)
+      const text = raw && raw.length ? raw.toString('utf8') : ''
+      if (text) form = Object.fromEntries(new URLSearchParams(text))
+      else if (req.body && typeof req.body === 'object') form = req.body
+    }
+    const upstream = await ehLogin.request(target, {
+      proxy: ((typeof getSetting === 'function' ? getSetting() : {}) || {}).proxy,
+      method: req.method,
+      form,
+      cookie: wnacgProxyCookieHeader(jar),
+      referer: 'https://' + host + '/',
+      headers: {
+        'X-Requested-With': req.headers['x-requested-with'] || '',
+        Accept: req.headers['accept'] || ''
+      },
+      raw: true,
+      timeout: 20000,
+      retries: 1
+    })
+    wnacgProxyAbsorb(jar, upstream)
+    const ctype = String((upstream.headers && upstream.headers['content-type']) || 'text/html; charset=utf-8')
+    const buf = (upstream && upstream.buffer) ? upstream.buffer : Buffer.from(String((upstream && upstream.body) || ''), 'utf8')
+    res.status(Number(upstream.status) || 200)
+    res.setHeader('Content-Type', ctype)
+    res.setHeader('Cache-Control', 'no-store')
+    if (/text\/html|text\/css|javascript|application\/json/i.test(ctype)) {
+      let out = wnacgProxyRewrite(buf.toString('utf8'))
+      // 只在登录页里注入自动填表脚本
+      if (/text\/html/i.test(ctype) && out.includes('id="login_form"')) {
+        out = out.replace('</body>', WNACG_AUTOFILL + '</body>')
+      }
+      res.send(out)
+    } else {
+      res.end(buf)
+    }
+  } catch (e) {
+    res.status(502).send('代理登录页失败:' + String((e && e.message) || e))
+  }
+  })
+})
+
+// 暂存/取回本次登录要用的账号密码(只在服务端内存里,5 分钟过期)
+app.post('/api/wnacg-proxy/creds', requireLogin, (req, res) => {
+  const { token } = wnacgProxySessionOf(req, res)
+  const body = req.body || {}
+  wnacgProxyCreds.set(token, {
+    username: String(body.username || ''),
+    password: String(body.password || ''),
+    at: Date.now()
+  })
+  res.json({ ok: true })
+})
+app.get('/api/wnacg-proxy/creds', requireLogin, (req, res) => {
+  const { token } = wnacgProxySessionOf(req, res)
+  const c = wnacgProxyCredsGet(token)
+  if (!c || !c.username) return res.json({ ok: false })
+  res.json({ ok: true, username: c.username, password: c.password })
+})
+
+// 登录状态 + Cookie:iframe 里登录成功后,前端靠这个接口把 Cookie 取走
+app.get('/api/wnacg-proxy/status', requireLogin, async (req, res) => {
+  return withAccount(profileNameOf(sessionOf(req)), async () => {
+  const host = wnacgProxyHost()
+  const jar = wnacgProxyJarOf(req, res)
+  try {
+    const upstream = await ehLogin.request('https://' + host + '/users-users_fav.html', {
+      proxy: ((typeof getSetting === 'function' ? getSetting() : {}) || {}).proxy,
+      cookie: wnacgProxyCookieHeader(jar),
+      referer: 'https://' + host + '/',
+      raw: true,
+      timeout: 20000,
+      retries: 1
+    })
+    wnacgProxyAbsorb(jar, upstream)
+    const html = (upstream && upstream.buffer) ? upstream.buffer.toString('utf8') : ''
+    // 未登录时站点给的是「您沒有權限,需要登錄!」那种空壳页(既没有列表也没有登录表单),
+    // 所以不能只看有没有 login_form —— 必须认这句提示。
+    const loggedIn = !!html && !/您沒有權限|您没有权限/.test(html) && !/users-check_login/.test(html)
+    res.json({ ok: true, loggedIn, cookie: loggedIn ? wnacgProxyCookieHeader(jar) : '' })
+  } catch (e) {
+    res.json({ ok: false, error: String((e && e.message) || e) })
+  }
+  })
+})
+
 const setSessionCookie = (res, token) => {
   // 一年有效(登录后一直保持,直到用户主动退出登录)
   res.setHeader('Set-Cookie', `${TOKEN_COOKIE}=${token}; HttpOnly; Path=/; Max-Age=31536000; SameSite=Lax`)
@@ -177,6 +363,10 @@ const VIEWER_ALLOWED_CHANNELS = new Set([
   'preview-thumbs',
   // 取「上一次 get-ex-webpage 失败的原因」,只读内存里的一个对象
   'eh-webpage-last-error',
+  // 绅士漫画「加入書架」:提交站点弹窗页自己的表单(只写远端收藏夹,不碰本地文件)
+  'post-ex-form',
+  // 绅士漫画账号密码直登:只 POST 到站点换回 Cookie,不写本地文件
+  'wnacg-password-login',
   // ---------- EH 下载 ----------
   // ⚠ 下载是会**写文件**的操作(往下载目录写图片、写 downloads.json),
   //   按「读放行 / 写限管理员」的既有语义本不该放给只读账户;
@@ -188,6 +378,13 @@ const VIEWER_ALLOWED_CHANNELS = new Set([
   //   判定依据是下面分发时塞进 event 的 _emmRole,所以**不要**再在这里做路径特判,保持单一出口。
   'eh-download-gallery', 'eh-download-page', 'eh-download-records', 'eh-download-files',
   'eh-download-action', 'eh-download-clear', 'eh-download-set-tags', 'eh-download-page-by-index',
+  // 绅士漫画下载(阅读=下拉阅读逐页图;Server1/2=站点下载页两条线路):
+  // 与 eh-download-* 同组 —— 会写文件,但按「只读账户也能下载」的语义放行。
+  // remove 只删任务记录(不删文件),和 eh-download-action 的「仅删除记录」同级。
+  // action = 右栏那几颗按钮(暂停/继续/重下/仅删除记录/删除记录和文件),
+  // 与 EH 的 eh-download-action 同级;删除文件同样只允许删「保存目录之内」的那一件。
+  // move 是把下好的漫画移进本地库,属于写操作,和 move-downloads 一样**不给**只读账户。
+  'wnacg-download', 'wnacg-download-remove', 'wnacg-download-action',
 ])
 
 // 账户/写操作类敏感通道:即使将来有人不小心把它们加进 viewer 白名单,也必须管理员才行。
@@ -457,6 +654,8 @@ app.get('/api/file', requireLogin, async (req, res) => {
 // 在线读图与页预览一律由服务端带 Cookie + 代理取回再转发。
 // 只放行 EH 的几个域名 —— 否则这就是一个「服务端任意 URL 代理」。
 const EX_IMAGE_HOST_RE = /^https:\/\/([^/]+\.)?(hath\.network|ehgt\.org|e-hentai\.org|exhentai\.org)(:\d+)?\//i
+// 紳士漫畫(wnacg)的封面/缩略图图床:与桌面版 emm-eh 同一份白名单
+const WNACG_IMAGE_HOST_RE = /^https:\/\/([^/]+\.)?(qy0\.ru|wnacg[0-9a-z.-]*\.(com|ru|org|net|cc|link))(:\d+)?\//i
 // ---------- EH 图片:内存缓存 + 有界并发 + 失败重试 ----------
 // 用户反馈「在线图片一直失败 / 很慢,自己开网站却又快又少失败」。三个原因:
 //   ① 每张图都现取、没有缓存 —— 翻回上一页、来回滚就又打一次 EH;
@@ -513,12 +712,13 @@ const releaseImgSlot = () => {
 
 app.get('/api/ex-image', requireLogin, async (req, res) => {
   const url = String(req.query.url || '')
-  if (!EX_IMAGE_HOST_RE.test(url)) return res.status(400).send('bad url')
+  const isEhImg = EX_IMAGE_HOST_RE.test(url)
+  if (!isEhImg && !WNACG_IMAGE_HOST_RE.test(url)) return res.status(400).send('bad url')
   // r = 图片页 URL(/s/<hash>/<gid>-<n>);EH 的 H@H 节点会校验来源,用站点根当 referer 容易被拒。
   // ⚠️ 它会被当作 Referer 发给上游、并交给 resolvePageImageInfo 二次解析 —— 必须走同一份域名白名单,
   //    否则 url 拦得再严也没用:r 就是一个完整的 SSRF 入口(已实测服务端会真的发出请求)。
-  const pageRefRaw = String(req.query.r || 'https://e-hentai.org/')
-  const pageRef = EX_IMAGE_HOST_RE.test(pageRefRaw) ? pageRefRaw : 'https://e-hentai.org/'
+  const pageRefRaw = String(req.query.r || (isEhImg ? 'https://e-hentai.org/' : 'https://www.wnacg.com/'))
+  const pageRef = (EX_IMAGE_HOST_RE.test(pageRefRaw) || WNACG_IMAGE_HOST_RE.test(pageRefRaw)) ? pageRefRaw : 'https://e-hentai.org/'
   // 缓存命中:①内存(同会话)②磁盘(跨重启/跨会话,key 抹掉了 keystamp)
   // max-age=3600 让浏览器自己也留一份;private 是因为这些图属于账号内容。
   const hit = imgCacheGet(url)
@@ -591,7 +791,7 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
     }
     for (let attempt = 0; attempt < 2; attempt += 1) {
       let target = url
-      if (attempt >= 1) {
+      if (attempt >= 1 && isEhImg) {
         try {
           const fresh = await ehLogin.resolvePageImageInfo(pageRef, { proxy: prof.proxy, cookie: prof.cookie || '', reloadKey: '' })
           // 上游页面里解析出来的图片地址同样要过白名单 —— 否则被投毒的页面能把请求引到内网
@@ -604,7 +804,7 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
       } catch (e) {
         lastErr = e
         const st = Number((e && e.status) || 0)
-        if (attempt === 0 && (st === 403 || st === 429 || st === 509)) continue
+        if (isEhImg && attempt === 0 && (st === 403 || st === 429 || st === 509)) continue
         break
       }
       try {

@@ -55,6 +55,7 @@
           @click.stop="$emit('move-one', tv.task)"
         ></el-button>
         <el-button
+          v-if="tv.canDeleteFiles"
           class="download-item-trash"
           size="small"
           link
@@ -64,7 +65,7 @@
           @click.stop="$emit('delete-with-files', tv.task)"
         ></el-button>
         <!-- 封面:左键 = 预览已下好的页。is-pending = 还没下完:封面做模糊 + 压暗 -->
-        <div class="download-card-cover" :class="{ 'is-pending': tv.pending }" :title="$t('m.downloadPreviewHint')" @click="$emit('open-preview', tv.task)">
+        <div class="download-card-cover" :class="{ 'is-pending': tv.pending }" :title="tv.task.source === 'wnacg' && !tv.task.dir ? (tv.task.filePath || tv.task.title) : $t('m.downloadPreviewHint')" @click="onCoverClick(tv.task)">
           <img
             v-if="(tv.task.coverPath || tv.task.cover) && !tv.coverFailed"
             :src="tv.coverSrc"
@@ -84,6 +85,7 @@
                   :show-text="false"
                   :status="tv.task.status === 'failed' ? 'exception' : ''"
                 />
+                <!-- 暂停/继续:EH 与绅士漫画都支持(后端都能在页边界停下来、按文件名续传) -->
                 <span
                   class="download-card-action"
                   :title="tv.task.status === 'downloading' ? $t('m.pauseTask') : $t('m.resumeTask')"
@@ -93,16 +95,24 @@
                 </span>
               </div>
               <div class="download-card-count">
-                {{ tv.task.done }}/{{ tv.task.total }}
+                <template v-if="tv.task.source === 'wnacg'">{{ tv.percent }}%</template>
+                <template v-else>{{ tv.task.done }}/{{ tv.task.total }}</template>
               </div>
             </div>
           </template>
         </div>
         <!-- 右侧:标题 → 中间标签行 → 状态/进度 → 右下角时间 + 底部细进度条 -->
         <div class="download-body">
-          <div class="download-title" :title="tv.task.title" @click="$emit('open-task-detail', tv.task)">{{ tv.task.title }}</div>
-          <div class="download-tags" v-if="tv.tags.length || tv.task.category">
-            <span v-if="tv.task.category" class="download-tag is-cat" :title="galleryCategoryName(tv.task.category, $t)" @click.stop="$emit('tag-click', { text: tv.task.category, ns: 'category' })">{{ galleryCategoryName(tv.task.category, $t) }}</span>
+          <div class="download-title" :title="tv.task.title" @click="onTitleClick(tv.task)">{{ tv.task.title }}</div>
+          <div class="download-tags" v-if="tv.tags.length || tv.task.category || tv.wnacgTag">
+            <!-- 绅士漫画任务:标明站点与线路,纯展示,点了不触发 EH 标签搜索 -->
+            <span v-if="tv.wnacgTag" class="download-tag is-cat">{{ tv.wnacgTag }}</span>
+            <!-- 绅士漫画的「分类」是站点自己的文字(同人志／汉化、单行本…),不是 EH 的画廊类别,
+                 所以原样显示、并且不按类别去搜索(点它没有意义)。EH 的类别仍走 galleryCategoryName。 -->
+            <span v-if="tv.task.category && tv.task.source === 'wnacg'" class="download-tag is-cat" :title="tv.task.category">{{ tv.task.category }}</span>
+            <span v-else-if="tv.task.category" class="download-tag is-cat" :title="galleryCategoryName(tv.task.category, $t)" @click.stop="$emit('tag-click', { text: tv.task.category, ns: 'category' })">{{ galleryCategoryName(tv.task.category, $t) }}</span>
+            <!-- 站点标签:下载时一并抓下来的(已在库里的落到原类别,新标签归「标签」类别),
+                 和 EH 记录完全同一套:点一下 = 按这个标签搜索 -->
             <span
               v-for="(tg, ti) in tv.tags"
               :key="ti"
@@ -116,7 +126,11 @@
             <span v-if="tv.task.original" class="download-pill">{{ $t('m.downloadOriginalTag') }}</span>
             <span v-if="tv.task.failed > 0" class="download-fail-chip">✗{{ tv.task.failed }}</span>
             <span class="download-count">
-              <template v-if="tv.task.phase === 'links'">{{ $t('m.downloadCollecting', { n: tv.task.linkCount || 0 }) }}</template>
+              <!-- zip 线路按字节百分比显示(没有「第几页」的概念),阅读线路仍显示页数。
+                   ⚠ 体积只在这一处显示:以前下面还有一颗 .download-size 也打同一个 sizeText,
+                     结果是「35% · 6.5 MB  6.5 MB」—— 同一个数字出现两遍。 -->
+              <template v-if="tv.task.source === 'wnacg' && tv.task.mode !== 'read'">{{ tv.percent }}%</template>
+              <template v-else-if="tv.task.phase === 'links'">{{ $t('m.downloadCollecting', { n: tv.task.linkCount || 0 }) }}</template>
               <template v-else>{{ tv.task.done }}/{{ tv.task.total }}</template>
             </span>
             <span v-if="tv.task.bytes > 0" class="download-size" :title="tv.task.bytes + ' bytes'">{{ tv.sizeText }}</span>
@@ -218,7 +232,7 @@ defineProps({
   warnId: { type: String, default: '' },
 })
 
-defineEmits([
+const emit = defineEmits([
   'resize-start', 'resume-all', 'open-folder', 'move-all', 'close', 'back',
   'task-action', 'move-one', 'delete-with-files', 'open-preview', 'open-task-detail',
   'tag-click', 'cover-error', 'warn-hover', 'warn-leave', 'warn-toggle',
@@ -226,4 +240,16 @@ defineEmits([
   // 下载目录缺失时的「去设置」入口(C2):由 App.vue 接住并打开设置里的下载目录
   'open-setting',
 ])
+
+// 绅士漫画记录:逐页图下载有目录,点封面可预览已下好的页;
+// Server1/2 是单个 zip(没有目录),点了不进预览,悬浮里给出压缩包路径。
+// 标题也不打开 EH 在线画廊详情(那是按 EH 链接解析的)。
+const onCoverClick = (task) => {
+  if (task && task.source === 'wnacg' && !task.dir) return
+  emit('open-preview', task)
+}
+const onTitleClick = (task) => {
+  if (task && task.source === 'wnacg') return
+  emit('open-task-detail', task)
+}
 </script>

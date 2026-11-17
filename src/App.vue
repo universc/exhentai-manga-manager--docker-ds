@@ -70,16 +70,51 @@
             <el-button v-else-if="id === 'searchButton'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" type="primary" :icon="Search32Filled" plain @click="searchBook" :title="$t('m.search')"></el-button>
             <!-- 排序/筛选:方向由箭头单独切换 -->
             <div v-else-if="id === 'sortSelect'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" class="sort-select-wrap">
-              <el-select class="sort-select" :placeholder="$t('m.sort_filter')" clearable v-model="sortBaseValue">
-                <el-option-group :label="$t('m.filter')">
+              <el-select :class="['sort-select', { 'is-wnacg': wnacgActive }]"
+                         :popper-class="wnacgActive ? 'sort-select-wnacg' : ''"
+                         :placeholder="$t('m.sort_filter')" clearable v-model="sortBaseValue">
+                <!-- 绅士漫画:下拉里直接是站点分类(更新 / 同人志 / 单行本 / 杂志&短篇 / 韩漫)。
+                     全部靠左;分类标题「左短线 + 文字 + 右侧长线」,文字位置不变 -->
+                <!-- 排行模式:下拉顶部一排周期切换(今日/本週/本月/今年),点了换周期重拉。
+                     放在 #header 插槽里(el-select-dropdown__header 承载,一定渲染在选项列表上方)。
+                     ★ v-if 必须放在 template 上:插槽整个不传,Element Plus 就不会渲染那个
+                       自带内边距+下边框的 header 容器 —— 条件写在里面会留一条空白(用户反馈的「更新上方有个空白」) -->
+                <template #header v-if="wnacgActive && wnacgRankMode">
+                  <div class="wnacg-period-row">
+                    <span v-for="p in WNACG_RANK_PERIODS" :key="'wp-' + p.id"
+                          :class="['wnacg-period-item', { active: wnacgRankPeriod === p.id }]"
+                          @click.stop.prevent="setWnacgRankPeriod(p.id)">{{ p.label }}</span>
+                  </div>
+                </template>
+                <template v-if="wnacgActive">
+                  <template v-for="sec in wnacgSectionOptions" :key="'wnacg-' + sec.id">
+                    <!-- 顶层栏目:左边一小段短线 + 文字 + 右边一条贯穿到行尾的长线,文字位置不动 -->
+                    <el-option :label="sec.label" :value="'wnacg:' + sec.id">
+                      <span class="wnacg-sec-title">
+                        <i class="wnacg-sec-rule"></i>
+                        <span class="wnacg-sec-label">{{ sec.label }}</span>
+                        <!-- 我的书架:后面跟一个「+」= 新增书架分类(点了不选这个选项) -->
+                        <i v-if="sec.id === 'shelf'" class="wnacg-add-btn"
+                           title="+"
+                           @click.stop.prevent="addWnacgFavClass">+</i>
+                        <i class="wnacg-sec-line"></i>
+                      </span>
+                    </el-option>
+                    <el-option v-for="sub in (sec.children || [])" :key="'wnacg-' + sub.id"
+                               :label="sub.label" :value="'wnacg:' + sub.id"></el-option>
+                  </template>
+                </template>
+                <el-option-group v-if="!wnacgActive" :label="$t('m.filter')">
                   <el-option :label="$t('m.all')" value=""></el-option>
                   <el-option :label="$t('m.bookmarkOnly')" value="mark"></el-option>
-                  <!-- EH在线:没有「合集」「隐藏」这两个本地概念,去掉;「仅收藏」= 我账号的收藏 -->
-                  <el-option v-if="!onlineActive" :label="$t('m.collectionOnly')" value="collection"></el-option>
+                  <!-- 合集:本地与在线**同一套**(用户要求绅士漫画合集和本地一样)。
+                       「隐藏」仍然只有本地有(在线列表没有这个概念)。 -->
+                  <el-option :label="$t('m.collectionOnly')" value="collection"></el-option>
                   <el-option v-if="!onlineActive" :label="$t('m.hiddenOnly')" value="hidden"></el-option>
                   <el-option :label="$t('m.recentReadOnly')" value="recentRead"></el-option>
                 </el-option-group>
-                <el-option-group :label="$t('m.sort')">
+                <!-- 绅士漫画:这一整组排序都不显示(站点列表本身就是按更新时间倒序) -->
+                <el-option-group v-if="!wnacgActive" :label="$t('m.sort')">
                   <el-option :label="$t('m.shuffle')" value="shuffle"></el-option>
                   <el-option :label="$t('m.addTime')" value="addTime"></el-option>
                   <el-option :label="$t('m.mtime')" value="mtime"></el-option>
@@ -91,17 +126,27 @@
                   <el-option :label="$t('m.page')" value="page"></el-option>
                 </el-option-group>
               </el-select>
+              <!-- 本地库:排序方向箭头;绅士漫画:同位置的「排行」按钮(下拉换成收藏榜分类) -->
               <el-button
+                v-if="!wnacgActive"
                 class="sort-dir-btn"
                 plain
                 :title="sortDirection === 'asc' ? $t('m.sortAsc') : $t('m.sortDesc')"
                 @click="toggleSortDirection"
               >{{ sortDirection === 'asc' ? '↑' : '↓' }}</el-button>
+              <el-button
+                v-if="wnacgActive"
+                class="sort-dir-btn wnacg-rank-btn"
+                :type="wnacgRankMode ? 'primary' : 'default'"
+                plain
+                :title="$t('m.wnacgRankBtn')"
+                @click="toggleWnacgRankMode"
+                :icon="Trophy"></el-button>
             </div>
             <!-- 筛选(漏斗):点开就是 JHenTai 那个筛选对话框 —— 分类 / 关键词 / 语言 / 页数 / 最低评分
                  (可在 高级 → 工具栏按钮 里隐藏;有筛选在生效时按钮高亮) -->
             <el-button
-              v-else-if="id === 'filter'" v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id"
+              v-else-if="id === 'filter'" v-show="!toolbarCollapsedIds.includes(id) && !wnacgActive" :data-tb-id="id"
               type="primary"
               plain
               :icon="MdFunnel"
@@ -184,6 +229,20 @@
     />
     <el-row :gutter="20" class="book-card-area" v-if="!authBlocked">
       <el-col :span="24" v-if="!manageView" class="book-card-list" :class="{ 'card-style-2': setting.cardStyle2 }" :style="{height: (setting.randomTagsEnabled || setting.showCollectTag) ? 'calc(100vh - 134px)' : 'calc(100vh - 96px)'}">
+        <!-- 绅士漫画:站点自己的广告位,做成卡片样式放在列表最上面。
+             pointer-events: none —— 只曝光、不产生点击(误点属于无效点击,扣的是站点的钱)。
+             地址/尺寸/脚本都从站点页面里抠(extractWnacgAdSlot),不写死。 -->
+        <div class="wnacg-ad-card" v-show="wnacgActive && !setting.wnacgDisableAds">
+          <span class="wnacg-ad-tag">{{ $t('m.wnacgAdLabel') }}</span>
+          <!-- 第一条:站点自己的静态图广告(原站在广告位上方) -->
+          <img v-if="wnacgAdBanner" :key="'wnacg-ad-banner-' + wnacgAdKey"
+               class="wnacg-ad-img" :src="wnacgAdBannerSrc" alt="">
+          <!-- 第二条:广告联盟的 728x90 位。放进 iframe 有两个好处:
+               ① 广告脚本不跟我们自己的页面混在一起;② 换版块时重建 iframe 就等于重新请求广告 -->
+          <iframe v-if="wnacgAdSlot && !setting.wnacgDisableAds" :key="'wnacg-ad-slot-' + wnacgAdKey"
+                  class="wnacg-ad-frame" :width="wnacgAdSlot.width" :height="wnacgAdSlot.height"
+                  sandbox="allow-scripts allow-same-origin" :srcdoc="wnacgAdFrameHtml"></iframe>
+        </div>
         <!-- EH在线 重新加载/搜索/排序:立刻摆上骨架卡,而不是留着旧列表装作没事(用户说的「卡半天」) -->
         <div class="online-skeleton" v-if="onlineReloading && !visibleRenderedBookList.length">
           <div class="online-skeleton-card" v-for="n in (Number(setting.pageSize) > 24 ? 24 : Number(setting.pageSize) || 12)" :key="'sk' + n">
@@ -299,8 +358,12 @@
         @update:width="onDetailPanelWidthChange"
         @read="onSideDetailRead"
         @download-gallery="({ book }) => openDownloadDialog(book)"
+        @download-wnacg="({ book, mode }) => startWnacgDownload(book, mode)"
+        @download-series="(p) => startSeriesDownload(p.chapters, p.mode)"
+        @read-url="({ url, title }) => openWnacgChapterInReader(url, title)"
         @open-torrents="openTorrentDialog"
         @favorite="onOnlineFavorite"
+        @open-uploader="openWnacgUploader"
         @search-from-tag="searchFromTag"
         @refresh-list="refreshAfterFilterChange"
         @open-book-detail="onSideDetailOpenDetail"
@@ -379,6 +442,7 @@
       <div
         v-show="drawerVisibleCollection"
         class="collection-bottom-drawer"
+        :class="{ 'is-series-drawer': seriesDrawerMode }"
         :style="{ height: collectionDrawerHeight + 'px' }"
       >
         <!-- 上边缘拖动条:往上拖变高,往下拖变矮(200 ~ 70vh) -->
@@ -389,8 +453,9 @@
           <span class="collection-drawer-actions">
             <!-- 添加漫画:弹窗里勾选还没进这个合集的书,确认后直接写入 collectionList。
                  按钮带文字(用户要求名称就是「添加漫画」),放在编辑按钮左边 -->
-            <el-button type="primary" :icon="Plus" plain size="small" class="collection-add-button" @click="openCollectionMemberPicker(openCollectionId)">{{ $t('m.addMangaToCollection') }}</el-button>
-            <el-button type="primary" :icon="Edit" plain link class="collection-edit-button" :title="$t('m.editCollection')" @click="editCurrentCollection"></el-button>
+            <!-- 绅士漫画的合集抽屉:只是「看 + 下载」,没有本地合集那套增删成员 / 改名的动作 -->
+            <el-button v-if="!seriesDrawerMode" type="primary" :icon="Plus" plain size="small" class="collection-add-button" @click="openCollectionMemberPicker(openCollectionId)">{{ $t('m.addMangaToCollection') }}</el-button>
+            <el-button v-if="!seriesDrawerMode" type="primary" :icon="Edit" plain link class="collection-edit-button" :title="$t('m.editCollection')" @click="editCurrentCollection"></el-button>
             <!-- 排序:按名称 / 时间 / 页数 / 评分。再点同一个字段切换升降序。
                  ★ 以前这里是卡片上的拖动方块(vuedraggable 手柄),用户要求去掉方块、
                    改成「编辑与关闭之间放一个排序按钮」。排序结果照旧写回 collection.list,
@@ -544,11 +609,23 @@
       :collection-id="collectionPickerId"
       @confirm="confirmCollectionMembers"
     />
+    <!-- 绅士漫画合集:选要下载的章节(可多选) -->
+    <SeriesDownloadPicker
+      v-model="seriesPicker.visible"
+      :chapters="seriesPicker.chapters"
+      :preset-selected="seriesPicker.preset"
+      :preset-mode="seriesPicker.mode"
+      @confirm="confirmSeriesDownloadPick"
+    />
     <BookDetailDialog
       ref="BookDetailDialogRef"
       :collection-sort-key="collectionSortKey"
       :collection-sort-asc="collectionSortAsc"
       @download-gallery="({ book }) => openDownloadDialog(book)"
+      @download-wnacg="({ book, mode }) => startWnacgDownload(book, mode)"
+      @download-series="(p) => startSeriesDownload(p.chapters, p.mode)"
+      @download-series-pick="(p) => openSeriesDownloadPick(p.chapters, p.mode, p.preset)"
+      @read-url="({ url, title }) => openWnacgChapterInReader(url, title)"
       @open-torrents="openTorrentDialog"
       @open-content-view="openContentView"
       @open-thumbnail-view="openThumbnailView"
@@ -557,6 +634,7 @@
       @open-search-dialog="$refs.SearchDialogRef.openSearchDialog(bookDetail)"
       @get-book-info="$refs.SearchDialogRef.getBookInfo(bookDetail)"
       @search-from-tag="searchFromTag"
+      @open-uploader="openWnacgUploader"
       @jump-mange-detail="jumpMangeDetail"
       @add-to-history="addBookToHistory"
       @open-hh-download="openHhDownloadDialog"
@@ -611,12 +689,12 @@
 <script>
 import { defineComponent } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { Setting as SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened, MoreFilled, Sort, Plus } from '@element-plus/icons-vue'
+import { Setting as SettingIcon, FullScreen, Edit, Loading, Close, Clock, InfoFilled, Warning, Refresh, ArrowLeft, FolderOpened, MoreFilled, Sort, Plus, Trophy } from '@element-plus/icons-vue'
 import { ArrowTrendingLines20Filled, Collections24Regular, Search32Filled, Save16Regular, Wand24Regular } from '@vicons/fluent'
 import { MdShuffle, MdRefresh, MdSync, MdCodeDownload, MdExit, MdBook, MdColorPalette, MdFolderOpen, MdCloudDone, MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdTrash, MdCloudDownload, MdPlay, MdPause } from '@vicons/ionicons4'
 import { TreeViewAlt, CicsSystemGroup, Catalog } from '@vicons/carbon'
 
-import { getWidth, fetchRecentReadRecords, removeReadRecord, clearReadRecords, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes, tagDisplayName, tagColorOf, galleryCategoryName as galleryCategoryNameOf, tagDisplayPrefix as tagDisplayPrefixOf, retryBookCover, compareCollectionBooks, defaultUiSettings } from './utils.js'
+import { getWidth, fetchRecentReadRecords, removeReadRecord, clearReadRecords, isContextMenuItemEnabled, sortContextMenuItems, mergeContextMenuOptions, applyCustomTheme, applyFavicon, applyCoverStyle, applyAppName, defaultToolbarButtons, ensureToolbarButtons, insertMissingToolbarItems, TOOLBAR_NEW_ITEMS, TOOLBAR_ALWAYS_ITEMS, clearCustomTheme, applyPixelTheme, toAssetUrl, parsePageSizes, tagDisplayName, tagColorOf, galleryCategoryName as galleryCategoryNameOf, tagDisplayPrefix as tagDisplayPrefixOf, retryBookCover, compareCollectionBooks, defaultUiSettings, collectionMemberKey, collectionMemberKeys } from './utils.js'
 import { extractCoverColors, pixelateToDataUrl } from './cover-color.js'
 // 内置的默认像素底图(构建后会变成带 hash 的资源 URL)
 import pixelDefaultBg from './assets/pixel-default-bg.png'
@@ -631,6 +709,7 @@ import HhDownloadDialog from './components/HhDownloadDialog.vue'
 import AutoCollectionDialog from './components/AutoCollectionDialog.vue'
 import BookDetailDialog from './components/BookDetailDialog.vue'
 import CollectionMemberPicker from './components/CollectionMemberPicker.vue'
+import SeriesDownloadPicker from './components/SeriesDownloadPicker.vue'
 import TagEditorDialog from './components/TagEditorDialog.vue'
 import FolderTree from './components/FolderTree.vue'
 import BookCard from './components/BookCard.vue'
@@ -644,6 +723,8 @@ import DownloadPanel from './components/DownloadPanel.vue'
 import DownloadDialog from './components/DownloadDialog.vue'
 import LibraryFolderPicker from './components/LibraryFolderPicker.vue'
 import { EH_ONLINE_ID, hasEhCookies, ehHost, ehListUrl, parseGalleryList, parseGalleryDetail, galleryToBook, ehImageSrc, EX_HOST, EH_HOST } from './ehOnline.js'
+import { WNACG_ONLINE_ID, WNACG_SECTIONS, wnacgHost, wnacgSectionUrl, parseWnacgList, wnacgToBook, isWnacgUrl,
+  parseWnacgShelf, parseWnacgFavDialog, wnacgAidOf, findWnacgFavDel, extractWnacgAdSlot, wnacgImageSrc, WNACG_RANK_SECTIONS, WNACG_RANK_PERIODS, WNACG_CATE_BADGE, wnacgIsRankSection, extractWnacgFavClasses, wnacgHtmlLooksBroken, wnacgParentCategory, wnacgIsSeriesCategory, parseWnacgChapterCover, parseWnacgDetail } from './wnacgOnline.js'
 import { loadEhFilter, saveEhFilter, ehFilterActive as ehFilterIsActive, ehFilterMatch, ehFilterParams, normalizeEhFilter } from './ehFilter.js'
 
 import { mapWritableState, mapActions } from 'pinia'
@@ -651,8 +732,11 @@ import { useAppStore } from './pinia.js'
 
 // 只读账户(viewerRole)在「书卡右键菜单」里看不到的项(A6):
 // 这些都是会写盘 / 写库的动作,服务端本来就会 403 —— 与其让用户点了报错,不如不显示。
-// 在线画廊分支只用到前两个(下载);其余是本地分支的写操作。
-const ONLINE_VIEWER_WRITE_IDS = new Set(['downloadGallery', 'downloadGalleryOriginal'])
+// 在线画廊分支:EH 两个下载入口 + 紳士漫畫三条下载入口,全部是写盘动作。
+const ONLINE_VIEWER_WRITE_IDS = new Set([
+  'downloadGallery', 'downloadGalleryOriginal',
+  'wnacgDlSeries'
+])
 const LOCAL_VIEWER_WRITE_IDS = new Set([
   'getMetadata', 'resetMetadata', 'moveFile', 'deleteFile', 'toggleHidden',
   'pasteTag', 'getMetadataFromLink',
@@ -673,6 +757,7 @@ export default defineComponent({
     SearchDialog,
     BookDetailDialog,
     CollectionMemberPicker,
+    SeriesDownloadPicker,
     TagEditorDialog,
     FolderTree,
     BookCard,
@@ -694,6 +779,10 @@ export default defineComponent({
       Collections24Regular, Search32Filled, ArrowTrendingLines20Filled, Save16Regular, Wand24Regular,
       MdRefresh, MdCodeDownload, MdExit, MdShuffle, MdFolderOpen, MdCloudDone, MoreFilled,
       MdPhonePortrait, MdTabletPortrait, MdDesktop, MdFunnel, MdTrash, MdCloudDownload,
+      // 排行按钮的奖杯(element-plus icons):不加进 setup 返回,模板里 :icon="Trophy" 拿到的是 undefined
+      Trophy,
+      // 排行下拉顶部的周期按钮数据源:同上,模板 v-for 只认 setup 返回的绑定
+      WNACG_RANK_PERIODS,
       // TagGroup 已随「管理标签」按钮合并进「管理」而不再使用(图标统一用 CicsSystemGroup)
       TreeViewAlt, CicsSystemGroup
     }
@@ -707,13 +796,48 @@ export default defineComponent({
       _libSwitchSeq: 0,
       // home
       searchString: '',
-      // 「EH在线」没被勾进任何「库切换」框时的临时站位标志:
-      // 勾进框之后切换库完全按框走,这个标志不再参与(见 computed onlineActive)
-      onlineStopActive: false,
-      // EH在线:书架数据来自 EH(不是本地库)。这些只是「取数据」用的游标,界面全部走原版
+      // 「EH在线」/「紳士漫畫」没被勾进任何「库切换」框时的临时站位:存的是库 id(''=不在线库)
+      // 勾进框之后切换库完全按框走,这个标志不再参与(见 computed onlineSource)
+      onlineStopActive: '',
+      // 在线库(两个来源共用一套书架数据流,切换时按 onlineSource 选解析器):
+      //   onlineItems   = 当前来源已取到的条目(EH 画廊 或 wnacg 相册)
+      //   onlineCursors = EH 的 gid 游标;wnacg 用「下一页地址」翻页(见 wnacgNextUrl)
       onlineItems: [],
       onlineCursors: [null],
       onlinePagesFetched: 0,
+      // 紳士漫畫:当前版块(更新/同人志/…,存 localStorage)、已翻到第几页、下一页地址
+      // 排行模式:排序框旁边的「排行」按钮,点一下下拉就换成站点收藏榜的分类
+      wnacgRankMode: (() => {
+        try { return localStorage.getItem('emmWnacgRankMode') === '1' } catch (e) { return false }
+      })(),
+      // 排行榜周期(今日/本週/本月/今年)
+      wnacgRankPeriod: (() => {
+        try {
+          const p = localStorage.getItem('emmWnacgRankPeriod')
+          return ['day', 'week', 'month', 'year'].includes(p) ? p : 'week'
+        } catch (e) { return 'week' }
+      })(),
+      // 账号的书架分类(我的书架下拉的子项)
+      wnacgFavClasses: [],
+      // 上传者的投稿列表(详情里点上传者时动态加一版块)
+      wnacgUserSections: [],
+      wnacgSection: (() => {
+        try {
+          const saved = localStorage.getItem('emmWnacgSection') || 'update'
+          // 只认菜单里真实存在的版块(分类 / 排行两套都算),老版本/手改的脏值一律回到「更新」
+          const known = WNACG_SECTIONS.some(sec => sec.id === saved || (sec.children || []).some(c => c.id === saved))
+            || wnacgIsRankSection(saved)
+          return known ? saved : 'update'
+        } catch (e) { return 'update' }
+      })(),
+      wnacgPage: 0,
+      wnacgNextUrl: '',
+      // 站点的两条广告:静态图(.dlh)+ 广告联盟 728x90 位。
+      // 都从列表页 HTML 里抠出来,渲染成一张不可点击的卡片。
+      wnacgAdSlot: null,
+      wnacgAdBanner: '',
+      // 换广告时递增:让 Vue 重建广告容器(只改 id 属性换不掉里面的 iframe)
+      wnacgAdKey: 0,
       onlineHasMore: true,
       onlineQuery: '',
       onlineLoading: false,
@@ -832,9 +956,13 @@ export default defineComponent({
       sortDirection_: 'desc',
       // collection
       drawerVisibleCollection: false,
+      // 当前抽屉是不是「绅士漫画合集」模式(只是看 + 下载,没有增删成员那套)
+      seriesDrawerMode: false,
       openCollectionTitle: undefined,
       // 「添加漫画」选择弹窗(抽屉 / 合集详情共用)
       collectionPickerVisible: false,
+      // 绅士漫画合集的多选下载弹窗:{ visible, chapters, preset, mode }
+      seriesPicker: { visible: false, chapters: [], preset: [], mode: 'read' },
       collectionPickerId: '',
       // 当前打开的合集 id(P2-8 拖拽排序要写回 collectionList 里对应的那一个)
       openCollectionId: undefined,
@@ -937,7 +1065,9 @@ export default defineComponent({
     },
     resumableDownloadCount () {
       // 已移到库里的记录不给「继续」:它的 dir 指向库里那本书,续传会往书里写多余页
-      return (this.downloadRecords || []).filter(t => !t.movedTo && ['paused', 'failed', 'waiting'].includes(t.status)).length
+      // 绅士漫画任务现在也支持暂停/继续了(后端按文件名跳过已下好的页,断点续传)
+      return (this.downloadRecords || []).filter(t =>
+        !t.movedTo && ['paused', 'failed', 'waiting'].includes(t.status)).length
     },
     previewDoneCount () {
       return (this.downloadPreviewFiles || []).filter(Boolean).length
@@ -974,12 +1104,16 @@ export default defineComponent({
         coverFailed: !!this.failedCovers[task.id],
         percent: this.downloadPercent(task),
         canMove: this.canMoveDownload(task),
+        // 「删除记录和文件」:站点任务只有盘上还有文件时才给这颗按钮(已移进书库的不给)
+        canDeleteFiles: task.source !== 'wnacg' || (!task.movedTo && !!(task.dir || task.filePath)),
         tags: this.downloadTaskTags(task),
         sizeText: this.downloadSizeText(task.bytes),
         timeText: this.downloadTimeText(task),
         statusText: this.downloadStatusText(task.status),
         hintText: this.downloadHintText(task),
         pending: task.status !== 'done',
+        // 绅士漫画任务在标签行显示「绅士漫画 · 线路」,只读展示、点了不触发 EH 标签搜索
+        wnacgTag: this.wnacgTaskTag(task),
       }))
     },
     // 预览页视图模型：页码状态/文案一次算好
@@ -1064,9 +1198,9 @@ export default defineComponent({
       // 两张卡 + 左右间距 + 卡片区留白 + 竖向滚动条 + 窗口边框
       return Math.max(560, Math.round(effW * 2 + gapH * 4 + 80))
     },
-    // 当前「筛选属于哪个库」:EH在线 单独一份,本地每个库各一份
+    // 当前「筛选属于哪个库」:每个在线库各一份,本地库各一份
     filterLibKey () {
-      if (this.onlineActive) return EH_ONLINE_ID
+      if (this.onlineActive) return this.onlineSourceId
       const id = this.setting && this.setting.activeLibraryId
       return id ? String(id) : ''
     },
@@ -1144,32 +1278,101 @@ export default defineComponent({
     // 多库:所有漫画库 / 当前框里的库名(工具栏「切换库」悬浮提示用)
     libraries () {
       const list = Array.isArray(this.setting?.libraries) ? this.setting.libraries : []
-      // 「EH在线」是前端虚拟库:没有本地文件夹、不写进 setting.libraries
-      // (塞进去会牵动后端的扫描 / 每库一个 sqlite / 缓存搬迁),只在库列表与工具栏循环里多出这一项
-      return this.ehOnlineAvailable ? [...list, this.ehOnlineLibrary] : list
+      // 「EH在线」「紳士漫畫」是前端虚拟库:没有本地文件夹、不写进 setting.libraries
+      // (塞进去会牵动后端的扫描 / 每库一个 sqlite / 缓存搬迁),只在库列表与工具栏循环里多出这两项
+      const out = list.slice()
+      if (this.ehOnlineAvailable) out.push(this.ehOnlineLibrary)
+      if (this.wnacgAvailable) out.push(this.wnacgLibrary)
+      return out
     },
     ehOnlineLibrary () {
       return { id: EH_ONLINE_ID, name: this.$t('m.ehOnline'), online: true, path: '', dataPath: '' }
+    },
+    wnacgLibrary () {
+      return { id: WNACG_ONLINE_ID, name: this.$t('m.wnacgLibrary'), online: true, path: '', dataPath: '' }
     },
     // 出现条件:已填登录 Cookie,且用户打开了「EH在线」(登录成功后会自动打开)
     ehOnlineAvailable () {
       return !!this.setting?.ehOnlineEnabled && hasEhCookies(this.setting)
     },
-    // 「EH在线」有没有被勾进某个「库切换」框:勾了之后切换库就完全按框循环
-    ehOnlineInAnyBox () {
-      return this.switchBoxes.some(b => Array.isArray(b.libraryIds) && b.libraryIds.includes(EH_ONLINE_ID))
+    // 「紳士漫畫」不需要登录:打开开关就有
+    wnacgAvailable () {
+      return !!this.setting?.wnacgOnlineEnabled
     },
-    // 当前这个框里有没有「EH在线」
-    activeBoxHasOnline () {
-      const boxes = this.switchBoxes
-      const box = boxes[Number.isInteger(this.setting?.activeBoxIndex) ? this.setting.activeBoxIndex : 0]
-      return !!(box && Array.isArray(box.libraryIds) && box.libraryIds.includes(EH_ONLINE_ID))
+    // 勾进「库切换」框里的虚拟库 id(可能两个都在)
+    boxOnlineIds () {
+      const ids = new Set()
+      for (const b of this.switchBoxes) {
+        for (const id of (b && Array.isArray(b.libraryIds) ? b.libraryIds : [])) {
+          if (id === EH_ONLINE_ID || id === WNACG_ONLINE_ID) ids.add(id)
+        }
+      }
+      return ids
     },
-    // 现在是不是停在「EH在线」:勾进框时看当前框;没勾进任何框时看临时站位
+    onlineIdsInAnyBox () {
+      return this.boxOnlineIds.size > 0
+    },
+    // 当前框里生效的在线库 id(一个框勾了两个时按勾选顺序取第一个可用的)
+    activeBoxOnlineId () {
+      const box = this.switchBoxes[this.activeBoxIndex]
+      const ids = box && Array.isArray(box.libraryIds) ? box.libraryIds : []
+      for (const id of ids) {
+        if (id === EH_ONLINE_ID && this.ehOnlineAvailable) return EH_ONLINE_ID
+        if (id === WNACG_ONLINE_ID && this.wnacgAvailable) return WNACG_ONLINE_ID
+      }
+      return ''
+    },
+    // 当前生效的在线库 id:勾进框时看当前框;没勾进任何框时看临时站位
+    onlineSourceId () {
+      if (this.onlineIdsInAnyBox) return this.activeBoxOnlineId
+      const stop = this.onlineStopActive
+      if (stop === EH_ONLINE_ID && this.ehOnlineAvailable) return EH_ONLINE_ID
+      if (stop === WNACG_ONLINE_ID && this.wnacgAvailable) return WNACG_ONLINE_ID
+      return ''
+    },
+    // 'eh' | 'wnacg' | '' —— 列表/详情/图片都按它选解析器
+    onlineSource () {
+      const id = this.onlineSourceId
+      return id === WNACG_ONLINE_ID ? 'wnacg' : id === EH_ONLINE_ID ? 'eh' : ''
+    },
     onlineActive () {
-      if (!this.ehOnlineAvailable) return false
-      if (this.ehOnlineInAnyBox) return this.activeBoxHasOnline
-      return this.onlineStopActive
+      return !!this.onlineSource
+    },
+    wnacgActive () {
+      return this.onlineSource === 'wnacg'
+    },
+    // 紳士漫畫 版块菜单(排序/筛选下拉里直接用)
+    wnacgSectionOptions () {
+      const base = this.wnacgRankMode ? WNACG_RANK_SECTIONS : WNACG_SECTIONS
+      // 我的书架下面挂账号的书架分类(登录后自动拉取)
+      return base
+        .map(sec => sec.id === 'shelf' ? { ...sec, children: this.wnacgShelfChildren } : sec)
+        .concat(this.wnacgUserSections)
+    },
+    wnacgShelfChildren () {
+      const list = [{ id: 'shelf', label: '全部' }]
+      for (const c of this.wnacgFavClasses) list.push({ id: 'shelf-c-' + c.id, label: c.name })
+      return list
+    },
+    // 广告位 iframe 的内容(一句话:把站点上那段广告位 + 广告脚本原样搬进来)
+    wnacgAdFrameHtml () {
+      const slot = this.wnacgAdSlot
+      if (!slot) return ''
+      const host = wnacgHost(this.setting)
+      return '<!doctype html><html><head><meta charset="utf-8">'
+        + '<base href="https://' + host + '/">'
+        + '<style>html,body{margin:0;padding:0;overflow:hidden;background:transparent}</style>'
+        + '</head><body>'
+        + '<div id="' + slot.id + '" data-adxad-v3="' + slot.spot + '"'
+        + ' style="width:' + slot.width + 'px;height:' + slot.height + 'px"></div>'
+        + '<script src="' + slot.script + '" data-site-id="' + host + '"><\/script>'
+        + '</body></html>'
+    },
+    // 静态广告图也走应用自己的图片代理(网站在境外,直连多半不通)
+    wnacgAdBannerSrc () {
+      const u = String(this.wnacgAdBanner || '')
+      if (!u) return ''
+      return wnacgImageSrc(u, 'https://' + wnacgHost(this.setting) + '/')
     },
     // ⚠️ Options API 的模板拿不到 <script> 里 import 的组件(要靠 this.xxx),
     // 所以图标必须经 computed 暴露,否则按钮是空白的(用户报的 bug)
@@ -1184,7 +1387,7 @@ export default defineComponent({
       return Number.isInteger(this.setting?.activeBoxIndex) ? this.setting.activeBoxIndex : 0
     },
     boxLabel () {
-      if (this.onlineActive) return this.$t('m.ehOnline')
+      if (this.onlineActive) return this.onlineSource === 'wnacg' ? this.$t('m.wnacgLibrary') : this.$t('m.ehOnline')
       const boxes = Array.isArray(this.setting?.switchBoxes) ? this.setting.switchBoxes : []
       const box = boxes[Number.isInteger(this.setting?.activeBoxIndex) ? this.setting.activeBoxIndex : 0]
       const ids = box && Array.isArray(box.libraryIds) ? box.libraryIds : []
@@ -1278,6 +1481,8 @@ export default defineComponent({
     // 排序下拉显示的基础值(不含方向;方向由箭头单独切换)
     sortBaseValue: {
       get () {
+        // 紳士漫畫:下拉顶部那组是站点版块(更新/同人志/…),显示当前版块
+        if (this.wnacgActive) return 'wnacg:' + this.wnacgSection
         if (!this.sortValue) return ''
         const reverseMap = {
           addAscend: 'addTime', addDescend: 'addTime',
@@ -1292,10 +1497,31 @@ export default defineComponent({
         return reverseMap[this.sortValue] || this.sortValue
       },
       set (val) {
+        if (val == null) val = ''
+        // 紳士漫畫版块:换栏目 = 清空列表重拉(与站点导航一个语义)
+        if (String(val).startsWith('wnacg:')) {
+          const section = String(val).slice(6)
+          // 换版块 = 离开搜索:站点搜索不分分类,带着搜索词选版块会变成「搜索该词」,
+          // 结果每个版块都一样(用户看到的「打开的全是同人志/汉化」就是它)
+          const hadQuery = !!(this.onlineQuery || this.searchString || this.filterAppliedKeyword)
+          if (hadQuery) {
+            this.onlineQuery = ''
+            this.searchString = ''
+            this.searchTyping = ''
+            this.filterAppliedKeyword = ''
+          }
+          if (section === this.wnacgSection && this.onlineItems.length && !hadQuery) return
+          this.wnacgSection = section
+          try { localStorage.setItem('emmWnacgSection', section) } catch (e) { /* 忽略 */ }
+          this.setting.wnacgSection = section
+          this.clearOnlineListForReload()
+          this.loadOnlineList(true)
+          return
+        }
         const base = this.combineSortValue(val)
         // EH在线:「仅收藏」= 我账号的收藏 → 换数据源重新拉一次(EH 的 /favorites.php)
         if (this.onlineActive) {
-          const wantFav = base === 'mark'
+          const wantFav = base === 'mark' && this.onlineSource === 'eh'
           if (wantFav !== this.onlineFavOnly) {
             this.onlineFavOnly = wantFav
             this.sortValue = base
@@ -1389,12 +1615,35 @@ export default defineComponent({
       this.lastAutoThemeCover = null
       this.$nextTick(() => this.applyAutoTheme())
     },
-    // 「EH在线」被关掉 / 登录 Cookie 被清空时:正停在这一站就自动回到本地书架,
+    // 「EH在线」/「紳士漫畫」被关掉时:正停在这一站就自动回到本地书架,
     // 否则界面会停在一个已经不存在的库上
     ehOnlineAvailable (val) {
-      if (!val && (this.onlineStopActive || this.activeBoxHasOnline)) {
-        this.onlineStopActive = false
+      if (!val && (this.onlineStopActive === EH_ONLINE_ID || this.boxOnlineIds.has(EH_ONLINE_ID))) {
+        this.onlineStopActive = ''
+        this.resetLibraryViewState()
         this.loadBookList()
+      }
+    },
+    wnacgAvailable (val) {
+      if (!val && (this.onlineStopActive === WNACG_ONLINE_ID || this.boxOnlineIds.has(WNACG_ONLINE_ID))) {
+        this.onlineStopActive = ''
+        this.resetLibraryViewState()
+        this.loadBookList()
+      }
+    },
+    // 设置里勾了「禁用广告」:iframe 会被 v-if 卸掉,这里只是把待执行的刷新取消掉
+    'setting.wnacgDisableAds' (val) {
+      if (val) clearTimeout(this._wnacgAdTimer)
+    },
+    // 进「紳士漫畫」时:本地专用的筛选态(仅收藏/合集/隐藏/历史)在站内没有对应物,
+    // 留着会让下拉显示「版块」实际却是另一套过滤 —— 统一回到按发布时间排。
+    wnacgActive (val) {
+      if (!val) return
+      const localOnly = ['mark', 'collection', 'hidden', 'recentRead',
+        'addAscend', 'addDescend', 'mtimeAscend', 'mtimeDescend',
+        'readCountAscend', 'readCountDescend', 'artistAscend', 'artistDescend']
+      if (localOnly.includes(this.sortValue)) {
+        this.handleSortChange('postDescend', this.bookList)
       }
     },
     'setting.pixelCoverLevel' () { this.refreshPixelArt() },
@@ -1447,7 +1696,8 @@ export default defineComponent({
     window.addEventListener('resize', this.recomputeToolbarWidth)
     // 搜索框尺寸一变(缩窗口/工具栏增减/侧栏拖宽)就同步下拉弹层宽度
     this.observeSearchBox()
-    // 下载进度 / 完成 / 删除:主进程推过来,右栏就地更新(JHenTai 的下载页也是实时刷)
+    // 下载进度 / 完成 / 删除:主进程推过来,右栏就地更新(JHenTai 的下载页也是实时刷)。
+    // 绅士漫画下载也走同一套 eh-download-progress 广播,进度直接进「下载记录」,不再弹百分比消息。
     ipcRenderer.on('eh-download-progress', (event, task) => this.upsertDownloadRecord(task))
     ipcRenderer.on('eh-download-done', (event, task) => this.upsertDownloadRecord(task))
     ipcRenderer.on('eh-download-removed', (event, arg) => this.removeDownloadRecord(arg && arg.id))
@@ -2261,7 +2511,7 @@ export default defineComponent({
       const idx = Number.isInteger(s.activeBoxIndex) ? s.activeBoxIndex : 0
       const box = boxes[idx]
       const ids = box && Array.isArray(box.libraryIds) ? box.libraryIds.slice().sort().join(',') : '*'
-      return [String(s.activeLibraryId || ''), String(idx), ids, this.onlineActive ? 'online' : 'local'].join('|')
+      return [String(s.activeLibraryId || ''), String(idx), ids, this.onlineSourceId || 'local'].join('|')
     },
     // 切库后列表 / 数量 / 选中态 / 分页 / 筛选 / 文件夹树全部按新库重建。
     // ★最关键的一步:_libLoadSeq +1 让所有在途的 loadBookList / loadCollectionList /
@@ -2286,6 +2536,15 @@ export default defineComponent({
       this.searchString = ''
       this.searchTyping = ''
       this.filterAppliedKeyword = ''
+      // 在线库切走:清掉游标与条目,免得把上一个来源的列表当成新库先摆出来
+      // (回到同一个来源时仍有 sessionStorage 缓存兜底,不会重新打网络)
+      this.onlineItems = []
+      this.onlineCursors = [null]
+      this.onlinePagesFetched = 0
+      this.onlineHasMore = true
+      this.wnacgPage = 0
+      this.wnacgNextUrl = ''
+      this.onlineQuery = ''
       this.manageView = false
       this.exitBookEditMode()
       try { this.scrollMainPageTop() } catch (e) { /* 书架区域还没挂载 */ }
@@ -2332,8 +2591,12 @@ export default defineComponent({
         }
         return !!(res && res.ok)
       }
-      // ①「EH在线」已经勾进某个切换框:完全按框循环
-      if (this.ehOnlineInAnyBox) {
+      // 没被勾进任何框的在线库:接在切换循环末尾当「临时站」(EH在线 → 紳士漫畫)
+      const tailStops = []
+      if (this.ehOnlineAvailable && !this.boxOnlineIds.has(EH_ONLINE_ID)) tailStops.push(EH_ONLINE_ID)
+      if (this.wnacgAvailable && !this.boxOnlineIds.has(WNACG_ONLINE_ID)) tailStops.push(WNACG_ONLINE_ID)
+      // ① 在线库已经勾进某个切换框:完全按框循环
+      if (this.boxOnlineIds.size) {
         if (n <= 1) { this.$message.info(this.$t('m.switchBoxNeedMore')); return }
         const next = ((this.activeBoxIndex + 1) % n + n) % n
         const prev = this.activeBoxIndex
@@ -2360,9 +2623,17 @@ export default defineComponent({
         }
         return
       }
-      // ② 没勾进任何框:循环末尾临时多一站 EH在线,回来时切回第 0 框
+      // ② 当前停在「临时站」:先去下一个临时站(换来源要清空列表),没有就切回第 0 框
       if (this.onlineActive) {
-        this.onlineStopActive = false
+        const at = tailStops.indexOf(this.onlineSourceId)
+        if (at >= 0 && at < tailStops.length - 1) {
+          this.resetLibraryViewState()
+          this.onlineStopActive = tailStops[at + 1]
+          this.buttonLoadBookListLoading = false
+          this.loadBookList()
+          return
+        }
+        this.onlineStopActive = ''
         this.resetLibraryViewState()
         const seq = this._libSwitchSeq
         if (n) {
@@ -2379,11 +2650,12 @@ export default defineComponent({
         if (seq === this._libSwitchSeq) this.loadBookList()
         return
       }
-      // ③ 最后一站的下一站是 EH在线(纯前端站位,不动后端运行时)
-      if (this.ehOnlineAvailable && (n === 0 || this.activeBoxIndex + 1 >= n)) {
+      // ③ 最后一站的下一站是第一个临时站(纯前端站位,不动后端运行时)
+      if (tailStops.length && (n === 0 || this.activeBoxIndex + 1 >= n)) {
         this.resetLibraryViewState()
-        this.onlineStopActive = true
+        this.onlineStopActive = tailStops[0]
         this.buttonLoadBookListLoading = false
+        this.loadBookList()
         return
       }
       if (n <= 1) { this.$message.info(this.$t('m.switchBoxNeedMore')); return }
@@ -2409,13 +2681,13 @@ export default defineComponent({
       }
     },
     async loadBookList (scan) {
-      // EH在线:没有本地书可扫,数据改成从 EH 取,然后照样塞进书架原本的数据流
+      // 在线库:没有本地书可扫,数据改成从站点取,然后照样塞进书架原本的数据流
       if (this.onlineActive) {
-        if (scan) this.$message.info(this.$t('m.ehOnlineScanUnsupported'))
+        if (scan) this.$message.info(this.wnacgActive ? this.$t('m.wnacgScanUnsupported') : this.$t('m.ehOnlineScanUnsupported'))
         // scan(工具栏「重新加载」)= 真的重拉;切库/切界面回来 = 用手上这份(见 loadOnlineList)
         this.loadAllTags()
         await this.loadOnlineList(!!scan)
-        // ⚠ 在线分支也要把 loading 收掉:否则切到 EH 在线后按钮一直转圈
+        // ⚠ 在线分支也要把 loading 收掉:否则切到在线库后按钮一直转圈
         this.buttonLoadBookListLoading = false
         return
       }
@@ -2574,6 +2846,8 @@ export default defineComponent({
     // 点击箭头切换排序方向
     toggleSortDirection () {
       const base = this.sortBaseValue
+      // 绅士漫画的「值」是站点版块,不是排序字段:翻转方向没有意义
+      if (String(base).startsWith('wnacg:')) return
       if (['', 'mark', 'collection', 'hidden', 'recentRead', 'shuffle'].includes(base)) return
       this.sortDirection = this.sortDirection === 'asc' ? 'desc' : 'asc'
       this.handleSortChange(this.combineSortValue(base), this.displayBookList)
@@ -3116,6 +3390,19 @@ export default defineComponent({
       // 侧边详细信息开着时,「详细界面」临时变成「侧边详细信息」—— 关掉面板就自动恢复
       // (不改设置里存的值,只是当前生效行为切换)
       if (action === 'detail' && this.detailPanelVisible) action = 'sideDetail'
+      // ★绅士漫画的合集(多话作品)必须**排在 online 分支之前**:
+      //   它的 online 也是 true,放进下面那个 if 就永远进不来。
+      // ★只有「内容/缩略图/封面」这类 action 进合集抽屉;**点标题照旧走详细弹窗**
+      //   (用户明确要求改回来:封面 → 抽屉,标题 → 详情)。
+      if (book.isSeries && book.site === 'wnacg') {
+        if (action === 'none') return
+        if (action === 'detail' || action === 'sideDetail') {
+          this.$refs.BookDetailDialogRef.openBookDetail(book)
+          return
+        }
+        this.openWnacgSeriesDrawer(book)
+        return
+      }
       // EH在线:不是本地书 —— 「缩略图」没有意义,所以 内容/缩略图 都走在线阅读;详细界面照旧
       if (book.online) {
         if (action === 'none') return
@@ -3402,17 +3689,41 @@ export default defineComponent({
       // 对一个在线画廊要么没意义、要么会写坏本地元数据(在线书没有 hash,写 Metadata 表会炸)。
       // ★只读账户(viewerRole):下载=写盘 + 写库,服务端会 403,所以直接不给看。
       if (book.online) {
+        const wnacg = isWnacgUrl(book.url)
         this.$contextmenu({
           x: e.x,
           y: e.y,
           items: [
+            // 绅士漫画:右键里也给「收藏 / 取消收藏」(等于站点自己的「加入書架」)
+            { id: 'wnacgFavorite', label: book.favcat != null ? this.$t('m.favoriteRemoveOption') : this.$t('m.favorite'), onClick: () => this.onOnlineFavorite(book) },
+            // 绅士漫画:三种下载 —— 阅读(下拉阅读逐页图)/ Server1 / Server2(站点下载页的两条线路)
+            // ⚠ 下载项**按书类型分开**,不要一律对待:
+            //   · 普通单本:原来的三个(阅读 / Server 1 / Server 2),保持原样;
+            //   · 合集(多话作品):只给一个「下载」,点开弹多选(选哪几话 + 线路)。
+            { id: 'wnacgDlRead', label: this.$t('m.wnacgDlRead'), onClick: () => this.startWnacgDownload(book, 'read') },
+            { id: 'wnacgDlS1', label: this.$t('m.wnacgDlServer1'), onClick: () => this.startWnacgDownload(book, 'server1') },
+            { id: 'wnacgDlS2', label: this.$t('m.wnacgDlServer2'), onClick: () => this.startWnacgDownload(book, 'server2') },
+            {
+              id: 'wnacgDlSeries',
+              label: this.$t('m.download'),
+              onClick: () => this.openSeriesDownloadPickFromBook(book)
+            },
+            // EH 在线的下载器/种子入口(紳士漫畫没接入,不给)
             { id: 'downloadGallery', label: this.$t('m.downloadGallery'), onClick: () => this.openDownloadDialog(book) },
             { id: 'downloadGalleryOriginal', label: this.$t('m.downloadGalleryOriginal'), onClick: () => this.startGalleryDownload(book, true) },
             { id: 'torrents', label: this.$t('m.torrent'), onClick: () => this.openTorrentDialog(book) },
             { id: 'copyTag', label: this.$t('m.copyTagClipboard'), onClick: () => this.copyTagClipboard(book) },
             { id: 'copyLink', label: this.$t('c.copyLinkToClipboard'), onClick: () => ipcRenderer.invoke('copy-text-to-clipboard', book.url) },
             { id: 'openInBrowser', label: this.$t('m.openInBrowser'), onClick: () => ipcRenderer.invoke('open-url', book.url) }
-          ].filter(item => !(this.viewerRole && ONLINE_VIEWER_WRITE_IDS.has(item.id)))
+          ].filter(item => {
+            if (!wnacg && ['wnacgFavorite', 'wnacgDlRead', 'wnacgDlS1', 'wnacgDlS2', 'wnacgDlSeries'].includes(item.id)) return false
+            // 绅士漫画:EH 下载器/种子不适用;「复制标签信息」复制的是 EH 结构 JSON,对在线书没意义,一并去掉
+            if (wnacg && ['downloadGallery', 'downloadGalleryOriginal', 'torrents', 'copyTag'].includes(item.id)) return false
+            // ★合集只留「下载」(多选);普通单本只留三个固定线路,不显示多选项
+            if (item.id === 'wnacgDlSeries' && !book.isSeries) return false
+            if (['wnacgDlRead', 'wnacgDlS1', 'wnacgDlS2'].includes(item.id) && book.isSeries) return false
+            return !(this.viewerRole && ONLINE_VIEWER_WRITE_IDS.has(item.id))
+          })
         })
         return
       }
@@ -3637,8 +3948,17 @@ export default defineComponent({
           book.collectionHide = false  // 成员隐藏标记一并复位:上次的合集可能已删/已改
         }
       }
-      // 创建查找映射表，避免重复遍历
-      const bookMap = new Map(bookList.flatMap(book => [[book.hash, book], [book.id, book]]))
+      // 创建查找映射表，避免重复遍历。
+      // ★ 必须同时登记 hash 与 id,并且**跳过空键**:
+      //   在线书没有 hash,以前 flatMap 会往 Map 里塞 [undefined, book],
+      //   后一本覆盖前一本 —— 所有在线成员都指向同一本书(或直接查不到)。
+      const bookMap = new Map()
+      for (const book of bookList) {
+        if (!book) continue
+        for (const k of collectionMemberKeys(book)) {
+          if (!bookMap.has(k)) bookMap.set(k, book)
+        }
+      }
 
       _.forEach(this.collectionList, collection => {
         // ⚠ 老数据 / 被外部写坏的合集可能没有 list 字段:直接 .map 会抛错,
@@ -3647,14 +3967,24 @@ export default defineComponent({
         const memberKeys = Array.isArray(collection.list) ? collection.list : []
         // 同一本书可能同时以 hash 和 id 两种键留在 list 里(老数据):按书去重,
         // 否则阅读数/页数被双算,ids 也重复。
+        // ★ 在线成员可能不在当前 bookList 里(切到本地库 / 刷新后在线列表没了),
+        //   这时用合集自己存的 _online 快照把它补回来 —— 否则合集卡上的成员数、封面、
+        //   页数全按 0 算,点开也是空的(用户说的「融合不好」的核心表现之一)。
+        const onlineSnap = (collection._online && typeof collection._online === 'object') ? collection._online : {}
         const collectBook = _.uniqBy(_.compact(_.flatten(memberKeys.map(hash_id => {
-          return bookMap.get(hash_id)
-        }))), book => book.id || book.hash)
+          const k = String(hash_id == null ? '' : hash_id)
+          if (!k) return null
+          return bookMap.get(k) || onlineSnap[k] || null
+        }))), book => collectionMemberKey(book))
         // ★ 不再就地重写 collection.list。后端 collectionList 是全局一份、不按库隔离,
         //   多库/书被移走时按当前库找不到的成员会被从 list 里删掉,而保存是整份写盘 ——
         //   截断一次,成员就永久丢失(用户反馈「合集里的书莫名其妙少了」)。
         //   磁盘原件留在 collection.list 里只作保存用;展示/抽屉/统计一律用可见成员。
-        collectBook.forEach(book => book.collectionHide = true)
+        // 本地书:收进合集卡(书架上不再单独占一格)—— 这是合集的本意。
+        // ★在线书例外:它们不在本地书架上,collectionHide 只会把它们从**在线列表**里藏掉;
+        //   而在线列表是站点分页结果,少一张卡就少一本书,用户会以为站点丢了内容。
+        //   在线成员照常显示在列表里,同时也能在合集卡里被看到(用户要求两边一致)。
+        collectBook.forEach(book => { if (!book.online) book.collectionHide = true })
         // 当前库一本成员都没有:不出聚合卡(出了也是一张空白角标的空卡)
         if (_.isEmpty(collectBook)) return
         // 以下聚合字段全部按「可见成员」算,并对空集合/缺字段兜底:
@@ -3691,7 +4021,7 @@ export default defineComponent({
         // 以前死取第一本 —— 第一本没封面时整张合集卡就是空白(用户截图里的「合集没有封面」)。
         const coverKey = collection.cover || ''
         const pickedCover = coverKey
-          ? collectBook.find(b => b && (b.hash === coverKey || b.id === coverKey) && b.coverPath)
+          ? collectBook.find(b => b && collectionMemberKeys(b).includes(String(coverKey)) && b.coverPath)
           : null
         const coverBook = pickedCover || collectBook.find(b => b && b.coverPath) || null
         bookList.push({
@@ -3704,8 +4034,9 @@ export default defineComponent({
           // 卡片/详情页用它判断「封面来自哪一本」,手动指定过才非空
           coverKey,
           date, posted, rating, mtime, mark, tags, title_jpn, category, status, pageDiff, readCount, pageCount,
-          // 卡片查成员用的键:可见成员的 hash(id 走 ids;老数据只有 id 时两边都能解析)
-          list: collectBook.map(book => book.hash),
+          // 卡片查成员用的键:统一走 collectionMemberKey(本地=hash,在线=id)。
+          // 以前这里写的是 book.hash —— 在线成员全是 undefined,卡片自然一个都解析不出来。
+          list: collectBook.map(book => collectionMemberKey(book)),
           filepath,
           isCollection: true,
           // 合集大小(角标上的 n)= **可见成员数**:以前取磁盘 list 长度,
@@ -3718,6 +4049,10 @@ export default defineComponent({
           //   × 上万个成员 = 每次渲染千万级 find,滚动/重排时主线程被拖死。
           //   BookCardCollection 优先用它,拿不到才回退扫描(老数据兼容)。
           _members: collectBook,
+          // 成员「全部可能键」的并集(含 id):在线成员没有 hash 时,卡片靠它去匹配
+          _memberKeys: [...new Set(collectBook.flatMap(b => collectionMemberKeys(b)))],
+          // 在线成员快照透传一份:详情页 / 抽屉在在线列表已经消失时还能渲染成员卡
+          _online: (collection._online && typeof collection._online === 'object') ? collection._online : {},
         })
       })
     },
@@ -3771,13 +4106,17 @@ export default defineComponent({
     },
     openCollection (collection) {
       if (!collection) return
+      // 打开本地合集 = 退出「绅士漫画合集」模式(那边的增删按钮要回来)
+      this.seriesDrawerMode = false
       this.drawerVisibleCollection = true
       this.recordPanelOpen('collection')
       // 老数据 / 被外部写坏的合集可能没有 list 字段:直接 .map 会抛错,
       // 与 loadCollectionList 里的防御口径保持一致(那边也是 (collection.list || []))
       const memberKeys = Array.isArray(collection.list) ? collection.list : []
+      // ★ 用 collectionMemberKeys 而不是手写 id/hash 比较:在线成员只有 id、本地只有 hash,
+      //   合并成一组键再比,两种都能命中(以前在线成员一个都解析不出来)。
       this.openCollectionBookList = _.compact(_.flatten(memberKeys.map(hash_id => {
-        return _.filter(this.bookList, book => book.id === hash_id || book.hash === hash_id)
+        return _.filter(this.bookList, book => collectionMemberKeys(book).includes(String(hash_id)))
       })))
       this.openCollectionTitle = collection.title
       this.openCollectionId = collection.id
@@ -3819,16 +4158,43 @@ export default defineComponent({
       rec.list = list.concat(addedKeys)
       await this.persistCollectionList()
 
+      // ★ 在线成员也要能加进来:它们没有 hash,键是 id(wnacg:xxx)。
+      //   以前只查 bookList —— 而 bookletList 里是在线书也行(applyOnlineList 会把它们放进去),
+      //   但下面 agg.list 用的是 b.hash,在线成员一律变成 undefined。
       const added = _.compact(addedKeys.map(k => this.bookList.find(b => b && !b.isCollection &&
-        (String(b.hash) === k || String(b.id) === k))))
-      added.forEach(b => { b.collectionHide = true })
+        collectionMemberKeys(b).includes(String(k)))))
+      // 在线书不该被「收进合集卡」隐藏掉 —— 它们不在本地书架上,
+      // collectionHide 对我们没意义,而且会让在线列表少一张卡(用户会以为书没了)。
+      added.forEach(b => { if (!b.online) b.collectionHide = true })
+
+      // ★ 在线成员存一份精简快照:切到本地库 / 刷新后在线列表没了,
+      //   合集就靠它还原成员卡(否则合集变成空壳,用户以为「加进去的书丢了」)。
+      if (added.some(b => b && b.online)) {
+        if (!rec._online || typeof rec._online !== 'object') rec._online = {}
+        for (const b of added) {
+          if (!b || !b.online) continue
+          const k = collectionMemberKey(b)
+          if (!k) continue
+          rec._online[k] = {
+            id: b.id, online: true, url: b.url, type: b.type || 'online',
+            title: b.title || '', title_jpn: b.title_jpn || '', title_cn: b.title_cn || '',
+            category: b.category || '', coverPath: b.coverPath || '',
+            pageCount: b.pageCount || null, filecount: b.filecount || null,
+            site: b.site || '', posted: b.posted || '', status: b.status || 'tagged',
+            filepath: b.filepath || b.url || '',
+            rating: Number(b.rating) || 0, mark: !!b.mark, readCount: Number(b.readCount) || 0,
+            tags: (b.tags && typeof b.tags === 'object') ? b.tags : {},
+          }
+        }
+      }
 
       const agg = (this.bookList || []).find(b => b && b.isCollection && b.id === collectionId)
       if (agg) {
-        const members = _.uniqBy([...(Array.isArray(agg._members) ? agg._members : []), ...added], b => b && (b.id || b.hash))
+        const members = _.uniqBy([...(Array.isArray(agg._members) ? agg._members : []), ...added], b => b && collectionMemberKey(b))
         agg._members = members
-        agg.list = members.map(b => b.hash)
+        agg.list = members.map(b => collectionMemberKey(b))
         agg.ids = members.map(b => b.id)
+        agg._memberKeys = [...new Set(members.flatMap(b => collectionMemberKeys(b)))]
         agg.chapterCount = members.length
         agg.pageCount = _.sumBy(members, b => Number(b && b.pageCount) || 0)
         agg.readCount = _.sumBy(members, b => Number(b && b.readCount) || 0)
@@ -3847,11 +4213,51 @@ export default defineComponent({
         })
       }
 
+      // ★ 聚合条目不存在时(新建合集刚加第一批成员 / 切库后还没聚合)就地补建一张。
+      //   以前只在「已有 agg」时更新:新建合集加完成员,卡片要等下次整库刷新才出现,
+      //   这期间点「查看合集」是空的(用户说的「加了看不见」)。
+      if (!agg) {
+        const membersNow = _.uniqBy(added, b => b && collectionMemberKey(b))
+        if (membersNow.length) {
+          const ratedNow = membersNow.filter(b => b && Number(b.rating) > 0)
+          const coverBookNow = membersNow.find(b => b && b.coverPath) || null
+          this.bookList.push({
+            title: rec.title,
+            id: collectionId,
+            hiddenBook: !!rec.hidden,
+            coverPath: (coverBookNow && coverBookNow.coverPath) || '',
+            coverKey: rec.cover || '',
+            date: '', posted: '', mtime: '',
+            rating: ratedNow.length
+              ? Math.round(ratedNow.reduce((s, b) => s + Number(b.rating), 0) / ratedNow.length * 10) / 10
+              : 0,
+            mark: membersNow.some(b => b && b.mark),
+            tags: _.mergeWith({}, ...membersNow.map(b => (b && b.tags) || {}), (obj, src) => {
+              if (_.isArray(obj) && _.isArray(src)) return [...new Set(obj.concat(src))]
+              return src
+            }),
+            title_jpn: membersNow.map(b => (b.title || '') + (b.title_jpn || '')).join(','),
+            category: [...new Set(membersNow.map(b => b && b.category).filter(Boolean))].join(','),
+            status: [...new Set(membersNow.map(b => b && b.status).filter(Boolean))].join(','),
+            pageCount: _.sumBy(membersNow, b => Number(b && b.pageCount) || 0),
+            readCount: _.sumBy(membersNow, b => Number(b && b.readCount) || 0),
+            list: membersNow.map(b => collectionMemberKey(b)),
+            ids: membersNow.map(b => b.id),
+            _memberKeys: [...new Set(membersNow.flatMap(b => collectionMemberKeys(b)))],
+            filepath: membersNow.map(b => b && b.filepath).filter(Boolean).join(','),
+            isCollection: true,
+            chapterCount: membersNow.length,
+            _members: membersNow,
+          })
+          this.syncShelfAfterCollectionAggregate(this.bookList)
+        }
+      }
+
       // 抽屉正开着这个合集:成员列表立即补上(按记录重算,顺序照旧走抽屉的排序设置)
       if (this.openCollectionId === collectionId) {
         const memberKeys = Array.isArray(rec.list) ? rec.list : []
         this.openCollectionBookList = _.compact(_.flatten(memberKeys.map(k => {
-          return _.filter(this.bookList, b => b && !b.isCollection && (b.id === k || b.hash === k))
+          return _.filter(this.bookList, b => b && !b.isCollection && collectionMemberKeys(b).includes(String(k)))
         })))
         this.collectionDrawerList = [...this.openCollectionBookList]
         this.sortCollectionDrawerList()
@@ -3949,13 +4355,33 @@ export default defineComponent({
       if (changed) this.printMessage('success', this.$t('c.collectionTagApplied', { n: changed }))
     },
     // 合集成员(优先用聚合条目挂的实时数组,老数据退回 ids/list 去 bookList 里查)
+    // ★在线书(绅士漫画 / EH 在线)也要能进合集:它们不在 bookList 里(那是本地库的书),
+    //   只按 bookList 查会全部丢掉 —— 表现就是「合集里加了在线漫画,打开合集却看不见」。
+    //   这里多找两处:① 当前在线列表 onlineItems ② 合集记录里缓存的成员快照(collection._online)。
     collectionMemberBooks (collection) {
       if (!collection) return []
       if (Array.isArray(collection._members) && collection._members.length) return collection._members
       const keys = Array.isArray(collection.ids) && collection.ids.length
         ? collection.ids
         : (Array.isArray(collection.list) ? collection.list : [])
-      return _.compact(keys.map(k => this.bookList.find(b => b && (b.id === k || b.hash === k))))
+      if (!keys.length) return []
+      // 在线成员快照:加进合集时把书对象整份存下来,刷新后也能还原(在线列表不在时就靠它)
+      const onlineCache = (collection._online && typeof collection._online === 'object') ? collection._online : {}
+      const onlinePool = new Map()
+      for (const b of (this.onlineItems || [])) {
+        if (b && b.id) onlinePool.set(b.id, b)
+      }
+      for (const k of Object.keys(onlineCache)) {
+        if (!onlinePool.has(k)) onlinePool.set(k, onlineCache[k])
+      }
+      const out = []
+      for (const k of keys) {
+        const local = this.bookList.find(b => b && (b.id === k || b.hash === k))
+        if (local) { out.push(local); continue }
+        const online = onlinePool.get(k) || onlineCache[k]
+        if (online) out.push(online)
+      }
+      return out
     },
     // 合集「隐藏漫画」:整组一起藏 —— 每个成员 hiddenBook = true(书不会单独冒出来,
     // 它们本来就被 collectionHide 收在合集卡里),合集记录再打一个 collection.hidden,
@@ -4011,8 +4437,13 @@ export default defineComponent({
       const book = this.bookList.find(b => b && !b.isCollection &&
         (b === member || (id != null && b.id === id) || (hash != null && b.hash === hash))) || member
       const rec = this.findCollectionRecord(collection.id)
+      // ★ 从 list 里摘掉**这本书的所有可能键**(hash / id):在线成员只有 id,
+      //   以前只比 hash && id 的原始值,键是字符串化存的就漏删,成员永远移不出去。
+      const bookKeys = collectionMemberKeys(book)
+      const oldKeys = collectionMemberKeys(member)
+      const dropKeys = new Set([...bookKeys, ...oldKeys].map(String))
       if (rec && Array.isArray(rec.list)) {
-        rec.list = rec.list.filter(k => k !== hash && k !== id)
+        rec.list = rec.list.filter(k => !dropKeys.has(String(k)))
         await this.persistCollectionList()
       }
       if (deleteFile && book.filepath) {
@@ -4025,7 +4456,11 @@ export default defineComponent({
         if (i >= 0) arr.splice(i, 1)
       }
       if (Array.isArray(collection.ids)) collection.ids = collection.ids.filter(x => x !== id)
-      if (Array.isArray(collection.list)) collection.list = collection.list.filter(x => x !== hash && x !== id)
+      if (Array.isArray(collection.list)) collection.list = collection.list.filter(x => !dropKeys.has(String(x)))
+      // 在线成员快照也要清掉,否则刷新后它又从 _online 里"复活"
+      if (collection._online && typeof collection._online === 'object') {
+        for (const k of dropKeys) { if (collection._online[k]) delete collection._online[k] }
+      }
       collection.chapterCount = Math.max(0, Number(collection.chapterCount || 0) - 1)
       // 被移出的书要回到书架(聚合时被打上了 collectionHide)
       book.collectionHide = false
@@ -4058,7 +4493,7 @@ export default defineComponent({
     // 手动指定合集封面(记成员的 hash/id,聚合时优先取它)
     async collectionSetCover ({ collection, member } = {}) {
       if (!collection || !collection.id || !member) return
-      const key = member.hash || member.id
+      const key = collectionMemberKey(member)
       const rec = this.findCollectionRecord(collection.id)
       if (rec) rec.cover = key
       await this.persistCollectionList()
@@ -4293,8 +4728,9 @@ export default defineComponent({
       if (this.backfillTagsRunning) return
       this.backfillTagsRunning = true
       try {
+        // 绅士漫画记录没有 EH 标签,也绝不能拿它的 url 去解析 EH 画廊详情
         const todo = (this.downloadRecords || []).filter(t =>
-          t && t.url && (!t.tags || !Object.keys(t.tags || {}).length)
+          t && t.source !== 'wnacg' && t.url && (!t.tags || !Object.keys(t.tags || {}).length)
         ).slice(0, 3)
         for (const task of todo) {
           try {
@@ -4415,7 +4851,7 @@ export default defineComponent({
     async saveCollectionDrawerOrder (silent) {
       const id = this.openCollectionId
       if (id === undefined || id === null) return
-      const keys = this.collectionDrawerList.map(book => book && (book.hash || book.id)).filter(Boolean)
+      const keys = this.collectionDrawerList.map(book => collectionMemberKey(book)).filter(Boolean)
       const target = (this.collectionList || []).find(c => c && c.id === id)
       if (!target) return
       // ★ 只写顺序,不回写成员。collectionList 是全局一份、不按库隔离,以前这里拿
@@ -4427,7 +4863,7 @@ export default defineComponent({
       const bookMap = new Map(this.bookList.flatMap(book => [[book.hash, book], [book.id, book]]))
       const canonical = (key) => {
         const book = bookMap.get(key)
-        return book ? (book.hash || book.id) : key
+        return book ? collectionMemberKey(book) : key
       }
       const visibleKeys = keys.map(canonical)
       const visibleSet = new Set(visibleKeys)
@@ -4448,7 +4884,8 @@ export default defineComponent({
     },
     // ⑤ 一条命令把「已暂停 / 失败 / 等待中」的任务全部继续
     async resumeAllDownloads () {
-      const list = (this.downloadRecords || []).filter(t => ['paused', 'failed', 'waiting'].includes(t.status))
+      const list = (this.downloadRecords || []).filter(t =>
+        t.source !== 'wnacg' && ['paused', 'failed', 'waiting'].includes(t.status))
       if (!list.length) return
       for (const t of list) {
         try { await ipcRenderer.invoke('eh-download-action', { id: t.id, action: 'resume' }) } catch (e) { /* 单条失败不影响其它 */ }
@@ -4603,6 +5040,8 @@ export default defineComponent({
     // 详情会自动补拉上传者/语言/大小等信息)。addToHistory=false:只是看看,不算「读过」。
     openDownloadTaskDetail (task) {
       if (!task) return
+      // 绅士漫画 zip 没有可当本地书打开的目录,也不该当成 EH 在线画廊去解析
+      if (task.source === 'wnacg' && !task.dir) return
       // 已经下完(并且能定位到目录):当**本地书**打开 —— 不再跑去解析 EH 链接。
       // 这里给出的 filepath 就是下载目录里的漫画文件夹,详情/阅读/标签都按本地书走。
       if (task.status === 'done' && task.dir) {
@@ -4683,9 +5122,16 @@ export default defineComponent({
       // 搜索用原始标签名(翻译后的显示名是给眼睛看的,EH/本地搜索都认原名)
       this.searchFromTag(tg.raw || tg.text, tg.ns)
     },
-    // 能不能「移动」:只有**下载完成**的任务才给移(暂停/失败/下载中的都不动)
+    // 绅士漫画下载记录在右栏里的小标签:标明来源站点和线路(阅读 / Server 1 / Server 2)
+    wnacgTaskTag (task) {
+      if (!task || task.source !== 'wnacg') return ''
+      return '绅士漫画 · ' + (task.modeLabel || { read: '阅读', server1: 'Server 1', server2: 'Server 2' }[task.mode] || '')
+    },
+    // 能不能「移动」:只有**下载完成**的任务才给移(暂停/失败/下载中的都不动)。
+    // 绅士漫画的逐页图是目录、Server1/2 是单个 zip,两者都能移进本地库(走 wnacg-download-move)。
     canMoveDownload (task) {
       if (!task || task.status !== 'done' || task.movedTo) return false
+      if (task.source === 'wnacg') return !!(task.dir || task.filePath)
       return !!task.dir
     },
     // 头部「移动」:全部已完成的任务 → 目标文件夹(设置里填了默认移动路径就直接用,不再弹选择)
@@ -4719,9 +5165,24 @@ export default defineComponent({
     // 真正执行移动(后端:搬文件 + 在目标库登记书 + 生成封面)
     async runMoveDownloads (ids, target) {
       try {
-        // ids 来自 this.moveDialog(reactive 数组):直接传会 structural-clone 失败
-        // 「An object could not be cloned」,展开成普通数组再跨进程
-        const r = await ipcRenderer.invoke('move-downloads', { ids: [...(ids || [])], target: String(target || '') })
+        // 绅士漫画记录和 EH 记录存在两个 Map 里,后端也分成两条通道:
+        // id 是 wnacg 生成的('wnacg-<aid>-<线路>-<时间戳>'),按前缀分流即可。
+        const all = [...(ids || [])].map(String)
+        const wnacgIds = all.filter(id => id.startsWith('wnacg-'))
+        const ehIds = all.filter(id => !id.startsWith('wnacg-'))
+        let r = null
+        if (ehIds.length) {
+          // ids 来自 this.moveDialog(reactive 数组):直接传会 structural-clone 失败
+          // 「An object could not be cloned」,展开成普通数组再跨进程
+          r = await ipcRenderer.invoke('move-downloads', { ids: ehIds, target: String(target || '') })
+        }
+        if (wnacgIds.length) {
+          const r2 = await ipcRenderer.invoke('wnacg-download-move', { ids: wnacgIds, target: String(target || '') })
+          if (r && r.ok && r2 && r2.ok) r = { ok: true, results: [...(r.results || []), ...(r2.results || [])] }
+          else if (!r) r = r2
+          else r = { ok: false, error: (r && r.error) || (r2 && r2.error) || 'failed', results: [...((r && r.results) || []), ...((r2 && r2.results) || [])] }
+        }
+        if (!r) r = { ok: false, error: 'noIds' }
         if (!r || !r.ok) { this.printMessage('error', (r && r.error) || this.$t('m.downloadMoveFailed')); return }
         const okList = (r.results || []).filter(x => x.ok)
         const badList = (r.results || []).filter(x => !x.ok)
@@ -4818,6 +5279,21 @@ export default defineComponent({
       if (!task) return
       // 已移到库里的记录不给「继续下载」(见 resumableDownloadCount 的注释)
       const resumable = !task.movedTo && ['paused', 'failed', 'waiting'].includes(task.status)
+      // 绅士漫画:支持整本暂停/继续,但**没有**「重下这一页」(站点是按整本的图片列表下的,
+      // 单页重下走的是 EH 的 eh-download-page-by-index,套不到这里)
+      if (task.source === 'wnacg') {
+        const items = []
+        if (resumable) {
+          items.push({
+            id: 'resume',
+            label: this.$t('m.previewContinueDownload'),
+            onClick: () => this.downloadAction(task, 'resume')
+          })
+        }
+        if (!items.length) return
+        this.$contextmenu({ x: e.x, y: e.y, items })
+        return
+      }
       const items = []
       // 「继续下载」只对暂停/失败/等待中的任务有意义
       if (resumable) {
@@ -4861,7 +5337,11 @@ export default defineComponent({
       } catch (err) { return }
       let r = null
       try {
-        r = await ipcRenderer.invoke('eh-download-action', { id: task.id, action: 'restart' })
+        // 绅士漫画任务的「重下」走自己的通道(会先删掉已下好的那一件,再从头下)
+        r = await ipcRenderer.invoke(
+          task && task.source === 'wnacg' ? 'wnacg-download-action' : 'eh-download-action',
+          { id: task.id, action: 'restart' }
+        )
       } catch (e) {
         this.printMessage('error', this.$t('m.downloadFailed') + ': ' + this.ipcErrorText(e))
         return
@@ -5089,6 +5569,12 @@ export default defineComponent({
       if (ref && typeof ref.deleteLocalBook === 'function') return ref.deleteLocalBook(book)
     },
     downloadPercent (task) {
+      // 绅士漫画:逐页图按页、Server1/2 按已收字节,主进程直接给 percent
+      if (task && task.source === 'wnacg') {
+        if (task.status === 'done') return 100
+        const p = Number(task.percent) || 0
+        if (p > 0) return Math.min(100, p)
+      }
       const total = Number(task.total) || 0
       if (!total) return task.status === 'done' ? 100 : 0
       return Math.min(100, Math.round(((task.done + task.failed) / total) * 100))
@@ -5197,6 +5683,28 @@ export default defineComponent({
       this.downloadAction(task, 'deleteWithFiles')
     },
     async downloadAction (task, action) {
+      // 绅士漫画任务的暂停 / 继续 / 重下 / 删除都走自己的通道(wancg-download-action),
+      // 不能丢给 eh-download-action —— 它不认这个 id,只会报 notFound。
+      if (task && task.source === 'wnacg') {
+        if (!['pause', 'resume', 'restart', 'delete', 'deleteWithFiles'].includes(action)) return
+        let rx = null
+        try {
+          rx = await ipcRenderer.invoke('wnacg-download-action', { id: task.id, action })
+        } catch (e) {
+          this.printMessage('error', this.$t('m.downloadFailed') + ': ' + this.ipcErrorText(e))
+          return
+        }
+        if (!rx || !rx.ok) {
+          if (rx && rx.error === 'notFound') this.refreshDownloadRecords()
+          else if (rx && rx.error === 'alreadyMoved') this.printMessage('warning', this.$t('m.downloadAlreadyMoved'))
+          else if (rx && rx.error !== 'badAction') this.handleDownloadError(rx)
+          return
+        }
+        if (action === 'delete' || action === 'deleteWithFiles') this.removeDownloadRecord(task.id)
+        else if (rx.task) this.upsertDownloadRecord(rx.task)
+        else this.refreshDownloadRecords()
+        return
+      }
       let r = null
       try {
         r = await ipcRenderer.invoke('eh-download-action', { id: task.id, action })
@@ -5473,6 +5981,8 @@ export default defineComponent({
     // ---------- EH 账号收藏 ----------
     // 点卡片上的收藏星:已收藏 → 取消;没收藏 → 打开收藏夹选择
     async onOnlineFavorite (book) {
+      // 绅士漫画:星标 = 站点自己的「加入書架」,点一下开、再点一下关,没有 EH 那套收藏夹分类
+      if (book && isWnacgUrl(book.url)) return this.toggleWnacgShelf(book)
       if (book.favcat != null) {
         const ok = await this.setOnlineFavorite(book, 0, true)
         if (ok) {
@@ -5482,6 +5992,293 @@ export default defineComponent({
         return
       }
       this.openFavoritePicker(book)
+    },
+    // ---------- 绅士漫画:下载(阅读 = 下拉阅读逐页图;Server1/2 = 站点下载页两条线路) ----------
+    // 保存目录只认设置里的「下载文件夹」:判定放在主进程(它读的是刚保存的最新设置)。
+    // 这里不做前端预判 —— App 的 this.setting 只在启动时加载一次,用户在设置里填完路径后
+    // 并不会同步过来,前端预判会把「明明填好了」误报成没填。
+    // 进度由主进程广播 eh-download-progress 直接进「下载记录」右栏,这里只处理最终结果。
+    async startWnacgDownload (book, mode) {
+      // ★「添加下载任务」的提示放在发起之前。
+      //   为什么不能等返回值:主进程的 wnacg-download 会**等整本跑完才 resolve**
+      //   (它是长作业),等它回来再说「已开始」等于任务都结束了才提示。
+      //   这里先给一句「已加入队列」,后续进度/成败全部由右侧任务记录呈现。
+      const modeLabel = { read: '阅读', server1: 'Server 1', server2: 'Server 2' }[mode] || mode
+      this.printMessage('success', this.$t('m.wnacgDlQueued', { mode: modeLabel }))
+      try {
+        const res = await ipcRenderer.invoke('wnacg-download', {
+          book: {
+            id: book.id,
+            url: book.url,
+            title: this.getDisplayTitle(book),
+            cover: book.coverPath || book.cover || '',
+            // 手上已经解析过的标签先带过去(列表页没有、详情页有):
+            // 主进程还会自己抓一次详情页补齐,这里只是不让它一条标签都没有。
+            // ⚠ 必须转成纯对象再跨进程:book.tags 是响应式 Proxy,直接传会 structural-clone 失败。
+            tags: JSON.parse(JSON.stringify(book.tags || {})),
+            category: book.category || '',
+            categoryName: book.categoryName || ''
+          },
+          mode
+        })
+        // 广播可能因为 SSE 掉线漏掉一两条:最终状态用返回值再兜底写一次
+        if (res && res.task) this.upsertDownloadRecord(res.task)
+        // ★用户要求:下载**完成**不弹提示(进度和结果都在右侧「任务记录」里看),
+        //   改成「添加任务的这一刻」给一句反馈 —— 点了下载立刻知道它进了队列。
+        //   注意:wnacg-download 是「跑完整本才返回」的(IPC 会等到作业结束),
+        //   所以这里的 res 其实是**最终结果**;要提示「已加入」只能在调用前就说。
+        if (res && res.ok) {
+          // 成功不再提示
+        } else if (res && res.error === 'needPath') {
+          // 没填「下载文件夹」:不发任何网络请求,只提示去设置里填
+          this.printMessage('error', this.$t('m.wnacgDlNeedPath'))
+        } else if (res && res.error === 'canceled') {
+          // 用户取消了目录选择:不打扰
+        } else {
+          this.printMessage('error', this.$t('m.wnacgDlFail') + (res && res.error ? ': ' + res.error : ''))
+        }
+      } catch (e) {
+        this.printMessage('error', this.$t('m.wnacgDlFail') + ': ' + String((e && e.message) || e))
+      }
+    },
+    // ---------- 绅士漫画合集:多选下载 / 阅读某一话 ----------
+    // 一次点「下载」可以勾选多话,逐条交给 startWnacgDownload。
+    // ⚠ 必须逐条串行发起:站点对整本压缩包有并发限制(见后端 wnacgZipSlot),
+    //   同时糊一堆请求上去后面的会失败。这里用 for..of + await,一条一条排。
+    async startSeriesDownload (chapters, mode) {
+      const list = Array.isArray(chapters) ? chapters.filter(c => c && c.url) : []
+      if (!list.length) return
+      const m = ['read', 'server1', 'server2'].includes(mode) ? mode : 'read'
+      let ok = 0
+      for (const c of list) {
+        try {
+          await this.startWnacgDownload(
+            { id: 'wnacg:' + (c.chid || Date.now()), url: c.url, title: c.title, cover: '', tags: {} },
+            m
+          )
+          ok += 1
+        } catch (e) { /* 单话失败不阻塞后面的 */ }
+      }
+      if (ok > 1) this.printMessage('success', this.$t('m.seriesDlQueued', { n: ok }))
+    },
+    // ---------- 绅士漫画合集:打开「和本地合集一样的抽屉」 ----------
+    // 抽屉本身复用 collection-bottom-drawer + BookCard 那套渲染,这里只是把
+    // 「每一话」映射成一张卡(cover/title/页数齐了,BookCard 直接就能画)。
+    async openWnacgSeriesDrawer (book) {
+      if (!book || !book.url) return
+      if (this._seriesDrawerBusy) return
+      this._seriesDrawerBusy = true
+      try {
+        const host = String(book.url).replace(/^https?:\/\//i, '').split('/')[0] || 'www.wnacg.com'
+        let html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: String(this.setting.wnacgCookie || '') })
+        if (!html || wnacgHtmlLooksBroken(html)) {
+          try { html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: '' }) } catch (e) { /* 忽略 */ }
+        }
+        const detail = parseWnacgDetail(html || '', host)
+        const chapters = (detail.series && detail.series.chapters) || []
+        if (chapters.length < 2) { this.openContentView(book); return }
+        const views = await this.buildSeriesViews(chapters)
+        // 每话映射成一张「书」卡:字段和本地书同口径,BookCard 不用改
+        const cards = views.map((c, i) => ({
+          id: 'wnacg-ch:' + (c.chid || i),
+          online: true,
+          site: 'wnacg',
+          url: c.url,
+          type: 'online',
+          filepath: c.url,
+          title: c.title || (c.order || ''),
+          title_jpn: '',
+          title_cn: '',
+          // 卡片左下角那颗角标显示话号(「第1話」),一眼看得出顺序
+          category: c.order || '',
+          coverPath: c.coverPath || '',
+          pageCount: c.pageCount || null,
+          filecount: c.pageCount || null,
+          rating: 0,
+          readCount: 0,
+          tags: {},
+          status: 'tagged',
+          mark: false,
+        }))
+        this.seriesDrawerMode = true
+        this.openCollectionTitle = book.title || ''
+        this.openCollectionId = book.id || ''
+        this.openCollectionBookList = cards
+        this.collectionDrawerList = cards.slice()
+        this.drawerVisibleCollection = true
+      } catch (e) {
+        this.printMessage('error', this.$t('m.wnacgFailed') + ': ' + String((e && e.message) || e))
+      } finally {
+        this._seriesDrawerBusy = false
+      }
+    },
+    // 卡片右键「下载」:合集要先抓章节列表(列表页不带章节),再弹多选
+    async openSeriesDownloadPickFromBook (book) {
+      if (!book || !book.url) return
+      try {
+        const host = String(book.url).replace(/^https?:\/\//i, '').split('/')[0] || 'www.wnacg.com'
+        let html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: String(this.setting.wnacgCookie || '') })
+        if (!html || wnacgHtmlLooksBroken(html)) {
+          try { html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: '' }) } catch (e) { /* 忽略 */ }
+        }
+        const detail = parseWnacgDetail(html || '', host)
+        const chapters = (detail.series && detail.series.chapters) || []
+        if (chapters.length < 2) {
+          // 不是合集:退回直接下载
+          this.startWnacgDownload(book, 'read')
+          return
+        }
+        // 顺手把封面也备上(多选弹窗要显示预览图)
+        const views = await this.buildSeriesViews(chapters)
+        this.seriesPicker = { visible: true, chapters: views, preset: [], mode: 'read' }
+      } catch (e) {
+        this.printMessage('error', this.$t('m.wnacgFailed') + ': ' + String((e && e.message) || e))
+      }
+    },
+    // 给章节列表补封面(并发 3,和界面里那条路径同一套)
+    async buildSeriesViews (chapters) {
+      const list = Array.isArray(chapters) ? chapters.filter(c => c && c.url) : []
+      const covers = {}
+      const queue = list.slice()
+      const worker = async () => {
+        for (;;) {
+          const c = queue.shift()
+          if (!c) return
+          try {
+            const host = String(c.url).replace(/^https?:\/\//i, '').split('/')[0] || 'www.wnacg.com'
+            const html = await ipcRenderer.invoke('get-ex-webpage', { url: c.url, cookie: String(this.setting.wnacgCookie || '') })
+            const cover = parseWnacgChapterCover(html || '', host)
+            if (cover) covers[c.chid] = cover
+          } catch (e) { /* 单话失败不影响其它 */ }
+        }
+      }
+      await Promise.all([worker(), worker(), worker()])
+      return list.map(c => ({ ...c, coverPath: covers[c.chid] || '' }))
+    },
+    // 多选下载弹窗(详情大弹窗里那颗下载按钮用)
+    openSeriesDownloadPick (chapters, mode, preset) {
+      this.seriesPicker = {
+        visible: true,
+        chapters: Array.isArray(chapters) ? chapters.slice() : [],
+        // 右键某一话时预选那一话;从按钮进来则默认全选
+        preset: Array.isArray(preset) ? preset.slice() : [],
+        mode: ['read', 'server1', 'server2'].includes(mode) ? mode : 'read',
+      }
+    },
+    confirmSeriesDownloadPick ({ chapters, mode }) {
+      this.seriesPicker.visible = false
+      this.startSeriesDownload(chapters, mode)
+    },
+    // 在应用内的在线阅读器里打开某一话(合集里的章节)
+    // 在应用内阅读器里打开绅士漫画某一话。
+    // ★阅读器取的是 **作品页** 的 aid(它去 /photos-item-aid-<aid>.html 拉整本图片列表);
+    //   传阅读页(photos-slide-aid-<chid>-sid-...)会解析不出 aid → badUrl,阅读器打不开。
+    openWnacgChapterInReader (url, title) {
+      if (!url) return
+      const link = String(url)
+      // 阅读页 -> 作品页:/photos-slide-aid-<chid>-sid-<sid>.html  =>  /photos-index-aid-<chid>.html
+      const slide = /photos-slide-aid-(\d+)-sid-\d+\.html/i.exec(link)
+      const idx = /photos-index-aid-(\d+)\.html/i.exec(link)
+      const aid = (slide && slide[1]) || (idx && idx[1]) || ''
+      const host = link.replace(/^https?:\/\//i, '').split('/')[0] || String(this.setting.wnacgHost || 'www.wnacg.com')
+      const target = aid ? ('https://' + host + '/photos-index-aid-' + aid + '.html') : link
+      try {
+        const viewer = this.$refs.InternalViewerRef
+        const book = { id: 'wnacg-ch:' + aid, online: true, url: target, type: 'online', filepath: target, title: title || '', site: 'wnacg' }
+        if (viewer && typeof viewer.viewManga === 'function') {
+          viewer.viewManga(book, '100%', 0, { skipHistory: true, skipSave: true })
+          return
+        }
+      } catch (e) { /* 退回浏览器 */ }
+      ipcRenderer.invoke('open-url', link)
+    },
+
+    // ---------- 绅士漫画:加入 / 移除「我的书架」 ----------
+    // 站点没有可以直接调的接口:入口是一个弹窗页 /users-addfav-id-<aid>.html,
+    // 登录后里面是 form(可能带「收藏夹分类」下拉)。这里把弹窗页取回来解析,
+    // 再让主进程按它自己的 action / 字段提交 —— 站点改字段时不用改代码。
+    async toggleWnacgShelf (book) {
+      const cookie = String(this.setting.wnacgCookie || '')
+      if (!cookie) {
+        this.printMessage('error', this.$t('m.wnacgShelfNeedLogin'))
+        return
+      }
+      const host = wnacgHost(this.setting)
+      const aid = wnacgAidOf(book.url)
+      if (!aid) {
+        this.printMessage('error', this.$t('m.wnacgShelfFailed'))
+        return
+      }
+      const dialogUrl = 'https://' + host + '/users-addfav-id-' + aid + '.html'
+      const html = await this.fetchWnacgHtml(dialogUrl)
+      if (!html) { this.reportWnacgError(); return }
+      const dlg = parseWnacgFavDialog(html, host)
+      if (dlg.needLogin) {
+        this.printMessage('error', this.$t('m.wnacgShelfNeedLogin'))
+        return
+      }
+      // 已在书架(站点回「你已經收藏過了」,或弹窗带「移除」入口):这一下就是取消。
+      // 移除只认 fav_del-id(收藏记录 id),所以要去书架第一页按 aid 找一遍。
+      if (dlg.already || dlg.removeUrl) {
+        let delUrl = dlg.removeUrl || ''
+        if (!delUrl) {
+          const shelfHtml = await this.fetchWnacgHtml('https://' + host + '/users-users_fav.html')
+          if (shelfHtml) delUrl = findWnacgFavDel(shelfHtml, aid, host)
+        }
+        if (!delUrl) {
+          book.favcat = 0
+          book.inShelf = true
+          this.printMessage('info', this.$t('m.wnacgShelfAlready'))
+          return
+        }
+        const r = await ipcRenderer.invoke('post-ex-form', {
+          url: delUrl, method: 'GET', cookie, referer: book.url
+        })
+        if (r && !/失敗|失败|錯誤|错误/.test(String(r))) {
+          book.favcat = null
+          book.inShelf = false
+          this.printMessage('success', this.$t('m.wnacgShelfRemoved'))
+          this.refreshWnacgShelfIfActive()
+        } else {
+          this.printMessage('error', this.$t('m.wnacgShelfFailed'))
+        }
+        return
+      }
+      if (!dlg.form) {
+        this.printMessage('error', this.$t('m.wnacgShelfFailed'))
+        return
+      }
+      const res = await ipcRenderer.invoke('post-ex-form', {
+        url: dlg.form.action || dialogUrl,
+        method: dlg.form.method,
+        fields: dlg.form.fields,
+        cookie,
+        referer: dialogUrl
+      })
+      if (!res) {
+        this.printMessage('error', this.$t('m.wnacgShelfFailed'))
+        return
+      }
+      const text = String(res)
+      // 站点回的内容不统一:只认「明确失败」的字样,其余当作成功
+      if (/請選擇收藏分類|请选择收藏分类/.test(text)) {
+        this.printMessage('error', this.$t('m.wnacgShelfNeedCategory'))
+        return
+      }
+      if (/失敗|失败|錯誤|错误|請先登錄|请先登录/.test(text)) {
+        this.printMessage('error', this.$t('m.wnacgShelfFailed'))
+        return
+      }
+      book.favcat = 0
+      book.inShelf = true
+      this.printMessage('success', this.$t('m.wnacgShelfAdded'))
+      this.refreshWnacgShelfIfActive()
+    },
+    // 正停在「我的书架」时,加/删完要重新拉一次,否则列表要等手动刷新
+    refreshWnacgShelfIfActive () {
+      if (!this.wnacgActive || this.wnacgSection !== 'shelf') return
+      this.clearOnlineListForReload()
+      this.loadOnlineList(true)
     },
     async openFavoritePicker (book) {
       this.favoritePickerBook = book
@@ -5542,7 +6339,7 @@ export default defineComponent({
       this.printMessage('success', this.$t('m.historyCleared'))
       this.handleSortChange(this.sortValue, this.bookList)
     },
-    // EH在线:工具栏的「重新加载」(在线模式下扫描按钮就是它)
+    // 在线库:工具栏的「重新加载」(在线模式下扫描按钮就是它)
     // ★用户反馈「点了要卡半天才刷新,像卡死」:以前 loadOnlineList(true) 会先打 EH 请求,
     //   期间旧列表原样不动、也没有任何「正在加载」的反馈。
     //   现在:立刻清空 + 显示骨架/加载态,再去取第一页,拿到一批就填一批。
@@ -5552,10 +6349,16 @@ export default defineComponent({
     },
     // 清空在线列表并进入「正在加载」态(排序/搜索/重新加载都走这里)
     clearOnlineListForReload () {
+      // 代次 +1:作废还在路上的旧版块翻页请求(否则旧数据会拼进新列表)
+      this._wnacgGen = (this._wnacgGen || 0) + 1
+      // 换版块 = 站内换了一页:广告跟着重新请求一次
+      this.scheduleWnacgAdRefresh()
       this.onlineItems = []
       this.onlineCursors = [null]
       this.onlinePagesFetched = 0
       this.onlineHasMore = true
+      this.wnacgPage = 0
+      this.wnacgNextUrl = ''
       this.bookList = []
       this.displayBookList = []
       this.chunkDisplayBookList = []
@@ -5564,7 +6367,10 @@ export default defineComponent({
       this.onlineReloading = true
       // onlineLoading 由 loadOnlineList 自己置位 —— 这里不要抢着设成 true,
       // 否则 loadOnlineList 一进来就判定「已经在加载」,整次重拉被跳过,骨架永远不消失。
-      try { sessionStorage.removeItem('emmOnlineCache') } catch (e) { /* 忽略 */ }
+      try {
+        sessionStorage.removeItem('emmOnlineCache')
+        sessionStorage.removeItem('emmWnacgCache')
+      } catch (e) { /* 忽略 */ }
       // 兜底:网络卡住(EH 不可达 / 代理没通)时,最多 15 秒也要收拾掉骨架,
       // 不能让界面永远停在骨架屏上(那和「卡死」没区别)。
       clearTimeout(this._onlineReloadGuard)
@@ -5572,7 +6378,7 @@ export default defineComponent({
         if (this.onlineReloading) {
           this.onlineReloading = false
           this.onlineLoading = false
-          if (!this.onlineItems.length) this.printMessage('error', this.$t('m.ehOnlineTimeout'))
+          if (!this.onlineItems.length) this.printMessage('error', this.$t(this.wnacgActive ? 'm.wnacgTimeout' : 'm.ehOnlineTimeout'))
         }
       }, 8000)
       this.$nextTick(() => this.scrollMainPageTop())
@@ -5617,16 +6423,37 @@ export default defineComponent({
       this.printMessage('error', msg)
       return msg
     },
-    // EH在线:把已取到的画廊映射成「书」塞进书架原本的数据流
+    // 在线库:把已取到的条目映射成「书」塞进书架原本的数据流(按来源选解析器)
     applyOnlineList () {
-      this.bookList = this.prepareBookList(this.onlineItems.map(galleryToBook).filter(Boolean))
+      const mapper = this.wnacgActive ? wnacgToBook : galleryToBook
+      const list = this.prepareBookList(this.onlineItems.map(mapper).filter(Boolean))
+      // ★合集必须也套进来(用户要求:绅士漫画的合集要和本地一样)。
+      //   以前这里只赋值、不聚合 —— 在线视图里**永远看不到合集卡**,
+      //   而本地书架走的是 loadBookList → applyCollectionAggregates 那条路。
+      //   现在两条路同口径:聚合条目照样生成,成员照样收进合集卡。
+      this.applyCollectionAggregates(list)
+      this.bookList = list
+      this.syncShelfAfterCollectionAggregate(list)
       this.saveOnlineCache()
     },
-    // ---------- EH在线 列表缓存 ----------
+    // ---------- 在线库 列表缓存 ----------
     // 用户要求:切界面 / 切库回来不要重新加载,只有「关掉软件或网页」才失效。
     // 用 sessionStorage:刷新页面还在,关掉标签页/客户端就没了 —— 正好是这个语义。
+    // 两个来源各存一份(切来源时不会互相覆盖,也不会被对方的搜索词判成"另一份列表")。
     saveOnlineCache () {
       try {
+        if (this.wnacgActive) {
+          sessionStorage.setItem('emmWnacgCache', JSON.stringify({
+            section: this.wnacgSection,
+            query: this.onlineQuery || '',
+            page: this.wnacgPage,
+            nextUrl: this.wnacgNextUrl,
+            hasMore: !!this.onlineHasMore,
+            items: this.onlineItems.slice(-600),
+            savedAt: Date.now()
+          }))
+          return
+        }
         sessionStorage.setItem('emmOnlineCache', JSON.stringify({
           query: this.onlineQuery || '',
           favOnly: !!this.onlineFavOnly,
@@ -5641,6 +6468,20 @@ export default defineComponent({
     },
     restoreOnlineCache () {
       try {
+        if (this.wnacgActive) {
+          const raw = sessionStorage.getItem('emmWnacgCache')
+          if (!raw) return false
+          const c = JSON.parse(raw)
+          if (!c || !Array.isArray(c.items) || !c.items.length) return false
+          // 版块 / 搜索词变了就不是同一份列表
+          if (String(c.section || '') !== String(this.wnacgSection || '')) return false
+          if (String(c.query || '') !== String(this.onlineQuery || '')) return false
+          this.onlineItems = c.items
+          this.wnacgPage = Number(c.page) || 0
+          this.wnacgNextUrl = String(c.nextUrl || '')
+          this.onlineHasMore = c.hasMore !== false
+          return true
+        }
         const raw = sessionStorage.getItem('emmOnlineCache')
         if (!raw) return false
         const c = JSON.parse(raw)
@@ -5701,6 +6542,278 @@ export default defineComponent({
         if (!n) break
       }
     },
+    // 排行模式开关:下拉换成站点收藏榜的分类,并从「全部分类」重新拉
+    // (sortBaseValue 的 setter 会负责清列表、重新加载)
+    toggleWnacgRankMode () {
+      this.wnacgRankMode = !this.wnacgRankMode
+      try { localStorage.setItem('emmWnacgRankMode', this.wnacgRankMode ? '1' : '0') } catch (e) { /* 忽略 */ }
+      this.sortBaseValue = 'wnacg:' + (this.wnacgRankMode ? 'rank-all' : 'update')
+    },
+    // 排行榜周期:今日/本週/本月/今年
+    setWnacgRankPeriod (p) {
+      if (!['day', 'week', 'month', 'year'].includes(p) || p === this.wnacgRankPeriod) return
+      this.wnacgRankPeriod = p
+      try { localStorage.setItem('emmWnacgRankPeriod', p) } catch (e) { /* 忽略 */ }
+      this.clearOnlineListForReload()
+      this.loadOnlineList(true)
+    },
+    // 拉账号的书架分类(登录后书架页顶部那排)
+    async fetchWnacgFavClasses () {
+      const host = wnacgHost(this.setting)
+      const html = await this.fetchWnacgHtml('https://' + host + '/users-users_fav.html')
+      if (html) {
+        const list = extractWnacgFavClasses(html)
+        if (list.length) this.wnacgFavClasses = list
+      }
+    },
+    // 「+」新增书架分类:网页版走代理(会话里有登录 Cookie),桌面版走 post-ex-form
+    async addWnacgFavClass () {
+      const cookie = String(this.setting.wnacgCookie || '')
+      if (!cookie) {
+        this.printMessage('error', this.$t('m.wnacgShelfNeedLogin'))
+        return
+      }
+      let name = ''
+      try {
+        const { value } = await ElMessageBox.prompt(
+          this.$t('m.wnacgShelfClassName'), this.$t('m.wnacgAddShelfClass'),
+          { confirmButtonText: this.$t('m.apply'), cancelButtonText: this.$t('m.cancel') }
+        )
+        name = String(value || '').trim()
+      } catch (e) {
+        return // 用户取消
+      }
+      if (!name) return
+      const host = wnacgHost(this.setting)
+      try {
+        if (this.isWebMode) {
+          await fetch('/wnacg-proxy/users-favc_save-id.html', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+            body: new URLSearchParams({ favc_name: name, submit: '保存' }).toString()
+          })
+        } else {
+          await ipcRenderer.invoke('post-ex-form', {
+            url: 'https://' + host + '/users-favc_save-id.html',
+            method: 'POST',
+            fields: { favc_name: name, submit: '保存' },
+            cookie,
+            referer: 'https://' + host + '/'
+          })
+        }
+        this._wnacgFavClassesFetched = false
+        await this.fetchWnacgFavClasses()
+        ElMessageBox.alert(this.$t('m.wnacgShelfClassOk'), '', { confirmButtonText: this.$t('m.apply') }).catch(() => {})
+      } catch (e) {
+        this.printMessage('error', this.$t('m.wnacgShelfFailed'))
+      }
+    },
+    // 详情里点上传者 → 主界面切到他的投稿列表
+    openWnacgUploader (book) {
+      const m = /albums-user-uid-(\d+)/.exec(String((book && book.uploaderUrl) || ''))
+      if (!m) return
+      const id = 'user-' + m[1]
+      if (!this.wnacgUserSections.some(x => x.id === id)) {
+        this.wnacgUserSections.push({ id, label: (book && book.uploader) || ('UID ' + m[1]) })
+      }
+      this.sortBaseValue = 'wnacg:' + id
+    },
+    // 广告脚本靠 currentScript 上的 data-site-id 识别站点、再扫 [data-adxad-v3] 找位置。
+    // 所以 iframe 里放三样东西:base(相对地址能落到站点)、广告位 div、带 data-site-id 的脚本。
+    // 换版块/翻页时只换 key → iframe 重建 → 广告重新请求(和原站换页一样)。
+    scheduleWnacgAdRefresh () {
+      if (!this.wnacgActive || this.setting.wnacgDisableAds || !this.wnacgAdSlot) return
+      clearTimeout(this._wnacgAdTimer)
+      this._wnacgAdTimer = setTimeout(() => {
+        if (!this.wnacgActive || this.setting.wnacgDisableAds) return
+        this.wnacgAdKey += 1
+      }, 400)
+    },
+    // 取一个紳士漫畫页面。**只带 wnacg 自己的 Cookie**(EH 的登录凭据绝不能带给第三方站点)。
+    // 失败时把原因记下来(代理不通 / 超时 / 站点拒绝),由 wnacgErrorText() 拼进提示 ——
+    // 只说「连接失败」等于让用户猜,实测最常见的根因就是「设置 → 代理」填了个不通的地址。
+    async fetchWnacgHtml (url) {
+      const raw = (ck) => new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('timeout')), 20000)
+        ipcRenderer.invoke('get-ex-webpage', { url, cookie: ck }).then(
+          (v) => { clearTimeout(timer); resolve(v) },
+          (e) => { clearTimeout(timer); reject(e) }
+        )
+      })
+      const cookie = String(this.setting.wnacgCookie || '')
+      try {
+        let html = await raw(cookie)
+        // Cookie 失效时站点回一个没正文的壳页:匿名重试一次(列表/详情页游客也能看;
+        // 书架匿名必是「您沒有權限」,parseWnacgShelf 会把它认成未登录,提示更准)。
+        if (html && cookie && wnacgHtmlLooksBroken(html)) {
+          html = await raw('')
+        }
+        return html
+      } catch (e) {
+        this._lastWnacgFetchError = String((e && e.message) || e || '')
+        // 主进程那边有更具体的原因(例如 ECONNREFUSED 192.168.1.10:7890)
+        try {
+          const why = await ipcRenderer.invoke('eh-webpage-last-error')
+          if (why && why.error) this._lastWnacgFetchError = String(why.error)
+        } catch (_) { /* 拿不到就用上面的 message */ }
+        return null
+      }
+    },
+    // 失败提示:统一带上最后一条原因(4 秒内同一条只弹一次)
+    wnacgErrorText () {
+      const detail = String(this._lastWnacgFetchError || '')
+      return this.$t('m.wnacgFailed') + (detail ? ': ' + detail : '')
+    },
+    reportWnacgError () {
+      const msg = this.wnacgErrorText()
+      const now = Date.now()
+      if (this._lastWnacgMsg === msg && now - (this._lastWnacgMsgAt || 0) < 4000) return msg
+      this._lastWnacgMsg = msg
+      this._lastWnacgMsgAt = now
+      this.printMessage('error', msg)
+      return msg
+    },
+    // 取「下一批」紳士漫畫相册并追加。翻页地址来自上一页的「後頁」链接,不自己拼。
+    async appendWnacgPage () {
+      if (!this.onlineHasMore) return 0
+      // 代次令牌:换版块/重新加载会把 _wnacgGen +1;旧请求回来后直接丢弃,不污染新列表
+      const gen = this._wnacgGen || 0
+      const host = wnacgHost(this.setting)
+      const url = this.wnacgPage === 0
+        ? wnacgSectionUrl(this.setting, this.wnacgSection, this.onlineQuery, this.wnacgRankPeriod)
+        : this.wnacgNextUrl
+      if (!url) { this.onlineHasMore = false; return 0 }
+      const html = await this.fetchWnacgHtml(url)
+      if ((this._wnacgGen || 0) !== gen) return 0
+      // 账号的书架分类(我的书架下拉用):进绅士漫画后拉一次,加过分类会重拉
+      if (!this._wnacgFavClassesFetched && String(this.setting.wnacgCookie || '')) {
+        this._wnacgFavClassesFetched = true
+        this.fetchWnacgFavClasses()
+      }
+      // 顺手记下站点的两条广告(同一个 spot 全站通用,拿一次就够)
+      if (html) {
+        const ad = extractWnacgAdSlot(html)
+        if (ad) {
+          if (!this.wnacgAdSlot) {
+            this.wnacgAdSlot = ad
+            this.wnacgAdBanner = ad.banner || ''
+          } else if (ad.banner && ad.banner !== this.wnacgAdBanner) {
+            // 静态广告每条不一样:翻页时跟着换,和原站一致
+            this.wnacgAdBanner = ad.banner
+          }
+        }
+      }
+      // 我的书架是站点收藏夹:行结构不同,而且必须带 Cookie(未登录站点只回登录框)
+      let parsed
+      if (this.wnacgSection === 'shelf') {
+        parsed = parseWnacgShelf(html, host)
+        if (parsed.needLogin) {
+          this.onlineHasMore = false
+          this._lastWnacgFetchError = ''
+          // 标记一下:外层别再加一条「取列表失败」,同一件事弹两次很吵
+          this._wnacgShelfNeedLogin = true
+          this.printMessage('error', this.$t('m.wnacgShelfNeedLogin'))
+          return 0
+        }
+      } else {
+        parsed = parseWnacgList(html, host)
+      }
+      // 排行榜分类页:卡片本身不带分类标记(pic_box 没有 cate-N 类),
+      // 整页都是同一个类目 —— 把版块对应的顶层分类填给每一条(角标显示「单行本」而不是 tagged)
+      const rkm = /^rank-cate-(\d+)$/.exec(String(this.wnacgSection || ''))
+      if (rkm) {
+        const cname = wnacgParentCategory(WNACG_CATE_BADGE[Number(rkm[1])] || '')
+        if (cname) for (const it of parsed.items) if (!it.category) it.category = cname
+      }
+      if ((this._wnacgGen || 0) !== gen) return 0
+      // ⚠ 去重:站点分类偶尔会在一页里重复同一条(合集带子条目时),重复卡会让「到底了」永远判不出来
+      const exist = new Set(this.onlineItems.map(it => it.id))
+      const fresh = parsed.items.filter(it => !exist.has(it.id))
+      if (!fresh.length) {
+        this.onlineHasMore = false
+        return 0
+      }
+      this.onlineItems = this.onlineItems.concat(fresh)
+      this.wnacgPage += 1
+      this.wnacgNextUrl = parsed.nextUrl
+      this.onlineHasMore = !!parsed.nextUrl
+      // 翻页也像原站那样换一次广告(首页由首次注入负责,这里只管第 2 页起)
+      if (this.wnacgPage > 1) this.scheduleWnacgAdRefresh()
+      return fresh.length
+    },
+    // 补到至少 need 条(单次最多补 8 页,避免一口气连打二十几个请求)
+    async fillWnacgUpTo (need) {
+      let guard = 0
+      while (this.onlineItems.length < need && this.onlineHasMore && guard < 8) {
+        const n = await this.appendWnacgPage()
+        guard += 1
+        if (!n) break
+      }
+    },
+    // 紳士漫畫:取列表 → 映射成书 → 交给书架原本的数据流(卡片/分页/排序/详情全是原版)
+    // 结构与 loadOnlineList(EH)一一对应,差别只有「翻页用下一页地址而不是 gid 游标」。
+    async loadWnacgList (reset = false) {
+      this._wnacgShelfNeedLogin = false
+      // 我的书架就是站点的收藏夹:没登录(没 Cookie)连请求都不用发
+      if (this.wnacgSection === 'shelf' && !String(this.setting.wnacgCookie || '')) {
+        this.onlineItems = []
+        this.bookList = []
+        this.displayBookList = []
+        this.chunkDisplayBookList = []
+        this.onlineHasMore = false
+        this.onlineLoading = false
+        this.onlineReloading = false
+        clearTimeout(this._onlineReloadGuard)
+        this.printMessage('error', this.$t('m.wnacgShelfNeedLogin'))
+        return
+      }
+      if (this.onlineLoading) {
+        if (!reset) return
+        for (let i = 0; i < 100 && this.onlineLoading; i++) await new Promise(r => setTimeout(r, 100))
+      }
+      if (!reset) {
+        if (this.onlineItems.length) {
+          this.applyOnlineList()
+          try {
+            const before = this.onlineItems.length
+            await this.fillWnacgUpTo((Number(this.currentPage) || 1) * (Number(this.setting.pageSize) || 42))
+            if (this.onlineItems.length > before) this.applyOnlineList()
+          } catch (e) { /* 补页失败不影响已显示的内容 */ }
+          this.onlineReloading = false
+          return
+        }
+        if (this.restoreOnlineCache()) {
+          this.applyOnlineList()
+          this.onlineReloading = false
+          return
+        }
+      }
+      this.onlineLoading = true
+      try {
+        // 手上没有条目(上次失败/刚从别的库切来)= 从第一页重来
+        if (reset || !this.onlineItems.length) {
+          this.onlineItems = []
+          this.wnacgPage = 0
+          this.wnacgNextUrl = ''
+          this.onlineHasMore = true
+        }
+        if (!this.onlineItems.length) await this.appendWnacgPage()
+        // 第一屏要铺满:站内一页 20 条,按「每页数量」再补几页
+        await this.fillWnacgUpTo((Number(this.currentPage) || 1) * (Number(this.setting.pageSize) || 42))
+        this.applyOnlineList()
+        // 一条都没取到:提示里带上具体原因(最常见的是代理不通)。
+        // 书架未登录已经提示过了,这里不再重复。
+        if (!this.onlineItems.length && !this._wnacgShelfNeedLogin) this.reportWnacgError()
+      } catch (e) {
+        console.error(e)
+        if (!this.onlineItems.length) this.reportWnacgError()
+      } finally {
+        this.onlineLoading = false
+        this.onlineReloading = false
+        clearTimeout(this._onlineReloadGuard)
+      }
+    },
     // 滚到底 / 翻页时再补下一页(在线「无限往下看」)
     async appendOnlinePageIfNeeded (force = false) {
       if (!this.onlineActive || this.onlineLoading || !this.onlineHasMore) return
@@ -5735,7 +6848,7 @@ export default defineComponent({
       this.onlineLoading = true
       this.onlineLastAppendAt = Date.now()
       try {
-        const n = await this.appendEhPage()
+        const n = this.wnacgActive ? await this.appendWnacgPage() : await this.appendEhPage()
         if (n) this.applyOnlineList()
       } catch (e) {
         console.error(e)
@@ -5747,6 +6860,8 @@ export default defineComponent({
     //  · EH 列表每页固定 20 条,所以按需拼几页(一次最多补 8 页,避免「每页 500 条」时连打二十几个请求)
     //  · 翻页时再补一批,保证往后翻总有新内容
     async loadOnlineList (reset = false) {
+      // 紳士漫畫与 EH 共用同一套在线书架,只是取数据的方式不同
+      if (this.wnacgActive) return this.loadWnacgList(reset)
       // ⚠ 这里以前是「已经在加载就直接 return」—— 但「重新加载」会先把 onlineReloading 打开,
       //   如果这时刚好有一次自动补页在跑,这个 return 就把 reload 整个吞掉,
       //   骨架屏从此再也不消失(实测:清空后卡在骨架 6 秒以上还不恢复)。
@@ -5811,6 +6926,7 @@ export default defineComponent({
       // 合集没有文件可读:直接打开合集抽屉(看里面有哪些书)。
       // 侧边详情的封面点击 / 「阅读」按钮 / 点击策略都汇到这里,不拦就会把合集丢给阅读器,什么都打不开。
       if (book && book.isCollection) { this.openCollection(book); return }
+      // 绅士漫画:内置阅读器已支持(图片源 = 站点下拉阅读的整页列表),封面/阅读按钮直达
       const viewer = this.$refs.InternalViewerRef
       if (!viewer || typeof viewer.viewManga !== 'function') {
         // 阅读器未就绪(或纯网页模式)时兜底:打开详细界面,避免"双击没反应"
@@ -6167,6 +7283,12 @@ body.emm-mobile
       padding: 0
       margin: 0
       font-size: 13px
+    // 绅士漫画的「排行」按钮:是文字不是箭头,给个合适的宽度
+    .wnacg-rank-btn
+      width: auto
+      padding: 0 10px
+      margin: 0
+      font-size: 12px
   // ★ 2026-11:.edit-btn-group 已删 —— 那排功能按钮挪进了右侧面板头部
   //   (EditView.vue 的 .emm-manage-actions),工具栏上不再需要这组样式。
 
@@ -7080,4 +8202,135 @@ html.nhentai
   --el-fill-color-extra-light: #1f1f1f
   --el-fill-color-dark: #666666
   --el-border-color: #6e6e6e
+
+// 绅士漫画:下拉里所有项一律靠左(顶层后面拖一条灰色细线铺满整行)
+.sort-select-wnacg
+  .el-select-dropdown__item
+    text-align: left
+    // 右侧内边距归零、左侧留给文字:这样细线能一直顶到行的最右边
+    padding: 0 0 0 12px
+  .wnacg-sec-title
+    position: relative
+    display: flex
+    align-items: center
+    height: 100%
+    line-height: inherit
+    text-align: left
+    // 文字左边的短线:只占 item 的左内边距(12px)那一小块,所以文字位置一点不动。
+    // 颜色用当前文字色的半透明 —— 浅色主题比 #dcdfe6 深,暗色主题自动提亮
+    .wnacg-sec-rule
+      position: absolute
+      top: 50%
+      left: -12px
+      width: 7px
+      height: 2px
+      margin-top: -1px
+      border-radius: 1px
+      background: currentColor
+      opacity: .45
+    // 文字右边的长线:从文字后面一直拉到行尾(item 右内边距为 0,所以正好贴边)
+    .wnacg-sec-line
+      flex: 1 1 auto
+      height: 1px
+      margin-left: 8px
+      background: currentColor
+      opacity: .45
+// 收起状态显示的那个值也靠左
+.sort-select.is-wnacg
+  .el-select__selection
+    justify-content: flex-start
+// 排行模式下拉顶部的周期行(今日/本週/本月/今年)。
+// 外层是 el-select-dropdown__header(自带 10px 内边距 + 下边框),这里只管横向排布
+.sort-select-wnacg
+  .el-select-dropdown__header
+    padding: 8px 12px
+    border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5)
+  .wnacg-period-row
+    display: flex
+    gap: 6px
+    .wnacg-period-item
+      flex: 1 1 0
+      text-align: center
+      font-size: 12px
+      line-height: 24px
+      border-radius: 4px
+      cursor: pointer
+      user-select: none
+      color: var(--el-text-color-regular, #606266)
+      &:hover
+        background: var(--el-fill-color, rgba(0, 0, 0, .06))
+      &.active
+        color: var(--el-color-white, #fff)
+        background: var(--el-color-primary, #409eff)
+// 绅士漫画:详情里的上传者可点击(侧栏 + 详细界面共用)
+.wnacg-uploader-link
+  cursor: pointer
+  color: var(--el-color-primary, #409eff)
+  &:hover
+    text-decoration: underline
+
+// 绅士漫画:排行模式下的一排周期按钮(今日/本週/本月/今年)
+.wnacg-period-group
+  flex: 0 0 auto
+  margin: 0 6px
+  .el-button
+    padding: 5px 8px
+    font-size: 12px
+// 下拉里「我的书架」后面的加号
+.wnacg-add-btn
+  display: inline-flex
+  align-items: center
+  justify-content: center
+  width: 16px
+  height: 16px
+  margin-left: auto
+  border-radius: 50%
+  background: var(--el-fill-color, rgba(0, 0, 0, .08))
+  color: var(--el-text-color-regular, #606266)
+  font-style: normal
+  font-size: 13px
+  line-height: 1
+  cursor: pointer
+  &:hover
+    background: var(--el-color-primary, #409eff)
+    color: #fff
+
+// 绅士漫画:站点广告位(卡片样式、不可点击)。广告脚本会把 iframe 填进 .wnacg-ad-slot。
+.wnacg-ad-card
+  position: relative
+  display: flex
+  flex-direction: column
+  align-items: center
+  justify-content: center
+  gap: 8px
+  width: 100%
+  box-sizing: border-box
+  padding: 16px 12px 12px
+  margin: 0 0 14px
+  border-radius: 8px
+  background: var(--el-bg-color, #fff)
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .12)
+  // 不能点:点了会跳站外,而且误点/连点会被广告平台判无效点击
+  pointer-events: none
+  .wnacg-ad-tag
+    position: absolute
+    top: 3px
+    left: 6px
+    padding: 0 4px
+    font-size: 10px
+    line-height: 14px
+    border-radius: 3px
+    color: var(--el-text-color-placeholder, #909399)
+    background: var(--el-fill-color-light, rgba(0, 0, 0, .05))
+  .wnacg-ad-img
+    display: block
+    width: 728px
+    max-width: 100%
+    height: auto
+    border-radius: 4px
+  .wnacg-ad-frame
+    border: 0
+    border-radius: 4px
+    max-width: 100%
+    background: transparent
 </style>

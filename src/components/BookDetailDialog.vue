@@ -48,7 +48,7 @@
           <div class="next-manga-pane" v-if="!isCollection" @click="$emit('jumpMangeDetail', 1)"><el-icon text><CaretRight20Regular /></el-icon></div>
           <div class="prev-manga-pane" v-if="!isCollection" @click="$emit('jumpMangeDetail', -1)"><el-icon text><CaretLeft20Regular /></el-icon></div>
         </el-row>
-        <el-row :gutter="20" class="book-detail-rate">
+        <el-row :gutter="20" class="book-detail-rate" v-if="!isWnacg">
           <!-- 合集:评分只统计**真的评过分**的成员,只读展示(不存在「给合集整体打分」这件事) -->
           <el-rate v-if="isCollection" :model-value="collectionAvgRating" size="large" allow-half disabled />
           <el-rate v-else v-model="bookDetail.rating" size="large" allow-half :disabled="viewerRole" @change="saveBook(bookDetail)"/>
@@ -64,7 +64,17 @@
             </el-descriptions-item>
             <el-descriptions-item v-if="!isOnline" :label="$t('m.readCount')+':'">{{ isCollection ? collectionTotalReads : bookDetail.readCount }}</el-descriptions-item>
             <el-descriptions-item v-if="!isOnline && !isCollection" :label="$t('m.mtime')+':'">{{new Date(bookDetail.mtime).toLocaleString("zh-CN")}}</el-descriptions-item>
-            <el-descriptions-item v-if="isOnline && bookDetail.uploader" :label="$t('m.ehOnlineUploader')+':'">{{bookDetail.uploader}}</el-descriptions-item>
+            <el-descriptions-item v-if="isWnacg" :label="$t('m.wnacgSideCategory')+':'">{{ bookDetail.category || '—' }}</el-descriptions-item>
+            <el-descriptions-item v-if="isWnacg" :label="$t('m.wnacgSideFav')+':'">{{ bookDetail.favProbed
+              ? ((bookDetail.inShelf ? $t('m.wnacgInShelf') : $t('m.wnacgNotInShelf')) + (bookDetail.favCount != null ? ' · ' + bookDetail.favCount : ''))
+              : (bookDetail.favCount != null ? bookDetail.favCount : '—') }}</el-descriptions-item>
+            <el-descriptions-item v-if="isWnacg" :label="$t('m.wnacgSideNumber')+':'">{{ bookDetail.number || '—' }}</el-descriptions-item>
+            <el-descriptions-item v-if="isWnacg" :label="$t('m.wnacgSideReadState')+':'">{{ bookDetail.readState || '—' }}</el-descriptions-item>
+            <el-descriptions-item v-if="isOnline && bookDetail.uploader" :label="$t('m.ehOnlineUploader')+':'">
+              <!-- 绅士漫画:点上传者 → 主界面切到他的投稿列表 -->
+              <span v-if="isWnacg" class="wnacg-uploader-link" @click="emit('openUploader', bookDetail)">{{ bookDetail.uploader }}</span>
+              <span v-else>{{ bookDetail.uploader }}</span>
+            </el-descriptions-item>
             <el-descriptions-item v-if="bookDetail.posted && !isCollection" :label="$t('m.postTime')+':'">{{ isOnline ? bookDetail.posted : new Date(bookDetail.posted * 1000).toLocaleString("zh-CN") }}</el-descriptions-item>
           </el-descriptions>
         </el-row>
@@ -85,16 +95,48 @@
             <el-button type="success" plain @click="openLocalBook(bookDetail)">{{$t('m.re')}}</el-button>
             <el-button type="success" plain @click="$emit('openContentView', bookDetail)">{{$t('m.ad')}}</el-button>
           </el-button-group>
-          <el-button class="detail-func-btn" plain @click="triggerShowComment">{{setting.showComment ? $t('m.hideComment') : $t('m.showComment')}}</el-button>
+          <el-button class="detail-func-btn" plain @click="triggerShowComment">{{commentsVisible ? $t('m.hideComment') : $t('m.showComment')}}</el-button>
           <el-button v-if="!viewerRole && !isOnline" class="detail-func-btn" type="primary" plain @click="editTags">{{editingTag ? $t('m.viewInfo') : $t('m.editInfo')}}</el-button>
-          <el-button v-if="isOnline" class="detail-func-btn" type="primary" plain @click="openUrl(bookDetail.url)">{{$t('m.ehOnlineOpen')}}</el-button>
-          <!-- 种子:与封面右键/卡片右下角的是同一个入口 -->
-          <el-button v-if="bookDetail.url" class="detail-func-btn" type="primary" plain @click="emit('openTorrents', bookDetail)">{{$t('m.torrent')}}</el-button>
+          <!-- 绅士漫画的「在浏览器中打开」统一放到下面单独一排(合集是独立行,普通单本也单独一行),
+               所以这里只给 EH 在线用 —— 以前写成 (!isWnacg || !isSeries),
+               对普通绅士漫画恒为真,于是它被塞进了下载按钮那一排(截图上那个空的蓝条)。 -->
+          <el-button v-if="isOnline && !isWnacg" class="detail-func-btn" type="primary" plain @click="openUrl(bookDetail.url)">{{$t('m.ehOnlineOpen')}}</el-button>
+          <!-- 种子:与封面右键/卡片右下角的是同一个入口(紳士漫畫没有种子,不显示) -->
+          <el-button v-if="bookDetail.url && !isWnacg" class="detail-func-btn" type="primary" plain @click="emit('openTorrents', bookDetail)">{{$t('m.torrent')}}</el-button>
           <!-- 下载整本(原图可选):与封面右键里的两项一致 -->
           <!-- 下载:合并成一个按钮,点开弹窗里选 位置 / 名称 / 原图 -->
-          <el-button v-if="!viewerRole && isOnline" class="detail-func-btn" type="primary" :icon="Download" @click="emit('downloadGallery', { book: bookDetail, original: false })">{{$t('m.download')}}</el-button>
+          <el-button v-if="!viewerRole && isOnline && !isWnacg" class="detail-func-btn" type="primary" :icon="Download" @click="emit('downloadGallery', { book: bookDetail, original: false })">{{$t('m.download')}}</el-button>
+          <!-- 普通绅士漫画(非合集):先「在浏览器中打开」,三个下载按钮放在它**下方** -
+               用户要求:三颗按钮颜色统一,以「下载(Server 1)」那一颗(浅蓝 plain)为准。 -->
+          <template v-if="!viewerRole && isOnline && isWnacg && !isSeries">
+            <el-button class="detail-func-btn detail-func-wnacg--full" type="primary" plain @click="openUrl(bookDetail.readUrl || bookDetail.url)">{{ $t('m.ehOnlineOpen') }}</el-button>
+            <el-button class="detail-func-btn detail-func-wnacg--full detail-func-wnacg--dl" type="primary" plain :icon="Download" @click="emit('downloadWnacg', { book: bookDetail, mode: 'read' })">{{ $t('m.wnacgDlRead') }}</el-button>
+            <el-button class="detail-func-btn detail-func-wnacg--half detail-func-wnacg--dl" type="primary" plain :icon="Download" @click="emit('downloadWnacg', { book: bookDetail, mode: 'server1' })">{{ $t('m.wnacgDlServer1') }}</el-button>
+            <el-button class="detail-func-btn detail-func-wnacg--half detail-func-wnacg--dl" type="primary" plain :icon="Download" @click="emit('downloadWnacg', { book: bookDetail, mode: 'server2' })">{{ $t('m.wnacgDlServer2') }}</el-button>
+          </template>
           <!-- H@H 归档下载:照 JHenTai 详情页的 H@H 按钮(EH 服务端打包,选分辨率后下载) -->
           <el-button v-if="!viewerRole && isOnline && bookDetail.archivePageUrl" class="detail-func-btn" type="warning" plain @click="emit('openHhDownload', bookDetail)">H@H</el-button>
+        </el-row>
+        <!-- 绅士漫画**合集**:「在浏览器中打开」和「下载」各占一排,**下载在浏览器打开的下方**
+             (用户要求:合集和普通单本的相对位置保持一致)。
+             ⚠ 判据必须是 isSeries,不能是 isWnacg —— 否则普通单本也会被拆成两排(误伤)。 -->
+        <el-row class="book-detail-function" v-if="isOnline && isWnacg && isSeries">
+          <el-button
+            class="detail-func-btn detail-func-wnacg--full"
+            type="primary"
+            plain
+            @click="openUrl(bookDetail.readUrl || bookDetail.url)"
+          >{{ $t('m.ehOnlineOpen') }}</el-button>
+        </el-row>
+        <el-row class="book-detail-function" v-if="isOnline && isWnacg && isSeries">
+          <el-button
+            v-if="!viewerRole"
+            class="detail-func-btn detail-func-wnacg--full detail-func-wnacg--dl"
+            type="primary"
+            plain
+            :icon="Download"
+            @click="onSeriesDownloadBtn('read')"
+          >{{ $t('m.download') }}</el-button>
         </el-row>
         <el-row class="book-detail-function" v-if="!isOnline && !isCollection">
           <el-button v-if="!viewerRole" class="detail-func-btn" type="primary" plain @click="$emit('openSearchDialog')">{{$t('m.getMetadata')}}</el-button>
@@ -106,7 +148,7 @@
           <el-button class="detail-func-btn" plain @click="rescanBook(bookDetail)">{{$t('m.rescan')}}</el-button>
         </el-row>
       </el-col>
-      <el-col :span="setting.showComment ? 10 : 18">
+      <el-col :span="commentsVisible ? 10 : 18">
         <el-scrollbar class="book-tag-frame">
           <div v-if="editingTag && !viewerRole">
             <!-- ========== 合集编辑:名称 / 标签(批量作用于全部成员) ==========
@@ -313,9 +355,10 @@
           </div>
           <!-- 预览:合集显示成员封面网格;本地书按批取页图;在线画廊用它自己的页预览(雪碧图)
                ★ 合集即使一本都没有也要显示这块:「添加漫画」按钮挂在这里,空合集也得能加书。 -->
-          <div class="book-preview" v-if="isCollection || previewItems.length || previewLoading">
+          <div class="book-preview" v-if="isSeries || isCollection || previewItems.length || previewLoading">
             <div class="book-preview-title">
-              <span v-if="isCollection">{{ $t('m.collectionBookCount', { n: collectionMembers.length }) }}</span>
+              <span v-if="isSeries">{{ $t('m.collectionBookCount', { n: seriesViews.length }) }}<template v-if="seriesStatus"> · {{ seriesStatus }}</template></span>
+              <span v-else-if="isCollection">{{ $t('m.collectionBookCount', { n: collectionMembers.length }) }}</span>
               <span v-else>{{ $t('m.ehOnlinePagePreview') }}</span>
               <!-- 添加漫画:弹窗勾选还没进这个合集的书(与合集抽屉那颗按钮同一个弹窗) -->
               <el-button
@@ -327,14 +370,36 @@
                 :icon="Plus"
                 @click="emit('add-collection-member', bookDetail)"
               >{{ $t('m.addMangaToCollection') }}</el-button>
-              <template v-if="!isCollection">
+              <template v-if="!isCollection && !isSeries">
                 <span class="book-preview-hint" v-if="previewTotal > previewItems.length">{{ previewItems.length }}/{{ previewTotal }}</span>
                 <span class="book-preview-hint" v-else-if="previewRawTotal > previewTotal">{{ previewTotal }}/{{ previewRawTotal }}</span>
               </template>
             </div>
             <div class="book-preview-strip" :style="{ '--preview-cell': previewCell + 'px' }">
+              <!-- 绅士漫画的合集:每话一格封面(和本地合集成员卡同款)。
+                   点封面 = 阅读那一话;右键 = 下载 / 阅读 / 浏览器打开 -->
+              <template v-if="isSeries">
+                <div
+                  v-for="sv in seriesViews"
+                  :key="'sv' + sv.id"
+                  class="book-preview-item collection-member-item"
+                  :title="sv.order + ' ' + sv.title + (sv.pageCount ? ' · ' + sv.pageCount + 'P' : '')"
+                  @click="onSeriesChapterClick(sv)"
+                  @contextmenu.prevent="onSeriesChapterContextMenu($event, sv)"
+                >
+                  <div class="book-preview-pending"></div>
+                  <img
+                    v-if="sv.coverPath"
+                    class="collection-member-cover is-loaded"
+                    :src="wnacgImageSrc(sv.coverPath, sv.url)"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <span class="member-cover-badge series-order-badge">{{ sv.order }}</span>
+                </div>
+              </template>
               <!-- 合集:每本成员一格,点一下进那本书的详情(合集本身没有「页」) -->
-              <template v-if="isCollection">
+              <template v-else-if="isCollection">
                 <div v-if="!collectionMembers.length" class="collection-member-empty">{{ $t('m.collectionEmptyBooks') }}</div>
                 <div
                   v-for="m in collectionMembers"
@@ -413,7 +478,7 @@
           <div class="book-preview-error" v-else-if="!isCollection && previewError">{{ previewError }}</div>
         </el-scrollbar>
       </el-col>
-      <el-col :span="8" v-if="setting.showComment">
+      <el-col :span="8" v-if="commentsVisible">
         <el-scrollbar class="book-comment-frame">
           <div class="book-comment" v-for="comment in comments" :key="comment.id">
             <div class="book-comment-postby">{{comment.author}}<span class="book-comment-score">{{comment.score}}</span></div>
@@ -467,7 +532,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { CaretRight20Regular, CaretLeft20Regular } from '@vicons/fluent'
 import { BookmarkTwotone } from '@vicons/material'
-import { Loading, ArrowDown, Download, Plus, Close, Delete } from '@element-plus/icons-vue'
+import { Loading, Download, Plus, Close, Delete } from '@element-plus/icons-vue'
 import { nanoid } from 'nanoid'
 import he from 'he'
 import * as linkify from 'linkifyjs'
@@ -479,6 +544,7 @@ import { useAppStore } from '../pinia.js'
 import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, retryBookCover, bookImgSrc, catDisplayName, getDisplayTagName, resolveCatKey, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName, compareCollectionBooks } from '../utils.js'
 import  { insertLocalReadRecord, toAssetUrl } from '../utils.js'
 import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, collectGalleryThumbs } from '../ehOnline.js'
+import { isWnacgUrl, parseWnacgDetail, mergeWnacgDetail, collectWnacgThumbs, wnacgHtmlLooksBroken, wnacgIsDeletedPage, parseWnacgFavDialog, wnacgAidOf, parseWnacgComments, parseWnacgChapterCover, wnacgImageSrc } from '../wnacgOnline.js'
 import { addTagToBlacklist, setBlacklistEnabled } from '../ehFilter.js'
 
 // 合集预览图的排序口径:由 App 把「合集界面设定的排序」传进来,
@@ -547,6 +613,8 @@ const viewerRole = computed(() => {
 
 // 在线画廊(书架上的「EH在线」):没有本地文件,本地专有的入口要隐藏
 const isOnline = computed(() => !!bookDetail.value?.online)
+// 紳士漫畫:没有种子/整本下载,「打开」优先给它的下拉阅读页
+const isWnacg = computed(() => isWnacgUrl(bookDetail.value?.url))
 
 // ---------- 合集(聚合条目) ----------
 // 合集不是一个磁盘文件,而是若干本书的集合。这里复用同一套 fullscreen 详情版式,
@@ -620,6 +688,12 @@ const collectionAvgRating = computed(() => {
 const emit = defineEmits([
   // EH在线:详情页的「下载整本 / 下载整本(原图)」交给 App 去走 IPC
   'downloadGallery',
+  // 绅士漫画:详情页的下载下拉(阅读 / Server 1 / Server 2)
+  'downloadWnacg',
+  // 绅士漫画合集:多选下载 / 点一话阅读
+  'downloadSeries', 'downloadSeriesPick', 'readUrl',
+  // 绅士漫画:点上传者 → 主界面切到他的投稿列表
+  'openUploader',
   // 详情页的「种子」按钮
   'openTorrents',
   // H@H 归档下载(照 JHenTai 的 H@H 按钮)
@@ -893,7 +967,7 @@ const tagGroups = computed(() => {
     .filter(k => Array.isArray(tags[k]) && tags[k].length)
     .map(k => ({
       key: k,
-      label: categoryDisplayName(setting.value, resolvedTranslation.value, k) + ':',
+      label: (k === 'tag' ? t('m.tag') : categoryDisplayName(setting.value, resolvedTranslation.value, k)) + ':',
       tags: tags[k],
     }))
     .sort((a, b) => tagCatRank(setting.value, a.key) - tagCatRank(setting.value, b.key))
@@ -905,6 +979,49 @@ const tagPillStyle = (cat, tag) => {
 }
 
 const previewItems = ref([])
+// ---------- 绅士漫画的合集(多话作品) ----------
+// 和本地合集同一套呈现:每话一张封面卡(collection-member-item 同款),
+// 点封面 = 阅读那一话,右键 = 下载 / 阅读 / 浏览器打开。
+const seriesChapters = computed(() => {
+  const s = bookDetail.value && bookDetail.value.series
+  return (s && Array.isArray(s.chapters)) ? s.chapters : []
+})
+const isSeries = computed(() => isWnacg.value && !isCollection.value && seriesChapters.value.length > 1)
+const seriesStatus = computed(() => (bookDetail.value && bookDetail.value.series && bookDetail.value.series.status) || '')
+const chapterCovers = ref({})
+const loadChapterCovers = async (chapters) => {
+  const todo = (chapters || []).filter(c => c && c.chid && !chapterCovers.value[c.chid])
+  if (!todo.length) return
+  const queue = todo.slice()
+  const worker = async () => {
+    for (;;) {
+      const c = queue.shift()
+      if (!c) return
+      try {
+        const html = await ipcRenderer.invoke('get-ex-webpage', { url: c.url, cookie: String(setting.value.wnacgCookie || '') })
+        const cover = parseWnacgChapterCover(html || '', String(c.url).replace(/^https?:\/\//i, '').split('/')[0])
+        if (cover) chapterCovers.value = { ...chapterCovers.value, [c.chid]: cover }
+      } catch (e) { /* 单话失败不影响其它 */ }
+    }
+  }
+  await Promise.all([worker(), worker(), worker()])
+}
+watch(
+  () => [isSeries.value, seriesChapters.value.map(c => c.chid).join(',')],
+  () => { if (isSeries.value) loadChapterCovers(seriesChapters.value) },
+  { immediate: true }
+)
+const seriesViews = computed(() => seriesChapters.value.map((c, i) => ({
+  id: c.chid || ('ch' + i),
+  chid: c.chid,
+  order: c.order,
+  title: c.title,
+  url: c.url,
+  readUrl: c.readUrl || c.url,
+  pageCount: c.pageCount,
+  posted: c.posted,
+  coverPath: chapterCovers.value[c.chid] || '',
+})))
 const previewTotal = ref(0)
 // 这本书实际有多少页(预览有上限,超出时提示「240/1234」而不是假装只有 240 页)
 const previewRawTotal = ref(0)
@@ -1028,6 +1145,8 @@ const ehFailedText = async () => {
 
 // 在线画廊:详情弹窗自己把 EH 详情页拉回来补齐(日文标题 / 上传者 / 时间 / 大小 / 标签 / 页预览)
 const enrichOnlineBook = async (book) => {
+  // 紳士漫畫走另一套详情页解析(分类 / 页数 / 标签 / 简介 / 全页缩略图)
+  if (isWnacgUrl(book.url)) return enrichWnacgBook(book)
   previewLoading.value = true
   try {
     const cookie = ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star']
@@ -1075,6 +1194,81 @@ const enrichOnlineBook = async (book) => {
     }
   } catch (e) {
     previewError.value = t('m.ehOnlineFailed')
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+// 紳士漫畫:详情页一次给 12 张缩略图,剩下的按「後頁」链接续拉
+const enrichWnacgBook = async (book) => {
+  previewLoading.value = true
+  try {
+    const host = String(book.url).replace(/^https?:\/\//i, '').split('/')[0] || 'www.wnacg.com'
+    let html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: String(setting.value.wnacgCookie || '') })
+    // Cookie 失效时站点回一个没正文的壳页:匿名重试一次(详情页游客也能看)
+    if (html && wnacgHtmlLooksBroken(html)) {
+      html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: '' })
+    }
+    // 作品已被站点删除:匿名重试也是同一句「漫畫不存在」,直接说明
+    if (html && wnacgIsDeletedPage(html)) {
+      previewLoading.value = false
+      previewError.value = t('m.wnacgDeleted')
+      return
+    }
+    if (!html) {
+      previewError.value = t('m.wnacgFailed')
+      return
+    }
+    const detail = parseWnacgDetail(html, host)
+    if (!detail.ok) {
+      previewError.value = t('m.wnacgFailed')
+      return
+    }
+    Object.assign(bookDetail.value, mergeWnacgDetail(bookDetail.value, detail))
+    // 收藏状态:同侧栏 —— 问一次「加入書架」弹窗(站点不给作品级收藏数)
+    if (!bookDetail.value.inShelf) {
+      try {
+        const aid = wnacgAidOf(book.url)
+        if (aid && String(setting.value.wnacgCookie || '')) {
+          const dlgHtml = await ipcRenderer.invoke('get-ex-webpage', {
+            url: 'https://' + host + '/users-addfav-id-' + aid + '.html',
+            cookie: String(setting.value.wnacgCookie || '')
+          })
+          const dlg = parseWnacgFavDialog(dlgHtml || '', host)
+          if (dlg.needLogin || dlg.already || dlg.removeUrl || dlg.form) {
+            bookDetail.value.inShelf = !!(dlg.already || dlg.removeUrl)
+            bookDetail.value.favProbed = true
+          }
+        }
+      } catch (e) { /* 探不到就保持原样 */ }
+    }
+    const first = detail.thumbnails || []
+    previewItems.value = first.map(th => ({ sprite: spriteStyleOf(th) }))
+    const pages = Number(detail.pageCount) || first.length
+    previewTotal.value = Math.max(pages, first.length)
+    previewRawTotal.value = previewTotal.value
+    const token = previewToken
+    if (previewTotal.value > first.length && detail.thumbsNextUrl) {
+      collectWnacgThumbs({
+        first,
+        nextUrl: detail.thumbsNextUrl,
+        pageCount: previewTotal.value,
+        host,
+        fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie: String(setting.value.wnacgCookie || '') }),
+        shouldStop: () => token !== previewToken,
+        onUpdate: (thumbs) => {
+          if (token !== previewToken) return
+          bookDetail.value.thumbnails = thumbs
+          previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
+        }
+      }).then((thumbs) => {
+        if (token !== previewToken) return
+        bookDetail.value.thumbnails = thumbs
+        previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
+      }).catch(() => { /* 某页拉不到就算了,已显示的先留着 */ })
+    }
+  } catch (e) {
+    previewError.value = t('m.wnacgFailed')
   } finally {
     previewLoading.value = false
   }
@@ -1330,7 +1524,10 @@ const openBookDetail = (book, addToHistory = true) => {
   bookDetail.value = book
   dialogVisibleBookDetail.value = true
   comments.value = []
-  if (setting.value.showComment) getComments(book.url)
+  // 每次打开详情都回到「站点默认收起」的状态(见 wnacgCommentsOpen 的注释)
+  wnacgCommentsOpen.value = false
+  const willShow = isWnacgUrl(book && book.url) ? false : setting.value.showComment
+  if (willShow) getComments(book.url)
   if (addToHistory) emit('addToHistory', book.id)
 }
 
@@ -1598,8 +1795,26 @@ const triggerHiddenCollection = () => {
 }
 
 const comments = ref([])
+// 绅士漫画:评论区**默认收起**。
+// 为什么不用全局 setting.showComment 当唯一开关:那是「设置 → 高级」里的全局偏好,
+// EH 用户多半是开着的;站点详情页的评论是另一套(独立页、结构不同),
+// 一进来就拉一遍既慢又没必要。所以这里给站点单开一个本地开关,默认 false;
+// 用户点一下「显示评论」照常展开,关掉详情再开又回到收起状态。
+const wnacgCommentsOpen = ref(false)
+// 详情页真正决定的「评论栏要不要显示」
+const commentsVisible = computed(() => (isWnacg.value ? wnacgCommentsOpen.value : setting.value.showComment))
 
 const triggerShowComment = () => {
+  if (isWnacg.value) {
+    if (wnacgCommentsOpen.value) {
+      wnacgCommentsOpen.value = false
+      return
+    }
+    comments.value = []
+    getComments(bookDetail.value.url)
+    wnacgCommentsOpen.value = true
+    return
+  }
   if (setting.value.showComment) {
     setting.value.showComment = false
   } else {
@@ -1611,6 +1826,20 @@ const triggerShowComment = () => {
 
 const getComments = (url) => {
   if (url) {
+    // 绅士漫画:评论在独立页 /comment-index-aid-<aid>.html(阅读器「評論」按钮的地址),
+    // 结构与 EH 完全不同 —— 单独走一套解析;只带 wnacg 自己的 Cookie
+    if (isWnacgUrl(url)) {
+      const aid = wnacgAidOf(url)
+      if (!aid) { comments.value = []; return }
+      const host = String(url).replace(/^https?:\/\//i, '').split('/')[0]
+      ipcRenderer.invoke('get-ex-webpage', {
+        url: 'https://' + host + '/comment-index-aid-' + aid + '.html',
+        cookie: String(setting.value.wnacgCookie || '')
+      })
+      .then(res => { comments.value = parseWnacgComments(res || '') })
+      .catch(() => { comments.value = [] })
+      return
+    }
     ipcRenderer.invoke('get-ex-webpage', {
       url,
       cookie: appStore.cookie
@@ -1782,6 +2011,80 @@ const isCollectionCover = (m) => {
 }
 
 // 编辑态点成员:不跳进那本书的详情 —— 那会把 bookDetail 换成成员,合集上下文就丢了
+// ---------- 绅士漫画合集:每话卡片的点击 / 右键 ----------
+// 点封面 = 进入**这一话的详细界面**(用户要求:以前是直接开读,现在要和本地合集一样
+// 「点一下先看详情」)。详情页地址是 sv.url(/photos-index-aid-<chid>.html),
+// 在册页上站内同样能取到标签/页数/封面;「阅读」仍然留在右键菜单里。
+const onSeriesChapterClick = (sv) => {
+  const b = seriesChapterBook(sv)
+  if (b) openBookDetail(b)
+}
+// 一话 → 「书」的形状:字段与 wnacgToBook 同口径,详细界面/侧边详情都直接认这套。
+// 已经在书里的章节(带 tags)就用现成的,避免每次点击都重抓详情页。
+const seriesChapterBook = (sv) => {
+  if (!sv || !sv.url) return null
+  const cur = bookDetail.value || {}
+  const host = String(sv.url).replace(/^https?:\/\//i, '').split('/')[0] || 'www.wnacg.com'
+  const aid = /photos-index-aid-(\d+)\.html/i.exec(String(sv.url))
+  const chid = sv.chid || (aid ? aid[1] : '')
+  const cover = sv.coverPath || ''
+  return {
+    id: 'wnacg:' + (chid || sv.url),
+    online: true,
+    url: sv.url,
+    type: 'online',
+    filepath: sv.url,
+    title: sv.title || sv.order || '',
+    title_jpn: '',
+    title_cn: '',
+    // 角标沿用合集卡片上的话号(「第1話」),详情界面里一眼看得出是哪一话
+    category: cur.category || '',
+    coverPath: cover ? wnacgImageSrc(cover, sv.url) : '',
+    pageCount: sv.pageCount != null ? sv.pageCount : null,
+    filecount: sv.pageCount != null ? sv.pageCount : null,
+    rating: 0,
+    tags: {},
+    status: 'tagged',
+    site: 'wnacg',
+    posted: sv.posted || '',
+    mark: false,
+    readCount: 0,
+    readUrl: sv.readUrl || sv.url,
+  }
+}
+const onSeriesChapterContextMenu = (e, sv) => {
+  if (!sv || !sv.url) return
+  // 用户要求:右键给**三个下载按钮**(阅读 / Server 1 / Server 2),单话直接下。
+  const items = [
+    { id: 'dlRead', label: t('m.wnacgDlRead'), onClick: () => emit('downloadSeries', { chapters: [sv], mode: 'read' }) },
+    { id: 'dlS1', label: t('m.wnacgDlServer1'), onClick: () => emit('downloadSeries', { chapters: [sv], mode: 'server1' }) },
+    { id: 'dlS2', label: t('m.wnacgDlServer2'), onClick: () => emit('downloadSeries', { chapters: [sv], mode: 'server2' }) },
+    { id: 'read', label: t('m.read'), onClick: () => emit('readUrl', { url: sv.readUrl || sv.url, title: sv.title }) },
+    { id: 'browser', label: t('m.openInBrowser'), onClick: () => ipcRenderer.invoke('open-url', sv.url) },
+  ]
+  ContextMenu.showContextMenu({ x: e.x, y: e.y, items })
+}
+// 合集里的下载按钮:弹出「选要下载的漫画(可多选)」;普通单本直接下
+const openSeriesDownloadPick = (mode) => {
+  const list = isSeries.value
+    ? seriesViews.value
+    : [{
+        id: 'single', chid: 'single',
+        order: bookDetail.value && bookDetail.value.title,
+        title: bookDetail.value && bookDetail.value.title,
+        url: (bookDetail.value && bookDetail.value.url) || '',
+        readUrl: (bookDetail.value && bookDetail.value.url) || '',
+        pageCount: bookDetail.value && bookDetail.value.pageCount,
+        coverPath: (bookDetail.value && bookDetail.value.coverPath) || '',
+      }]
+  emit('downloadSeriesPick', { chapters: list, mode: mode || 'read' })
+}
+// 下载按钮:合集和单本**都**弹「选择要下载的漫画」——
+// 合集是选哪几话,单本只有一条(但它同时也是选线路的地方)。
+const onSeriesDownloadBtn = (mode) => {
+  openSeriesDownloadPick(mode)
+}
+
 const onMemberClick = (m) => {
   if (editingTag.value && !viewerRole.value) return
   openBookDetail(m)
@@ -2341,6 +2644,29 @@ defineExpose({
     .detail-func-btn, .detail-read-group
       flex: 1 1 108px
       margin: 0
+    // 绅士漫画的按钮排布(**普通单本与合集共用这两个类**):
+    //   「在浏览器中打开」「下载(阅读)」各独占整行,「Server 1 / Server 2」两两对半。
+    .detail-func-btn.detail-func-wnacg--full
+      flex: 1 0 100%
+    .detail-func-btn.detail-func-wnacg--half
+      flex: 1 1 calc(50% - 4px)
+      min-width: 0
+      padding-left: 4px
+      padding-right: 4px
+      white-space: nowrap
+      overflow: hidden
+      text-overflow: ellipsis
+    // 绅士漫画的三颗下载按钮:颜色**统一以 Server 1 为准**(浅蓝 plain)。
+    // 这里再钉一次,防止以后有人单独给某一颗加实心/其它色 —— 用户明确要求「并同一颜色」。
+    .detail-func-btn.detail-func-wnacg--dl
+      background-color: var(--el-color-primary-light-9)
+      border-color: var(--el-color-primary-light-5)
+      color: var(--el-color-primary)
+    // ★普通绅士漫画的三颗下载按钮必须压住「按钮文字把格子撑满整行」这件事:
+    //   el-button 默认 white-space:nowrap + min-width:auto,「下载(Server 1)」这种长文字
+    //   的 min-content 宽度 > 108px,flex 就把它推到单独一行(实测每颗各占 250px 整行)。
+    //   这里允许换行 + min-width:0,三颗才排得回原样(和改动前一致)。
+
     // 「编辑合集」单独占一整排(用户要求):盒子拉满一行,不再和「获取元数据」挤两列
     .detail-func-btn.is-wide
       flex: 1 0 100%

@@ -56,7 +56,7 @@ import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 import { Check } from '@element-plus/icons-vue'
 import { Search32Filled } from '@vicons/fluent'
-import { bookImgSrc } from '../utils.js'
+import { bookImgSrc, collectionMemberKey, collectionMemberKeys } from '../utils.js'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -74,7 +74,8 @@ const selected = ref([])
 // 一次最多渲染这么多本:大书库一万多本,全铺出来会卡死(要更多就用搜索)
 const MAX_SHOWN = 300
 
-const keyOf = (b) => String((b && (b.hash || b.id)) || '')
+// 成员键统一口径:本地=hash,在线=id(见 utils.collectionMemberKey)
+const keyOf = (b) => collectionMemberKey(b)
 const titleOf = (b) => {
   try { return getDisplayTitle(b) } catch (e) { return (b && b.title) || '' }
 }
@@ -88,16 +89,26 @@ const existingKeys = computed(() => {
   if (agg) {
     if (Array.isArray(agg.ids)) agg.ids.forEach(k => set.add(String(k)))
     if (Array.isArray(agg.list)) agg.list.forEach(k => set.add(String(k)))
-    if (Array.isArray(agg._members)) agg._members.forEach(m => m && set.add(String(m.hash || m.id)))
+    if (Array.isArray(agg._memberKeys)) agg._memberKeys.forEach(k => set.add(String(k)))
+    if (Array.isArray(agg._members)) {
+      agg._members.forEach(m => { if (m) collectionMemberKeys(m).forEach(k => set.add(k)) })
+    }
   }
+  // 在线成员快照:刷新后 bookList 里可能没有这些书,但仍要算「已在合集里」
+  const recOnline = (rec && rec._online && typeof rec._online === 'object') ? rec._online : {}
+  Object.keys(recOnline).forEach(k => set.add(String(k)))
   return set
 })
 
+// ★ 在线书(绅士漫画 / EH 在线)也要能选:以前这里写着 b.online 直接 return false,
+//   而合集另一边又只按 hash 存键 —— 两边一起把在线成员堵死了。
+//   现在候选池 = 本地书 + 当前在线列表里的书;已经在合集里的按「全部可能键」排除。
 const candidates = computed(() => (bookList.value || []).filter(b => {
-  if (!b || b.isCollection || b.online) return false
-  const k1 = String(b.hash || '')
-  const k2 = String(b.id || '')
-  if ((k1 && existingKeys.value.has(k1)) || (k2 && existingKeys.value.has(k2))) return false
+  if (!b || b.isCollection) return false
+  // 在线书只收「当前列表里真实存在」的那些(bookList 在在线模式下就是在线列表)
+  const keys = collectionMemberKeys(b)
+  if (!keys.length) return false
+  if (keys.some(k => existingKeys.value.has(k))) return false
   return true
 }))
 

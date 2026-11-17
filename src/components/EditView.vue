@@ -42,7 +42,7 @@
                   <span v-if="book.isCollection" class="book-manage-collection-tag">{{ $t('m.collection') }}</span>
                   <!-- 合集成员角点:纯提示,和选中态(book.selected)完全无关,
                        只为让用户看得出「哪几本已经是当前合集的成员」,别让「移出选中」变盲操作 -->
-                  <span v-if="currentCollectionHashes.has(book.hash || book.id)" class="book-manage-member-dot"></span>
+                  <span v-if="currentCollectionHashes.has(collectionMemberKey(book))" class="book-manage-member-dot"></span>
                 </span>
               </template>
               <el-descriptions :column="1" size="small" class="book-tag-edit-popover">
@@ -324,7 +324,7 @@ import TagSettingsSection from './TagSettingsSection.vue'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { galleryCategoryName, bookImgSrc, categoryDisplayName, resolveCatKey, tagColorOf, retryBookCover } from '../utils.js'
+import { galleryCategoryName, bookImgSrc, categoryDisplayName, resolveCatKey, tagColorOf, retryBookCover, collectionMemberKey } from '../utils.js'
 const appStore = useAppStore()
 const {
   cat2letter,
@@ -940,7 +940,8 @@ const addCollectionWithSelected = () => {
       selectCollectionObject.value = collection
       const exist = new Set(collection.list)
       for (const book of selectedBookObjects.value) {
-        const key = book.hash || book.id
+        // 成员键统一口径(本地=hash,在线=id)
+        const key = collectionMemberKey(book)
         if (exist.has(key) || exist.has(book.id)) continue
         collection.list.push(key)
         exist.add(key)
@@ -1006,14 +1007,37 @@ const addSelectedToCollection = () => {
   // 两个都塞进去判断:老数据里成员可能存的是 id,新数据存的是 hash(openCollection 也是两个都比)
   const exist = new Set(target.list)
   let added = 0
+  // 在线书(绅士漫画 / EH 在线)不在 bookList 里,得单独找;
+  // 找到之后把书对象整份存进 collection._online,刷新页面后还能还原出成员卡。
+  // 在线书在浏览时也在 bookList / displayBookList 里(只是 online=true),
+  // 所以两处都收进来 —— 纯本地模式下它们本来就是空集合,不影响本地合集。
+  const onlinePool = new Map()
+  for (const list of [bookList.value, displayBookList.value]) {
+    for (const b of (list || [])) {
+      if (b && b.id && b.online) onlinePool.set(b.id, b)
+    }
+  }
+  if (!target._online || typeof target._online !== 'object') target._online = {}
   for (const id of selectedBookIds.value) {
-    const book = _.find(bookList.value, b => b.id === id || b.hash === id)
+    const book = _.find(bookList.value, b => b.id === id || b.hash === id) || onlinePool.get(id)
     // 合集卡不是真书:不能被塞进另一个合集的成员表里
     if (!book || book.isCollection) continue
-    const key = book.hash || book.id
+    // 成员键统一口径(本地=hash,在线=id):在线书没有 hash,统一靠 id 才能进得了合集
+    const key = collectionMemberKey(book)
+    if (!key) continue
     if (exist.has(key) || exist.has(book.id)) continue
     target.list.push(key)
     exist.add(key)
+    // 在线成员:留一份精简快照(不带滚动加载用的临时字段),离线也能在合集里看到
+    if (book.online) {
+      target._online[key] = {
+        id: book.id, online: true, url: book.url, type: book.type || 'online',
+        title: book.title || '', title_jpn: book.title_jpn || '', title_cn: book.title_cn || '',
+        category: book.category || '', coverPath: book.coverPath || '',
+        pageCount: book.pageCount || null, filecount: book.filecount || null,
+        site: book.site || '', posted: book.posted || '', status: book.status || 'tagged'
+      }
+    }
     added += 1
   }
   if (added) {
