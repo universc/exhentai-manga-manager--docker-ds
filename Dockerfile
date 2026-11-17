@@ -51,10 +51,17 @@ RUN npm ci --omit=dev \
 FROM node:18-bookworm-slim AS build
 
 # 同样走 npmmirror(本阶段 npm ci 也会安装 sharp 等依赖)
-ENV npm_config_sharp_libvips_binary_host=https://npmmirror.com/mirrors/sharp-libvips \
+# ★ registry 必须显式指定:以前只有 deps 阶段设了 npm_config_registry,
+#   本阶段漏了 —— 于是 npm ci 直连 registry.npmjs.org,在 NAS 上跑了 79 分钟后
+#   被 ECONNRESET 打断,构建整体失败(实测 build-1183.log)。
+#   加上这一条后本阶段与 deps 阶段同速(约 1 分钟)。
+ENV npm_config_registry=https://registry.npmmirror.com \
+    npm_config_sharp_libvips_binary_host=https://npmmirror.com/mirrors/sharp-libvips \
     SHARP_LIBVIPS_BINARY_HOST=https://npmmirror.com/mirrors/sharp-libvips \
     npm_config_sharp_binary_host=https://registry.npmmirror.com/-/binary/sharp \
-    npm_config_sqlite3_binary_host_mirror=https://npmmirror.com/mirrors/sqlite3
+    npm_config_sqlite3_binary_host_mirror=https://npmmirror.com/mirrors/sqlite3 \
+    npm_config_fetch_retries=5 \
+    npm_config_fetch_retry_maxtimeout=120000
 
 # vite 构建不需要 electron 二进制,跳过下载加速构建
 ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
