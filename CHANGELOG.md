@@ -1,6 +1,24 @@
 # 更新记录
 
-## 未发布
+## v1.18.4(2026-11-18)
+
+### 修复:在线书架标题、EH 登录卡在「安全验证」
+
+- **在线书架卡片标题变成 `photos-index-aid-xxxxx`**(真因):在线书(绅士漫画 / EH)的 `filepath`
+  是**作品页 URL**,`returnFileName` 取 URL 末段得到 `photos-index-aid-404973`,
+  再被 `getDisplayTitle` 当成「文件名」顶掉了真实标题。
+  现在 `returnFileName` 对 `book.online` 直接返回空串,显示层回退到 `title_cn / title_jpn / title`;
+  本地书不受影响(压缩包 / 文件夹仍按原样显示文件名)。
+- **EH 登录窗口卡在「正在进行安全验证」无限刷新**(两个独立原因):
+  1. 登录窗口用独立分区 `persist:eh-login`,**不继承** `defaultSession` 的代理 ——
+     主界面走代理、登录窗口一直直连,论坛挂在 Cloudflare 后面,直连被判可疑,挑战永远过不去。
+     现在登录分区显式 `setProxy`(有代理用同一代理,没配则用 `system`)。
+  2. 窗口 UA 是 Electron 默认串(带 `Electron/26.6.10`),Cloudflare 直接判自动化。
+     现在统一成 `EMU_BROWSER_UA`(普通 Chrome 120),HTTP 登录与窗口登录共用同一个串。
+  - 实测证据:分区 Cookies 里只留下 `cf_chl_rc_ni`(=1,挑战重试计数),
+    分区 Preferences 的 profile 为空 —— 确认代理从未装到该分区。
+
+## v1.18.3 补充(2026-11-17)
 
 ### 调整:绅士漫画详细界面按钮排布 / 合集预览图进详情 / 阅读器去掉原图下载(2026-11-17 03:2x)
 
