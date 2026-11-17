@@ -125,7 +125,12 @@ COPY docker/fonts/DejaVuSans.ttf /usr/share/fonts/truetype/emm/DejaVuSans.ttf
 COPY docker/fonts/DroidSansFallbackFull.ttf /usr/share/fonts/truetype/emm/DroidSansFallbackFull.ttf
 
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# ★ 必须去掉 CRLF:脚本从 Windows 工作区打进来时若带 \r,
+#   容器启动会直接 "exec /entrypoint.sh: no such file or directory"
+#   (报错看起来像文件不存在,其实是 /bin/sh 不认 CRLF 的 shebang)。
+#   .gitattributes 里已加 `*.sh text eol=lf`,这里是第二道保险 ——
+#   构建上下文可能来自 zip / tar / 别的机器,不保证经过 git 的行尾转换。
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 EXPOSE 10000
 

@@ -20,3 +20,8 @@
 *.pdf binary
 *.7z binary
 *.rar binary
+
+# shell 脚本必须保持 LF:容器里 /bin/sh 执行带 CRLF 的脚本会直接
+# "exec /entrypoint.sh: no such file or directory"(实测 v1.18.3 构建踩过)。
+# 这条同时管住 git checkout(core.autocrlf=true 的 Windows 工作区)。
+*.sh text eol=lf
