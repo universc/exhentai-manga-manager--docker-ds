@@ -300,8 +300,13 @@ export const useAppStore = defineStore('appStore', {
     returnFileNameWithExt (filepath) {
       return filepath.split(/[/\\]/).pop()
     },
+    // 在线书(绅士漫画 / EH)的 filepath 是**作品页 URL**,不是磁盘路径。
+    // 直接 returnFileName 会得到 "photos-index-aid-404973" 这种东西,
+    // 再被 getDisplayTitle 当成"文件名"顶掉真实标题 —— 卡片上就只剩一串 aid(用户截图)。
+    // 所以在线书一律视为"没有文件名",返回空串让调用方回退到 title。
     returnFileName (book) {
-      const fileNameWithExtension = this.returnFileNameWithExt(book.filepath)
+      if (!book || book.online) return ''
+      const fileNameWithExtension = this.returnFileNameWithExt(book.filepath || '')
       if (book.type === 'folder') return fileNameWithExtension
       return fileNameWithExtension.split('.').slice(0, -1).join('.')
     },
@@ -334,12 +339,13 @@ export const useAppStore = defineStore('appStore', {
           return book.title_cn || book.title_jpn || book.title
         case 'filename': {
           // 用户要求:文件名 → 中文 → 日文 → 英文 → 默认标题
-          // (在线画廊没有本地文件名,所以会一路回退到画廊标题,不再显示 URL)
-          const byName = book.filepath ? this.returnFileName(book) : ''
+          // ★ 在线书的 returnFileName 现在返回空串(见上面),所以这里会一路回退到
+          //   画廊标题 —— 以前在线书在这一档显示的是 "photos-index-aid-xxxxx"(报 bug 的那种)
+          const byName = this.returnFileName(book)
           return byName || book.title_cn || book.title_jpn || book.title || ''
         }
         default:
-          return book.title_jpn || book.title || this.returnFileName(book)
+          return book.title_jpn || book.title || this.returnFileName(book) || ''
       }
     },
     async resetMetadata (book) {
