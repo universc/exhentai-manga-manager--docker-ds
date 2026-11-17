@@ -497,6 +497,7 @@
     "ehOnlineEmpty": "Nothing on this page (try another source or page)",
     "ehOnlineLoading": "Loading from EH…",
     "ehOnlineFailed": "Failed to fetch the list from EH (network, proxy or expired cookie)",
+    "ehNeedConfirm": "This gallery requires confirming adult content on EH and could not be skipped automatically. Please make sure you are logged in to EH and try again.",
     "ehOnlineIpBanned": "Your IP is temporarily banned or over the bandwidth limit on EH, try again later",
     "ehOnlineTimeout": "Timed out fetching from EH (no network or proxy misconfigured); check the proxy setting and retry",
     "ehOnlineNotLoggedIn": "EH refused this request: check the login cookies (the EX site needs igneous)",

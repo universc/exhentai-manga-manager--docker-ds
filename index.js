@@ -4463,9 +4463,16 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
     // ★复用 ehLogin.agentFor(按代理地址缓存 + keep-alive):以前每次调用都 new HttpsProxyAgent,
     //   等于每个 EH 页面(在线列表一屏十几次)都重新跟代理建一次 TCP+TLS,是「EH 在线很慢」的大头。
     const agent = setting.proxy ? ehLogin.agentFor(setting.proxy) : undefined
+    // ★ Cookie 必须过一遍 ehLogin.ensureEhCookies:
+    //   前端传上来的只是「登录那几项」,少了 nw=1 / datatags=1 ——
+    //   而 nw=1 正是跳过「成人内容确认」拦截页的关键(照 JHenTai 的做法)。
+    //   以前这里直接原样用,于是部分画廊拿到的是确认页,解析不出详情/页列表 →
+    //   「有的漫画能看、有的加载和下载都失败」。
+    //   已经带了的不会被重复添加(ensure 里做了去重)。
+    const cookieHeader = ehLogin.ensureEhCookies(cookie)
     const res = agent
-      ? await fetch(url, { headers: { Cookie: cookie }, agent })
-      : await fetch(url, { headers: { Cookie: cookie } })
+      ? await fetch(url, { headers: { Cookie: cookieHeader }, agent })
+      : await fetch(url, { headers: { Cookie: cookieHeader } })
     const result = await res.text()
     if (!result) throw new Error('Empty response, maybe the cookie is expired')
     return result

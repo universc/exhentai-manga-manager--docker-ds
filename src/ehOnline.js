@@ -168,6 +168,14 @@ const detectError = (html) => {
   if (/Your IP address has been temporarily banned/i.test(h)) return 'ipBanned'
   if (/509 (Bandwidth|Error)|Bandwidth Limit Exceeded/i.test(h)) return 'ipBanned'
   if (/sadpanda|sad panda/i.test(h)) return 'notLoggedIn'
+  // EH 的「成人内容确认」中间页:访问带 R18/R18G 或敏感标签的画廊时,
+  // 站点先回一张只有「是否继续」按钮的页面(不是画廊页,没有 #gn / #gdt)。
+  // 以前这里不认它,于是被当成「解析不出来」→ 详情/预览/下载全失败。
+  // 带上 nw=1 Cookie 就不会走到这个页面(见 modules/ehLogin.js 的 EH_ALWAYS_COOKIES);
+  // 这里留一条兜底,是为了万一 Cookie 被站点忽略时能给用户一句准确的话。
+  if (!/id="gn"/.test(h) && /This gallery is for adults|are you sure you want to continue|I understand|agree to (view|continue)/i.test(h)) {
+    return 'needConfirm'
+  }
   return ''
 }
 

@@ -1162,7 +1162,11 @@ const enrichOnlineBook = async (book) => {
     }
     const detail = parseGalleryDetail(html, host)
     if (!detail.ok) {
-      previewError.value = t('m.ehOnlineFailed')
+      // 「需要确认访问」和普通失败要分开说:前者能靠 Cookie 解决(nw=1),
+      // 后者是网络/登录问题 —— 都笼统显示「获取失败」用户根本不知道该怎么办。
+      previewError.value = detail.error === 'needConfirm'
+        ? t('m.ehNeedConfirm')
+        : t('m.ehOnlineFailed')
       return
     }
     Object.assign(bookDetail.value, mergeDetailIntoBook(bookDetail.value, detail))

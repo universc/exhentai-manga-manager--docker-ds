@@ -496,6 +496,7 @@
     "ehOnlineEmpty": "这一页没有内容(换个来源或翻页试试)",
     "ehOnlineLoading": "正在从 EH 取数据…",
     "ehOnlineFailed": "从 EH 取列表失败(可能是网络、代理或 Cookie 失效)",
+    "ehNeedConfirm": "这本漫画在 EH 上是「需要确认才能访问」的内容(成人内容确认页),当前没能自动跳过。请确认已登录 EH 账号后再试。",
     "ehOnlineIpBanned": "IP 被 EH 临时封禁或带宽超限,请稍后再试",
     "ehOnlineTimeout": "从 EH 取数据超时(网络不通或代理没配好),请检查「代理」设置后重试",
     "ehOnlineNotLoggedIn": "EH 拒绝了这次访问:请检查登录 Cookie(EX 站需要 igneous)",

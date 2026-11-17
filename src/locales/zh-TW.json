@@ -497,6 +497,7 @@
     "ehOnlineEmpty": "這一頁沒有內容(換個來源或翻頁試試)",
     "ehOnlineLoading": "正在從 EH 取資料…",
     "ehOnlineFailed": "從 EH 取列表失敗(可能是網路、代理或 Cookie 失效)",
+    "ehNeedConfirm": "這本漫畫在 EH 上是「需要確認才能存取」的內容(成人內容確認頁),目前沒能自動跳過。請確認已登入 EH 帳號後再試。",
     "ehOnlineIpBanned": "IP 被 EH 臨時封禁或頻寬超限,請稍後再試",
     "ehOnlineTimeout": "從 EH 取資料逾時(網路不通或代理沒設好),請檢查「代理」設定後重試",
     "ehOnlineNotLoggedIn": "EH 拒絕了這次存取:請檢查登入 Cookie(EX 站需要 igneous)",

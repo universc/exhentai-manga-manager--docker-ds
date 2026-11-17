@@ -31,10 +31,42 @@ const EH_BASES = {
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 const DEFAULT_TIMEOUT = 15000
 
-const cookieHeaderOf = (cookies) => Object.entries(cookies || {})
-  .filter(([, v]) => v)
+// EH 的两个「偏好」Cookie,必须无条件带上 —— 照 JHenTai 的做法
+// (002/JHenTai-8.0.16-334/lib/src/network/eh_cookie_manager.dart:14)。
+//
+//   nw=1        :跳過「This gallery is for adults」这类**成人内容确认拦截页**
+//   datatags=1  :让标签以完整名称下发,不用二次请求补全
+//
+// 少了 nw=1 时,部分画廊(带 R18/R18G 或敏感标签的)返回的不是画廊页,
+// 而是一张「需要确认访问」的中间页 —— 解析器拿不到详情/页列表,
+// 表现就是「有的漫画能看,有的加载和下载都失败」(用户报的正是这个)。
+// JHenTai 把这俩当常量塞在 cookie 列表里,且**不写回存储**(见 removeWhere('nw'))。
+const EH_ALWAYS_COOKIES = { nw: '1', datatags: '1' }
+
+const cookieHeaderOf = (cookies) => Object.entries({ ...EH_ALWAYS_COOKIES, ...(cookies || {}) })
+  .filter(([, v]) => v !== undefined && v !== null && v !== '')
   .map(([k, v]) => `${k}=${v}`)
   .join('; ')
+
+// 已经拼成 "a=1; b=2" 的 Cookie 串,补齐 EH 必需的那两项。
+// 渲染进程只持有「登录四项」,页面请求却是把字符串原样发上来的 ——
+// 不走这一步就会漏掉 nw=1,进而命中成人内容确认拦截页(见上面 EH_ALWAYS_COOKIES)。
+const ensureEhCookies = (cookieString) => {
+  const raw = String(cookieString || '').trim()
+  const jar = {}
+  for (const part of raw.split(';')) {
+    const i = part.indexOf('=')
+    if (i <= 0) continue
+    const k = part.slice(0, i).trim()
+    const v = part.slice(i + 1).trim()
+    if (k) jar[k] = v
+  }
+  // 只补缺失的键,不覆盖调用方已有的同名值(以调用方为准)
+  for (const [k, v] of Object.entries(EH_ALWAYS_COOKIES)) {
+    if (jar[k] === undefined) jar[k] = v
+  }
+  return Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ')
+}
 
 // ---------- 出网选路:完全照 JHenTai 的口径 ----------
 // JHenTai 的做法(已对照 002/JHenTai-8.0.16-334 源码确认):
@@ -754,6 +786,8 @@ module.exports = {
   EH_COOKIE_NAMES,
   EH_BASES,
   cookieHeaderOf,
+  // 已有 "a=1; b=2" 串补上 nw/datatags(渲染进程传来的 Cookie 只含登录四项)
+  ensureEhCookies,
   request,
   // 图片节点判定(所有调用方共用一个口径:图片直连,站点走代理)
   isEhImageHost,
