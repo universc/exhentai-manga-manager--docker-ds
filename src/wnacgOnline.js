@@ -131,10 +131,31 @@ const findSection = (id) => {
 }
 
 // 版块第一页的地址(第 2 页起由页面里的「後頁」链接给出,见 parseWnacgList)
+// EH 的高级搜索语法在绅士漫画上不成立。点标签时 EH 那边会送 `"标签"$`(精确匹配),
+// 绅士漫画的搜索框只做普通关键词匹配 —— 原样丢过去 = 拿字面量去搜,永远 0 结果。
+// 这里做一层「EH 语法 → 绅士漫画关键词」的归一化(用户手动粘贴也可能带这些符号):
+//   · 去掉包裹的双引号(精确匹配)
+//   · 去掉结尾的 $ 精确标记
+//   · 去掉 f:/m:/a: 这类命名空间前缀(绅士漫画没有命名空间)
+export const wnacgNormalizeQuery = (query) => {
+  let q = String(query || '').trim()
+  if (!q) return ''
+  // 整串是 "xxx"$ / "xxx" 这种精确匹配:取引号里的内容
+  const exact = /^"([\s\S]*)"\$?$/.exec(q)
+  if (exact) q = exact[1]
+  // 残留的引号 / $ 一并清掉(手动输入、或「精确匹配 + 附加词」混着写时常见)。
+  // 注意 $ 要清**全部**而不是只清结尾:"\"big breasts\"$ extra" 这种混写,
+  // $ 会落在中间,只清结尾就漏掉,搜索照样 0 结果。
+  q = q.replace(/"/g, '').replace(/\$/g, ' ').replace(/\s+/g, ' ').trim()
+  // 命名空间前缀 EH 才有(f: 女性 / m: 男性 / a: 作者 …),绅士漫画按纯关键词搜
+  q = q.replace(/(^|\s)[a-z]:(?=\S)/gi, '$1').trim()
+  return q
+}
+
 export const wnacgSectionUrl = (setting, sectionId, query = '', rankPeriod = 'week') => {
   const host = wnacgHost(setting)
   const base = 'https://' + host
-  const kw = String(query || '').trim()
+  const kw = wnacgNormalizeQuery(query)
   if (kw) return base + '/search/?q=' + encodeURIComponent(kw) + '&f=_all&s=create_time_DESC&syn=yes'
   // 排行模式:rank-all / rank-cate-N → 站点收藏榜(period = day/week/month/year,默认 week)
   const rk = /^rank(?:-all|-cate-(\d+))?$/.exec(String(sectionId || ''))

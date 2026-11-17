@@ -3381,7 +3381,11 @@ export default defineComponent({
         return
       }
       // 搜索语法里也不再用 f:/m:/a: 这种字母前缀(用户要求):直接按标签名精确匹配
-      this.searchString = `"${tag}"$`
+      // ★ `"标签"$` 是 **EH 专属**的「精确匹配」语法。
+      //   绅士漫画的搜索框只做普通关键词匹配,把 `"…"$` 原样丢过去会被当成
+      //   字面字符去搜,于是永远 0 结果(用户报的就是这个)。
+      //   所以按当前来源分别生成:EH 保留精确语法,绅士漫画只送标签名本身。
+      this.searchString = this.wnacgActive ? String(tag) : `"${tag}"$`
       this.searchBook()
     },
     // ---------- 可配置点击策略(设置 → 高级设置):详细界面 / 内容界面 / 缩略图 ----------
@@ -3396,10 +3400,19 @@ export default defineComponent({
       //   (用户明确要求改回来:封面 → 抽屉,标题 → 详情)。
       if (book.isSeries && book.site === 'wnacg') {
         if (action === 'none') return
-        if (action === 'detail' || action === 'sideDetail') {
+        // ★ 这里必须分开判 detail / sideDetail:
+        //   上面已经把「侧栏开着时的 detail」改写成 sideDetail 了 —— 以前把两个动作
+        //   合在同一个分支里都送去详细弹窗,于是「侧边详细信息展开时点合集标题」
+        //   进的是全屏详细界面,而不是侧栏(用户报的就是这个)。
+        if (action === 'detail') {
           this.$refs.BookDetailDialogRef.openBookDetail(book)
           return
         }
+        if (action === 'sideDetail') {
+          this.openSideDetail(book)
+          return
+        }
+        // 内容 / 缩略图 / 封面 → 合集抽屉
         this.openWnacgSeriesDrawer(book)
         return
       }
