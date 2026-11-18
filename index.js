@@ -5659,7 +5659,7 @@ const wnacgMoveTasks = async (ids, targetRoot, opts = {}) => {
     try {
       // ★压缩包解压后移动:站点 Server1/2 下回来的是单个 zip,勾上后解压成文件夹再搬
       let dest = ''
-      if (ARCHIVE_EXT_OF(src) && setting.archiveExtractOnMove) {
+      if (sniffArchiveExt(src) && setting.archiveExtractOnMove) {
         const re = await moveArchiveExtracted(src, targetRoot, { removeSource: !setting.archiveExtractKeepSource })
         dest = re.dest
       } else {
@@ -6550,13 +6550,19 @@ const runMoveDownloads = async (ids, targetRoot, opts = {}) => {
     if (!rec) { results.push({ id, ok: false, error: 'notFound' }); continue }
     // 正在下的不给动(会写坏文件)
     if (rec.status === 'downloading') { results.push({ id, ok: false, error: 'downloading' }); continue }
-    const src = rec.dir ? path.resolve(rec.dir) : ''
+    // ★ 源路径 = 这条任务真正下出来的那一件,不是「一定有 dir」。
+    //   逐页图线路(wnacg read)才写 dir;Server1/2 下回来的是**单个 zip**,记在 filePath 里,
+    //   dir 是空串 —— 以前这里只认 rec.dir,于是「压缩包解压后移动」对 zip 直接走 noDir,
+    //   勾了设置也完全没反应(用户报的问题 2)。
+    const src = rec.dir
+      ? path.resolve(rec.dir)
+      : (rec.filePath ? path.resolve(rec.filePath) : '')
     if (!src || !fs.existsSync(src)) { results.push({ id, ok: false, error: 'noDir' }); continue }
     try {
       // ★压缩包解压后移动(设置 → 功能 → 文件移动):勾上后先解压成文件夹,再搬文件夹
       let dest = ''
       let extracted = false
-      if (ARCHIVE_EXT_OF(src) && setting.archiveExtractOnMove) {
+      if (sniffArchiveExt(src) && setting.archiveExtractOnMove) {
         const r2 = await moveArchiveExtracted(src, targetRoot, { removeSource: !setting.archiveExtractKeepSource })
         dest = r2.dest
         extracted = true
@@ -6756,7 +6762,28 @@ ipcMain.handle('wnacg-password-login', async (event, arg) => {
 // · 阅读    = 下拉阅读的图片源:/photos-item-aid-<aid>.html 一次给全,逐页存图
 // · Server1 = 下载页「點擊下載 (Server 1)」:POST https://d1.wcdn.date/api/generate-link 签发直链
 // · Server2 = 下载页「備用線路 (Server 2)」:页面里现成的 //dl1.wn01.download/…zip 直链
-const WNACG_DL_SANITIZE = (s) => String(s || '').replace(/[\\/:*?"<>|\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+// 文件名清理。★ 必须先分离扩展名再截断主名:
+//   以前是整串 slice(0,120) —— 站点给的长标题(日文名很容易超 120 字)
+//   会把结尾的 .zip 一起截掉,下出来就是一个没有后缀的文件(用户报的问题)。
+//   现在:扩展名单独保留,只截主干,并保证总长不超过 120。
+const WNACG_DL_SANITIZE = (s) => {
+  const raw = String(s || '').replace(/[\\/:*?"<>|\r\n]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!raw) return ''
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(raw)
+  const ext = m ? '.' + m[1] : ''
+  const stem = ext ? raw.slice(0, -ext.length) : raw
+  const room = Math.max(1, 120 - ext.length)
+  return stem.slice(0, room).trim() + ext
+}
+// 落盘前兜底补扩展名:Server2 的 ?n= 参数经常**不带** .zip(实测),
+// 直接拿来当文件名就会得到无后缀文件。按响应里的实际类型补。
+const WNACG_DEFAULT_ARCHIVE_EXT = '.zip'
+const ensureArchiveExt = (name, ext = WNACG_DEFAULT_ARCHIVE_EXT) => {
+  const s = String(name || '').trim()
+  if (!s) return ''
+  if (/\.[A-Za-z0-9]{1,8}$/.test(s)) return s
+  return s + (ext || WNACG_DEFAULT_ARCHIVE_EXT)
+}
 
 // ---------- 站点详情页解析(主进程用正则,没有 DOMParser) ----------
 // 只取下载真正需要的四项:标题 / 分类 / 页数 / 标签。标签是用户这次要求的重点:
@@ -7087,7 +7114,10 @@ const runWnacgJob = (rec, opts = {}) => {
         }
         // zip 落到「下载根目录」下(saveDir 才是稳定基准,dirTo 可能已被移动改写)
         const zipBase = String(rec.saveDir || rec.dirTo || '').trim()
-        const filePath = path.join(zipBase, WNACG_DL_SANITIZE(fileName) || fileName)
+        // ★ 兜底补 .zip:站点给的 FILE_NAME 通常带扩展名,但 Server2 的 ?n= 经常不带
+        //   (实测 //dl1.wn01.download/…zip?n=[circle]%20title),直接当文件名会得到无后缀文件。
+        const safeName = WNACG_DL_SANITIZE(fileName) || WNACG_DL_SANITIZE(rec.title) || ('wnacg-' + aid)
+        const filePath = path.join(zipBase, ensureArchiveExt(safeName))
         // zip 是单文件:已经下完过(大小和上次一致)就别重下
         if (opts.resume) {
           try {
@@ -7421,6 +7451,19 @@ if (!WEB_MODE) {
       // 伪装成普通 Chrome(见 EMU_BROWSER_UA 的注释):不改的话 Cloudflare 会把窗口
       // 判成自动化流量,安全验证无限循环。
       try { win.webContents.setUserAgent(EMU_BROWSER_UA) } catch (e) { /* 忽略 */ }
+      // ★ 已有登录态就直接种进窗口(照 JHenTai 的
+      //   addScriptToExecuteOnDocumentCreated('document.cookie = "ipb_..."') 做法)。
+      //   好处:用户之前登录过、只是 igneous 失效时,不用再走一遍 Cloudflare 挑战 ——
+      //   窗口一打开就是已登录状态,轮询立刻就能收工。
+      try {
+        const seed = []
+        if (String(setting.ipb_member_id || '').trim()) seed.push('ipb_member_id=' + setting.ipb_member_id)
+        if (String(setting.ipb_pass_hash || '').trim()) seed.push('ipb_pass_hash=' + setting.ipb_pass_hash)
+        if (seed.length) {
+          const js = seed.map(kv => "document.cookie = " + JSON.stringify(kv + '; path=/; domain=.e-hentai.org') + ';').join(' ')
+          win.webContents.on('dom-ready', () => { try { win.webContents.executeJavaScript(js) } catch (e) { /* 忽略 */ } })
+        }
+      } catch (e) { /* 忽略 */ }
       let closed = false
       win.on('closed', () => { closed = true })
       const winRef = win
@@ -7444,26 +7487,51 @@ if (!WEB_MODE) {
         let windowUserName = ''
         let done = false
         const finish = (payload) => { if (done) return; done = true; resolve(payload) }
+        // ★ 轮询只「看 Cookie」,**不再主动导航**。
+        //   照 JHenTai 的口径(lib/src/pages/setting/account/login/login_page_logic.dart:319-333):
+        //   窗口只 launch 一次,之后靠 addScriptToExecuteOnDocumentCreated 注入 / 读取页面状态,
+        //   全程不 reload。以前这里一拿到 Cookie 就 loadURL(EH_EX_URL),
+        //   而那一刻 EX 正在跑 Cloudflare 挑战 —— 直接把它打断,页面又回到「请稍候…」,
+        //   Cloudflare 于是重新发起挑战 → 用户看到的就是「一直转圈、反复刷新」。
+        //
+        //   现在:拿到 Cookie 后**原地**等页面自己稳定(EX 的 igneous 由下面的独立请求补,
+        //   不再依赖窗口导航),窗口一关或超时才结束。
+        let loginSeenAt = 0
         const tick = async () => {
           if (done) return
-          if (closed) return finish({ ok: false, error: 'canceled' })
+          if (closed) {
+            // 用户自己关了窗口:有 Cookie 就当成功(他可能已经登完了)
+            const c = await ehCookieMapOf(ses)
+            if (c.ipb_member_id && c.ipb_pass_hash) {
+              const picked = {}
+              for (const name of ehLogin.EH_COOKIE_NAMES) picked[name] = c[name] || ''
+              const user = windowUserName || await ehLogin.fetchUserName(picked.ipb_member_id, picked, { proxy: setting.proxy })
+              return finish({ ok: true, cookies: picked, user })
+            }
+            return finish({ ok: false, error: 'canceled' })
+          }
           if (Date.now() > deadline) return finish({ ok: false, error: 'timeout' })
           const cookies = await ehCookieMapOf(ses)
           if (cookies.ipb_member_id && cookies.ipb_pass_hash) {
-            if (!exRequestedAt) {
-              // 先趁着还在论坛页把用户名读出来(下面就要离开这一页了)
+            if (!loginSeenAt) {
+              // 刚拿到登录态:先记一次用户名(此刻还在论坛页,别等页面跳走)
+              loginSeenAt = Date.now()
               windowUserName = await readUserNameFromWindow()
-              // 已登录:再访问一次 EX,让服务端下发 igneous(取不到也不影响登录成功)
-              exRequestedAt = Date.now()
-              try { winRef.loadURL(EH_EX_URL) } catch (e) { /* 忽略:取 igneous 是加分项 */ }
-            } else if (Date.now() - exRequestedAt > 3000) {
+            } else if (Date.now() - loginSeenAt > 3000) {
+              // 稳定 3 秒:收工。igneous 用独立 HTTP 请求补,不再让窗口跳去 EX
               const picked = {}
               for (const name of ehLogin.EH_COOKIE_NAMES) picked[name] = cookies[name] || ''
+              try {
+                const extra = await ehLogin.fetchExtraCookies(picked, { proxy: setting.proxy })
+                for (const k of ['igneous', 'star']) {
+                  if (extra && extra[k]) picked[k] = extra[k]
+                }
+              } catch (e) { /* 取不到 igneous 不影响登录成功 */ }
               const user = windowUserName || await ehLogin.fetchUserName(picked.ipb_member_id, picked, { proxy: setting.proxy })
               return finish({ ok: true, cookies: picked, user })
             }
           }
-          setTimeout(tick, 1500)
+          setTimeout(tick, 1200)
         }
         winRef.loadURL(EH_LOGIN_URL).catch(() => { /* 网络失败:交给轮询/超时 */ })
         // 自动填表(给了账号密码时):等 Cloudflare 整页挑战过去、**并且 Turnstile 出了 token** 之后再提交。
@@ -8081,9 +8149,33 @@ ipcMain.handle('trash-log', async () => {
 // 这样搬完就能当普通目录漫画读(目录模式比压缩包模式快很多,也能改文件名/单页删除)。
 // 图片扩展名(判断压缩包条目是不是漫画页)
 const IMAGE_NAME_RE = /\.(jpe?g|png|webp|gif|bmp|avif|jxl|tiff?)$/i
+const ARCHIVE_EXTS = ['.zip', '.rar', '.7z', '.cbz', '.cbr', '.cb7']
 const ARCHIVE_EXT_OF = (p) => {
   const ext = path.extname(String(p || '')).toLowerCase()
-  return ['.zip', '.rar', '.7z', '.cbz', '.cbr', '.cb7'].includes(ext) ? ext : ''
+  return ARCHIVE_EXTS.includes(ext) ? ext : ''
+}
+// 没有扩展名时按**文件头**判断(用于兼容旧版本下出来的无后缀 zip)。
+//   以前 WNACG_DL_SANITIZE 会截掉 .zip,那些文件现在还在盘上 ——
+//   光靠扩展名判断会一直报「不是压缩包 / 搬不动」。
+const sniffArchiveExt = (p) => {
+  const byExt = ARCHIVE_EXT_OF(p)
+  if (byExt) return byExt
+  try {
+    const fd = fs.openSync(p, 'r')
+    try {
+      const buf = Buffer.alloc(8)
+      const n = fs.readSync(fd, buf, 0, 8, 0)
+      if (n >= 4) {
+        // PK\x03\x04 / PK\x05\x06(zip) / PK\x07\x08(分卷)
+        if (buf[0] === 0x50 && buf[1] === 0x4b) return '.zip'
+        // Rar! \x1a\x07
+        if (buf[0] === 0x52 && buf[1] === 0x61 && buf[2] === 0x72 && buf[3] === 0x21) return '.rar'
+        // 7z\xbc\xaf\x27\x1c
+        if (buf[0] === 0x37 && buf[1] === 0x7a && buf[2] === 0xbc && buf[3] === 0xaf) return '.7z'
+      }
+    } finally { fs.closeSync(fd) }
+  } catch (e) { /* 读不到就按非压缩包处理 */ }
+  return ''
 }
 // 把压缩包解到 destDir(不存在就建)。返回解出来的图片数。
 // zip 优先用 adm-zip(纯 JS,不依赖外部 7z);rar / 7z 走随包的 7z.exe。
@@ -8092,7 +8184,9 @@ const ARCHIVE_EXT_OF = (p) => {
 //   否则「解压后移动」对 zip 直接不可用。
 const extractArchiveInto = async (archivePath, destDir) => {
   await fs.promises.mkdir(destDir, { recursive: true })
-  const ext = ARCHIVE_EXT_OF(archivePath)
+  // ★ 用 sniffArchiveExt 而不是 ARCHIVE_EXT_OF:旧版本下出来的无后缀 zip
+  //   也要能走 adm-zip 这条纯 JS 分支(否则会掉进 7z,而随包的 7z.exe 常是坏的)。
+  const ext = sniffArchiveExt(archivePath)
   if (ext === '.zip' || ext === '.cbz') {
     try {
       const AdmZip = require('adm-zip')
