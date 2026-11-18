@@ -1,5 +1,58 @@
 # 更新记录
 
+## v1.18.5(2026-11-18)
+
+### 修复:绅士漫画下载的压缩包没有后缀名
+
+**真因**:`WNACG_DL_SANITIZE` 对整串 `slice(0, 120)` —— 站点给的长标题(日文名很容易超 120 字)
+会把结尾的 `.zip` 一起截掉;另外 Server 2 的 `?n=` 参数实测经常**不带** `.zip`,
+直接拿来当文件名也会无后缀。
+
+**修法**:清理时先分离扩展名再截主干;落盘前用 `ensureArchiveExt` 兜底补 `.zip`。
+
+### 修复:压缩包解压后移动没有生效
+
+**真因**:`runMoveDownloads` 只认 `rec.dir`(`const src = rec.dir ? ... : ''`),
+而 Server 1/2 下回来的是**单个 zip**,路径记在 `rec.filePath`,`dir` 是空串
+(见 `succeed()`:只有 `runMode === 'read'` 才写 `dir`)。于是直接走 `noDir`,
+勾了「解压后移动」也完全不动。
+
+**修法**:`src` 在 `dir` 为空时回退到 `filePath`;
+另新增 `sniffArchiveExt` —— 按文件头(PK / Rar! / 7z²)识别压缩包,
+兼容旧版本已经下出来的无后缀 zip,`extractArchiveInto` 也改用它
+(否则这类文件会掉进 7z 分支,随包 `7z.exe` 常是坏的)。
+
+### 修复:EH 登录一直转圈重复
+
+对照 JHenTai 的 `login_page_logic.dart`:它只 `launch` 一次,靠
+`addScriptToExecuteOnDocumentCreated` 注入 cookie,全程不 reload。
+我们的实现一拿到 Cookie 就 `loadURL(EH_EX_URL)`,而那一刻 EX 正在跑 Cloudflare 挑战 ——
+直接打断 → 重新挑战 → 用户看到「一直转圈、反复刷新」。
+
+**修法**:
+
+- 轮询只读 Cookie,**不再主动导航**;拿到登录态后原地等 3 秒收工。
+- `igneous` 改用独立 HTTP 请求补(`ehLogin.fetchExtraCookies`),不依赖窗口跳转。
+- 窗口打开时把已有 `ipb_member_id` / `ipb_pass_hash` 用 `document.cookie` 种进去,
+  已登录用户不用再过一遍挑战。
+- 保留之前的代理继承与 UA 伪装。
+
+### 调整:EH 登录顺序按 JHenTai 分发 + 认得出 IP 封禁
+
+JHenTai 有密码 / Cookie / Webview 三种登录方式,webview 只是兜底。
+我们之前把「登录」按钮写死成只走 webview —— 而 webview 需要过 Cloudflare Turnstile,
+过不了就永远转圈,且没有别的入口。
+
+1. 登录顺序改成:① 先走纯 HTTP 账号密码(`passwordLogin`,
+   即 `POST forums.e-hentai.org/index.php?act=Login&CODE=01`);
+   ② 只有被 Cloudflare 拦下(`cloudflare` / `network` / `timeout`)才开登录窗口;
+   ③ 都不行就明确提示用「粘贴 Cookie」(设置里已有那三个输入框 + 粘贴按钮)。
+2. **认出 IP 临时封禁**(实测踩到,当时被误报成 Cloudflare 挑战):
+   站点返回 200 + `This IP address has been temporarily banned …`。
+   现在 `passwordLogin` 返回 `error:'ipBanned'` + `detail`(剩余时间),
+   前端显示专门文案(三语);`ehOnline` 的 `detectError` 正则以前只认
+   `Your IP address`(站点实际写 `This IP address`),所以从没匹配上 —— 已修正。
+
 ## v1.18.4(2026-11-18)
 
 ### 修复:绅士漫画合集标题进侧栏 / 标签搜索带上 EH 语法搜不到
