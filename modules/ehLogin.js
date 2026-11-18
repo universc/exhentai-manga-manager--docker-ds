@@ -454,6 +454,14 @@ const passwordLogin = async ({ username, password, proxy, bases = EH_BASES } = {
     // 论坛开着 Cloudflare 的 JS 挑战:响应头 Cf-Mitigated: challenge,页面是 "Just a moment..."。
     // 实测(2026-10-14,本机 Clash 出口)就是这么被拦的 —— 这不是密码错,不能报成 badCredentials,
     // 否则用户会一直去改密码。403 也按「被拦」处理(EH 的密码错返回的是 200 + 错误页)。
+    // ★ IP 被临时封禁要先认出来:这时报「Cloudflare 挑战」会把人带偏 ——
+    //   用户会以为是验证码问题,反复重试反而延长封禁。
+    //   站点返回的是 200 + 一句 "This IP address has been temporarily banned …"。
+    const banMatch = /The ban expires in\s*([^.<\n]+)/i.exec(html)
+      || (/temporarily banned|excessive request rate/i.exec(html) ? [''] : null)
+    if (banMatch) {
+      return { ok: false, error: 'ipBanned', detail: String(banMatch[1] || '').trim() }
+    }
     const cfChallenge = String(res.headers['cf-mitigated'] || '').toLowerCase() === 'challenge'
       || /just a moment|challenges\.cloudflare\.com/i.test(html)
       || res.status === 403

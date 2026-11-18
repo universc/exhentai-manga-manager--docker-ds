@@ -467,6 +467,7 @@
     "ehLoginBadCredentials": "EH 帳號或密碼不對",
     "ehLoginCloudflare": "EH 論壇被 Cloudflare 攔下(要求人機驗證),不是密碼錯 —— 請改用「開啟 EH 登入視窗」讓真瀏覽器過驗證,或在瀏覽器登入 EH 後用「從剪貼簿貼上 Cookie」(換個代理節點有時也能過)",
     "ehLoginNeedCaptcha": "EH 要求輸入驗證碼(通常是 IP 被風控),請改用「開啟 EH 登入視窗」,或在瀏覽器登入 EH 後用「從剪貼簿貼上 Cookie」",
+    "ehLoginIpBanned": "目前 IP 被 EH 暫時封鎖(請求過快),無法登入。封鎖會自己過期({time});期間可以換一個代理節點,或直接在瀏覽器登入 EH 後用「從剪貼簿貼上 Cookie」。",
     "ehLoginNetwork": "連不上 EH(網路或代理不通),請檢查「代理」設定",
     "ehNotLoggedIn": "未登入",
     "ehLoginHint": "點「登入」會開啟 EH 登入視窗並自動填好帳號密碼送出(EH 論壇有 Cloudflare 人機驗證 + Turnstile 驗證碼,只有真瀏覽器視窗能過);帳號密碼留空則開啟視窗由你手動登入",

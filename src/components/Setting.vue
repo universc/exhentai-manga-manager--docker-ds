@@ -5183,7 +5183,8 @@ const applyEhLoginResult = (res) => {
     return true
   }
   const err = (res && res.error) || ''
-  const msg = err === 'captcha' ? t('m.ehLoginNeedCaptcha')
+  const msg = err === 'ipBanned' ? t('m.ehLoginIpBanned', { time: (res && res.detail) || '' })
+    : err === 'captcha' ? t('m.ehLoginNeedCaptcha')
     : err === 'cloudflare' ? t('m.ehLoginCloudflare')
       : err === 'badCredentials' ? t('m.ehLoginBadCredentials')
         : err === 'emptyInput' ? t('m.ehLoginInputRequired')
@@ -5195,22 +5196,52 @@ const applyEhLoginResult = (res) => {
   return false
 }
 
-// 「登录」按钮:桌面端开登录窗口并自动填账号密码 —— EH 论坛有 Cloudflare 人机挑战 + Turnstile 验证码,
-// 只有真浏览器窗口能过(实测);网页版没有窗口,只能退回纯 HTTP 登录(通常会被拦,会给出明确提示)。
+// 「登录」按钮 —— 顺序照 JHenTai 的 LoginPageLogic.handleLogin:
+//   ① 先走**纯 HTTP 账号密码登录**(ehLogin.passwordLogin):
+//     它就是 POST forums.e-hentai.org/index.php?act=Login&CODE=01,不经过浏览器。
+//      成功 → 直接拿到 ipb_member_id / ipb_pass_hash,秒完成。
+//   ② 只有 HTTP 被 Cloudflare 挡下(error === 'cloudflare')时,才开登录窗口让用户手动过验证。
+//      窗口那条路现在也修好了(不继承代理 / UA 伪装 / 不再反复跳转),但它依赖挑战能过,
+//      所以只能当兜底,不能当唯一入口。
+//   ③ 两条都不行 → 明确提示用户用「粘贴 Cookie」(设置里那三个输入框 / 粘贴按钮,
+//      与 JHenTai 的 Cookie 标签页等价)。
 const doEhLogin = async () => {
   if (ehLoginLoading.value || ehPasswordLoginLoading.value) return
-  if (isDesktopClient.value) {
-    ehLoginLoading.value = true
-    try {
-      applyEhLoginResult(await ipcRenderer.invoke('eh-login', { username: ehUsername.value, password: ehPassword.value }))
-    } catch (e) {
-      printMessage('error', t('m.ehLoginFailed', { msg: String((e && e.message) || e) }))
-    } finally {
-      ehLoginLoading.value = false
-    }
-    return
+  const user = String(ehUsername.value || '').trim()
+  const pass = String(ehPassword.value || '')
+  // 没填账号密码:直接走窗口(用户可能是想在窗口里手动登录)
+  if (!user || !pass) {
+    if (!isDesktopClient.value) { printMessage('warning', t('m.ehLoginInputRequired')); return }
+    return openEhLoginWindow()
   }
-  await doEhPasswordLogin()
+  // ① 纯 HTTP 优先
+  ehPasswordLoginLoading.value = true
+  let httpRes = null
+  try {
+    httpRes = await ipcRenderer.invoke('eh-password-login', { username: user, password: pass })
+  } catch (e) {
+    httpRes = { ok: false, error: 'network', detail: String((e && e.message) || e) }
+  } finally {
+    ehPasswordLoginLoading.value = false
+  }
+  if (applyEhLoginResult(httpRes)) return
+  // ② 只有被 Cloudflare 拦下来才值得开窗口;密码错之类开窗口也没用
+  const err = (httpRes && httpRes.error) || ''
+  if (isDesktopClient.value && (err === 'cloudflare' || err === 'network' || err === 'timeout')) {
+    return openEhLoginWindow()
+  }
+}
+// 开登录窗口(桌面端兜底路径)
+const openEhLoginWindow = async () => {
+  if (ehLoginLoading.value) return
+  ehLoginLoading.value = true
+  try {
+    applyEhLoginResult(await ipcRenderer.invoke('eh-login', { username: ehUsername.value, password: ehPassword.value }))
+  } catch (e) {
+    printMessage('error', t('m.ehLoginFailed', { msg: String((e && e.message) || e) }))
+  } finally {
+    ehLoginLoading.value = false
+  }
 }
 
 const doEhLogout = async () => {

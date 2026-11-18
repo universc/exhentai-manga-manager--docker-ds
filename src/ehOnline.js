@@ -165,7 +165,9 @@ const cursorOf = (doc, id) => {
 // 明确可识别的失败页(其余情况交给「没有画廊」的兜底)
 const detectError = (html) => {
   const h = html || ''
-  if (/Your IP address has been temporarily banned/i.test(h)) return 'ipBanned'
+  // 站点实际文案是 "This IP address has been temporarily banned"(不是 Your),
+  // 以前只认 "Your IP address" 所以从没匹配上 —— 封禁期只会显示笼统的「获取失败」。
+  if (/(?:Your|This) IP address has been temporarily banned|excessive request rate/i.test(h)) return 'ipBanned'
   if (/509 (Bandwidth|Error)|Bandwidth Limit Exceeded/i.test(h)) return 'ipBanned'
   if (/sadpanda|sad panda/i.test(h)) return 'notLoggedIn'
   // EH 的「成人内容确认」中间页:访问带 R18/R18G 或敏感标签的画廊时,

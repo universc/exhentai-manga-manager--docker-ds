@@ -467,6 +467,7 @@
     "ehLoginBadCredentials": "Wrong EH account or password",
     "ehLoginCloudflare": "The EH forum is behind a Cloudflare challenge — not a wrong password. Use \"Open the EH login window\" so a real browser can pass it, or log in to EH in a browser and paste the cookies (another proxy node sometimes passes too).",
     "ehLoginNeedCaptcha": "EH is asking for a captcha (usually IP rate-limiting). Use \"Open the EH login window\" instead, or log in to EH in a browser and use \"Paste cookie from clipboard\".",
+    "ehLoginIpBanned": "Your IP is temporarily banned by EH (requests too fast), so logging in is not possible. The ban expires on its own ({time}); meanwhile switch to another proxy node, or log in to EH in a browser and use \"Paste cookie from clipboard\".",
     "ehLoginNetwork": "Cannot reach EH (network or proxy down); check the proxy setting",
     "ehNotLoggedIn": "Not signed in",
     "ehLoginHint": "Clicking \"Log in\" opens the EH login window and submits your account/password automatically (the EH forum has a Cloudflare challenge + Turnstile; only a real browser window gets through). Leave the fields empty to log in manually in that window.",
