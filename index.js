@@ -5472,6 +5472,99 @@ const acquireWnacgZipSlot = (label) => new Promise((resolve) => {
   wnacgZipWaiters.push(waiter)
   try { sendMessageToWebContents('等待前一个 Server 下载完成:' + who) } catch (e) { /* 忽略 */ }
 })
+
+// ============================================================================
+// 下载记录表(download-history.json)—— 借鉴 aria2 的 .aria2 控制文件思路
+//
+// 目的(用户要求 4):记住「这个地址已经下过」,新下载时对比一下,
+// 重复就给提示 / 直接跳过。以前只有「当前任务列表」,任务被清掉就忘了,
+// 于是同一个作品会被反复下载。
+//
+// 表结构:一条 = 一次成功的下载
+//   { key, url, aid, title, source, savedPath, bytes, createdAt }
+//   key = 归一化后的地址(去掉 query / 锚点),用它做去重主键
+// 上限:setting.downloadHistoryLimit(默认 500,0 = 不限;超出按时间淘汰最旧的)
+// ============================================================================
+const DOWNLOAD_HISTORY_FILE = () => path.join(STORE_PATH, 'download-history.json')
+let downloadHistory = []
+let downloadHistoryLoaded = false
+
+// 地址归一化:去 query / hash / 尾斜杠,统一小写 host。
+// 站点同一条目常带一次性 token(verify=…),不归一化就永远「不重复」。
+const normalizeDownloadUrl = (u) => {
+  let s = String(u || '').trim()
+  if (!s) return ''
+  try {
+    const x = new URL(s)
+    const host = String(x.hostname || '').toLowerCase()
+    const p = String(x.pathname || '').replace(/\/+$/, '')
+    return (x.protocol + '//' + host + p).toLowerCase()
+  } catch (e) {
+    return s.split('?')[0].split('#')[0].replace(/\/+$/, '').toLowerCase()
+  }
+}
+
+const loadDownloadHistory = () => {
+  if (downloadHistoryLoaded) return downloadHistory
+  downloadHistoryLoaded = true
+  try {
+    const raw = JSON.parse(fs.readFileSync(DOWNLOAD_HISTORY_FILE(), 'utf-8'))
+    downloadHistory = Array.isArray(raw) ? raw.filter(x => x && x.key) : []
+  } catch (e) { downloadHistory = [] }
+  return downloadHistory
+}
+
+const persistDownloadHistory = () => {
+  try {
+    const limit = Math.max(0, Number(setting.downloadHistoryLimit) || 0)
+    const list = limit > 0 ? downloadHistory.slice(0, limit) : downloadHistory
+    fs.writeFileSync(DOWNLOAD_HISTORY_FILE(), JSON.stringify(list, null, 1))
+  } catch (e) { /* 写不了只影响去重,不影响下载 */ }
+}
+
+// 记一条(同 key 覆盖成最新,并顶到最前)
+const addDownloadHistory = (entry) => {
+  if (!entry) return
+  loadDownloadHistory()
+  const key = normalizeDownloadUrl(entry.url)
+  if (!key) return
+  const item = {
+    key,
+    url: String(entry.url || ''),
+    aid: String(entry.aid || ''),
+    title: String(entry.title || ''),
+    source: String(entry.source || ''),
+    savedPath: String(entry.savedPath || ''),
+    bytes: Number(entry.bytes) || 0,
+    createdAt: Date.now()
+  }
+  downloadHistory = [item, ...downloadHistory.filter(x => x.key !== key)]
+  const limit = Math.max(0, Number(setting.downloadHistoryLimit) || 0)
+  if (limit > 0 && downloadHistory.length > limit) downloadHistory.length = limit
+  persistDownloadHistory()
+}
+
+// 查重:返回命中的那条(没有就 null)
+const findDownloadHistory = (url) => {
+  const key = normalizeDownloadUrl(url)
+  if (!key) return null
+  loadDownloadHistory()
+  return downloadHistory.find(x => x.key === key) || null
+}
+
+// 清空 / 删除单条
+const clearDownloadHistory = (url) => {
+  loadDownloadHistory()
+  if (url) {
+    const key = normalizeDownloadUrl(url)
+    downloadHistory = downloadHistory.filter(x => x.key !== key)
+  } else {
+    downloadHistory = []
+  }
+  persistDownloadHistory()
+  return { ok: true, count: downloadHistory.length }
+}
+
 const wnacgDownloadStoreFile = () => path.join(STORE_PATH, 'wnacg-downloads.json')
 const wnacgTagsObj = (t) => ((t && t.tags && typeof t.tags === 'object' && !Array.isArray(t.tags)) ? t.tags : {})
 const publicWnacgTask = (t) => ({
@@ -7024,6 +7117,18 @@ const runWnacgJob = (rec, opts = {}) => {
         if (runMode === 'read') rec.dir = extra.folder
       }
       emitWnacgTask(rec)
+      // ★ 成功落库到「下载记录表」:下次下同一个作品就能查重提示(用户要求 4)。
+      //   只记**成功**的 —— 失败/暂停的不算「已下过」,否则用户会被误挡。
+      try {
+        addDownloadHistory({
+          url: rec.url,
+          aid: String(rec.aid || ''),
+          title: rec.title || '',
+          source: 'wnacg',
+          savedPath: extra && extra.folder ? extra.folder : (rec.filePath || ''),
+          bytes: Number(rec.bytes) || 0
+        })
+      } catch (e) { /* 记录失败不影响下载 */ }
     }
     return { ok: true, ...(extra || {}), task: alive() ? publicWnacgTask(rec) : null }
   }
@@ -7144,6 +7249,15 @@ const runWnacgJob = (rec, opts = {}) => {
         await tick()
         const r = await ehLogin.request(base + '/download-index-aid-' + aid + '.html', { proxy, cookie, referer: base + '/', raw: true, timeout: 20000, retries: 1 })
         const html = (r.buffer || Buffer.from('')).toString('utf8')
+        // ★ 先认「下载配额用完」页 —— 站点对每个 IP 限制 24 小时内 100 个文件。
+        //   配额用完时下载页里**没有** FILE_KEY / 下载直链,而是回一段配额提示;
+        //   以前不认这个页,于是往下找不到 fk 就报 noServer1 / noServer2,
+        //   前端再把它翻译成「请求被 EH 限速:等一会儿再点继续」—— 完全误导用户
+        //   (其实是站点配额,不是 EH 限速,也不是等一会儿就好,得等满 24 小时或换 IP)。
+        //   rec.error 存的是**错误码**(wnacgQuota),前端按码翻文案;不能把中文塞进这里,
+        //   否则历史记录/日志里会出现无法翻译的混合串。
+        const quotaHit = /下載配額已用完|下载配额已用完|每個\s*IP\s*24\s*小時|每个\s*IP\s*24\s*小时|只能下載\s*100\s*個|只能下载\s*100\s*个|download\s*quota/i.test(html)
+        if (quotaHit) return fail('wnacgQuota')
         const fk = /FILE_KEY:\s*"([^"]+)"/.exec(html)
         const fn = /FILE_NAME:\s*"([^"]+)"/.exec(html)
         const s2 = /href="(\/\/dl[^"]+\.zip[^"]*)"/.exec(html)
@@ -7187,23 +7301,75 @@ const runWnacgJob = (rec, opts = {}) => {
             if (st.size > 0 && rec.bytes && st.size === rec.bytes) return succeed({ folder: filePath, saved: 1, total: 1 })
           } catch (e) { /* 没下完过 */ }
         }
-        report(0, 1, { percent: 0 })
-        // zip 可能几百 MB:流式落盘,不整包进内存;流过的字节实时写进任务记录
+        // ★ 断点续传(照 aria2 的 .aria2 控制文件 + HTTP Range 做法):
+        //   zip 是单文件、站点支持 Range(实测返回 206),所以失败/暂停后**不必从头再下**。
+        //   以前这里固定 `fs.createWriteStream(filePath)` —— 每次都 truncate 到 0,
+        //   于是「压缩包下载失败后重试进度归零」(用户报的问题 3)。
+        //   现在:
+        //     · 已存在且小于远端大小 → 用 Range: bytes=<已有>- 续传,append 模式写入
+        //     · 远端不认识 Range(回 200 而不是 206)→ 退回从头下(先清空文件)
+        //     · 新旧文件不匹配(远端大小变了 / 站点换了包)→ 从头下
+        let startBytes = 0
+        if (opts.resume) {
+          try {
+            const st = fs.statSync(filePath)
+            if (st.size > 0) startBytes = st.size
+          } catch (e) { startBytes = 0 }
+        }
         await tick()
         if (stopRequested()) return paused()
-        const res2 = await fetch(dlUrl, {
+        const reqHeaders = { Referer: base + '/' }
+        if (startBytes > 0) reqHeaders.Range = 'bytes=' + startBytes + '-'
+        let res2 = await fetch(dlUrl, {
           agent: proxy ? ehLogin.agentFor(proxy) : undefined,
-          headers: { Referer: base + '/' }
+          headers: reqHeaders
         })
-        if (!res2.ok) return fail('http ' + res2.status)
-        const contentLen = Number(res2.headers && res2.headers.get('content-length')) || 0
-        let received = 0
+        let resumed = false
+        if (startBytes > 0) {
+          if (res2.status === 206) {
+            resumed = true
+          } else if (res2.ok) {
+            // 服务器不认 Range:整包重下,先把残片清掉
+            startBytes = 0
+          } else if (res2.status === 416) {
+            // 416 = 请求区间超出文件大小:本地文件可能已完整(或已损坏),从头再来
+            startBytes = 0
+            try { fs.rmSync(filePath, { force: true }) } catch (e) { /* 忽略 */ }
+            res2 = await fetch(dlUrl, {
+              agent: proxy ? ehLogin.agentFor(proxy) : undefined,
+              headers: { Referer: base + '/' }
+            })
+          }
+        }
+        // ★ 配额页会以 **429** 出现在 zip 直链这一跳(实测 dl1.wn01.download 直接回
+        //   <h1>下載配額已用完</h1><p>每個IP 24小時內只能下載 100 個文件。</p>)。
+        //   以前这里只报 'http 429',前端再翻成「EH 限速」—— 完全不沾边。
+        //   现在先读一小段 body 认配额,认出就报专门的 wnacgQuota。
+        if (!res2.ok) {
+          let peek = ''
+          try {
+            const ab = await res2.arrayBuffer()
+            peek = Buffer.from(ab).toString('utf8').slice(0, 800)
+          } catch (e) { /* 读不到就算了 */ }
+          if (/下載配額已用完|下载配额已用完|每個\s*IP\s*24\s*小時|每个\s*IP\s*24\s*小时|100\s*個文件|100\s*个文件/i.test(peek)) {
+            return fail('wnacgQuota')
+          }
+          return fail('http ' + res2.status)
+        }
+        // 「远端整包大小」:续传时 content-length 是**剩余**字节,要加回已下载的部分
+        const partLen = Number(res2.headers && res2.headers.get('content-length')) || 0
+        const contentLen = resumed ? startBytes + partLen : partLen
+        let received = startBytes
         let lastPct = -1
+        if (contentLen > 0) {
+          const p0 = Math.floor((received / contentLen) * 100)
+          if (p0 > 0) report(0, 1, { percent: p0, bytes: received })
+        }
         await new Promise((resolve, reject) => {
-          const out = fs.createWriteStream(filePath)
+          const out = fs.createWriteStream(filePath, { flags: resumed ? 'a' : 'w' })
           if (res2.body && typeof res2.body.on === 'function') {
             res2.body.on('data', (chunk) => {
-              // 暂停:停止收流,写一半的文件留着(下次继续会重下这个 zip)
+              // 暂停:停止收流,已写入的部分**保留**,下次从这里续
               if (stopRequested()) { try { res2.body.destroy() } catch (e) { /* 忽略 */ } return }
               received += chunk.length
               const pct = contentLen ? Math.floor((received / contentLen) * 100) : 0
@@ -7217,6 +7383,11 @@ const runWnacgJob = (rec, opts = {}) => {
           out.on('finish', resolve)
         })
         if (state.stopped) return paused()
+        // 完整性校验:下完的字节数要和「远端整包」一致,否则算失败(下次会从断点续)
+        if (contentLen > 0 && received < contentLen) {
+          rec.bytes = received
+          return fail('incomplete: ' + received + '/' + contentLen)
+        }
         rec.bytes = received
         return succeed({ folder: filePath, saved: 1, total: 1 })
 
@@ -7235,6 +7406,32 @@ const runWnacgJob = (rec, opts = {}) => {
   wnacgJobs.set(rec.id, { state, promise: job })
   return job
 }
+
+
+// ---------- 下载记录表 IPC ----------
+// 列表(给「打开下载记录表」按钮用)
+ipcMain.handle('download-history-list', async () => {
+  loadDownloadHistory()
+  return { ok: true, list: downloadHistory.slice(0, 500), total: downloadHistory.length }
+})
+// 查重:前端在发起下载前问一次
+ipcMain.handle('download-history-check', async (event, arg) => {
+  const hit = findDownloadHistory(arg && arg.url)
+  return { ok: true, hit: hit || null }
+})
+// 删除单条 / 清空
+ipcMain.handle('download-history-clear', async (event, arg) => {
+  return clearDownloadHistory(arg && arg.url)
+})
+// 记录表上限(设置项改动后立即生效并裁剪)
+ipcMain.handle('download-history-set-limit', async (event, arg) => {
+  const n = Math.max(0, Number(arg && arg.limit) || 0)
+  setting.downloadHistoryLimit = n
+  loadDownloadHistory()
+  if (n > 0 && downloadHistory.length > n) downloadHistory.length = n
+  persistDownloadHistory()
+  return { ok: true, limit: n, total: downloadHistory.length }
+})
 
 ipcMain.handle('wnacg-download', async (event, arg) => {
   const { book } = arg || {}
@@ -7286,6 +7483,24 @@ ipcMain.handle('wnacg-download', async (event, arg) => {
       emitWnacgTask(dupId)
       runWnacgJob(dupId, { resume: true }).catch(() => {})
       return { ok: true, duplicate: true, resumed: true, task: publicWnacgTask(dupId) }
+    }
+
+    // ★ 下载记录表查重(用户要求 4):
+    //   内存里的 dupId 只覆盖「当前任务列表还活着」的情况;任务被清掉/重启程序后就忘了。
+    //   记录表(download-history.json)是持久的,这里查它。
+    //   两个开关:
+    //     · downloadHistoryWarnOnDup  → 命中就回 duplicateInHistory(前端弹提示,由用户决定)
+    //     · downloadHistorySkipDup    → 命中就直接不下载(frontend 不会弹,提示「已跳过」)
+    if (!(arg && arg.ignoreHistory)) {
+      const hitHist = findDownloadHistory(book && book.url)
+      if (hitHist) {
+        if (setting.downloadHistorySkipDup) {
+          return { ok: true, skippedDuplicate: true, history: hitHist }
+        }
+        if (setting.downloadHistoryWarnOnDup) {
+          return { ok: false, duplicateInHistory: true, history: hitHist }
+        }
+      }
     }
 
     // 建任务记录并立刻广播:右键点下去,右栏「下载记录」马上出现一条「下载中」

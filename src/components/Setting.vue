@@ -686,20 +686,15 @@
               @change="saveSetting"
             />
           </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.fillCover"
-              :active-text="$t('m.fillCover')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <!-- 二号样式:主界面只留「封面 + 标题」的密集网格(尺寸见下方第二套配置) -->
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.cardStyle2"
-              :active-text="$t('m.cardStyle2')"
-              @change="handleCoverStyleChange"
-            />
+          <!-- 卡片样式:一号(经典/填充封面)与二号(密集网格)与三号(条状列表)**互斥**,
+               用三选一的方式表达,不再是两个独立开关(以前两个都开时行为不确定)。
+               选中后在下方折叠展开对应的尺寸配置。 -->
+          <el-col :span="18" class="setting-switch">
+            <el-radio-group :model-value="activeCardStyle" size="small" @change="setActiveCardStyle">
+              <el-radio-button label="1">{{ $t('m.cardStyle1') }}</el-radio-button>
+              <el-radio-button label="2">{{ $t('m.cardStyle2') }}</el-radio-button>
+              <el-radio-button label="3">{{ $t('m.cardStyle3') }}</el-radio-button>
+            </el-radio-group>
           </el-col>
           <!-- 「合集」角标只出现在主界面的合集卡上 → 属于普通卡片开关(以前错放在合集界面分组里) -->
           <el-col :span="6" class="setting-switch">
@@ -710,7 +705,13 @@
             />
           </el-col>
         </el-row>
-        <!-- 尺寸配置:普通样式一套、二号样式一套。启用二号样式后这里自动切换成第二套 -->
+        <!-- 尺寸配置:每种样式各一套,按当前选中的样式折叠展开(用户要求:
+             「一号样式和二号样式折叠并列,启用后展开」)。 -->
+        <el-collapse v-model="cardStylePanelOpen" class="card-style-collapse">
+          <el-collapse-item name="style1">
+            <template #title>
+              <span class="card-style-collapse-title">{{ $t('m.cardStyle1') }}<template v-if="activeCardStyle === '1'"> · {{ $t('m.cardStyleActive') }}</template></span>
+            </template>
         <template v-if="!setting.cardStyle2">
           <!-- 封面大小(整体百分比,宽高等比)/ 封面宽度 / 封面高度 -->
           <el-row :gutter="8">
@@ -759,7 +760,12 @@
             </el-col>
           </el-row>
         </template>
-        <template v-else>
+          </el-collapse-item>
+          <el-collapse-item name="style2">
+            <template #title>
+              <span class="card-style-collapse-title">{{ $t('m.cardStyle2') }}<template v-if="activeCardStyle === '2'"> · {{ $t('m.cardStyleActive') }}</template></span>
+            </template>
+        <template v-if="setting.cardStyle2 || activeCardStyle === '2'">
           <!-- 二号样式的第二套尺寸(默认值取用户给的参考图:140×210,间距 6/8) -->
           <el-row :gutter="8">
             <el-col :span="12">
@@ -806,6 +812,34 @@
             </el-col>
           </el-row>
         </template>
+          </el-collapse-item>
+          <!-- 三号样式:条状列表(类似「下载记录」的每一行:小封面 + 标题 + 标签 + 进度) -->
+          <el-collapse-item name="style3">
+            <template #title>
+              <span class="card-style-collapse-title">{{ $t('m.cardStyle3') }}<template v-if="activeCardStyle === '3'"> · {{ $t('m.cardStyleActive') }}</template></span>
+            </template>
+            <template v-if="setting.cardStyle3">
+              <el-row :gutter="8">
+                <el-col :span="12">
+                  <div class="setting-line">
+                    <NameFormItem class="label-input" prependWidth="100px">
+                      <template #prepend><span class="setting-label">{{ $t('m.cardStyle3RowHeight') }}</span></template>
+                      <el-input-number v-model="setting.style3RowHeight" :min="56" :max="240" :step="4" :value-on-clear="96" controls-position="right" placeholder="96" @change="handleCoverStyleChange" />
+                    </NameFormItem>
+                  </div>
+                </el-col>
+                <el-col :span="12">
+                  <div class="setting-line">
+                    <NameFormItem class="label-input" prependWidth="100px">
+                      <template #prepend><span class="setting-label">{{ $t('m.cardStyle3CoverWidth') }}</span></template>
+                      <el-input-number v-model="setting.style3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" placeholder="64" @change="handleCoverStyleChange" />
+                    </NameFormItem>
+                  </div>
+                </el-col>
+              </el-row>
+            </template>
+          </el-collapse-item>
+        </el-collapse>
         <!-- 合集界面卡片:是「卡片样式」的分支(不是同级分区),只管打开合集后
              底部抽屉里那些卡片;主界面的合集卡跟普通卡片走同一套开关。
              带一个总开关:关掉时抽屉卡片完全跟随主界面样式,打开后才展开下面的设置。 -->
@@ -1640,6 +1674,37 @@
                     </div>
                   </div>
                   <div class="setting-hint">{{$t('m.wnacgDownloadRateHint')}}</div>
+
+                  <!-- 下载记录表(用户要求 4):记住已下载的地址,新下载时对比查重 -->
+                  <div class="download-subsection-title">{{$t('m.dlHistory')}}</div>
+                  <div class="setting-hint">{{$t('m.dlHistoryHint')}}</div>
+                  <div class="theme-row theme-row-wide">
+                    <span class="theme-label">{{$t('m.dlHistoryLimit')}}</span>
+                    <div class="theme-value">
+                      <el-input-number v-model="setting.downloadHistoryLimit" :min="0" :max="100000" :step="100" size="small" @change="onDownloadHistoryLimitChange" />
+                    </div>
+                  </div>
+                  <div class="setting-hint">{{$t('m.dlHistoryLimitHint')}}</div>
+                  <div class="theme-row theme-row-wide">
+                    <span class="theme-label">{{$t('m.dlHistoryWarnOnDup')}}</span>
+                    <div class="theme-value">
+                      <el-switch v-model="setting.downloadHistoryWarnOnDup" @change="saveSetting" />
+                    </div>
+                  </div>
+                  <div class="setting-hint">{{$t('m.dlHistoryWarnOnDupHint')}}</div>
+                  <div class="theme-row theme-row-wide">
+                    <span class="theme-label">{{$t('m.dlHistorySkipDup')}}</span>
+                    <div class="theme-value">
+                      <el-switch v-model="setting.downloadHistorySkipDup" @change="saveSetting" />
+                    </div>
+                  </div>
+                  <div class="setting-hint">{{$t('m.dlHistorySkipDupHint')}}</div>
+                  <div class="theme-row theme-row-wide">
+                    <span class="theme-label">{{$t('m.dlHistoryOpen')}}</span>
+                    <div class="theme-value">
+                      <el-button size="small" type="primary" plain @click="openDownloadHistory">{{$t('m.dlHistoryOpen')}}</el-button>
+                    </div>
+                  </div>
                 </div>
               </el-col>
             </el-row>
@@ -2128,6 +2193,29 @@
       <iframe v-if="wnacgLoginDialogVisible" class="wnacg-login-frame" src="/wnacg-proxy/users-login.html"></iframe>
     </div>
     <div class="toolbar-tip" style="margin-top: 8px">{{ $t('m.wnacgLoginDialogHint') }}</div>
+  </el-dialog>
+  <!-- 下载记录表(用户要求 4):列出已下载过的地址,可清空 -->
+  <el-dialog v-model="downloadHistoryVisible" :title="$t('m.dlHistory')" width="720px" append-to-body>
+    <div class="dl-history-head">
+      <span class="dl-history-total">{{ $t('m.dlHistoryTotal', { n: downloadHistoryList.length }) }}</span>
+      <el-button size="small" type="danger" plain :disabled="!downloadHistoryList.length" @click="clearDownloadHistoryAll">{{ $t('m.dlHistoryClearAll') }}</el-button>
+    </div>
+    <el-empty v-if="!downloadHistoryList.length" :description="$t('m.dlHistoryEmpty')" />
+    <el-table v-else :data="downloadHistoryList" size="small" height="420">
+      <el-table-column :label="$t('m.dlHistoryColumnTitle')" min-width="300">
+        <template #default="{ row }">
+          <span class="dl-history-title" :title="row.url">{{ row.title || row.url }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column :label="$t('m.dlHistoryColumnTime')" width="170">
+        <template #default="{ row }">{{ formatHistoryTime(row.createdAt) }}</template>
+      </el-table-column>
+      <el-table-column :label="$t('m.dlHistoryColumnAction')" width="90">
+        <template #default="{ row }">
+          <el-button size="small" text type="danger" @click="removeDownloadHistoryOne(row)">{{ $t('m.deleteFile') }}</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
   </el-dialog>
 </template>
 
@@ -3206,6 +3294,14 @@ onMounted(() => {
       if (res.style2CoverWidth === undefined) setting.value.style2CoverWidth = 140
       if (res.style2CardGapV === undefined) setting.value.style2CardGapV = 6
       if (res.style2CardGapH === undefined) setting.value.style2CardGapH = 8
+  // 三号样式(条状列表)的默认值
+  if (res.cardStyle3 === undefined) setting.value.cardStyle3 = false
+  if (res.style3RowHeight === undefined) setting.value.style3RowHeight = 96
+  if (res.style3CoverWidth === undefined) setting.value.style3CoverWidth = 64
+  // 下载记录表:默认保留 500 条,重复默认提示(不默认跳过 —— 跳过太激进)
+  if (res.downloadHistoryLimit === undefined) setting.value.downloadHistoryLimit = 500
+  if (res.downloadHistoryWarnOnDup === undefined) setting.value.downloadHistoryWarnOnDup = true
+  if (res.downloadHistorySkipDup === undefined) setting.value.downloadHistorySkipDup = false
       if (res.style2CoverHeight === undefined) setting.value.style2CoverHeight = 220
       // 上一版默认 210(封面不是 3:4):发布时间很短,统一挪到 220
       else if (Number(res.style2CoverHeight) === 210 && Number(res.style2CoverWidth) === 140) setting.value.style2CoverHeight = 220
@@ -5347,6 +5443,67 @@ const doEhPasswordLogin = async () => {
   } finally {
     ehPasswordLoginLoading.value = false
   }
+}
+// ---------- 卡片样式:一号(经典/填充封面) / 二号(密集网格) / 三号(条状列表) ----------
+// 三者**互斥**(用户要求)。以前 fillCover 和 cardStyle2 是两个独立开关,
+// 同时打开时行为取决于模板里的判断顺序,结果不确定 —— 现在统一成一个选择。
+const activeCardStyle = computed(() => {
+  const s = setting.value || {}
+  if (s.cardStyle3) return '3'
+  if (s.cardStyle2) return '2'
+  return '1'
+})
+// 折叠面板的展开项:只展开当前样式,切换时跟着换(「启用后展开」)
+const cardStylePanelOpen = ref(['style1'])
+// 打开设置面板时,默认展开「当前正在用的那种样式」
+watch(() => [setting.value && setting.value.cardStyle2, setting.value && setting.value.cardStyle3], () => {
+  cardStylePanelOpen.value = ['style' + activeCardStyle.value]
+}, { immediate: true })
+const setActiveCardStyle = (v) => {
+  const s = setting.value
+  const style = String(v || '1')
+  // 三个开关互斥设置:选中的那个为 true,其余强制 false
+  s.cardStyle2 = style === '2'
+  s.cardStyle3 = style === '3'
+  // 一号样式内部还有「填充封面」这个子形态,选一号时保留用户原来的 fillCover 偏好
+  if (style !== '1') s.fillCover = false
+  cardStylePanelOpen.value = ['style' + style]
+  handleCoverStyleChange()
+}
+// ---------- 下载记录表(用户要求 4) ----------
+const downloadHistoryVisible = ref(false)
+const downloadHistoryList = ref([])
+const formatHistoryTime = (ts) => {
+  const n = Number(ts) || 0
+  if (!n) return '-'
+  try { return new Date(n).toLocaleString('zh-CN') } catch (e) { return '-' }
+}
+const refreshDownloadHistory = async () => {
+  try {
+    const r = await ipcRenderer.invoke('download-history-list')
+    downloadHistoryList.value = (r && Array.isArray(r.list)) ? r.list : []
+  } catch (e) { downloadHistoryList.value = [] }
+}
+const openDownloadHistory = async () => {
+  downloadHistoryVisible.value = true
+  await refreshDownloadHistory()
+}
+const removeDownloadHistoryOne = async (row) => {
+  try { await ipcRenderer.invoke('download-history-clear', { url: row && row.url }) } catch (e) { /* 忽略 */ }
+  await refreshDownloadHistory()
+}
+const clearDownloadHistoryAll = async () => {
+  try {
+    await ElMessageBox.confirm(t('m.dlHistoryClearConfirm'), t('m.dlHistoryClearAll'), { type: 'warning' })
+  } catch (e) { return }
+  try { await ipcRenderer.invoke('download-history-clear', {}) } catch (e) { /* 忽略 */ }
+  await refreshDownloadHistory()
+  printMessage('success', t('m.dlHistoryCleared'))
+}
+// 上限改了立刻在主进程裁剪并落盘
+const onDownloadHistoryLimitChange = async () => {
+  saveSetting()
+  try { await ipcRenderer.invoke('download-history-set-limit', { limit: Number(setting.value.downloadHistoryLimit) || 0 }) } catch (e) { /* 忽略 */ }
 }
 const handlePixelThemeChange = () => {
   applyPixelTheme(setting.value)

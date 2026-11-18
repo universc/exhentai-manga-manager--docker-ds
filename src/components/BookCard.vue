@@ -1,5 +1,5 @@
 <template>
-  <div class="book-card" :class="{'fill-cover': fillCover}">
+  <div class="book-card" :class="{'fill-cover': fillCover, 'style-3': isStyle3}">
     <!-- 种子:这个画廊确实有种子时才出现。挂在**卡片框**的右下角(不在封面里),
          图标是用户给的藤蔓图,压在框角上像是藤蔓缠在框上;不显示数量 -->
     <button
@@ -10,8 +10,49 @@
     >
       <img :src="vineIcon" alt="torrent" />
     </button>
+    <!-- ================= 三号样式:条状列表 =================
+         参考「下载记录」的一行:左小封面 + 右信息(标题 / 标签 / 页数·评分)。
+         卡片本身变成横向条状,由主界面的网格列数自适应排布。 -->
+    <template v-if="isStyle3">
+      <div class="strip-cover" :title="getDisplayTitle(book)" @click="onCoverClickOnce" @contextmenu="onCoverContextMenu($event)">
+        <img v-if="coverSrc" class="strip-cover-img" :src="coverSrc" alt="" loading="lazy" decoding="async" @load="onCoverLoad" @error="onCoverError" />
+        <div v-else class="strip-cover-img strip-cover-empty"></div>
+        <div class="cover-loading" v-if="coverLoading"><el-icon class="is-loading" :size="18"><Loading /></el-icon></div>
+      </div>
+      <div class="strip-body">
+        <p class="strip-title" v-if="!viewSetting.hideTitle" :title="getDisplayTitle(book)"
+          @click="$emit('titleClick')" @contextmenu="onTitleContextMenu($event)"
+        >{{ getDisplayTitle(book) }}</p>
+        <div class="strip-tags">
+          <el-tag v-if="!viewSetting.hideNonTag" class="strip-tag is-cat" size="small" effect="plain"
+            :title="book.status"
+            @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
+          >{{ book.site === 'wnacg' ? (wnacgCategoryText(book) || book.status) : (galleryCategoryName(book.category, $t) || book.status) }}</el-tag>
+          <el-tag v-if="!viewSetting.hideNonTag && book.site === 'wnacg' && book.isSeries" class="strip-tag" size="small" type="warning" effect="plain">{{ $t('m.seriesBadge') }}</el-tag>
+          <el-tag
+            v-for="tag in filterCollectTag(book.tags).slice(0, 3)" :key="tag.id"
+            class="book-collect-tag strip-tag" size="small" effect="dark" :color="tag.color"
+            @click="onCollectTagClick(tag)"
+            @mousedown="startTagPress(tag)" @mouseup="cancelTagPress" @mouseleave="cancelTagPress"
+            @touchstart.passive="startTagPress(tag)" @touchend="cancelTagPress" @touchmove.passive="cancelTagPress"
+            @contextmenu="onCollectTagContextMenu($event, tag)"
+          >{{tag.letter}}:{{ tagDisplayName(setting, resolvedTranslation, resolveCatKey(tag.cat), tag.tag) }}</el-tag>
+        </div>
+        <div class="strip-meta">
+          <span v-if="!viewSetting.hidePageCount" class="strip-meta-item" @click="$emit('pageCountClick')">{{ book.pageCount }}P</span>
+          <span v-if="book.historyTime || !viewSetting.hideReadCount" class="strip-meta-item" @click="onReadCountClick">
+            {{ book.historyTime ? historyTimeText : (book.online ? languageBadgeText(book) : book.readCount) }}
+          </span>
+          <el-rate v-if="!viewSetting.hideRating && book.site !== 'wnacg'" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange" />
+          <el-button-group class="strip-read-group" v-if="!viewSetting.hideReadButton">
+            <el-button type="success" size="small" plain @click.stop="$emit('yueClick')">{{$t('m.re')}}</el-button>
+            <el-button type="success" size="small" plain @click.stop="$emit('duClick')">{{$t('m.ad')}}</el-button>
+          </el-button-group>
+        </div>
+      </div>
+    </template>
     <!-- ================= 经典卡片布局(默认;原版布局原样保留) ================= -->
-    <template v-if="!fillCover">
+    <template v-else-if="!fillCover">
     <p class="book-title" v-if="!viewSetting.hideTitle"
       @click="$emit('titleClick')"
       @contextmenu="onTitleContextMenu($event)"
@@ -108,7 +149,7 @@
         :type="book.status === 'non-tag' ? 'info' : book.status === 'tagged' ? 'success' : 'warning'"
         :title="book.status"
         @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
-      >{{ galleryCategoryName(book.category, $t) || book.status }}</el-tag>
+      >{{ book.site === 'wnacg' ? (wnacgCategoryText(book) || book.status) : (galleryCategoryName(book.category, $t) || book.status) }}</el-tag>
       <!-- 绅士漫画的合集:在「同人志」右边单独标一个「合集」(用户要求)。
            站点分类是 同人誌／漢化／合集,只看第一段会把这个信息丢掉。 -->
       <el-tag
@@ -164,7 +205,32 @@
         <span class="book-task-text">{{ bookTaskChar }}</span>
         <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
       </div>
+      <!-- ★ 二号样式(填充封面)的右上角角标区:
+           以前这里只有「阅读数」,用户要求把**收藏标签**也放到右上角,
+           而且不跟底部的页数/阅读按钮挤在一起。
+           现在右上角是:收藏标签(前几个,超出的折叠成 +N)+ 阅读数角标。
+           底部那一行仍然保留(页数/阅·读/分类),两边互不遮挡。 -->
       <div class="fill-top" v-if="fillTopShown || (!viewSetting.hideBookmarkButton && !viewerRole)">
+        <div class="fill-top-tags" v-if="fillTopTags.length">
+          <el-tag
+            v-for="tag in fillTopTags" :key="tag.id"
+            class="book-collect-tag fill-top-tag"
+            :color="tag.color"
+            size="small"
+            effect="dark"
+            :title="tag.letter + ':' + tagDisplayName(setting, resolvedTranslation, resolveCatKey(tag.cat), tag.tag)"
+            @click.stop="onCollectTagClick(tag)"
+            @mousedown="startTagPress(tag)"
+            @mouseup="cancelTagPress"
+            @mouseleave="cancelTagPress"
+            @touchstart.passive="startTagPress(tag)"
+            @touchend="cancelTagPress"
+            @touchmove.passive="cancelTagPress"
+            @contextmenu="onCollectTagContextMenu($event, tag)"
+          >{{tag.letter}}:{{ tagDisplayName(setting, resolvedTranslation, resolveCatKey(tag.cat), tag.tag) }}</el-tag>
+          <el-tag v-if="fillTopTagsOverflow > 0" class="fill-badge fill-top-tag" size="small" effect="plain"
+            :title="'+' + fillTopTagsOverflow">+{{ fillTopTagsOverflow }}</el-tag>
+        </div>
         <el-tag class="fill-badge" size="small" v-if="book.historyTime || !viewSetting.hideReadCount"
           @click="onReadCountClick"
         >{{ book.historyTime ? historyTimeText : (book.online ? languageBadgeText(book) : book.readCount) }}</el-tag>
@@ -213,7 +279,7 @@
             class="fill-badge"
             :title="book.status"
             @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
-          >{{ galleryCategoryName(book.category, $t) || book.status }}</el-tag>
+          >{{ book.site === 'wnacg' ? (wnacgCategoryText(book) || book.status) : (galleryCategoryName(book.category, $t) || book.status) }}</el-tag>
           <!-- 填充封面布局里的「合集」标记 -->
           <el-tag
             v-if="!viewSetting.hideNonTag && book.site === 'wnacg' && book.isSeries"
@@ -268,6 +334,16 @@ const LANG_ZH_CHAR = {
   TL: '菲律宾', MY: '缅甸', KM: '高棉', LO: '老挝', NE: '尼泊尔', SI: '僧伽罗', TA: '泰米尔',
   TE: '泰卢固', ML: '马拉雅拉姆', KN: '卡纳达', MR: '马拉地', GU: '古吉拉特', PA: '旁遮普'
 }
+// 绅士漫画的分类角标。
+// ★ 站点给的是完整分类(如「單行本／漢化」「同人誌／漢化／合集」),以前只取第一段
+//   (wnacgParentCategory 截成「单行本」) —— 用户报的就是这个:信息被截掉了。
+//   现在优先用 fullCategory;把站点的全角「／」统一显示成半角「/」(用户要求)。
+const wnacgCategoryText = (book) => {
+  if (!book || book.site !== 'wnacg') return ''
+  const raw = String(book.fullCategory || book.category || '').trim()
+  if (!raw) return ''
+  return raw.replace(/\s*／\s*/g, '/').replace(/\s*\/\s*/g, '/')
+}
 const languageBadgeText = (book) => {
   // 绅士漫画:汉化→汉,日语→日,English→英,其余分类没有语言,角标直接不显示
   if (book && book.site === 'wnacg') {
@@ -303,8 +379,12 @@ const viewSetting = computed(() => {
   }
 })
 
+// 三号样式(条状列表):设置里选了「三号」时整个卡片换成长条布局。
+// 它是三选一(与一/二号互斥),所以这里只要看 cardStyle3。
+const isStyle3 = computed(() => !!viewSetting.value.cardStyle3)
 // 填充封面开关(设置 → 显示选项「填充封面」):开 = 封面铺满卡片、文字/按钮透明浮层
-const fillCover = computed(() => !!viewSetting.value.fillCover)
+// ★ 三号样式下不参与判断(它有自己的布局),避免两套模板同时命中。
+const fillCover = computed(() => !isStyle3.value && !!viewSetting.value.fillCover)
 
 // 填充布局:顶部/底部浮层是否有内容(各元素显隐由独立开关控制,互相不联动)
 const fillTopShown = computed(() => {
@@ -318,6 +398,19 @@ const fillRow1Shown = computed(() => {
 const fillFooterShown = computed(() => {
   const s = viewSetting.value
   return fillRow1Shown.value || !s.hideRating
+})
+
+// 二号样式右上角的收藏标签(用户要求:右上角也要能看到标签)。
+// 卡片很窄,塞太多会盖住封面 —— 最多显示 3 个,其余折成 +N。
+const FILL_TOP_TAG_MAX = 3
+const fillTopTags = computed(() => {
+  if (!fillCover.value) return []
+  const all = filterCollectTag(props.book.tags)
+  return all.slice(0, FILL_TOP_TAG_MAX)
+})
+const fillTopTagsOverflow = computed(() => {
+  if (!fillCover.value) return 0
+  return Math.max(0, filterCollectTag(props.book.tags).length - FILL_TOP_TAG_MAX)
 })
 
 // 网页版(Docker)只读账户:隐藏收藏/评分(写操作)
@@ -895,11 +988,38 @@ onUnmounted(() => {
     padding: 6px 8px 18px
     background: linear-gradient(180deg, rgba(0, 0, 0, .55), rgba(0, 0, 0, 0))
     pointer-events: none
-    // 阅读数角标(左上,随开关显隐)
+    // 阅读数角标(随开关显隐)。
+    // 加了右上角标签区之后,这个角标也靠右排 —— 原来它贴在左上,
+    // 会跟「右上角标签」分处两端、中间的标题被夹得很窄。
     .fill-badge
       flex: 0 0 auto
       pointer-events: auto
       margin-top: 1px
+      order: 3
+    // 右上角的收藏标签区(用户要求:二号样式右上角也要能看到标签)。
+    // 卡片窄、标签长,所以最多 3 个 + 一个 +N;只占右上角,不挤压中间的标题。
+    .fill-top-tags
+      position: absolute
+      top: 6px
+      right: 8px
+      display: flex
+      flex-direction: column
+      align-items: flex-end
+      gap: 3px
+      max-width: 62%
+      pointer-events: auto
+      z-index: 3
+      .fill-top-tag
+        flex: 0 0 auto
+        max-width: 100%
+        font-size: calc(var(--emm-custom-font-size, 14px) - 4px)
+        line-height: 1.5
+        padding: 0 5px
+        height: 18px
+        overflow: hidden
+        text-overflow: ellipsis
+        white-space: nowrap
+        box-shadow: 0 1px 3px rgba(0, 0, 0, .5)
     .fill-title
       flex: 1 1 auto
       min-width: 0
@@ -1021,6 +1141,22 @@ onUnmounted(() => {
     opacity: 1
     transform: scale(1.08)
 
+
+// ---------- 三号样式:条状列表(设置 → 高级 → 卡片样式 → 三号样式) ----------
+// 版式参考「下载记录」每一行:左小封面 + 右信息(标题 / 标签 / 页数·评分 / 阅·读)。
+// 容器按「条宽自适应」排布:一行能放几张就放几张,条宽下限 320px。
+// 与一/二号互斥(由设置里的三选一保证),这里只负责容器层面的列数。
+.card-style-3
+  display: grid !important
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr))
+  align-content: start
+  gap: 8px
+  padding: 4px
+  // 三号样式下卡片自身已改成 flex 横排(见 BookCard 的 .book-card.style-3)
+  .book-card
+    width: 100%
+    margin: 0
+
 // ---------- 二号样式(设置 → 高级 → 卡片样式 → 二号样式) ----------
 // 版式照「合集界面 → 添加漫画」的选择弹窗:封面在上(圆角、铺满整格)、标题在下(左对齐、最多两行),
 // 没有卡片边框/底色/角标/按钮/评分/标签。点击仍走标题/封面的点击策略,标题显隐仍由「隐藏标题」控制。
@@ -1078,6 +1214,90 @@ onUnmounted(() => {
     // 填充封面:保留标题浮层,字号与上面一致
     &.fill-cover .fill-title
       font-size: calc(12px * var(--emm-card-zoom, 1))
+
+
+/* ================= 三号样式:条状列表 =================
+   参考「下载记录」的每一行:左小封面 + 右信息。
+   卡片整体变成横向条状,高度由 --style3-row-h 控制(设置里可调)。
+   主界面的网格用 auto-fill 排布,一行能放多张就放多张。 */
+.book-card.style-3 {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: stretch;
+  gap: 8px;
+  padding: 6px;
+  min-height: calc(var(--style3-row-h, 96px));
+  border-radius: 6px;
+  overflow: hidden;
+  /* 条状样式不需要原来的封面框/标题浮层 */
+  .book-cover-frame,
+  .book-title,
+  .book-card-footer,
+  .fill-top,
+  .fill-footer,
+  .book-task-mask,
+  .book-card-torrent { display: none !important; }
+
+  .strip-cover {
+    position: relative;
+    flex: 0 0 auto;
+    width: calc(var(--style3-cover-w, 64px));
+    height: 100%;
+    min-height: calc(var(--style3-row-h, 96px) - 12px);
+    border-radius: 4px;
+    overflow: hidden;
+    background: rgba(128, 128, 128, .12);
+    cursor: pointer;
+    .strip-cover-img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .strip-cover-empty { background: rgba(128, 128, 128, .18); }
+    .cover-loading {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--el-color-primary);
+    }
+  }
+
+  .strip-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+  }
+  .strip-title {
+    margin: 0;
+    font-size: calc(12px * var(--emm-card-zoom, 1));
+    line-height: 1.35;
+    font-weight: 600;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    &:hover { color: var(--el-color-primary); }
+  }
+  .strip-tags {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 3px;
+    overflow: hidden;
+    .strip-tag { flex: 0 0 auto; font-size: 11px; height: 18px; line-height: 18px; }
+  }
+  .strip-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    opacity: .8;
+    .strip-meta-item { cursor: pointer; flex: 0 0 auto; }
+    .strip-read-group { margin-left: auto; }
+  }
+}
 
 /* 绅士漫画的「合集」角标:紧跟在分类标签右边,用暖色区分 */
 .book-series-tag {

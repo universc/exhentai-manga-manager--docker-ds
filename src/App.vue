@@ -228,7 +228,16 @@
       @search="handleSearchString"
     />
     <el-row :gutter="20" class="book-card-area" v-if="!authBlocked">
-      <el-col :span="24" v-if="!manageView" class="book-card-list" :class="{ 'card-style-2': setting.cardStyle2 }" :style="{height: (setting.randomTagsEnabled || setting.showCollectTag) ? 'calc(100vh - 134px)' : 'calc(100vh - 96px)'}">
+      <!-- card-style-3 = 三号条状样式(用户要求,类似下载记录的一行):
+           卡片变横向长条,网格按条宽自适应排布。
+           --style3-row-h / --style3-cover-w 由设置里的两个数值驱动。 -->
+      <el-col :span="24" v-if="!manageView" class="book-card-list"
+        :class="{ 'card-style-2': setting.cardStyle2, 'card-style-3': setting.cardStyle3 }"
+        :style="{
+          height: (setting.randomTagsEnabled || setting.showCollectTag) ? 'calc(100vh - 134px)' : 'calc(100vh - 96px)',
+          '--style3-row-h': (Number(setting.style3RowHeight) || 96) + 'px',
+          '--style3-cover-w': (Number(setting.style3CoverWidth) || 64) + 'px'
+        }">
         <!-- 绅士漫画:站点自己的广告位,做成卡片样式放在列表最上面。
              pointer-events: none —— 只曝光、不产生点击(误点属于无效点击,扣的是站点的钱)。
              地址/尺寸/脚本都从站点页面里抠(extractWnacgAdSlot),不写死。 -->
@@ -4896,15 +4905,25 @@ export default defineComponent({
       try { localStorage.setItem('emmFolderTreePanelWidth', String(this.folderTreePanelWidth)) } catch (e) { /* 忽略 */ }
     },
     // ⑤ 一条命令把「已暂停 / 失败 / 等待中」的任务全部继续
+    // 「全部继续」:EH 与绅士漫画都要能被控制。
+    // 以前这里用 `t.source !== 'wnacg'` 把绅士漫画整个排除掉了 ——
+    // 它们的暂停/继续本身是支持的(wnacg-download-action 的 resume 分支),
+    // 只是这个批量按钮从没把它们算进去。
+    // ★ 通道要按 source 分开:绅士漫画的 id 丢给 eh-download-action 只会回 notFound。
     async resumeAllDownloads () {
       const list = (this.downloadRecords || []).filter(t =>
-        t.source !== 'wnacg' && ['paused', 'failed', 'waiting'].includes(t.status))
+        !t.movedTo && ['paused', 'failed', 'waiting'].includes(t.status))
       if (!list.length) return
+      let ok = 0
       for (const t of list) {
-        try { await ipcRenderer.invoke('eh-download-action', { id: t.id, action: 'resume' }) } catch (e) { /* 单条失败不影响其它 */ }
+        try {
+          const channel = t.source === 'wnacg' ? 'wnacg-download-action' : 'eh-download-action'
+          const r = await ipcRenderer.invoke(channel, { id: t.id, action: 'resume' })
+          if (r && r.ok) ok += 1
+        } catch (e) { /* 单条失败不影响其它 */ }
       }
       this.refreshDownloadRecords()
-      this.printMessage('success', this.$t('m.downloadResumedAll', { n: list.length }))
+      if (ok) this.printMessage('success', this.$t('m.downloadResumedAll', { n: ok }))
     },
     // ③ 点封面 → 在右栏里预览这个任务已经下好的页
     // 任务刚建好时还没解析出目录(dir 为空),这时也先进预览 —— 目录一到会自动补上(见 schedulePreviewRefresh)
@@ -5053,8 +5072,37 @@ export default defineComponent({
     // 详情会自动补拉上传者/语言/大小等信息)。addToHistory=false:只是看看,不算「读过」。
     openDownloadTaskDetail (task) {
       if (!task) return
-      // 绅士漫画 zip 没有可当本地书打开的目录,也不该当成 EH 在线画廊去解析
-      if (task.source === 'wnacg' && !task.dir) return
+      // ★ 绅士漫画任务:用户要求点标题也能打开详细信息。
+      //   它不能当 EH 在线画廊去解析(那是按 e-hentai 的 /g/<id>/<token> 解析的),
+      //   但记录里已经有 title / url / cover / tags / total —— 直接构造成 site='wnacg'
+      //   的书对象,详细界面就会走绅士漫画那一套渲染(分类/编号/收藏/页预览)。
+      if (task.source === 'wnacg') {
+        const isDirReady = task.status === 'done' && !!task.dir
+        this.$refs.BookDetailDialogRef.openBookDetail({
+          id: task.id,
+          // 下完了并且有目录 → 当本地书(能直接读);否则仍是在线条目(走站点解析)
+          online: !isDirReady,
+          site: 'wnacg',
+          type: isDirReady ? 'folder' : 'online',
+          filepath: isDirReady ? task.dir : (task.url || ''),
+          url: task.url || '',
+          title: task.title || '',
+          title_jpn: task.titleJpn || '',
+          title_cn: '',
+          category: task.category || '',
+          fullCategory: task.category || '',
+          coverPath: task.cover ? ehImageSrc(task.cover) : '',
+          pageCount: task.total || null,
+          filecount: task.total || null,
+          rating: Number(task.rating) || 0,
+          tags: (task.tags && typeof task.tags === 'object') ? task.tags : {},
+          status: 'tagged',
+          readCount: 0,
+          mark: false,
+          movedTo: task.movedTo || ''
+        }, false)
+        return
+      }
       // 已经下完(并且能定位到目录):当**本地书**打开 —— 不再跑去解析 EH 链接。
       // 这里给出的 filepath 就是下载目录里的漫画文件夹,详情/阅读/标签都按本地书走。
       if (task.status === 'done' && task.dir) {
@@ -5611,6 +5659,10 @@ export default defineComponent({
     downloadErrorText (err) {
       const e = String(err || '')
       if (!e) return ''
+      // ★ 绅士漫画的「下载配额用完」:站点对每个 IP 限制 24h 内 100 个文件。
+      //   以前这类页面里找不到 FILE_KEY,于是报成 noServer1,再被翻成
+      //   「请求被 EH 限速:等一会儿再点继续」—— 既不是 EH、也不是等一会儿就好。
+      if (e === 'wnacgQuota') return this.$t('m.wnacgQuotaExhausted')
       // 原图被 EH 挡下(需要 GP):任务停在等待中,等额度恢复点「继续」接着下
       if (e === 'gp') return this.$t('m.downloadErrGpShort')
       // 取页链接一条都没收到:EH 限速 / 网络不通 —— 先说清原因,别让用户以为画廊没了
@@ -5639,6 +5691,13 @@ export default defineComponent({
         noIds: 'm.errBadArgs',
         noTarget: 'm.errBadArgs',
         badUrl: 'm.errBadUrl',
+        // ---- 绅士漫画(Server1 / Server2)自己的错误码 ----
+        // 以前这些码没有映射,会原样透出去变成「下载失败: noServer1」这种英文串,
+        // 用户完全看不懂。现在逐个翻成具体原因。
+        noServer1: 'm.wnacgErrNoServer1',
+        noServer2: 'm.wnacgErrNoServer2',
+        noWorkerApi: 'm.wnacgErrNoWorkerApi',
+        noImages: 'm.wnacgErrNoImages',
         busy: 'm.errBusy',
         downloading: 'm.errBusy',
         canceled: 'm.errCanceled',
@@ -6011,12 +6070,36 @@ export default defineComponent({
     // 这里不做前端预判 —— App 的 this.setting 只在启动时加载一次,用户在设置里填完路径后
     // 并不会同步过来,前端预判会把「明明填好了」误报成没填。
     // 进度由主进程广播 eh-download-progress 直接进「下载记录」右栏,这里只处理最终结果。
-    async startWnacgDownload (book, mode) {
+    // opts.ignoreHistory = true 时跳过「下载记录表」查重(用户确认「仍要下载」后重入)
+    async startWnacgDownload (book, mode, opts = {}) {
       // ★「添加下载任务」的提示放在发起之前。
       //   为什么不能等返回值:主进程的 wnacg-download 会**等整本跑完才 resolve**
       //   (它是长作业),等它回来再说「已开始」等于任务都结束了才提示。
       //   这里先给一句「已加入队列」,后续进度/成败全部由右侧任务记录呈现。
       const modeLabel = { read: '阅读', server1: 'Server 1', server2: 'Server 2' }[mode] || mode
+      // ★ 先自动查一次下载记录表(明文提示放在真正发起之前,避免「提示已加入」之后才说重复)。
+      //   主进程也会查(那是权威),这里提前查只是为了不让「已加入队列」和「重复」提示互相打架。
+      if (!(opts && opts.ignoreHistory)) {
+        try {
+          const pre = await ipcRenderer.invoke('download-history-check', { url: book && book.url })
+          if (pre && pre.hit) {
+            let skip = false
+            if (this.setting.downloadHistorySkipDup) {
+              skip = true
+              this.printMessage('info', this.$t('m.dlHistorySkipTip', { title: this.getDisplayTitle(book) }))
+            } else if (this.setting.downloadHistoryWarnOnDup) {
+              try {
+                await ElMessageBox.confirm(
+                  this.$t('m.dlHistoryDupConfirm', { title: this.getDisplayTitle(book) }),
+                  this.$t('m.dlHistoryDupTitle'),
+                  { type: 'warning', confirmButtonText: this.$t('m.dlHistoryStillDownload'), cancelButtonText: this.$t('m.cancel') }
+                )
+              } catch (e) { skip = true }
+            }
+            if (skip) return
+          }
+        } catch (e) { /* 查重失败就当没重复,不阻断下载 */ }
+      }
       this.printMessage('success', this.$t('m.wnacgDlQueued', { mode: modeLabel }))
       try {
         const res = await ipcRenderer.invoke('wnacg-download', {
@@ -6032,7 +6115,8 @@ export default defineComponent({
             category: book.category || '',
             categoryName: book.categoryName || ''
           },
-          mode
+          mode,
+          ignoreHistory: !!(opts && opts.ignoreHistory)
         })
         // 广播可能因为 SSE 掉线漏掉一两条:最终状态用返回值再兜底写一次
         if (res && res.task) this.upsertDownloadRecord(res.task)

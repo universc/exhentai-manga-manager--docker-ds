@@ -215,6 +215,10 @@ const parseRow = (row, host) => {
   const pageMatch = /(\d[\d,]*)\s*(?:張|张)圖片/.exec(infoText)
   const dateMatch = /(\d{4}-\d{2}-\d{2})/.exec(infoText)
   const title = (titleEl ? titleEl.textContent : (img ? img.getAttribute('alt') : '')) || ''
+  // 站点角标原文(如「單行本／漢化」)。category 只取主分类用于筛选/搜索,
+  // fullCategory 保留完整写法给卡片显示 —— 以前卡片直接显示 category,
+  // 于是「单行本／汉化」被截成「单行本」(用户报的问题 6)。
+  const badgeFull = (cate == null ? '' : String(WNACG_CATE_BADGE[cate] || '')).trim()
   return {
     id: 'wnacg:' + aid,
     aid,
@@ -224,7 +228,8 @@ const parseRow = (row, host) => {
     pageCount: pageMatch ? Number(pageMatch[1].replace(/,/g, '')) : null,
     posted: dateMatch ? dateMatch[1] : '',
     categoryId: cate,
-    category: cate == null ? '' : wnacgParentCategory(WNACG_CATE_BADGE[cate] || ''),
+    category: badgeFull ? wnacgParentCategory(badgeFull) : '',
+    fullCategory: badgeFull,
     rank,
     favCount: favMatch ? Number(favMatch[1].replace(/,/g, '')) : null
   }
@@ -883,6 +888,8 @@ export const wnacgToBook = (item) => {
     title_jpn: '',
     title_cn: '',
     category: item.category || '',
+    // 完整分类(「单行本/汉化」):卡片显示用;详情页会再合并一次站点原文
+    fullCategory: item.fullCategory || item.category || '',
     coverPath: wnacgImageSrc(item.cover, item.url),
     pageCount: pages,
     filecount: pages,

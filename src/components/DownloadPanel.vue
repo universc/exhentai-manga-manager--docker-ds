@@ -248,8 +248,12 @@ const onCoverClick = (task) => {
   if (task && task.source === 'wnacg' && !task.dir) return
   emit('open-preview', task)
 }
+// 点标题 → 打开这本的详细信息。
+// ★ 绅士漫画任务以前在这里直接 return(什么都不做),用户要求也要能点开详情。
+//   它没有 EH 那样的画廊 URL 可解析,但记录里带着 url / title / coverPath / tags,
+//   足够喂给详细界面(site='wnacg' 会自动走绅士漫画那套渲染)。
 const onTitleClick = (task) => {
-  if (task && task.source === 'wnacg') return
+  if (!task) return
   emit('open-task-detail', task)
 }
 </script>
