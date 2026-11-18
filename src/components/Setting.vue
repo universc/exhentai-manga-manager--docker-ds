@@ -1817,40 +1817,66 @@
                 {{ ehLoggedIn ? $t('m.ehLoggedInAs', { name: setting.ehOnlineUser || setting.ipb_member_id || '-' }) : $t('m.ehNotLoggedIn') }}
               </el-tag>
             </div>
-            <!-- ① 账号密码登录:纯 HTTP,桌面版与网页版(Docker)都能用 -->
-            <div class="setting-line eh-login-bar">
-              <el-input v-model="ehUsername" size="small" class="eh-login-input" :placeholder="$t('m.ehAccount')" clearable />
-              <el-input v-model="ehPassword" size="small" class="eh-login-input" type="password" show-password :placeholder="$t('m.ehPassword')" @keyup.enter="doEhLogin" />
-              <el-button type="primary" :loading="ehLoginLoading || ehPasswordLoginLoading" @click="doEhLogin">{{$t('m.ehLogin')}}</el-button>
+            <!-- 三种登录方式 —— 与 JHenTai 的 LoginPage 三个 Tab 一一对应
+                 (passwordTab / cookieTab / webTab,见 login_page.dart:43-45) -->
+            <div class="setting-line">
+              <el-tabs v-model="ehLoginTab" class="eh-login-tabs">
+                <!-- ① 密码登录:纯 HTTP,不经过浏览器 -->
+                <el-tab-pane :label="$t('m.ehPasswordTab')" name="password">
+                  <div class="eh-tab-body">
+                    <el-input v-model="ehUsername" size="small" class="eh-tab-input" :placeholder="$t('m.ehAccount')" clearable />
+                    <el-input v-model="ehPassword" size="small" class="eh-tab-input" type="password" show-password
+                      :placeholder="$t('m.ehPassword')" @keyup.enter="doEhPasswordLogin" />
+                    <el-button type="primary" size="small" :loading="ehPasswordLoginLoading" @click="doEhPasswordLogin">{{$t('m.ehLogin')}}</el-button>
+                  </div>
+                  <div class="setting-line toolbar-tip">{{ $t('m.ehPasswordTabHint') }}</div>
+                </el-tab-pane>
+
+                <!-- ② Cookie 登录:三格 + 验证方式(normal / webview / skip) -->
+                <el-tab-pane :label="$t('m.ehCookieTab')" name="cookie">
+                  <div class="eh-tab-body eh-tab-col">
+                    <el-input v-model="setting.ipb_member_id" size="small" @change="onEhCookieChange">
+                      <template #prepend><span class="setting-label">ipb_member_id</span></template>
+                    </el-input>
+                    <el-input v-model="setting.ipb_pass_hash" size="small" @change="onEhCookieChange">
+                      <template #prepend><span class="setting-label">ipb_pass_hash</span></template>
+                    </el-input>
+                    <el-input v-model="setting.igneous" size="small" @change="onEhCookieChange">
+                      <template #prepend><span class="setting-label">igneous</span></template>
+                      <template #append>
+                        <el-button size="small" @click="pasteEhCookie">{{$t('m.ehCookieParse')}}</el-button>
+                      </template>
+                    </el-input>
+                    <div class="eh-verify-radios">
+                      <el-radio-group v-model="ehCookieVerify" size="small">
+                        <el-radio label="normal">{{ $t('m.ehCookieVerifyNormal') }}</el-radio>
+                        <el-radio label="webview">{{ $t('m.ehCookieVerifyWebview') }}</el-radio>
+                        <el-radio label="skip">{{ $t('m.ehCookieVerifySkip') }}</el-radio>
+                      </el-radio-group>
+                    </div>
+                    <div class="eh-tab-actions">
+                      <el-button type="primary" size="small" :loading="ehCookieLoginLoading" @click="doEhCookieLogin">{{$t('m.ehLogin')}}</el-button>
+                      <el-button size="small" @click="pasteEhCookie">{{$t('m.ehPasteCookie')}}</el-button>
+                      <el-button size="small" plain @click="clearEhCookie">{{$t('m.ehClearCookie')}}</el-button>
+                    </div>
+                  </div>
+                  <div class="setting-line toolbar-tip">{{ $t('m.ehCookieTabHint') }}</div>
+                </el-tab-pane>
+
+                <!-- ③ Web 登录:真浏览器窗口,登录完成后从 document.cookie 取回 -->
+                <el-tab-pane :label="$t('m.ehWebTab')" name="web">
+                  <div class="eh-tab-body">
+                    <el-button type="primary" size="small" :loading="ehLoginLoading" :disabled="!isDesktopClient" @click="doEhWebLogin">{{$t('m.ehWebLoginOpen')}}</el-button>
+                    <el-button size="small" @click="pasteEhCookie">{{$t('m.ehPasteCookie')}}</el-button>
+                  </div>
+                  <div class="setting-line toolbar-tip">{{ isDesktopClient ? $t('m.ehWebTabHint') : $t('m.ehWebLoginDisabled') }}</div>
+                </el-tab-pane>
+              </el-tabs>
             </div>
-            <!-- ② 其余登录方式:登录窗口(桌面)/ 粘贴或手填 Cookie / 退出 -->
             <div class="setting-line">
               <el-button v-if="ehLoggedIn" size="small" plain @click="doEhLogout">{{$t('m.ehLogout')}}</el-button>
-              <el-button size="small" @click="pasteEhCookie">{{$t('m.ehPasteCookie')}}</el-button>
-              <el-button size="small" plain @click="clearEhCookie">{{$t('m.ehClearCookie')}}</el-button>
             </div>
-            <div class="setting-line toolbar-tip">{{ isDesktopClient ? $t('m.ehLoginHint') : $t('m.ehLoginHintWeb') }}</div>
             <div class="setting-hint" style="margin-bottom:8px">{{$t('m.ehSettingHint')}}</div>
-            <div class="setting-line">
-              <el-input v-model="setting.igneous" @change="onEhCookieChange">
-                <template #prepend><span class="setting-label">igneous</span></template>
-              </el-input>
-            </div>
-            <div class="setting-line">
-              <el-input v-model="setting.ipb_pass_hash" @change="onEhCookieChange">
-                <template #prepend><span class="setting-label">ipb_pass_hash</span></template>
-              </el-input>
-            </div>
-            <div class="setting-line">
-              <el-input v-model="setting.ipb_member_id" @change="onEhCookieChange">
-                <template #prepend><span class="setting-label">ipb_member_id</span></template>
-              </el-input>
-            </div>
-            <div class="setting-line">
-              <el-input v-model="setting.star" @change="onEhCookieChange">
-                <template #prepend><span class="setting-label">star</span></template>
-              </el-input>
-            </div>
             <!-- EH 在线漫画库:登录后书架多出一个「EH在线」,切过去直接浏览 EH 上的漫画 -->
             <div class="advanced-section-title" style="margin-top: 18px;">{{$t('m.ehOnline')}}</div>
             <div class="setting-line">
@@ -5196,47 +5222,60 @@ const applyEhLoginResult = (res) => {
   return false
 }
 
-// 「登录」按钮 —— 顺序照 JHenTai 的 LoginPageLogic.handleLogin:
-//   ① 先走**纯 HTTP 账号密码登录**(ehLogin.passwordLogin):
-//     它就是 POST forums.e-hentai.org/index.php?act=Login&CODE=01,不经过浏览器。
-//      成功 → 直接拿到 ipb_member_id / ipb_pass_hash,秒完成。
-//   ② 只有 HTTP 被 Cloudflare 挡下(error === 'cloudflare')时,才开登录窗口让用户手动过验证。
-//      窗口那条路现在也修好了(不继承代理 / UA 伪装 / 不再反复跳转),但它依赖挑战能过,
-//      所以只能当兜底,不能当唯一入口。
-//   ③ 两条都不行 → 明确提示用户用「粘贴 Cookie」(设置里那三个输入框 / 粘贴按钮,
-//      与 JHenTai 的 Cookie 标签页等价)。
-const doEhLogin = async () => {
-  if (ehLoginLoading.value || ehPasswordLoginLoading.value) return
-  const user = String(ehUsername.value || '').trim()
-  const pass = String(ehPassword.value || '')
-  // 没填账号密码:直接走窗口(用户可能是想在窗口里手动登录)
-  if (!user || !pass) {
-    if (!isDesktopClient.value) { printMessage('warning', t('m.ehLoginInputRequired')); return }
-    return openEhLoginWindow()
-  }
-  // ① 纯 HTTP 优先
-  ehPasswordLoginLoading.value = true
-  let httpRes = null
+// ============================================================================
+// EH 三种登录 —— 与 JHenTai 的 LoginPageLogic 一一对应
+//   enum LoginType { password, cookie, web }  (login_page_state.dart:4)
+// 每个 Tab 自己一个入口,不再「一个按钮猜用户想用哪种」。
+// ============================================================================
+const ehLoginTab = ref('password')
+// Cookie 登录的「验证方式」,对应 JHenTai 的 CookieVerificationType
+//   normal  → _handleCookieLoginNormal(请求首页 + showuser 验证)
+//   webview → _handleCookieLoginViaWebview(开窗口验证)
+//   skip    → _handleCookieLoginWithoutVerification(直接存)
+const ehCookieVerify = ref('normal')
+const ehCookieLoginLoading = ref(false)
+
+// ② Cookie 登录
+const doEhCookieLogin = async () => {
+  if (ehCookieLoginLoading.value) return
+  const id = String(setting.value.ipb_member_id || '').trim()
+  const hash = String(setting.value.ipb_pass_hash || '').trim()
+  if (!id || !hash) { printMessage('warning', t('m.ehCookieIsEmpty')); return }
+  // webview 验证 = 走 ③ 的窗口(注入 cookie 后确认登录态)
+  if (ehCookieVerify.value === 'webview') return doEhWebLogin()
+  ehCookieLoginLoading.value = true
   try {
-    httpRes = await ipcRenderer.invoke('eh-password-login', { username: user, password: pass })
+    const res = await ipcRenderer.invoke('eh-cookie-login', {
+      ipbMemberId: id,
+      ipbPassHash: hash,
+      igneous: setting.value.igneous || '',
+      star: setting.value.star || '',
+      // skip = 不验证
+      verify: ehCookieVerify.value !== 'skip'
+    })
+    // invalidCookie 用专门文案(不是笼统的「登录失败」)
+    if (res && res.ok === false && res.error === 'invalidCookie') {
+      printMessage('error', t('m.ehInvalidCookie'))
+      return
+    }
+    applyEhLoginResult(res)
   } catch (e) {
-    httpRes = { ok: false, error: 'network', detail: String((e && e.message) || e) }
+    printMessage('error', t('m.ehLoginFailed', { msg: String((e && e.message) || e) }))
   } finally {
-    ehPasswordLoginLoading.value = false
-  }
-  if (applyEhLoginResult(httpRes)) return
-  // ② 只有被 Cloudflare 拦下来才值得开窗口;密码错之类开窗口也没用
-  const err = (httpRes && httpRes.error) || ''
-  if (isDesktopClient.value && (err === 'cloudflare' || err === 'network' || err === 'timeout')) {
-    return openEhLoginWindow()
+    ehCookieLoginLoading.value = false
   }
 }
-// 开登录窗口(桌面端兜底路径)
-const openEhLoginWindow = async () => {
+
+// ③ Web 登录:开真浏览器窗口,登录后从 document.cookie 取回
+const doEhWebLogin = async () => {
   if (ehLoginLoading.value) return
+  if (!isDesktopClient.value) { printMessage('warning', t('m.ehWebLoginDisabled')); return }
   ehLoginLoading.value = true
   try {
-    applyEhLoginResult(await ipcRenderer.invoke('eh-login', { username: ehUsername.value, password: ehPassword.value }))
+    applyEhLoginResult(await ipcRenderer.invoke('eh-login', {
+      username: ehUsername.value,
+      password: ehPassword.value
+    }))
   } catch (e) {
     printMessage('error', t('m.ehLoginFailed', { msg: String((e && e.message) || e) }))
   } finally {
@@ -5396,6 +5435,16 @@ defineExpose({
 /* EH 设置:登录区(账号 / 密码 / 登录按钮排一行) */
 .eh-login-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .eh-login-input { width: 170px; }
+/* EH 三种登录方式的标签页(对齐 JHenTai 的 passwordTab / cookieTab / webTab) */
+.eh-login-tabs { width: 100%; }
+.eh-login-tabs .el-tabs__header { margin-bottom: 10px; }
+.eh-tab-body { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.eh-tab-body.eh-tab-col { flex-direction: column; align-items: stretch; }
+.eh-tab-body.eh-tab-col .el-input { width: 100%; }
+.eh-tab-input { width: 180px; }
+.eh-tab-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.eh-verify-radios { margin-top: 4px; }
+.eh-verify-radios .el-radio { margin-right: 14px; }
 
 /* 本地模型行(设置 → 功能 → 本地模型) */
 .local-model-options { margin: 0 0 10px 0; padding: 6px 10px; border-radius: 6px; background: rgba(127, 127, 127, 0.07); }

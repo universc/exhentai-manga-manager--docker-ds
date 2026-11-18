@@ -4581,6 +4581,20 @@ const ehCookieMapOf = async (ses) => {
 }
 
 // 账号密码登录:桌面版与网页版都用这一条(不需要 Electron,所以放在 WEB_MODE 判断之外)
+// ============================================================================
+// EH 登录 —— 三种方式,与 JHenTai-8.0.16-334 的 LoginPageLogic 一一对应
+//   (lib/src/pages/setting/account/login/login_page_state.dart: enum LoginType { password, cookie, web })
+//
+//   ① password : eh-password-login  —— 纯 HTTP POST 论坛登录表单,不经过浏览器
+//   ② cookie   : eh-cookie-login    —— 手填/粘贴 Cookie 后验证(normal / skip 两种)
+//   ③ web      : eh-login           —— 真浏览器窗口登录,读 document.cookie
+//
+// JHenTai 的 Cookie 登录有三个「验证方式」子模式:
+//   normal  → _handleCookieLoginNormal     : 请求首页拿 sk,再 requestForum 验证身份
+//   webview → _handleCookieLoginViaWebview : 开窗口注入 cookie 验证(仅验证,不填表)
+//   skip    → _handleCookieLoginWithoutVerification : 直接存,不验证
+// 这里 normal / skip 走 IPC,webview 复用 ③ 的窗口逻辑。
+// ============================================================================
 ipcMain.handle('eh-password-login', async (event, arg) => {
   const { username, password } = arg || {}
   try {
@@ -4590,6 +4604,54 @@ ipcMain.handle('eh-password-login', async (event, arg) => {
     return { ok: true, cookies: res.cookies, user }
   } catch (e) {
     console.error(e)
+    return { ok: false, error: 'network', detail: String((e && e.message) || e) }
+  }
+})
+
+// ② Cookie 登录(对应 JHenTai 的 _handleCookieLoginNormal / _handleCookieLoginWithoutVerification)
+//   verify=true  : normal —— 先请求首页(拿 sk / 让站点建立会话),再拉 showuser 验证;
+//                  验证不过就明确回 invalidCookie,而不是假装成功。
+//   verify=false : skip   —— 直接落库,不做任何网络请求。
+// igneous 只接受非 ''/null/mystery/deleted 的值(JHenTai 同口径),否则按「没有 EX 权限」处理。
+ipcMain.handle('eh-cookie-login', async (event, arg) => {
+  const ipbMemberId = String((arg && arg.ipbMemberId) || '').trim()
+  const ipbPassHash = String((arg && arg.ipbPassHash) || '').trim()
+  const rawIgneous = String((arg && arg.igneous) || '').trim()
+  const verify = !(arg && arg.verify === false)
+  if (!ipbMemberId || !ipbPassHash) return { ok: false, error: 'emptyInput' }
+  // JHenTai: igneous 为空 / null / mystery / deleted 都算「没有」
+  const igneousUsable = !!rawIgneous && rawIgneous !== 'null' && rawIgneous !== 'mystery' && rawIgneous !== 'deleted'
+  const cookies = {
+    ipb_member_id: ipbMemberId,
+    ipb_pass_hash: ipbPassHash,
+    igneous: igneousUsable ? rawIgneous : '',
+    star: String((arg && arg.star) || '').trim()
+  }
+  if (!verify) {
+    // skip:不验证,直接把用户填的当登录态
+    return { ok: true, cookies, user: '', useExSite: igneousUsable, skipped: true }
+  }
+  try {
+    // 先请求首页:JHenTai 的 _handleCookieLoginNormal 也是先 requestHomePage() 拿 sk
+    try {
+      await ehLogin.request(ehLogin.EH_BASES.ehome, { cookie: ehLogin.cookieHeaderOf(cookies), proxy: setting.proxy, timeout: 20000, retries: 1 })
+    } catch (e) { /* 首页失败不致命:下面 showuser 才是判定依据 */ }
+    const user = await ehLogin.fetchUserName(ipbMemberId, cookies, { proxy: setting.proxy })
+    if (!user) {
+      // showuser 拿不到用户名 = cookie 无效(站点会把游客也渲染出来,所以空值就是失败)
+      return { ok: false, error: 'invalidCookie', detail: 'showuser empty' }
+    }
+    // 如果没填 igneous,顺手让站点下发一次(与 fetchExtraCookies 同口径)
+    if (!igneousUsable) {
+      try {
+        const extra = await ehLogin.fetchExtraCookies(cookies, { proxy: setting.proxy })
+        for (const k of ['igneous', 'star']) {
+          if (extra && extra[k] && extra[k] !== 'mystery' && extra[k] !== 'deleted') cookies[k] = extra[k]
+        }
+      } catch (e) { /* 取不到 igneous 不影响 EH 侧登录 */ }
+    }
+    return { ok: true, cookies, user, useExSite: !!cookies.igneous }
+  } catch (e) {
     return { ok: false, error: 'network', detail: String((e && e.message) || e) }
   }
 })
