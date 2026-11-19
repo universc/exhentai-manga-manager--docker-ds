@@ -22,6 +22,57 @@ const newLibraryId = () => 'lib-' + crypto.randomBytes(5).toString('hex')
 
 const isWindowsPath = (p) => /^[A-Za-z]:[\\/]/.test(String(p || ''))
 
+// ============================================================================
+// 映射盘 → UNC 自动解析(解决「Y 盘在资源管理器里好好的,程序却说不可达」)
+//
+// 背景:Windows 的网络映射盘是**按登录会话/令牌**存在的。
+//   · 资源管理器(explorer.exe)在用户普通令牌下建立 Y: → \\NAS\01
+//   · 如果本程序以**管理员权限**启动(UAC 提权),它拿到的是另一份令牌,
+//     **看不到**普通令牌下建的映射盘 —— Y:\ 对它不存在。
+//     除非把 HKCU/HKLM 的 EnableLinkedConnections 设为 1(需要重启,且是全局策略)。
+//   · 更微妙的是:即使不提权,映射盘也可能因为「会话隔离」(RDP/多用户/服务)
+//     而在某些进程里不可见。
+//
+// 做法:探测路径的盘符;若盘符在**本进程**里不可用,就去注册表
+//   HKCU\Network\<盘符> 读出它的 RemotePath(UNC),把路径前缀换成 UNC 再试。
+//   这样无论程序是否提权、映射盘是否可见,只要 NAS 本身能连通就能工作。
+//   ⚠ 只做「盘符 → UNC」的等价替换,不改变用户保存的原始路径(配置里仍是 Y:…),
+//     避免把配置悄悄改成 \\192.168.1.10\… 导致换机器/换 IP 后失效。
+// ============================================================================
+const mappedDriveCache = new Map()
+const readMappedDriveUnc = (driveLetter) => {
+  const d = String(driveLetter || '').replace(/:$/, '').toUpperCase()
+  if (!d) return ''
+  if (mappedDriveCache.has(d)) return mappedDriveCache.get(d)
+  let unc = ''
+  try {
+    // 先看当前用户映射(HKCU\Network\Y)
+    const key = 'HKCU\\Network\\' + d
+    const out = require('child_process').execSync(
+      'reg query "' + key + '" /v RemotePath',
+      { encoding: 'utf8', windowsHide: true, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }
+    )
+    const m = /RemotePath\s+REG_SZ\s+(.+)/i.exec(out || '')
+    if (m) unc = String(m[1] || '').trim()
+  } catch (e) { /* 没有这个映射 */ }
+  mappedDriveCache.set(d, unc)
+  return unc
+}
+
+// 把 "Y:\a\b" 变成 "\\NAS\share\a\b"。盘符可用时原样返回(零开销)。
+const resolveMappedDrivePath = (p) => {
+  const s = String(p || '')
+  const m = /^([A-Za-z]):([\\/].*)?$/.exec(s)
+  if (!m) return s
+  const drive = m[1].toUpperCase()
+  // 盘符在**本进程**里就在:不折腾
+  try { if (fs.existsSync(drive + ':\\')) return s } catch (e) { /* 继续尝试 UNC */ }
+  const unc = readMappedDriveUnc(drive)
+  if (!unc) return s
+  const rest = String(m[2] || '').replace(/^[\\/]+/, '')
+  return unc.replace(/[\\/]+$/, '') + '\\' + rest
+}
+
 // 路径去重用的归一化 key(忽略结尾分隔符与大小写)
 const normalizePathKey = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase()
 
@@ -195,7 +246,11 @@ const ensureLibraries = (setting, options = {}) => {
 // 某个库的运行时路径集合(库数据目录 / 缩略图缓存 / 扫描快照 / 库数据库)。
 // 启动与「切换活动库」共用同一套计算,保证两处不会算出不同路径。
 const libraryRuntimePaths = (storePath, lib) => {
-  const dataDir = lib ? libraryDataDir(storePath, lib) : storePath
+  // ★ 库数据目录若在「本进程不可见的映射盘」上(Y: 这种网络盘,程序提权时看不到),
+  //   这里就换成 UNC 形态 —— 否则后续 sequelize/fs 全部会 ENOENT。
+  //   盘符可见时 toAccessiblePath 原样返回,零额外开销。
+  const rawDataDir = lib ? libraryDataDir(storePath, lib) : storePath
+  const dataDir = toAccessiblePath(rawDataDir)
   return {
     dataDir,
     viewcacheDir: path.join(dataDir, 'viewcache'),
@@ -259,10 +314,29 @@ const isLibraryActive = (lib, isWeb) => !!(
 
 // 库根 / 库数据目录是否「现在就能用」:网络盘未挂载时 existsSync 返回 false(不会抛)。
 // 注意只判存在,不判可写 —— 可写性留给真正落盘时兜底,避免启动时对慢速网络盘做两次探测。
+//
+// ★ 先试原路径;不可达时把映射盘换成 UNC 再试一次(见 resolveMappedDrivePath)。
+//   这样「程序提权、映射盘在普通令牌下」的情况就不会被误判成「磁盘未挂载」。
 const isPathReachable = (p) => {
   const s = String(p || '').trim()
   if (!s) return false
-  try { return fs.existsSync(s) } catch (e) { return false }
+  try { if (fs.existsSync(s)) return true } catch (e) { /* 落到 UNC 重试 */ }
+  try {
+    const alt = resolveMappedDrivePath(s)
+    if (alt && alt !== s) return fs.existsSync(alt)
+  } catch (e) { /* 就当不可达 */ }
+  return false
+}
+
+// 对外提供「把这个路径换算成当前进程真正能访问的形态」:
+// 盘符可见 → 原样;盘符不可见但能查到 UNC → 返回 UNC。
+// index.js 在真正做 IO(建库/读写数据库)之前调它。
+const toAccessiblePath = (p) => {
+  const s = String(p || '').trim()
+  if (!s) return s
+  try { if (fs.existsSync(s)) return s } catch (e) { /* 继续 */ }
+  const alt = resolveMappedDrivePath(s)
+  return alt || s
 }
 
 // 属于「某个库」的数据文件名(第二十八轮起从「数据存放目录」根部搬进库数据目录)
@@ -333,6 +407,9 @@ module.exports = {
   libraryRuntimePaths,
   isLibraryActive,
   isPathReachable,
+  // 映射盘 → UNC:盘符在本进程不可见时(提权/会话隔离),换成 UNC 继续用
+  resolveMappedDrivePath,
+  toAccessiblePath,
   shouldMoveLibraryData,
   ensureLibraries,
   migrateLibraryData
