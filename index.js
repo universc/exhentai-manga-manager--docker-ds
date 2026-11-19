@@ -578,6 +578,9 @@ if (setting.metadataPath) {
   metadataSqliteFile = path.join(STORE_PATH, './metadata.sqlite')
 }
 let Metadata = prepareMetadataModel(metadataSqliteFile)
+// 元数据库初始化失败的原因(数据目录在离线盘上时会出现)。
+// 留给前端/日志排查用,不再让它变成 unhandledRejection。
+let metadataInitError = ''
 // 重建 Metadata 模型:必须先关掉旧连接 —— 同一个 metadata.sqlite 被两个连接打开,
 // SQLite 会报 SQLITE_IOERR: disk I/O error,并连锁成
 // "Transaction cannot be rolled back because it has been finished with state: commit"。
@@ -737,13 +740,25 @@ const switchActiveLibraryRuntime = async (prevLibrary, prevDataDir, options = {}
   return true
 }
 ;(async () => {
-  // 先建表再补列:全新数据库(无表)时 ALTER 会失败
-  await ensureMangaSchema(Manga)
-  await Metadata.sync()
-  await ensureColumns(Metadata.sequelize, 'Metadata', {
-    title_cn: 'TEXT',
-    description: 'TEXT'
-  })
+  // 先建表再补列:全新数据库(无表)时 ALTER 会失败。
+  // ★ 必须整段兜住:metadata.sqlite 的用户配置目录(metadataPath)如果在**离线盘**上
+  //   (例如被设到 Y:\01-漫画\S\数据存放 这种库盘路径),Y 盘不在时 sequelize 的
+  //   getConnection 会在 mkdir 阶段抛 ENOENT。以前这段是裸 IIFE,
+  //   异常直接冒成 unhandledRejection 写进崩溃日志(crash-*.log:ENOENT mkdir)。
+  //   现在降级成一条 console 提示,程序继续跑(元数据功能暂不可用,但书架/阅读不受影响)。
+  try {
+    await ensureMangaSchema(Manga)
+    await Metadata.sync()
+    await ensureColumns(Metadata.sequelize, 'Metadata', {
+      title_cn: 'TEXT',
+      description: 'TEXT'
+    })
+  } catch (e) {
+    const msg = String((e && e.message) || e)
+    console.error('[meta] 元数据库初始化失败(数据目录可能不可达):' + msg)
+    // 记一笔给前端:设置界面可以把「元数据目录」标红,而不是让用户对着空列表猜
+    metadataInitError = msg
+  }
 })()
 
 const logFile = fs.createWriteStream(path.join(STORE_PATH, 'log.txt'), { flags: 'w' })
@@ -4520,6 +4535,12 @@ ipcMain.handle('post-ex-form', async (event, arg) => {
 })
 
 ipcMain.handle('eh-webpage-last-error', async () => ({ ok: !!lastEhWebpageError, ...(lastEhWebpageError || {}) }))
+// 元数据库初始化失败原因(数据目录不可达)。前端设置界面据此提示用户换目录。
+ipcMain.handle('metadata-init-error', async () => ({
+  ok: !metadataInitError,
+  error: metadataInitError || '',
+  metadataPath: String(metadataSqliteFile || '')
+}))
 
 ipcMain.handle('post-data-ex', async (event, { url, data }) => {
   if (setting.proxy) {
@@ -9234,8 +9255,19 @@ const applySetting = async (receiveSetting) => {
   if (receiveSetting.metadataPath !== setting.metadataPath) {
     // metadataPath 可能为 undefined/null/空(前端缺键或用户清空):回退默认数据目录
     const target = receiveSetting.metadataPath || STORE_PATH
-    rebuildMetadataModel(path.join(target, './metadata.sqlite'))
-    await Metadata.sync()
+    metadataSqliteFile = path.join(target, './metadata.sqlite')
+    rebuildMetadataModel(metadataSqliteFile)
+    // ★ 必须兜住:用户可能把「元数据目录」选到一个离线盘/被拔掉的移动硬盘上,
+    //   sequelize 会在 mkdir 阶段抛 ENOENT。以前这里直接 await,异常冒到 save-setting
+    //   的调用方 → 整个设置保存链中断(用户看到的是「设置保存失败」且不知原因)。
+    //   现在只记错误、不中断保存:设置照样落盘,下次盘回来了重启即可恢复。
+    try {
+      await Metadata.sync()
+      metadataInitError = ''
+    } catch (e) {
+      metadataInitError = String((e && e.message) || e)
+      console.error('[meta] 切换元数据目录失败(目录不可达?):' + metadataInitError)
+    }
   }
   // 网页版(Docker)不需要局域网浏览 API:本身就是通过网页/网络访问的
   if (!WEB_MODE && receiveSetting.enabledLANBrowsing !== setting.enabledLANBrowsing) {
