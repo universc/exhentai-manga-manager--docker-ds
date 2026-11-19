@@ -1,5 +1,59 @@
 # 更新记录
 
+## v1.18.6(2026-11-19)
+
+### 新增:EH 登录三种方式(账号密码 / Cookie / 网页)
+
+完全对齐 JHenTai-8.0.16-334 的 `LoginPage`(`enum LoginType { password, cookie, web }`
++ 三个标签页 + `handleLogin()` 按类型分发)。
+原来设置里是一条平铺的「账号密码 + 粘贴 Cookie + 一堆输入框」,按钮行为还写死成只走 webview
+(过不了 Cloudflare 就永久转圈)。现在改成三个独立标签页,每页一个明确入口:
+
+- **① 账号密码**(`eh-password-login`)= JHenTai 的 `requestLogin`:纯 HTTP POST
+  `forums…/index.php?act=Login&CODE=01`,不经过浏览器,成功直接拿到
+  `ipb_member_id` / `ipb_pass_hash`。
+- **② Cookie**(`eh-cookie-login`,新增)= JHenTai 的三个 `CookieVerificationType`:
+  `normal` 线上验证(先请求首页拿会话,再 `fetchUserName` 确认身份,拿不到用户名就回
+  `invalidCookie`,不假装成功)/ `webview` 网页验证 / `skip` 跳过验证(直接保存,不发请求)。
+  另含 JHenTai 的 `igneous` 判定:`''`/`null`/`mystery`/`deleted` 一律视为「没有」。
+- **③ 网页登录**(`eh-login`)= JHenTai 的 `handleWebLogin`:开真浏览器窗口,登录后读
+  `document.cookie` 取回。
+
+界面上 `igneous` 输入框右侧加了「解析」按钮(等价 JHenTai 的 `pasteCookie`),
+自动从剪贴板整串 Cookie 里抽出三项。
+
+### 新增:下载相关 6 项
+
+1. **「全部继续」现在也控制绅士漫画任务** —— 真因:`resumeAllDownloads` 里写死
+   `t.source !== 'wnacg'` 把它们整个排除了。现在去掉过滤,并按 source 分流到
+   `wnacg-download-action` / `eh-download-action`(绅士漫画的 id 丢给 eh 只会回 `notFound`)。
+2. **绅士漫画配额错误提示修正** —— 站点配额用完时 zip 直链回 429 +「下載配額已用完 /
+   每個 IP 24 小時內只能下載 100 個文件」,而下载页里没有 `FILE_KEY` → 报成
+   `noServer1`/`noServer2`,再被前端翻成「请求被 EH 限速」。现在下载页与 429 响应体都识别配额页
+   → `error='wnacgQuota'` → 专门文案;顺带给 `noServer1`/`noServer2`/`noWorkerApi`/`noImages`
+   也补了中文映射(以前直接透英文)。
+3. **压缩包重试不再归零**(照 aria2 的断点续传)—— 真因:`fs.createWriteStream(filePath)`
+   每次 truncate 到 0。现在用 HTTP Range 续传:已有大小 > 0 时发 `bytes=<n>-`,收到 206 就 append,
+   收到 200(服务端不认 Range)退回整包,416 就清残片重来;下完校验 `received` 与远端整包大小一致,
+   不一致算失败(下次从断点续)。
+4. **下载记录表**(`download-history.json`)—— 持久记录已下载地址(归一化去 query/token 做 key),
+   成功才记;新下载前查重,可配置「重复时提示」(弹窗询问)/「重复时不下载」(直接跳过);
+   设置 → 功能 → 下载:记录条数上限(默认 500,0 = 不限)+ 两个开关 + 打开按钮;
+   弹窗里可看列表、单条删除、一键清空。
+5. **绅士漫画任务点标题可打开详细信息** —— 真因:`onTitleClick` 对 wnacg 直接 `return`。
+   现在用记录里的 `url`/`title`/`cover`/`tags` 构造成 `site='wnacg'` 的书对象交给详细界面。
+
+### 新增:卡片样式 3 项
+
+6. **卡片分类不再截断** —— 真因:`parseRow` 只存 `wnacgParentCategory` 截断后的主分类。
+   现在额外保留 `fullCategory`(站点角标原文),卡片优先显示它,并把全角「／」统一成半角「/」。
+   实测显示「單行本/漢化」「同人誌/漢化/合集」。
+7. **二号样式右上角显示标签**(最多 3 个 + `+N` 折叠),与标题/阅读数不打架。
+8. **一号/二号/三号改成三选一**(互斥)+ 折叠面板,选中项自动展开。
+   以前 `fillCover` 与 `cardStyle2` 是两个独立开关,同时开时行为不确定。
+9. **新增三号条状样式**:左小封面 + 右信息(标题/标签/页数/阅·读),
+   容器按 `minmax(320px)` 自适应列数;条高与封面宽可在设置里调。
+
 ## v1.18.5(2026-11-18)
 
 ### 修复:绅士漫画下载的压缩包没有后缀名
