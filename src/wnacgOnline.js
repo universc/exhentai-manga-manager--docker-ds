@@ -809,7 +809,9 @@ export const parseWnacgDetail = (html, host = WNACG_DEFAULT_HOST) => {
 //   fetchHtml(url) -> Promise<html> 由调用方注入(渲染进程用 get-ex-webpage)
 export const collectWnacgThumbs = async ({
   first = [], nextUrl = '', pageCount = 0, host = '', fetchHtml,
-  onUpdate = null, shouldStop = null, maxPages = 8
+  onUpdate = null, shouldStop = null, maxPages = 8,
+  // onError(err, loadedCount):所有重试都失败时回调,让界面能提示 + 提供重试入口
+  onError = null
 } = {}) => {
   const out = Array.isArray(first) ? first.slice() : []
   const seen = new Set(out.map(t => t && t.href).filter(Boolean))
@@ -818,9 +820,31 @@ export const collectWnacgThumbs = async ({
   for (let i = 0; i < maxPages && url; i++) {
     if (shouldStop && shouldStop()) break
     if (pageCount && out.length >= pageCount) break
+    // ★ 分页请求要重试:NAS/代理链路上偶发 ECONNRESET(站点会直接断 TLS),
+    //   以前这里一失败就 break —— 缩略图永远停在第一页,界面一直转圈,
+    //   而且不给任何提示(用户只看到「预览图出不来」)。
+    //   现在:每页最多试 3 次(退避 300/700/1500ms),全失败才放弃并把原因带出去。
     let html = ''
-    try { html = await fetchHtml(url) } catch (e) { break }
-    if (!html) break
+    let lastErr = null
+    const RETRY_DELAYS = [300, 700, 1500]
+    for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
+      if (shouldStop && shouldStop()) break
+      try {
+        html = await fetchHtml(url)
+        if (html) break
+        lastErr = 'empty'
+      } catch (e) {
+        lastErr = e
+      }
+      if (attempt < RETRY_DELAYS.length) {
+        await new Promise(r => setTimeout(r, RETRY_DELAYS[attempt]))
+      }
+    }
+    if (!html) {
+      // 记下失败原因交给调用方:界面可以提示「预览图加载失败,点击重试」
+      if (typeof onError === 'function') onError(lastErr, out.length)
+      break
+    }
     let doc
     try { doc = new DOMParser().parseFromString(html, 'text/html') } catch (e) { break }
     let added = 0

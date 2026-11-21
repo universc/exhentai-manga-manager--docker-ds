@@ -531,6 +531,7 @@
     "ehOnlineUploader": "Uploader",
     "ehOnlinePagePreview": "Page preview",
     "previewLoadMore": "Load more",
+    "previewThumbsRetry": "Preview failed to load ({n} loaded). Click to retry",
     "ehOnlineNoPreview": "(this gallery gives no page preview)",
     "ehOnlineNoSummary": "Online galleries have no \"story summary\" — that field belongs to local manga. Download/save the gallery locally to edit it.",
     "ehOnlineNoTags": "(no tags)",

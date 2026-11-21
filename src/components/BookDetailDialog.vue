@@ -373,6 +373,17 @@
               <template v-if="!isCollection && !isSeries">
                 <span class="book-preview-hint" v-if="previewTotal > previewItems.length">{{ previewItems.length }}/{{ previewTotal }}</span>
                 <span class="book-preview-hint" v-else-if="previewRawTotal > previewTotal">{{ previewTotal }}/{{ previewRawTotal }}</span>
+                <!-- 绅士漫画缩略图分页失败(站点偶发断 TLS):给个明确提示 + 重试按钮,
+                     否则用户只能看着一排转圈的空格子干等。 -->
+                <el-button
+                  v-if="wnacgThumbsError"
+                  class="preview-retry-btn"
+                  size="small"
+                  type="warning"
+                  plain
+                  :icon="Refresh"
+                  @click="retryWnacgThumbs"
+                >{{ $t('m.previewThumbsRetry', { n: wnacgThumbsLoaded }) }}</el-button>
               </template>
             </div>
             <div class="book-preview-strip" :style="{ '--preview-cell': previewCell + 'px' }">
@@ -532,7 +543,7 @@ import { useI18n } from 'vue-i18n'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import { CaretRight20Regular, CaretLeft20Regular } from '@vicons/fluent'
 import { BookmarkTwotone } from '@vicons/material'
-import { Loading, Download, Plus, Close, Delete } from '@element-plus/icons-vue'
+import { Loading, Download, Plus, Close, Delete, Refresh } from '@element-plus/icons-vue'
 import { nanoid } from 'nanoid'
 import he from 'he'
 import * as linkify from 'linkifyjs'
@@ -989,6 +1000,21 @@ const seriesChapters = computed(() => {
 const isSeries = computed(() => isWnacg.value && !isCollection.value && seriesChapters.value.length > 1)
 const seriesStatus = computed(() => (bookDetail.value && bookDetail.value.series && bookDetail.value.series.status) || '')
 const chapterCovers = ref({})
+// 绅士漫画缩略图分页失败标记:界面据此显示「预览加载失败,点击重试」
+const wnacgThumbsError = ref(false)
+const wnacgThumbsLoaded = ref(0)
+// 「重试」:重新拉一次详情页,把没拿到的缩略图分页补回来。
+// 直接复用 enrichWnacgBook(它会重新解析详情页并按「後頁」续拉),
+// 只是把错误标记清掉、绕开「已有 thumbnails 就不重拉」的缓存判断。
+const retryWnacgThumbs = async () => {
+  const b = bookDetail.value
+  if (!b || !isWnacg.value) return
+  wnacgThumbsError.value = false
+  wnacgThumbsLoaded.value = 0
+  // 清掉旧的部分结果,让 enrichWnacgBook 走完整流程(而不是看到已有缩略图就跳过)
+  b.thumbnails = []
+  await enrichWnacgBook(b)
+}
 const loadChapterCovers = async (chapters) => {
   const todo = (chapters || []).filter(c => c && c.chid && !chapterCovers.value[c.chid])
   if (!todo.length) return
@@ -1264,11 +1290,21 @@ const enrichWnacgBook = async (book) => {
           if (token !== previewToken) return
           bookDetail.value.thumbnails = thumbs
           previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
+        },
+        // ★ 缩略图分页最终失败(重试也救不回来):记下来给界面显示「点此重试」,
+        //   以前是静默 break —— 用户只看到一堆转圈的空格子,不知道发生了什么。
+        onError: (err, loaded) => {
+          if (token !== previewToken) return
+          wnacgThumbsError.value = true
+          wnacgThumbsLoaded.value = loaded
+          console.warn('[wnacg] 缩略图分页失败(已加载 ' + loaded + ' 张):', err && (err.message || err))
         }
       }).then((thumbs) => {
         if (token !== previewToken) return
         bookDetail.value.thumbnails = thumbs
         previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
+        // 全部拿到就清掉错误标记
+        if (thumbs.length >= previewTotal.value) wnacgThumbsError.value = false
       }).catch(() => { /* 某页拉不到就算了,已显示的先留着 */ })
     }
   } catch (e) {

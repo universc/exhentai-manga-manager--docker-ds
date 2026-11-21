@@ -531,6 +531,7 @@
     "ehOnlineUploader": "上傳者",
     "ehOnlinePagePreview": "頁面預覽",
     "previewLoadMore": "載入更多",
+    "previewThumbsRetry": "預覽載入失敗(已取得 {n} 張),點此重試",
     "ehOnlineNoPreview": "(這個畫廊沒有頁面預覽)",
     "ehOnlineNoSummary": "線上畫廊沒有「故事簡介」—— 簡介是本地漫畫的欄位;把畫廊下載/收藏到本地後就能在這裡編輯。",
     "ehOnlineNoTags": "(沒有標籤)",

@@ -530,6 +530,7 @@
     "ehOnlineUploader": "上传者",
     "ehOnlinePagePreview": "页面预览",
     "previewLoadMore": "加载更多",
+    "previewThumbsRetry": "预览加载失败(已拿到 {n} 张),点此重试",
     "ehOnlineNoPreview": "(这个画廊没给出页预览)",
     "ehOnlineNoSummary": "在线画廊没有「故事简介」—— 简介是本地漫画的字段;把画廊下载/收藏到本地后就能在这里编辑。",
     "ehOnlineNoTags": "(没有标签)",
