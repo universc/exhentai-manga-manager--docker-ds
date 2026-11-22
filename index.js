@@ -9767,22 +9767,41 @@ ipcMain.handle('get-all-tags', async () => {
   // 标签表会暴露「这个库里有什么内容」:未登录只回空表(返回结构不变,前端不会崩)
   if (!isDesktopAuthed()) return { ok: true, tags: [] }
   try {
-    const rows = await Metadata.findAll({ attributes: ['tags'] })
+    // ★ 把「类别」(category)也作为一组标签返回。
+    //   用户要求:设置→标签→类别标签、主界面标签栏、本地筛选的分类按钮/语言下拉
+    //   都应该能用「类别」这一组。而 category 是书的独立字段,不在 tags 里,
+    //   所以以前这些界面完全看不到它。
+    //   这里一并查 category(和 tags 同一批行,不多查一次数据库)。
+    const rows = await Metadata.findAll({ attributes: ['tags', 'category'] })
     const seen = new Set()
     const out = []
+    const push = (cat, tag) => {
+      if (!tag) return
+      const key = cat + '##' + tag
+      if (seen.has(key)) return
+      seen.add(key)
+      out.push({ cat, tag })
+    }
     for (const row of rows) {
-      const tags = row.tags
-      if (!tags || typeof tags !== 'object') continue
-      for (const [cat, arr] of Object.entries(tags)) {
-        if (!Array.isArray(arr)) continue
-        for (const tag of arr) {
-          if (!tag) continue
-          const key = cat + '##' + tag
-          if (seen.has(key)) continue
-          seen.add(key)
-          out.push({ cat, tag })
+      // ① 普通标签
+      //   ⚠ 实测:sequelize 的 DataTypes.JSON 在这个查询路径上**不会自动反序列化**,
+      //      row.tags 拿到的是字符串 '{"character":["xx"]}'。
+      //      以前写的是 `typeof tags === 'object'` —— 字符串直接不满足,
+      //      于是整个标签表被跳过,get-all-tags 返回空(界面标签全靠 globalTags 撑着)。
+      //      这里必须兼容「字符串 / 已解析对象」两种形态。
+      let tags = row.tags
+      if (typeof tags === 'string') {
+        try { tags = JSON.parse(tags) } catch (e) { tags = null }
+      }
+      if (tags && typeof tags === 'object' && !Array.isArray(tags)) {
+        for (const [cat, arr] of Object.entries(tags)) {
+          if (!Array.isArray(arr)) continue
+          for (const tag of arr) push(cat, tag)
         }
       }
+      // ② 类别:归到 category 这一组
+      const cat = String((row.category || '')).trim()
+      if (cat) push('category', cat)
     }
     return { ok: true, tags: out }
   } catch (e) {

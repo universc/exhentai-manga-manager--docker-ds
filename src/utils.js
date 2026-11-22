@@ -664,6 +664,10 @@ const DEFAULT_CAT_NAMES = {
   // EH 的 location / mixed / reclass 等命名空间此前缺中文名,直接显示英文键
   location: '地点',
   temp2: '临时2',
+  // ★「类别」分组:书的 category(同人志/漫画/画师CG/图集…)作为一组标签时的组名。
+  //   注意不要和上面的 doujinshi/manga 等混用 —— 那些是 EH 分类键本身,
+  //   这里是一组**标签**的组名,两者语义不同。
+  category: '类别',
 }
 const catDisplayName = (key) => {
   if (key == null || key === '') return ''
