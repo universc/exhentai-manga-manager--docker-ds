@@ -1220,7 +1220,8 @@ const enrichOnlineBook = async (book) => {
     const pages = Number(detail.pageCount) || firstThumbs.length
     previewTotal.value = Math.max(pages, firstThumbs.length)
     previewRawTotal.value = previewTotal.value
-    const token = previewToken
+    // ★ 同 enrichWnacgBook:必须用入口处领的令牌,否则切书后旧分页仍会写进新书
+    const token = myToken
     if (previewTotal.value > firstThumbs.length) {
       collectGalleryThumbs({
         url: book.url,
@@ -1309,7 +1310,13 @@ const enrichWnacgBook = async (book) => {
     const pages = Number(detail.pageCount) || first.length
     previewTotal.value = Math.max(pages, first.length)
     previewRawTotal.value = previewTotal.value
-    const token = previewToken
+    // ★ 必须用入口处领的令牌(不能用当前的 previewToken):
+    //   以前这里写的是 const token = previewToken —— 但此刻已经过了好几次 await,
+    //   如果用户中途切了书,previewToken 早就变了,这里再取一次等于「追认新令牌」,
+    //   于是 shouldStop/onUpdate 的校验形同虚设:
+    //   上一本的缩略图分页会继续跑,并把结果写到**当前这本**的 previewItems 上
+    //   —— 用户看到的就是「上一个漫画的预览图加载到现在这个漫画上」。
+    const token = myToken
     if (previewTotal.value > first.length && detail.thumbsNextUrl) {
       collectWnacgThumbs({
         first,

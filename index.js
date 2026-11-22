@@ -4485,11 +4485,37 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
     //   「有的漫画能看、有的加载和下载都失败」。
     //   已经带了的不会被重复添加(ensure 里做了去重)。
     const cookieHeader = ehLogin.ensureEhCookies(cookie)
-    const res = agent
-      ? await fetch(url, { headers: { Cookie: cookieHeader }, agent })
-      : await fetch(url, { headers: { Cookie: cookieHeader } })
-    const result = await res.text()
-    if (!result) throw new Error('Empty response, maybe the cookie is expired')
+    // ★ 必须有超时 + 重试。
+    //   以前这里是裸 fetch:Node 20 的 fetch **没有总超时**,代理卡住/站点握手不响应时
+    //   请求会一直挂着 —— 用户看到的就是「点进去等半天、然后加载失败」。
+    //   现在:单次 15s 超时,失败自动重试 1 次(ECONNRESET/超时这类抖动重试基本能救回来)。
+    const EX_FETCH_TIMEOUT = 15000
+    const fetchOnce = async () => {
+      const ac = new AbortController()
+      const timer = setTimeout(() => { try { ac.abort() } catch (e) { /* 忽略 */ } }, EX_FETCH_TIMEOUT)
+      try {
+        const res = agent
+          ? await fetch(url, { headers: { Cookie: cookieHeader }, agent, signal: ac.signal })
+          : await fetch(url, { headers: { Cookie: cookieHeader }, signal: ac.signal })
+        return await res.text()
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+    let result = ''
+    let lastErr = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        result = await fetchOnce()
+        if (result) break
+        lastErr = new Error('Empty response, maybe the cookie is expired')
+      } catch (e) {
+        lastErr = e
+        // 第一次失败且是网络类错误(超时/被重置/异常):稍等再试一次
+        if (attempt === 0) await new Promise(r => setTimeout(r, 400))
+      }
+    }
+    if (!result) throw (lastErr || new Error('Empty response'))
     return result
   } catch (e) {
     // 不弹系统提示:在线列表/预览拉不到时由调用方按「有没有已显示内容」决定要不要打扰用户,

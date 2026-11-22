@@ -1049,7 +1049,12 @@ export const mergeWnacgDetail = (book, detail) => {
     fullCategory: detail.category || book.fullCategory || '',
     // 是不是合集(多话作品):有章节列表 / 分类里带「合集」
     isSeries: !!(detail.series && detail.series.isSeries) || wnacgIsSeriesCategory(detail.category || book.fullCategory || ''),
-    coverPath: wnacgImageSrc(detail.cover, book.url) || book.coverPath,
+    // ★ 封面不要重新生成:卡片上已经加载过的封面,详情页必须沿用同一个 URL。
+    //   以前是 wnacgImageSrc(detail.cover, book.url) —— 详情页给的图床地址
+    //   (t3/t4 节点、缩略图 vs 大图)常常和列表页不同,拼出来的代理 URL 也就不同,
+    //   浏览器缓存命中不了 → 用户看到「已经显示封面的卡片,点进去又转圈重载一次」。
+    //   现在:已有 coverPath 就保留原样;只有原来没有封面时才用详情页的补上。
+    coverPath: book.coverPath || wnacgImageSrc(detail.cover, book.url),
     pageCount: pages,
     filecount: pages,
     tags: (detail.tags && Object.keys(detail.tags).length) ? detail.tags : book.tags,
