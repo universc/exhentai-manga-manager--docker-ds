@@ -264,17 +264,60 @@ const READ_STATE_JS = `(() => {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
+// ---------- 持久 profile 目录 ----------
+// 位置优先 %APPDATA%\exhentai-manga-manager\eh-login-profile(与 JHenTai 的
+// %APPDATA%\top.jtmonster\jhentai\EBWebView 同性质:长期存在,只有退出登录才清)。
+// 拿不到 APPDATA 时退回 home 下的隐藏目录,再不行才用 temp —— 但那种情况下
+// cf_clearance 保不住,登录会退化成「每次都要重新过人机验证」。
+const PROFILE_DIR_NAME = 'eh-login-profile'
+
+const resolveProfileDir = () => {
+  try {
+    const base = process.env.APPDATA || process.env.XDG_CONFIG_HOME
+    if (base) return path.join(base, 'exhentai-manga-manager', PROFILE_DIR_NAME)
+    return path.join(os.homedir(), '.' + PROFILE_DIR_NAME)
+  } catch (e) {
+    return path.join(os.tmpdir(), PROFILE_DIR_NAME)
+  }
+}
+
+// 退出登录时清空 profile(JHenTai 的 requestLogout 也是删 webview 目录):
+// 目的是把 cf_clearance / 站点 Cookie 一起作废,下次是干净状态。
+const clearLoginProfile = async () => {
+  const dir = resolveProfileDir()
+  try {
+    fs.rmSync(dir, { recursive: true, force: true })
+    return { ok: true, dir }
+  } catch (e) {
+    return { ok: false, dir, error: String((e && e.message) || e) }
+  }
+}
+
 const launchBrowserLogin = async ({ username = '', password = '', proxy = '', browserPath = '', timeoutMs = 5 * 60 * 1000, onStatus, loginUrl = '' } = {}) => {
   const browser = findBrowser(browserPath)
   if (!browser) return { ok: false, error: 'browserNotFound' }
 
-  const userDataDir = path.join(os.tmpdir(), 'emm-eh-login-' + crypto.randomBytes(6).toString('hex'))
+  // ★★ profile 必须是**持久**目录,这是能不能过的关键 ★★
+  //
+  // Cloudflare 过了人机验证之后会下发 cf_clearance(HttpOnly,有效期一年)。
+  // 它在浏览器的 profile 里 —— profile 一删,凭据就没了,下次等于重新解一次挑战。
+  //
+  // JHenTai 就是这么做的:userDataFolderWindows = getVisibleDir()
+  //   = %APPDATA%\top.jtmonster\jhentai\EBWebView,是个长期目录,
+  //   只在「退出登录」时才删(login_page_logic.dart:301-305 → requestLogout)。
+  // 实测那台机器上的 JHenTai profile 里就躺着:
+  //   .e-hentai.org | cf_clearance | created=2026-11-22T14:05Z | expires=2027-11-22T14:05Z
+  // 所以它「一直能登」。
+  //
+  // 这里以前用 os.tmpdir()+随机名,并在 cleanup() 里 rmSync ——
+  // 每次都是白纸 profile,永远拿不到 cf_clearance,于是每次都卡在人机验证。
+  // 现在改成和 JHenTai 等价:固定目录、不清空,只有退出登录才清。
+  const userDataDir = resolveProfileDir()
   try { fs.mkdirSync(userDataDir, { recursive: true }) } catch (e) { return { ok: false, error: 'launchFailed', detail: String(e.message || e) } }
 
   const port = await pickPort()
   const args = [
     '--remote-debugging-port=' + port,
-    '--remote-allow-origins=*',
     '--user-data-dir=' + userDataDir,
     '--no-first-run',
     '--no-default-browser-check',
@@ -304,9 +347,9 @@ const launchBrowserLogin = async ({ username = '', password = '', proxy = '', br
         }
       } catch (e) { /* 忽略 */ }
     }
-    // profile 目录:留 2 秒再删(进程可能还在写 last-run / lockfile)
-    await sleep(2000)
-    try { fs.rmSync(userDataDir, { recursive: true, force: true }) } catch (e) { /* 忽略 */ }
+    // ★ profile **绝对不要删**:cf_clearance 就存在这里,删了等于每次重新过挑战。
+    //   只等进程把 last-run / lockfile 写完,下次启动才不会被判「profile 正在使用中」。
+    await sleep(1500)
   }
 
   try {
@@ -533,6 +576,9 @@ module.exports = {
   findBrowser,
   listBrowsers,
   launchBrowserLogin,
+  // profile 路径(诊断用)与退出登录时的清空
+  resolveProfileDir,
+  clearLoginProfile,
   // 供测试/诊断用
   _connectWebSocket: connectWebSocket,
   _pickPort: pickPort

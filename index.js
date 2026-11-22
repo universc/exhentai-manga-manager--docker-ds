@@ -315,6 +315,12 @@ const insideServeRoots = (target) => {
 
 // 本地超分模型目录:<数据目录>/models/upscale/<模型 id>
 localModels.init(STORE_PATH)
+// H@H 图片节点(*.hath.network,多用非标端口)经代理会 ECONNRESET —— 这正是
+// modules/ehLogin.js 的 shouldBypassProxy() 单独放行它的原因。图片现在由 Chromium
+// 自己的网络栈直连,所以浏览器侧的 bypass 列表必须与之一致,否则图片又全被塞进代理。
+// <-loopback>:连本机地址也不走代理(内置服务/网页版是同机 http)。
+const PROXY_BYPASS_RULES = '*.hath.network,<-loopback>'
+
 // ---------- 系统代理兜底 ----------
 // 用户经常是「浏览器能上 EH、应用上不了」:浏览器走系统代理(Clash 等),而 setting.proxy 是空的。
 // 这里在没配置代理时读一次系统代理(Electron 的 resolveProxy 会读 Windows 的 WinINET/系统设置),
@@ -2059,6 +2065,19 @@ if (!WEB_MODE) {
       // 否则会先按旧目录读一次封面、再按新目录重新生成一遍。
       // 库盘离线时跳过:它会对不可达的库路径做 mkdir/rename,只会刷一堆失败日志。
       if (!libraryOfflineInfo) ensureCoverDirsMigrated()
+      // 缩略图现在由前端直接把 https://ehgt.org/... 交给 Chromium 走(拿回连接池 + HTTP 缓存),
+      // 但站点会校验图片来源,少了 Referer 一律 403。这里统一补一个站点根 Referer。
+      // ⚠ 只对 ehgt.org 注册:*.hath.network 走 emm-eh:// 协议,那条链路自己带的是正确的
+      //   /s/<hash>/ 图片页来源,这里再覆盖反而会把它冲掉。
+      // ⚠ webRequest 同一 session 只能注册一次同名监听,所以只放在这里(whenReady 内,单次执行)。
+      session.defaultSession.webRequest.onBeforeSendHeaders(
+        { urls: ['*://*.ehgt.org/*'] },
+        (details, cb) => {
+          const h = details.requestHeaders || {}
+          if (!h.Referer && !h.referer) h.Referer = 'https://e-hentai.org/'
+          cb({ requestHeaders: h })
+        }
+      )
       mainWindow = createWindow()
       registerGlobalHotkey()
       // 数据目录不可用:明确弹窗,绝不静默换目录
@@ -2109,7 +2128,8 @@ if (!WEB_MODE) {
     if (setting.proxy) {
       await session.defaultSession.setProxy({
         mode: 'fixed_servers',
-        proxyRules: setting.proxy
+        proxyRules: setting.proxy,
+        proxyBypassRules: PROXY_BYPASS_RULES
       })
     }
     // 在线图片磁盘缓存:启动后用空闲时间做一次容量修剪(文件数超限就按 mtime 删最旧 25%)。
@@ -4640,6 +4660,38 @@ ipcMain.handle('cancel-ex-webpage', async (event, { groupId } = {}) => {
   return n
 })
 
+// ---------- 详情页 HTML:流式消费 + 首图预热 ----------
+// 以前是 res.text():整包(90KB 量级)收完才返回,渲染进程才开始解析、才开始发图片请求,
+// 首图等于白白多等一整趟页面下载。现在边收边扫缩略图地址,命中就先把地址告诉渲染进程去预热。
+// 详情页的特征是缩略图容器 id="gdt";列表页没有它,自然不会命中(也就不发事件)。
+const GDT_THUMB_RE = /id=["']gdt["'][\s\S]{0,40000}?url\(\s*['"]?([^'")]+)['"]?\s*\)/i
+// gdt → 首图 url 的距离在 40KB 以内,留两倍余量做跨块匹配;
+// 只保留尾部是为了不让 acc 无限增长(否则每个块都要全量重扫,退化成 O(n²))。
+const GDT_SCAN_WINDOW = 80000
+
+// body: node-fetch v2 的 res.body(Node Readable);onThumb(thumb) 命中首图时回调。
+// 返回值与 res.text() 等价(完整 HTML 字符串);中断/出错交给调用方的 catch。
+const readHtmlStreaming = async (body, onThumb) => {
+  const chunks = []
+  const decoder = new TextDecoder('utf-8')
+  let acc = ''
+  let sent = false
+  for await (const chunk of body) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    if (!sent) {
+      // stream: true —— 多字节 UTF-8 字符被块边界切开时由 decoder 自己接上
+      acc = (acc + decoder.decode(chunk, { stream: true })).slice(-GDT_SCAN_WINDOW)
+      const m = GDT_THUMB_RE.exec(acc)
+      if (m && onThumb) {
+        sent = true
+        acc = ''
+        try { onThumb(m[1]) } catch (e) { /* 预热失败不影响正文 */ }
+      }
+    }
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
 ipcMain.handle('get-ex-webpage', async (event, { url, cookie, groupId } = {}) => {
   // ★ Cookie 必须过一遍 ehLogin.ensureEhCookies:
   //   前端传上来的只是「登录那几项」,少了 nw=1 / datatags=1 ——
@@ -4666,6 +4718,8 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie, groupId } = {}) =>
     //   请求会一直挂着 —— 用户看到的就是「点进去等半天、然后加载失败」。
     //   现在:单次 15s 超时,失败自动重试 1 次(ECONNRESET/超时这类抖动重试基本能救回来)。
     const EX_FETCH_TIMEOUT = 15000
+    // 预热事件全局只发一次:重试(第二次 fetchOnce)不该让前端收到同一张图两次
+    let earlyThumbSent = false
     const fetchOnce = async () => {
       const ac = new AbortController()
       // ★ 加入分组:前端切书时会通过 cancel-ex-webpage 直接 abort 掉这些请求,
@@ -4676,7 +4730,17 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie, groupId } = {}) =>
         const opts = { headers: { ...EH_PAGE_HEADERS, Referer: refererOf(url), Cookie: cookieHeader }, signal: ac.signal }
         if (agent) opts.agent = agent
         const res = await fetch(url, opts)
-        return await res.text()
+        if (!res.body) return await res.text()
+        return await readHtmlStreaming(res.body, (thumb) => {
+          if (earlyThumbSent) return
+          earlyThumbSent = true
+          // thumb 原样发(可能是协议相对地址 //ehgt.org/...,前端自己补 https)
+          try {
+            if (event.sender && !(event.sender.isDestroyed && event.sender.isDestroyed())) {
+              event.sender.send('eh-early-thumb', { pageUrl: url, thumb })
+            }
+          } catch (e) { /* 窗口已关:不影响正文返回 */ }
+        })
       } finally {
         clearTimeout(timer)
         untrackAbort(ac)
@@ -8260,19 +8324,29 @@ if (!WEB_MODE) {
       electronUa,
       // 用户手动指定了某个浏览器路径(设置里可填,给「装在奇葩位置」的情况留口子)
       customPath: String(setting.ehLoginBrowserPath || '').trim(),
+      // profile 路径:cf_clearance 就存在这里,必须持久。用户排查「一直人机验证」时第一个看它。
+      profileDir: browserLogin.resolveProfileDir(),
+      profileExists: (() => { try { return fs.existsSync(browserLogin.resolveProfileDir()) } catch (e) { return false } })(),
       proxy: String(setting.proxy || '').trim()
     }
   })
 
   // 退出登录:清掉登录窗口分区里的 Cookie(设置里的四项由前端清空并保存)
+  // ★ 同时清掉真浏览器的持久 profile —— 与 JHenTai 的 requestLogout 对齐
+  //   (那边是删掉 EBWebView 目录)。不清的话 cf_clearance / 站点 Cookie 会一直留着,
+  //   「退出登录」就成了假动作,换账号登录还会带着上一个人的会话。
   ipcMain.handle('eh-logout', async () => {
+    let ok = true
+    const errs = []
     try {
       const ses = session.fromPartition(EH_LOGIN_PARTITION)
       await ses.clearStorageData()
-      return { ok: true }
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e) }
-    }
+    } catch (e) { ok = false; errs.push(String((e && e.message) || e)) }
+    try {
+      const r = await browserLogin.clearLoginProfile()
+      if (r && r.ok === false) { ok = false; errs.push(r.error || 'clearProfile') }
+    } catch (e) { ok = false; errs.push(String((e && e.message) || e)) }
+    return ok ? { ok: true } : { ok: false, error: errs.join('; ') }
   })
 }
 
@@ -9627,7 +9701,9 @@ const applySetting = async (receiveSetting) => {
     //   (表现为「切库没反应 / 设置保存转圈」)。改成后台设置 + 吞掉异常。
     session.defaultSession.setProxy({
       mode: 'fixed_servers',
-      proxyRules: receiveSetting.proxy
+      proxyRules: receiveSetting.proxy,
+      // 与启动时同一份 bypass:H@H 图片必须直连,否则保存设置后图片又开始被代理截断
+      proxyBypassRules: PROXY_BYPASS_RULES
     }).catch((e) => console.error('setProxy failed', e))
   }
   // 本地模型下载同步使用代理 / 镜像前缀
