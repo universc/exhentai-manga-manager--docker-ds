@@ -6978,8 +6978,55 @@ const decodeHtmlEntities = (s) => {
     .replace(/&amp;/gi, '&')
 }
 const stripTags = (s) => decodeHtmlEntities(String(s || '').replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim()
+// ============================================================================
+// 绅士漫画分类拆分(与 src/wnacgOnline.js 的 WNACG_CATEGORY_SPLIT 保持同一套规则)
+//
+// 站点把主分类和语言拼成一个角标:「同人誌／漢化」「單行本／日語」「同人誌／CG画集」。
+// 用户要求拆成两个字段:
+//   类别(category)  → 同人志 / 单行本 / 韩漫 / CG画集 / 写真 / 3D漫画 / AI图集
+//   语言(language)  → chinese / japanese / english
+// 特殊规则(用户确认):
+//   · 同人志／汉化   → 同人志 + chinese
+//   · 同人志／CG画集 → CG画集(丢弃「同人志」)
+//   · 写真 & Cosplay → 写真
+//   · 杂志&短篇 整类**不保留**(类别为空)
+//   · AI&图集 → AI图集 ; 3D&漫画 → 3D漫画
+// ============================================================================
+const wnacgSplitCategoryText = (name) => {
+  const raw = String(name || '').trim()
+  if (!raw) return { category: '', language: '' }
+  const parts = raw.split(/[／/]/).map(s => s.trim()).filter(Boolean)
+  if (!parts.length) return { category: '', language: '' }
+  const head = parts[0]
+  const rest = parts.slice(1)
+  let language = ''
+  for (const p of rest) {
+    if (/^(汉化|漢化|中文|中譯|中译)$/i.test(p)) language = 'chinese'
+    else if (/^(日语|日語|日文|生肉)$/i.test(p)) language = 'japanese'
+    else if (/^english$/i.test(p)) language = 'english'
+  }
+  let category = head
+  if (/^同人志$|^同人誌$/.test(head)) {
+    const cg = rest.find(p => /CG/i.test(p))
+    category = cg ? 'CG画集' : '同人志'
+  } else if (/^写真/.test(head)) {
+    category = '写真'
+  } else if (/^杂志|^雜誌/.test(head)) {
+    category = ''                 // 用户要求:杂志&短篇不保留
+  } else if (/^AI/.test(head)) {
+    category = 'AI图集'
+  } else if (/^3D/i.test(head)) {
+    category = '3D漫画'
+  } else if (/^单行本$|^單行本$/.test(head)) {
+    category = '单行本'
+  } else if (/^韩漫$|^韓漫$/.test(head)) {
+    category = '韩漫'
+  }
+  return { category, language }
+}
+
 const parseWnacgDetailBrief = (html) => {
-  const out = { ok: false, title: '', category: '', pageCount: 0, tags: [] }
+  const out = { ok: false, title: '', category: '', language: '', pageCount: 0, tags: [] }
   const src = String(html || '')
   if (!src || !/photos-index-aid-|addtags|uwconn/i.test(src)) return out
   out.ok = true
@@ -6989,7 +7036,13 @@ const parseWnacgDetailBrief = (html) => {
     const text = stripTags(m[1])
     const mm = /^(分類|分类|頁數|页数)[:：]\s*(.*)$/.exec(text)
     if (!mm) continue
-    if (/^(分類|分类)$/.test(mm[1])) out.category = mm[2].trim()
+    if (/^(分類|分类)$/.test(mm[1])) {
+      // 站点原文(如「同人誌／漢化」)按规则拆成 类别 + 语言
+      const split = wnacgSplitCategoryText(mm[2])
+      out.category = split.category
+      out.language = split.language
+      out.fullCategory = mm[2].trim()
+    }
     else out.pageCount = Number((/(\d+)/.exec(mm[2]) || [])[1]) || 0
   }
   // 标签:站点把整段放在 <div class="addtags">…</div>,每个标签是一个 a.tagshow
@@ -7570,7 +7623,9 @@ ipcMain.handle('wnacg-download', async (event, arg) => {
       }).then(r2 => parseWnacgDetailBrief(String((r2 && r2.buffer) || ''))).catch(() => null)
       if (detail && detail.ok) {
         if (detail.title && !String((book && book.title) || '').trim()) rec.title = WNACG_DL_SANITIZE(detail.title)
+        // 类别 + 语言:站点原文已按规则拆好(见 wnacgSplitCategoryText)
         if (detail.category && !rec.category) rec.category = detail.category
+        if (detail.language && !rec.language) rec.language = detail.language
         if (detail.pageCount && !rec.total) rec.total = detail.pageCount
         if (detail.tags.length) {
           const index = await wnacgBuildTagIndex()
@@ -7578,6 +7633,19 @@ ipcMain.handle('wnacg-download', async (event, arg) => {
           if (Object.keys(classified).length) {
             rec.tags = classified
             registerGlobalTags(classified)
+          }
+        }
+        // ★ 语言标签:分类拆分出来的语言要以「语言」类别写进标签,
+        //   这样下载记录和本地书库都能按语言筛选(用户要求:汉化→语言)。
+        if (detail.language) {
+          const langLabel = ({ chinese: 'chinese', japanese: 'japanese', english: 'english' })[detail.language] || ''
+          if (langLabel) {
+            const merged = { ...(rec.tags || {}) }
+            const key = '语言'
+            const arr = Array.isArray(merged[key]) ? merged[key].slice() : []
+            if (!arr.includes(langLabel)) arr.push(langLabel)
+            merged[key] = arr
+            rec.tags = merged
           }
         }
         emitWnacgTask(rec)

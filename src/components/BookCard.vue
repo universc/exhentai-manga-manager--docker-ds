@@ -28,6 +28,8 @@
             :title="book.status"
             @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
           >{{ book.site === 'wnacg' ? (wnacgCategoryText(book) || book.status) : (galleryCategoryName(book.category, $t) || book.status) }}</el-tag>
+          <!-- 语言标签:由绅士漫画分类拆分而来(汉化/日语/English),单独一个标签 -->
+          <el-tag v-if="!viewSetting.hideNonTag && book.site === 'wnacg' && wnacgLanguageText(book)" class="strip-tag is-lang" size="small" effect="plain" type="success">{{ wnacgLanguageText(book) }}</el-tag>
           <el-tag v-if="!viewSetting.hideNonTag && book.site === 'wnacg' && book.isSeries" class="strip-tag" size="small" type="warning" effect="plain">{{ $t('m.seriesBadge') }}</el-tag>
           <el-tag
             v-for="tag in filterCollectTag(book.tags).slice(0, 3)" :key="tag.id"
@@ -157,6 +159,12 @@
         :title="book.status"
         @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
       >{{ book.site === 'wnacg' ? (wnacgCategoryText(book) || book.status) : (galleryCategoryName(book.category, $t) || book.status) }}</el-tag>
+      <!-- 语言标签(分类拆分而来) -->
+      <el-tag
+        v-if="!viewSetting.hideNonTag && book.site === 'wnacg' && wnacgLanguageText(book)"
+        class="book-status-tag book-lang-tag"
+        size="small" effect="plain" type="success"
+      >{{ wnacgLanguageText(book) }}</el-tag>
       <!-- 绅士漫画的合集:在「同人志」右边单独标一个「合集」(用户要求)。
            站点分类是 同人誌／漢化／合集,只看第一段会把这个信息丢掉。 -->
       <el-tag
@@ -289,6 +297,12 @@
             :title="book.status"
             @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
           >{{ book.site === 'wnacg' ? (wnacgCategoryText(book) || book.status) : (galleryCategoryName(book.category, $t) || book.status) }}</el-tag>
+          <!-- 语言标签(分类拆分而来) -->
+          <el-tag
+            v-if="!viewSetting.hideNonTag && book.site === 'wnacg' && wnacgLanguageText(book)"
+            class="fill-badge book-lang-tag"
+            size="small" effect="plain" type="success"
+          >{{ wnacgLanguageText(book) }}</el-tag>
           <!-- 填充封面布局里的「合集」标记 -->
           <el-tag
             v-if="!viewSetting.hideNonTag && book.site === 'wnacg' && book.isSeries"
@@ -343,15 +357,22 @@ const LANG_ZH_CHAR = {
   TL: '菲律宾', MY: '缅甸', KM: '高棉', LO: '老挝', NE: '尼泊尔', SI: '僧伽罗', TA: '泰米尔',
   TE: '泰卢固', ML: '马拉雅拉姆', KN: '卡纳达', MR: '马拉地', GU: '古吉拉特', PA: '旁遮普'
 }
-// 绅士漫画的分类角标。
-// ★ 站点给的是完整分类(如「單行本／漢化」「同人誌／漢化／合集」),以前只取第一段
-//   (wnacgParentCategory 截成「单行本」) —— 用户报的就是这个:信息被截掉了。
-//   现在优先用 fullCategory;把站点的全角「／」统一显示成半角「/」(用户要求)。
+// 绅士漫画的分类角标(类别部分)。
+// ★ 现在显示的是**拆分后的类别**(用户确认的方案):
+//   「同人志／汉化」→ 类别=同人志、语言=chinese,卡片上拆成两个标签显示。
+//   所以这里只回 category(已经是干净的主分类),不再拼接 fullCategory。
 const wnacgCategoryText = (book) => {
   if (!book || book.site !== 'wnacg') return ''
-  const raw = String(book.fullCategory || book.category || '').trim()
+  const raw = String(book.category || '').trim()
   if (!raw) return ''
   return raw.replace(/\s*／\s*/g, '/').replace(/\s*\/\s*/g, '/')
+}
+// 绅士漫画的语言角标(由分类拆分而来):chinese→汉化 / japanese→日语 / english→English
+const wnacgLanguageText = (book) => {
+  if (!book || book.site !== 'wnacg') return ''
+  const lang = String(book.language || '').trim().toLowerCase()
+  if (!lang) return ''
+  return ({ chinese: '汉化', japanese: '日语', english: 'English' })[lang] || ''
 }
 const languageBadgeText = (book) => {
   // 绅士漫画:汉化→汉,日语→日,English→英,其余分类没有语言,角标直接不显示

@@ -91,29 +91,93 @@ export const WNACG_CATE_BADGE = {
   38: '韩漫／合集'
 }
 
-export const WNACG_CATEGORY_NAMES = {
-  0: '未分类',
-  1: '同人志',
-  2: '同人志',
-  3: '写真&Cosplay',
-  5: '同人志',
-  6: '单行本',
-  9: '单行本',
-  10: '杂志&短篇',
-  12: '同人志',
-  13: '单行本',
-  14: '杂志&短篇',
-  16: '同人志',
-  17: '单行本',
-  18: '杂志&短篇',
-  19: '韩漫',
-  20: '韩漫',
-  21: '韩漫',
-  22: '3D&漫画',
-  23: '3D&漫画',
-  24: '3D&漫画',
-  37: 'AI图集',
-  38: '韩漫',
+// ============================================================================
+// 分类拆分表(用户确认的最终方案)
+//
+// 站点把「主分类」和「语言/子类」用「／」拼在一起,例如「同人志／汉化」。
+// 以前只取第一段当 category,语言信息就丢了。
+// 现在拆成两个字段:
+//   cat      → 写进书的 category(类别)
+//   lang     → 写进书的 language 标签(chinese / japanese / english / '' )
+//
+// 用户明确的几条特殊规则:
+//   · 「同人志／汉化」     → 同人志 + chinese
+//   · 「同人志／CG画集」   → CG画集(不要同人志)
+//   · 「写真 & Cosplay」   → 写真
+//   · 「杂志&短篇」整类**不保留**(cat 为空,该分类的书不带类别)
+//   · 「AI&图集」          → AI图集
+//   · 「3D&漫画」          → 3D漫画
+// ============================================================================
+export const WNACG_CATEGORY_SPLIT = {
+  // id: [类别, 语言]
+  1:  ['同人志', 'chinese'],      // 同人志／汉化
+  2:  ['CG画集', ''],              // 同人志／CG画集 → 只保留 CG画集
+  3:  ['写真', ''],                // 写真 & Cosplay → 写真
+  5:  ['同人志', ''],              // 同人志
+  6:  ['单行本', ''],              // 单行本
+  7:  ['', ''],                    // 杂志&短篇 → 用户要求不保留
+  9:  ['单行本', 'chinese'],       // 单行本／汉化
+  10: ['', 'chinese'],             // 杂志&短篇／汉化 → 类别不要,但语言仍是汉化
+  12: ['同人志', 'japanese'],      // 同人志／日语
+  13: ['单行本', 'japanese'],      // 单行本／日语
+  14: ['', 'japanese'],            // 杂志&短篇／日语
+  16: ['同人志', 'english'],       // 同人志／English
+  17: ['单行本', 'english'],       // 单行本／English
+  18: ['', 'english'],             // 杂志&短篇／English
+  19: ['韩漫', ''],                // 韩漫
+  20: ['韩漫', 'chinese'],         // 韩漫／汉化
+  21: ['韩漫', 'japanese'],        // 韩漫／生肉 → 生肉=日语原版
+  22: ['3D漫画', ''],              // 3D&漫画
+  23: ['3D漫画', 'chinese'],       // 3D&漫画／汉化
+  24: ['3D漫画', ''],              // 3D&漫画／其他
+  37: ['AI图集', ''],              // AI&图集
+  38: ['韩漫', ''],                // 韩漫／合集
+}
+
+// 从分类 id 取 { category, language }
+export const wnacgSplitCategory = (id) => {
+  const hit = WNACG_CATEGORY_SPLIT[Number(id)]
+  if (!hit) return { category: '', language: '' }
+  return { category: hit[0] || '', language: hit[1] || '' }
+}
+
+// 从角标文字反推(详情页只给文字「同人誌／漢化」,没有 id):
+// 按拆分表的值反查,同时做简繁归一。
+export const wnacgSplitCategoryByName = (name) => {
+  const raw = String(name || '').trim()
+  if (!raw) return { category: '', language: '' }
+  // 拆段:全角/半角斜杠都认,去掉「合集」尾段(它另有系列标记)
+  const parts = raw.split(/[／/]/).map(s => s.trim()).filter(Boolean)
+  if (!parts.length) return { category: '', language: '' }
+  const head = parts[0]
+  const rest = parts.slice(1)
+  // 语言判定:汉化/中文 → chinese;日语/日文 → japanese;English/英文 → english
+  let language = ''
+  for (const p of rest) {
+    if (/^(汉化|漢化|中文|中譯|中译)$/i.test(p)) language = 'chinese'
+    else if (/^(日语|日語|日文|生肉)$/i.test(p)) language = 'japanese'
+    else if (/^english$/i.test(p)) language = 'english'
+  }
+  // 类别:按用户规则归一
+  let category = head
+  if (/^同人志$|^同人誌$/.test(head)) {
+    // 「同人志／CG画集」→ 只留 CG画集(在 rest 里)
+    const cg = rest.find(p => /CG/.test(p))
+    category = cg ? 'CG画集' : '同人志'
+  } else if (/^写真/.test(head)) {
+    category = '写真'
+  } else if (/^杂志|^雜誌/.test(head)) {
+    category = ''            // 用户要求不保留
+  } else if (/^AI/.test(head)) {
+    category = 'AI图集'
+  } else if (/^3D/.test(head)) {
+    category = '3D漫画'
+  } else if (/^单行本$|^單行本$/.test(head)) {
+    category = '单行本'
+  } else if (/^韩漫$|^韓漫$/.test(head)) {
+    category = '韩漫'
+  }
+  return { category, language }
 }
 
 export const wnacgHost = (setting) => {
@@ -228,7 +292,10 @@ const parseRow = (row, host) => {
     pageCount: pageMatch ? Number(pageMatch[1].replace(/,/g, '')) : null,
     posted: dateMatch ? dateMatch[1] : '',
     categoryId: cate,
-    category: badgeFull ? wnacgParentCategory(badgeFull) : '',
+    // 类别 + 语言拆分(见 WNACG_CATEGORY_SPLIT):列表页有分类 id,直接查表最准
+    category: cate == null ? '' : wnacgSplitCategory(cate).category,
+    language: cate == null ? '' : wnacgSplitCategory(cate).language,
+    // 站点角标原文(详情页/卡片悬停用)
     fullCategory: badgeFull,
     rank,
     favCount: favMatch ? Number(favMatch[1].replace(/,/g, '')) : null
@@ -912,7 +979,9 @@ export const wnacgToBook = (item) => {
     title_jpn: '',
     title_cn: '',
     category: item.category || '',
-    // 完整分类(「单行本/汉化」):卡片显示用;详情页会再合并一次站点原文
+    // 语言标签(chinese/japanese/english):由分类拆分而来,用于筛选/下载写库
+    language: item.language || '',
+    // 完整分类(站点角标原文):卡片显示用;详情页会再合并一次
     fullCategory: item.fullCategory || item.category || '',
     coverPath: wnacgImageSrc(item.cover, item.url),
     pageCount: pages,
@@ -960,9 +1029,16 @@ export const parseWnacgChapterCover = (html, host = WNACG_DEFAULT_HOST) => {
 export const mergeWnacgDetail = (book, detail) => {
   if (!book || !detail || !detail.ok) return book
   const pages = (detail.pageCount == null) ? book.pageCount : detail.pageCount
+  // ★ 分类拆分:详情页只给站点文字(如「同人誌／漢化」),按名称反查拆成 类别 + 语言。
+  //   以前只取第一段(wnacgParentCategory),语言信息直接丢了。
+  const rawCat = detail.category || book.fullCategory || book.category || ''
+  const split = wnacgSplitCategoryByName(rawCat)
   return {
     ...book,
-    category: wnacgParentCategory(detail.category || book.category),
+    // 类别:拆分表说了算;拆不出来时退回「取第一段」的旧行为
+    category: split.category || (rawCat ? wnacgParentCategory(rawCat) : ''),
+    // 语言:chinese / japanese / english(拆分表给不出来就沿用书里已有的)
+    language: split.language || book.language || '',
     // 站点完整分类(同人誌／漢化／合集):卡片要在「同人志」右边单独标一个「合集」
     fullCategory: detail.category || book.fullCategory || '',
     // 是不是合集(多话作品):有章节列表 / 分类里带「合集」
