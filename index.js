@@ -4473,8 +4473,59 @@ const setEhWebpageError = (url, e) => {
     error: String((e && (e.message || e.error)) || e || 'unknown'),
   }
 }
+// ============================================================================
+// get-ex-webpage 的短期缓存 + 同 URL 请求去重
+//
+// 背景(用户反馈「点多了加载很慢」「打开速度远不如原网页」):
+//   以前每次调用都是「裸打一次上游」,没有任何缓存,也没有并发去重 ——
+//   于是:① 同一本书点两次(关掉详情再点开)= 抓两次详情页;
+//        ② 快速连点同一本 = 同时飞出去好几个一模一样的请求;
+//        ③ 用户快速切换 A→B→A = A 被抓两次,而 A 第一次的结果被直接丢掉。
+//   原网页之所以快:浏览器 HTTP 缓存直接复用,根本不会重复下载同一页。
+//
+// 做法:
+//   · 成功结果按 URL 缓存 60 秒(详情页/列表页的内容在这个尺度上不会变)
+//   · 同一个 URL 正在飞行时,后来的调用**复用同一个 Promise**,不再发新请求
+//   · 失败不缓存(用户重试要能真的重试)
+//   · 只缓存 GET 语义的 HTML(本 handler 本来就只抓页面)
+// ============================================================================
+const EX_WEBPAGE_TTL = 60 * 1000
+const EX_WEBPAGE_CACHE_MAX = 200
+const exWebpageCache = new Map()   // url -> { html, at }(Map 插入序 = LRU 顺序)
+const exWebpageInflight = new Map() // url -> Promise
+const exWebpageCacheGet = (url) => {
+  const hit = exWebpageCache.get(url)
+  if (!hit) return null
+  if (Date.now() - hit.at > EX_WEBPAGE_TTL) {
+    exWebpageCache.delete(url)
+    return null
+  }
+  // 命中即刷新 LRU 位置
+  exWebpageCache.delete(url)
+  exWebpageCache.set(url, hit)
+  return hit.html
+}
+const exWebpageCachePut = (url, html) => {
+  if (!html) return
+  exWebpageCache.delete(url)
+  exWebpageCache.set(url, { html, at: Date.now() })
+  // 超上限:从最老的开始淘汰
+  while (exWebpageCache.size > EX_WEBPAGE_CACHE_MAX) {
+    const oldest = exWebpageCache.keys().next().value
+    if (oldest === undefined) break
+    exWebpageCache.delete(oldest)
+  }
+}
+
 ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
-  try {
+  // ① 缓存命中:直接返回,一个字节都不用重新下载
+  const cached = exWebpageCacheGet(url)
+  if (cached) return cached
+  // ② 同一 URL 正在飞:复用同一个 Promise(连点同一本不再重复请求)
+  const inflight = exWebpageInflight.get(url)
+  if (inflight) return inflight
+  const task = (async () => {
+    try {
     // ★复用 ehLogin.agentFor(按代理地址缓存 + keep-alive):以前每次调用都 new HttpsProxyAgent,
     //   等于每个 EH 页面(在线列表一屏十几次)都重新跟代理建一次 TCP+TLS,是「EH 在线很慢」的大头。
     const agent = setting.proxy ? ehLogin.agentFor(setting.proxy) : undefined
@@ -4516,6 +4567,8 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
       }
     }
     if (!result) throw (lastErr || new Error('Empty response'))
+    // ③ 成功才写缓存(失败不缓存:用户重试要能真的重试)
+    exWebpageCachePut(url, result)
     return result
   } catch (e) {
     // 不弹系统提示:在线列表/预览拉不到时由调用方按「有没有已显示内容」决定要不要打扰用户,
@@ -4523,6 +4576,14 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
     console.error('get-ex-webpage failed', e)
     setEhWebpageError(url, e)
     return null
+  }
+  })()
+  exWebpageInflight.set(url, task)
+  try {
+    return await task
+  } finally {
+    // ④ 无论成败都要摘掉 inflight,否则后续请求会永远拿到一个旧 Promise
+    exWebpageInflight.delete(url)
   }
 })
 

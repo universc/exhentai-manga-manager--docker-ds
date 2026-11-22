@@ -819,6 +819,8 @@ export default defineComponent({
       _libSwitchSeq: 0,
       // home
       searchString: '',
+      // 「点搜索之前」的主界面状态(页码/排序/滚动):点 X 清空搜索时用它还原
+      searchPrevState: null,
       // 「EH在线」/「紳士漫畫」没被勾进任何「库切换」框时的临时站位:存的是库 id(''=不在线库)
       // 勾进框之后切换库完全按框走,这个标志不再参与(见 computed onlineSource)
       onlineStopActive: '',
@@ -3165,27 +3167,65 @@ export default defineComponent({
     // 搜索框内容变化(含用户点 X 清空)。
     // ★ 用户要求:点 X 清掉搜索文字后**回到原来的界面** —— 即恢复成未搜索前的
     //   全量列表、回到第 1 页、滚回顶部,和从没搜过一样。
+    // 搜索框内容变化(含用户点 X 清空)。
+    // ★ 用户要求:点 X 清掉搜索词后,**完全回到点搜索之前的样子** ——
+    //   页码、排序、滚动位置都保留(不是回到第 1 页)。
+    //   所以这里用 searchBook 入口处记的快照来还原。
     handleSearchStringChange (val) {
       this.searchTyping = String(val || '')
-      if (!val) {
-        this.searchString = ''
-        // 在线库:清掉搜索词并重新拉第一页(否则还停在搜索结果上)
-        if (this.onlineActive) {
-          this.onlineQuery = ''
-          this.currentPage = 1
-          try { this.clearOnlineListForReload() } catch (e) { /* 忽略 */ }
-          this.loadOnlineList(true)
-          this.$nextTick(() => this.scrollBookAreaToTop())
-          return
-        }
-        // 本地库:恢复全量列表 + 回到第 1 页 + 滚回顶部
-        this.handleSortChange(this.sortValue, this.bookList)
-        this.currentPage = 1
+      if (val) return
+      this.searchString = ''
+      const snap = this.searchPrevState
+      this.searchPrevState = null
+      // 在线库:清掉搜索词,重新拉回「无搜索」的列表
+      if (this.onlineActive) {
+        this.onlineQuery = ''
+        try { this.clearOnlineListForReload() } catch (e) { /* 忽略 */ }
+        this.loadOnlineList(true)
+        // 拉回来之后再按快照定位页码与滚动(列表是异步回来的,放在 then 里)
         this.$nextTick(() => {
-          try { this.chunkList(true) } catch (e) { /* 忽略 */ }
-          this.scrollBookAreaToTop()
+          if (snap) this.restoreBookAreaState(snap)
         })
+        return
       }
+      // 本地库:恢复全量列表,再按快照还原页码与滚动
+      this.handleSortChange(this.sortValue, this.bookList)
+      this.$nextTick(() => {
+        if (snap) this.restoreBookAreaState(snap)
+        else this.scrollBookAreaToTop()
+      })
+    },
+    // 按快照还原书架:页码 + 滚动位置
+    //
+    // ★ 顺序很关键(踩过坑):chunkList(true) 会按**当时的 displayBookCount** 把页码
+    //   夹紧。如果先写页码再重排,而那一刻 displayBookCount 还是「搜索结果」的数量
+    //   (很少,可能只有 1 页),页码就被夹成 1 —— 快照里的第 3 页丢了。
+    //   正确做法:先在 nextTick 里让列表恢复完成(handleSortChange 已经同步写好
+    //   bookList/displayBookList),再写页码,最后重排 + 还原滚动。
+    restoreBookAreaState (snap) {
+      if (!snap) return
+      this.$nextTick(() => {
+        try {
+          const pageSize = Number(this.setting.pageSize) || 1
+          const total = Number(this.displayBookCount) || 0
+          const totalPages = Math.max(1, Math.ceil(total / pageSize))
+          const page = Math.min(Math.max(1, Number(snap.currentPage) || 1), totalPages)
+          // 直接写私有字段:绕开 setter 在「列表还没重排完」时的夹紧
+          this.currentPage_ = page
+          this.chunkDisplayBookList = this.customChunk(this.displayBookList, pageSize, page - 1)
+        } catch (e) { /* 忽略 */ }
+        // 再下一帧还原滚动(此时卡片已经按新页码渲染出来,scrollHeight 才是对的)
+        this.$nextTick(() => {
+          try {
+            const el = document.querySelector('.book-card-area')
+            if (!el) return
+            const prev = el.style.scrollBehavior
+            el.style.scrollBehavior = 'auto'
+            el.scrollTop = Math.max(0, Number(snap.scrollTop) || 0)
+            requestAnimationFrame(() => { el.style.scrollBehavior = prev || '' })
+          } catch (e) { /* 忽略 */ }
+        })
+      })
     },
     // 把书架滚回顶部(清空搜索后"回到原界面"的一部分)
     scrollBookAreaToTop () {
@@ -3235,6 +3275,23 @@ export default defineComponent({
       }
     },
     searchBook (addToHistory = true) {
+      // ★ 记录「搜索前」的主界面状态:页码 + 滚动位置。
+      //   用户要求:点 X 清掉搜索词后,要**完全回到点搜索之前的样子**
+      //   (页码、滚动位置都保留),而不是回到第 1 页。
+      //   只在「从无搜索 → 开始搜索」这一下记录,连续改词重搜不覆盖,
+      //   否则快照会被中间那次搜索的状态污染。
+      if (!this.searchPrevState && String(this.searchString || '').trim()) {
+        this.searchPrevState = {
+          currentPage: this.currentPage,
+          sortValue: this.sortValue,
+          scrollTop: (() => {
+            try {
+              const el = document.querySelector('.book-card-area')
+              return el ? el.scrollTop : 0
+            } catch (e) { return 0 }
+          })()
+        }
+      }
       this.rememberSearch(this.searchString)
       // EH在线:搜索框就是「去 EH 上找」,结果照样进书架原本的数据流
       if (this.onlineActive) {

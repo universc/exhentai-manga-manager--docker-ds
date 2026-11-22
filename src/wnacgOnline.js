@@ -1068,7 +1068,12 @@ export const mergeWnacgDetail = (book, detail) => {
     posted: detail.posted || book.posted || '',
     summary: detail.summary || '',
     readUrl: detail.readUrl || '',
+    // ★ 缩略图必须带「归属 id」:详情界面读缓存前会校验 thumbsOwnerId === book.id,
+    //   归属不符就当脏数据丢弃重拉。这是「点这本书却显示上一本预览图」的根因防护 ——
+    //   以前这里直接写 detail.thumbnails,而 book 对象是书架里的共享引用,
+    //   一旦有竞态把 A 的详情合并进 B,这段图就会跟着 B 一直留着。
     thumbnails: detail.thumbnails || [],
+    thumbsOwnerId: (detail.thumbnails && detail.thumbnails.length) ? (book && book.id) || '' : '',
     thumbsNextUrl: detail.thumbsNextUrl || '',
     // 合集(多话作品):章节列表给详情界面渲染用;普通单本时 isSeries=false
     series: (detail.series && detail.series.isSeries) ? detail.series : (book.series || null),

@@ -1157,6 +1157,14 @@ const spriteBoxStyle = (s) => ({
   '--sw': s['--sw'],
 })
 
+// 统一写缩略图并记录「这份数据属于哪本书」。
+// 用于杜绝「上一本的预览图显示在这一本上」:读取缓存前会校验归属 id,
+// 归属不符就当脏数据丢弃重新拉。
+const setPreviewThumbnails = (thumbs, ownerId) => {
+  if (!bookDetail.value) return
+  bookDetail.value.thumbnails = Array.isArray(thumbs) ? thumbs : []
+  bookDetail.value.thumbsOwnerId = ownerId || ''
+}
 const spriteStyleOf = (th) => {
   const w = Number(th.width) || 200
   const h = Number(th.height) || 287
@@ -1232,12 +1240,12 @@ const enrichOnlineBook = async (book) => {
         shouldStop: () => token !== previewToken,
         onUpdate: (thumbs) => {
           if (token !== previewToken) return
-          bookDetail.value.thumbnails = thumbs
+          setPreviewThumbnails(thumbs, book && book.id)
           previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
         }
       }).then((thumbs) => {
         if (token !== previewToken) return
-        bookDetail.value.thumbnails = thumbs
+        setPreviewThumbnails(thumbs, book && book.id)
         previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
       }).catch(() => { /* 某页拉不到就算了,已显示的先留着 */ })
     }
@@ -1327,7 +1335,7 @@ const enrichWnacgBook = async (book) => {
         shouldStop: () => token !== previewToken,
         onUpdate: (thumbs) => {
           if (token !== previewToken) return
-          bookDetail.value.thumbnails = thumbs
+          setPreviewThumbnails(thumbs, book && book.id)
           previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
         },
         // ★ 缩略图分页最终失败(重试也救不回来):记下来给界面显示「点此重试」,
@@ -1340,7 +1348,7 @@ const enrichWnacgBook = async (book) => {
         }
       }).then((thumbs) => {
         if (token !== previewToken) return
-        bookDetail.value.thumbnails = thumbs
+        setPreviewThumbnails(thumbs, book && book.id)
         previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
         // 全部拿到就清掉错误标记
         if (thumbs.length >= previewTotal.value) wnacgThumbsError.value = false
@@ -1461,10 +1469,22 @@ watch(() => bookDetail.value?.id, (id) => {
   // 合集走上面的「成员封面网格」分支,这里必须直接返回。
   if (b.isCollection) return
   if (b.online) {
-    if ((b.thumbnails || []).length) {
+    // ★ 关键:缩略图缓存必须**确认是这本书自己的**。
+    //   mergeWnacgDetail 会把 thumbnails 写回书架里的 book 对象(Object.assign),
+    //   而「上一本」的结果如果因为竞态被写到「这一本」上,下次点开就会直接
+    //   拿这段脏数据显示 —— 用户看到的就是「点这本书却显示上一本的预览图」。
+    //   这里用「这份 thumbnails 是在处理哪一本时产生的」来校验:
+    //   只有 thumbsOwnerId === b.id 才认这个缓存。
+    const thumbsOwner = b.thumbsOwnerId || ''
+    if ((b.thumbnails || []).length && thumbsOwner && thumbsOwner === b.id) {
       previewItems.value = b.thumbnails.map(th => ({ sprite: spriteStyleOf(th) }))
       previewTotal.value = previewItems.value.length
     } else {
+      // 归属不明 / 属于别的书:清掉脏缓存,重新拉
+      if ((b.thumbnails || []).length && thumbsOwner !== b.id) {
+        console.warn('[preview] 丢弃不属于本书的缩略图缓存:', b.id, 'owner=', thumbsOwner)
+        b.thumbnails = []
+      }
       enrichOnlineBook(b)
     }
     return
