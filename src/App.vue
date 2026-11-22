@@ -67,8 +67,7 @@
               </template>
             </el-autocomplete>
             <!-- 搜索按钮 -->
-            <!-- 搜索按钮:改成打开**独立搜索界面**(用户要求),关闭后回到刚才的主界面 -->
-            <el-button v-else-if="id === 'searchButton'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" type="primary" :icon="Search32Filled" plain @click="openSearchPage" :title="$t('m.search')"></el-button>
+            <el-button v-else-if="id === 'searchButton'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" type="primary" :icon="Search32Filled" plain @click="searchBook" :title="$t('m.search')"></el-button>
             <!-- 排序/筛选:方向由箭头单独切换 -->
             <div v-else-if="id === 'sortSelect'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" class="sort-select-wrap">
               <el-select :class="['sort-select', { 'is-wnacg': wnacgActive }]"
@@ -223,50 +222,6 @@
         </div>
       </el-col>
     </el-row>
-    <!-- ================= 独立搜索界面(用户要求 7) =================
-         点工具栏搜索按钮 → 打开这个全屏搜索页;关闭后**恢复打开前的主界面状态**
-         (页码 / 滚动位置 / 列表内容原样回去,不是重新加载)。
-         界面本身只做一件事:输入关键词 + 给搜索历史,回车或点搜索即执行。 -->
-    <div class="search-fullpage" v-if="searchPageOpen" @click.self="closeSearchPage">
-      <div class="search-fullpage-inner" @click.stop>
-      <div class="search-fullpage-head">
-        <el-input
-          ref="searchPageInputRef"
-          v-model="searchPageQuery"
-          class="search-fullpage-input"
-          :placeholder="$t('m.searchPlaceholder')"
-          clearable
-          size="large"
-          @keyup.enter="submitSearchPage"
-          @keydown.esc.stop.prevent="closeSearchPage"
-          @input="syncSearchPageSuggest"
-        />
-        <el-button type="primary" size="large" :icon="Search32Filled" @click="submitSearchPage">{{ $t('m.search') }}</el-button>
-        <el-button size="large" @click="closeSearchPage">{{ $t('m.cancel') }}</el-button>
-      </div>
-      <!-- 清空后的撤销条(替代 toast:搜索页 z-index 3000 会盖住 ElMessage) -->
-      <div v-if="searchPageHistoryUndo" class="search-fullpage-history">
-        <div class="search-fullpage-undo">
-          <span>{{ $t('m.searchHistoryCleared') }}</span>
-          <el-button size="small" text type="primary" @click="undoClearSearchHistory">{{ $t('m.searchHistoryUndo') }}</el-button>
-        </div>
-      </div>
-      <!-- 搜索历史:横排芯片,点一下填入输入框 -->
-      <div v-else-if="searchHistory.length" class="search-fullpage-history">
-        <div class="search-fullpage-history-title">{{ $t('m.searchHistory') }}</div>
-        <div class="search-fullpage-chips">
-          <el-tag
-            v-for="h in searchHistory.slice(0, 12)" :key="'sfp-' + h"
-            class="search-fullpage-chip" size="large" closable
-            :title="$t('m.searchHistoryRemove')"
-            @click="searchPageQuery = h"
-            @close="removeSearchHistory(h)"
-          >{{ h }}</el-tag>
-        </div>
-        <el-button size="small" text type="danger" @click="clearSearchHistory">{{ $t('m.searchHistoryClear') }}</el-button>
-      </div>
-      </div>
-    </div>
     <RandomTags
       ref="randomTagsRef"
       v-if="!manageView && (setting.randomTagsEnabled || setting.showCollectTag)"
@@ -864,14 +819,6 @@ export default defineComponent({
       _libSwitchSeq: 0,
       // home
       searchString: '',
-    // ---------- 独立搜索界面(用户要求 7) ----------
-    // 打开时先快照主界面状态,关闭时原样还原 —— 用户要求「关闭搜索后返回刚才的主界面」,
-    // 是**回到当时的界面**,不是重新加载一遍列表。
-    searchPageOpen: false,
-    searchPageQuery: '',
-    searchPageSnapshot: null,
-    // 清空搜索历史后的撤销数据(面板内显示「已清空 · 撤销」,5 秒后失效)
-    searchPageHistoryUndo: null,
       // 「EH在线」/「紳士漫畫」没被勾进任何「库切换」框时的临时站位:存的是库 id(''=不在线库)
       // 勾进框之后切换库完全按框走,这个标志不再参与(见 computed onlineSource)
       onlineStopActive: '',
@@ -2018,13 +1965,6 @@ export default defineComponent({
       if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') {
         return 'inputing'
       }
-      // ★ 独立搜索页开着:必须独占键盘上下文。
-      //   放在 'inputing' 之后(输入框内仍走输入框逻辑)、'home' 之前
-      //   —— 否则用户点一下搜索页空白处,焦点变成 body,currentUI() 会返回 'home',
-      //   于是 Enter 去点书架封面、F5 刷列表、PageDown 翻看不见的页码,全都乱套。
-      if (this.searchPageOpen) {
-        return 'search-page'
-      }
       if (!!document.querySelector('.is-message-box')) {
         return 'message-box'
       }
@@ -2068,29 +2008,6 @@ export default defineComponent({
     resolveKey (event) {
       // 阅读器里的翻页键由 InternalViewer.handleViewerKey 统一处理(按阅读方向)
       const currentUIValue = this.currentUI()
-      // ★ 独立搜索页:独占键盘。
-      //   Esc = 关闭(取消);Ctrl+Enter = 再提交一次;其它键一律不往下传
-      //   —— 否则遮罩下面的书架会跟着响应方向键 / F5 / PageDown。
-      if (this.searchPageOpen) {
-        // Esc 一律关闭(焦点在输入框里也算)'isComposing' 时不管,避免输入法冲突
-        if (event.key === 'Escape' && !event.isComposing) {
-          event.preventDefault()
-          this.closeSearchPage()
-          return
-        }
-        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-          event.preventDefault()
-          this.submitSearchPage()
-          return
-        }
-        // ★ 无论焦点在哪,搜索页开着就**一律不往下传**。
-        //   焦点在输入框时:输入相关按键由输入框自己的 @keydown/@input 处理,
-        //   这里再往下走会命中 Backspace→模拟 Esc、方向键→翻书架等 home 语义;
-        //   焦点在 body 时:更要把 F5/PageDown/Enter 全部挡掉。
-        //   (评审指出的 bookEachLine 在下方无条件计算、列表区可能为 null →
-        //    getWidth(null) 得 NaN —— 这里提前 return 也一并规避了。)
-        return
-      }
       const bookEachLine = Math.floor(getWidth(document.querySelector('.book-card-area div:first-child'), 'width') / getWidth(document.querySelector('.book-card'), 'full'))
       if (currentUIValue !== 'inputing') {
         if (event.key === 'Backspace') {
@@ -2514,7 +2431,7 @@ export default defineComponent({
     // ⋯ 菜单项的动作:必须与模板里对应分支的 @click 完全一致
     runToolbarAction (id) {
       switch (id) {
-        case 'searchButton': return this.openSearchPage()
+        case 'searchButton': return this.searchBook()
         case 'filter': this.ehFilterVisible = true; return
         case 'downloads': return this.toggleDownloadDrawer()
         case 'detailPanel': this.detailPanelVisible = !this.detailPanelVisible; return
@@ -3234,27 +3151,9 @@ export default defineComponent({
       try { localStorage.setItem('emmSearchHistory', JSON.stringify(this.searchHistory)) } catch (e) { /* 忽略 */ }
     },
     clearSearchHistory () {
-      // ★ 不用 ElMessageBox 二次确认、也不用 toast:
-      //   搜索页 z-index 3000,而 Element 的 overlay/message 都是 2000 级,
-      //   确认框和提示都会被整屏盖住(用户只看到「点了没反应」)。
-      //   改成面板内的「已清空 + 撤销」条:5 秒内可恢复,比一条 3 秒就消失的 toast 更有用。
-      if (!this.searchHistory || !this.searchHistory.length) return
-      this.searchPageHistoryUndo = this.searchHistory.slice()
       this.searchHistory = []
       try { localStorage.removeItem('emmSearchHistory') } catch (e) { /* 忽略 */ }
-      clearTimeout(this._searchHistoryUndoTimer)
-      this._searchHistoryUndoTimer = setTimeout(() => {
-        this.searchPageHistoryUndo = null
-      }, 5000)
-    },
-    // 撤销「清空搜索历史」
-    undoClearSearchHistory () {
-      const prev = this.searchPageHistoryUndo
-      if (!prev || !prev.length) return
-      this.searchHistory = prev
-      try { localStorage.setItem('emmSearchHistory', JSON.stringify(prev)) } catch (e) { /* 忽略 */ }
-      this.searchPageHistoryUndo = null
-      clearTimeout(this._searchHistoryUndoTimer)
+      this.printMessage('success', this.$t('m.searchHistoryCleared'))
     },
     rememberSearch (s) {
       const v = String(s || '').trim()
@@ -3263,12 +3162,42 @@ export default defineComponent({
       this.searchHistory = [v, ...(this.searchHistory || []).filter(x => x !== v)].slice(0, 500)
       try { localStorage.setItem('emmSearchHistory', JSON.stringify(this.searchHistory)) } catch (e) { /* 忽略 */ }
     },
+    // 搜索框内容变化(含用户点 X 清空)。
+    // ★ 用户要求:点 X 清掉搜索文字后**回到原来的界面** —— 即恢复成未搜索前的
+    //   全量列表、回到第 1 页、滚回顶部,和从没搜过一样。
     handleSearchStringChange (val) {
       this.searchTyping = String(val || '')
       if (!val) {
         this.searchString = ''
+        // 在线库:清掉搜索词并重新拉第一页(否则还停在搜索结果上)
+        if (this.onlineActive) {
+          this.onlineQuery = ''
+          this.currentPage = 1
+          try { this.clearOnlineListForReload() } catch (e) { /* 忽略 */ }
+          this.loadOnlineList(true)
+          this.$nextTick(() => this.scrollBookAreaToTop())
+          return
+        }
+        // 本地库:恢复全量列表 + 回到第 1 页 + 滚回顶部
         this.handleSortChange(this.sortValue, this.bookList)
+        this.currentPage = 1
+        this.$nextTick(() => {
+          try { this.chunkList(true) } catch (e) { /* 忽略 */ }
+          this.scrollBookAreaToTop()
+        })
       }
+    },
+    // 把书架滚回顶部(清空搜索后"回到原界面"的一部分)
+    scrollBookAreaToTop () {
+      try {
+        const el = document.querySelector('.book-card-area')
+        if (!el) return
+        // 临时关掉 smooth,避免「缓缓滚上去」看起来像卡住
+        const prev = el.style.scrollBehavior
+        el.style.scrollBehavior = 'auto'
+        el.scrollTop = 0
+        requestAnimationFrame(() => { el.style.scrollBehavior = prev || '' })
+      } catch (e) { /* 忽略 */ }
     },
     handleInput (val) {
       this.searchTyping = String(val || '')
@@ -3305,93 +3234,6 @@ export default defineComponent({
         this.searchString = val
       }
     },
-    // ---------- 独立搜索界面 ----------
-    // 打开:快照当前主界面状态(页码/列表/滚动位置),然后显示搜索页
-    openSearchPage () {
-      if (this.searchPageOpen) return
-      // ★ 先关掉工具栏建议弹层:它 teleport 到 body、z-index 2000,
-      //   不关会挂在搜索页(3000)下面继续存在,关掉搜索页后又诡异地冒出来。
-      try { if (typeof this.closeSearchPopper === 'function') this.closeSearchPopper() } catch (e) { /* 忽略 */ }
-      this.searchPageSnapshot = {
-        currentPage: this.currentPage,
-        sortValue: this.sortValue,
-        searchString: this.searchString,
-        scrollTop: (() => {
-          try {
-            const el = document.querySelector('.book-card-area')
-            return el ? el.scrollTop : 0
-          } catch (e) { return 0 }
-        })()
-      }
-      this.searchPageQuery = this.searchString || ''
-      this.searchPageOpen = true
-      this.$nextTick(() => {
-        // ★ focus + 全选:用户的下一步几乎总是「改词重搜」,
-        //   不选中就得先手动全选/删;全选后直接打字即覆盖(与原搜索框 Ctrl+L 行为一致)。
-        try {
-          const inp = this.$refs.searchPageInputRef
-          if (inp) {
-            inp.focus()
-            // el-input 的 select() 会把内部 <input> 内容全选
-            if (typeof inp.select === 'function') inp.select()
-          }
-        } catch (e) { /* 忽略 */ }
-      })
-    },
-    // 关闭:还原快照(不动列表内容,只把页码/滚动位置放回去)
-    closeSearchPage () {
-      const snap = this.searchPageSnapshot
-      this.searchPageOpen = false
-      this.searchPageQuery = ''
-      if (snap) {
-        this.currentPage = snap.currentPage
-        this.$nextTick(() => {
-          try {
-            const el = document.querySelector('.book-card-area')
-            if (el) el.scrollTop = snap.scrollTop || 0
-          } catch (e) { /* 忽略 */ }
-        })
-      }
-      this.searchPageSnapshot = null
-    },
-    // 提交搜索:把关键词交给原来的 searchBook 流程,然后关闭搜索页。
-    // ★ 不能走 closeSearchPage() —— 那个是「取消」语义,会把页码/滚动位置还原成
-    //   打开搜索页之前的旧值。结果就是「搜完了却停在第 3 页、还停在半截滚动位置」。
-    //   在线库分支里 searchBook 自己会 currentPage=1,本地库分支不会(它走
-    //   handleSortChange → chunkList(true) 的 keepPage 路径),所以这里必须显式归位。
-    submitSearchPage () {
-      const q = String(this.searchPageQuery || '').trim()
-      const snap = this.searchPageSnapshot
-      this.searchPageOpen = false
-      this.searchPageQuery = ''
-      this.searchPageSnapshot = null
-      // 用户没输入内容:等同取消,保持原状
-      if (!q) {
-        if (snap) {
-          this.currentPage = snap.currentPage
-          this.$nextTick(() => {
-            try {
-              const el = document.querySelector('.book-card-area')
-              if (el) el.scrollTop = snap.scrollTop || 0
-            } catch (e) { /* 忽略 */ }
-          })
-        }
-        return
-      }
-      this.searchString = q
-      // 提交后回到第 1 页 + 顶部(本地库的 chunkList(true) 会保留旧页码)
-      this.currentPage = 1
-      this.searchBook()
-      // searchBook 之后再把滚动位置拉回顶部(列表已经换了一批书)
-      this.$nextTick(() => {
-        try {
-          const el = document.querySelector('.book-card-area')
-          if (el) el.scrollTop = 0
-        } catch (e) { /* 忽略 */ }
-      })
-    },
-    // 输入时同步给 searchString,让原有的搜索建议/历史逻辑照常工作
-    syncSearchPageSuggest () { /* 预留:需要时可接搜索建议 */ },
     searchBook (addToHistory = true) {
       this.rememberSearch(this.searchString)
       // EH在线:搜索框就是「去 EH 上找」,结果照样进书架原本的数据流
@@ -8733,77 +8575,6 @@ html.nhentai
     max-width: 100%
     background: transparent
 
-/* ================= 独立搜索界面(用户要求 7) ================= */
-/* ==========================================================================
- * 独立搜索页(评审建议 A:顶部锚定单卡片,而不是居中大输入框)
- *
- * 为什么不居中:提交后立刻关闭回主界面,它是「唤起→输入→执行→消失」的一次性面板
- * (VS Code / Raycast / Linear 那种),不是搜索结果页。顶部锚定后,
- * 历史/撤销等附加内容向下生长,不会把输入框挤走、也没有布局跳动。
- *
- * ⚠ stylus 坑:width: min(760px, 92vw) 会被 stylus 折叠成 92vw(只留最后一参),
- *    必须用 s("min(760px,92vw)") 包一下,或者拆成 max-width + width:100%。
- *    这里用后者的等价写法,避免依赖 s() 的写法差异。
- * ========================================================================== */
-.search-fullpage {
-  position: fixed;
-  inset: 0;
-  z-index: 3000;
-  /* 遮罩:深浅主题都成立(模糊的是背后内容);--el-mask-color 在浅色主题是白色半透明,会提亮成灰白 */
-  background: rgba(0, 0, 0, 0.35);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  /* 顶部留白:避开窗口自带的 .fullscreen-button(top:39px, z-index:3000) */
-  padding-top: 12vh;
-  gap: 0;
-}
-/* 单卡片容器:输入行 + 历史/撤销 全部收在同一个盒子里,零布局跳动 */
-.search-fullpage-inner {
-  /* box-sizing 必须显式写:stylus 编译后 padding 会撑破 max-width(实测 794px > 760) */
-  box-sizing: border-box;
-  width: 92vw;
-  max-width: 760px;
-  max-height: 70vh;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 16px;
-  border-radius: 12px;
-  background: var(--el-bg-color-overlay);
-  border: 1px solid var(--el-border-color-light);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
-  overflow-y: auto;
-  /* 面板内滚动不要带动后面的书架 */
-  overscroll-behavior: contain;
-}
-.search-fullpage-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-}
-.search-fullpage-input {
-  flex: 1 1 auto;
-}
-.search-fullpage-history {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.search-fullpage-history-title {
-  font-size: 13px;
-  opacity: .65;
-}
-.search-fullpage-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.search-fullpage-chip {
-  cursor: pointer;
-}
 /* 详情界面「返回」按钮(用户要求:只要箭头、与 ✕ 对齐)
    ✕ 的实测位置在 BookDetailDialog 的样式里:top:0 / right:10px / 32x32。
    所以返回按钮做成同样 32x32、top:0,右移一个按钮位(right:44px)贴着它,
@@ -8853,13 +8624,6 @@ html.nhentai
 }
 
 
-/* 清空搜索历史后的撤销条 */
-.search-fullpage-undo {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 13px;
-  color: var(--el-text-color-regular);
-}
+
 
 </style>
