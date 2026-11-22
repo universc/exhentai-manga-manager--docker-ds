@@ -7,8 +7,9 @@
     <div class="detail-panel-header">
       <span class="detail-panel-title">{{ $t('m.sideDetailTitle') }}</span>
       <span class="detail-panel-actions">
-        <!-- 返回:从合集成员/某一话点进来时,退回上一本(通常是合集)。
-             用户要求在 ✕ 左边加这个按钮;没有可返回的历史时自动隐藏。 -->
+        <el-button v-if="book.online" size="small" text :icon="MdRefresh" :title="$t('m.sideDetailRefresh')" :loading="detailLoading" @click="refreshDetail"></el-button>
+        <!-- 返回:紧挨 ✕(用户要求「靠近 X 号」),只要箭头不要文字;
+             只有能返回时(canNavigateBack)才出现。 -->
         <el-button
           v-if="canNavigateBack"
           size="small"
@@ -17,7 +18,6 @@
           :title="$t('m.goBack')"
           @click="emit('navigate-back')"
         >←</el-button>
-        <el-button v-if="book.online" size="small" text :icon="MdRefresh" :title="$t('m.sideDetailRefresh')" :loading="detailLoading" @click="refreshDetail"></el-button>
         <el-button size="small" text class="detail-panel-close" :title="$t('m.close')" @click="$emit('close')">✕</el-button>
       </span>
     </div>

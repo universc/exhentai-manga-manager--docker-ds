@@ -11,11 +11,11 @@
     <el-button
       v-if="canNavigateBack"
       class="detail-nav-back"
-      size="small"
+      size="default"
       text
       :title="$t('m.goBack')"
       @click="navigateBack"
-    >← {{ $t('m.goBack') }}</el-button>
+    >←</el-button>
     <el-row :gutter="20" class="book-detail-card">
       <el-col :span="6">
         <!-- 标题:与封面同宽居中显示(与图片、按钮对齐) -->

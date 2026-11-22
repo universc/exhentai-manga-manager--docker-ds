@@ -1680,3 +1680,26 @@
     color: var(--emm-text-1);
     background: var(--el-fill-color-light);
 }
+
+/* ==========================================================================
+ * 详情界面 / 侧边详情的「返回」按钮(用户要求)
+ *   · 只要箭头,不要文字
+ *   · 与 ✕ 同尺寸、同一水平线对齐
+ *   · 只有能返回时才显示(v-if 已控制)
+ * ========================================================================== */
+.detail-panel .detail-panel-header .detail-panel-actions .detail-panel-back {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    padding: 0;
+    margin: 0;
+    font-size: 17px;
+    line-height: 1;
+    color: var(--emm-text-2);
+    border-radius: 4px;
+    /* 靠近 ✕:与刷新按钮同组,gap 由 .detail-panel-actions 的 2px 控制 */
+}
+.detail-panel .detail-panel-header .detail-panel-actions .detail-panel-back:hover {
+    color: var(--emm-text-1);
+    background: var(--el-fill-color-light);
+}

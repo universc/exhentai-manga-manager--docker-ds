@@ -8670,13 +8670,30 @@ html.nhentai
 .search-fullpage-chip {
   cursor: pointer;
 }
-/* 详情界面「返回」按钮:贴在 el-dialog 自带 ✕ 的左边 */
+/* 详情界面「返回」按钮(用户要求:只要箭头、与 ✕ 对齐)
+   ✕ 的实测位置在 BookDetailDialog 的样式里:top:0 / right:10px / 32x32。
+   所以返回按钮做成同样 32x32、top:0,右移一个按钮位(right:44px)贴着它,
+   两者天然在同一水平线上,不依赖字号/缩放。 */
 .dialog-detail .detail-nav-back {
   position: absolute;
-  top: 12px;
-  right: 56px;
-  z-index: 10;
-  font-size: 14px;
+  top: 0;
+  right: 44px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  margin: 0;
+  z-index: 21;
+  font-size: 18px;
+  line-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--el-text-color-regular, #606266);
+}
+.dialog-detail .detail-nav-back:hover {
+  color: var(--el-text-color-primary, #303133);
+  background: var(--el-fill-color-light);
+  border-radius: 4px;
 }
 /* 「加载失败,点击重试」要看起来能点 */
 .load-more-end.is-retry {
