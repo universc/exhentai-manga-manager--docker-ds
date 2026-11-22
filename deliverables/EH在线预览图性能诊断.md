@@ -225,6 +225,14 @@ EH 侧会按请求特征区别对待（`ehLogin.js:454-468` 的 `cf-mitigated` �
 | M3 | `modules/ehImageCache.js` | `get()` 改 async（stat/readFile/utimes），两处调用点均 await |
 | M4 | `index.js`、`web-server.js` | 内存 Map 只收 ≤512KB；整包攒下来落盘的上限改为磁盘单张上限（4MB） |
 | M6 | `modules/ehLogin.js` + 图片路径 | 新增 `totalTimeout`（总时长，流式/缓冲都会清定时器），图片路径传 20s |
+
+**关于总时长的最终口径（易被误读，记在这里）**：
+
+- 预算在 `requestOnce` **入口**算一次，重试共用（`total-timeout` 不再重试），所以 20s 是「整个请求」而不是「每次尝试」。
+- **拿到响应头之后**，流式响应按体积重算：`min(180s, max(20s, content-length / 50KB/s))`。
+  300KB→20s、1.5MB→30.7s、4MB→80s、8MB→160s、更大或**体积未知（分块传输，代理可能剥掉 Content-Length）→ 封顶 180s**。
+- 因此「传了 `totalTimeout: 20000` 却跑了 80 秒」不是 bug：那是一条按 50KB/s 以上速度在正常传的 4MB 大图。
+  真正「完全不出数据」的坏节点由 `req.on('timeout')`（socket 空闲 15s）兜住，不受这条影响。
 | M1/M7/M8 | `index.js` `get-ex-webpage` | 缓存键 = URL + cookie 的 md5，TTL 60s→5min；补 Chrome UA / Accept-Language / 站点根 Referer；`BROWSER_UA` 从 `ehLogin` 导出复用 |
 | B1（直连半） | `modules/ehLogin.js` | 直连时挂 `https.Agent({keepAlive})`；代理隧道池化未做（`agent-base` 不池化，硬改会破坏隧道生命周期），已在注释里写明 |
 | L2 | 两个组件 | `previewItems` 改增量 append；侧栏 `syncOnlinePreview` 返回真实新增条数 |
