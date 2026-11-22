@@ -149,8 +149,13 @@
         <el-button type="success" size="small" class="outer-read-button" plain @click="$emit('duClick')">{{$t('m.ad')}}</el-button>
       </el-button-group>
       <!-- 这个「标签」格:有类别就显示所属类别(如 Misc / Western),没有才显示 tagged / non-tag 状态;悬停可看真实状态 -->
+      <!-- ★ 以前的条件是 !(wnacg && !category):绅士漫画只要 category 为空就**整块不渲染**。
+           而「杂志&短篇」这类书的 category 按规则被置空了(用户要求分类不保留),
+           于是它们的标签格彻底消失,看起来就像「加载不完全」。
+           现在改成:@wnacgCategoryText 有内容就显示(它会回退到 fullCategory 站点原文),
+           实在什么都没有才退回 status。 -->
       <el-tag
-        v-if="!viewSetting.hideNonTag && !(book.site === 'wnacg' && !book.category)"
+        v-if="!viewSetting.hideNonTag && (book.site !== 'wnacg' || !!wnacgCategoryText(book) || !!book.status)"
         class="book-status-tag"
         effect="plain"
         :type="book.status === 'non-tag' ? 'info' : book.status === 'tagged' ? 'success' : 'warning'"
@@ -349,7 +354,9 @@ const LANG_ZH_CHAR = {
 //   UI 上不要再拆成两个标签(用户明确要求改回去)。
 const wnacgCategoryText = (book) => {
   if (!book || book.site !== 'wnacg') return ''
-  const raw = String(book.fullCategory || book.category || '').trim()
+  // 优先 category(拆分后的干净类别);为空时回退 fullCategory(站点角标原文),
+  // 这样「杂志&短篇」这类 category 被规则置空的书,卡片上仍然有分类可看。
+  const raw = String(book.category || book.fullCategory || '').trim()
   if (!raw) return ''
   return raw.replace(/\s*／\s*/g, '/').replace(/\s*\/\s*/g, '/')
 }

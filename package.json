@@ -1,7 +1,7 @@
 {
   "name": "exhentai-manga-manager",
   "private": true,
-  "version": "1.18.6",
+  "version": "1.18.8",
   "main": "index.js",
   "license": "MIT",
   "author": "SchneeHertz (modified fork by universc)",
