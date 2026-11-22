@@ -117,7 +117,29 @@ const requireLogin = (req, res, next) => {
 // 每个浏览器一个 jar(用 HttpOnly cookie 认人),多开也不会串。
 const WNACG_PROXY_PATH = '/wnacg-proxy/'
 const WNACG_PROXY_TOKEN_COOKIE = 'emm_wnacg_proxy'
+// 绅士漫画登录 iframe 的会话 jar。
+// ★ 必须有上限 + 清理:以前是裸 Map,每个不带 cookie 的请求都会新建一个 jar,
+//   永不删除 —— 长时间运行(尤其被扫描器/多标签刷)会一路涨内存。
+//   现在:最多保留 200 个会话,超出淘汰最老的;并且每小时清一次 2 小时没动过的。
 const wnacgProxyJars = new Map()
+const WNACG_PROXY_JAR_MAX = 200
+const WNACG_PROXY_JAR_TTL = 2 * 60 * 60 * 1000
+const touchWnacgProxyJar = (token, jar) => {
+  // 用「删除再插入」把最近使用的顶到 Map 末尾(插入序),淘汰时从头部删最老
+  wnacgProxyJars.delete(token)
+  wnacgProxyJars.set(token, jar)
+  if (wnacgProxyJars.size > WNACG_PROXY_JAR_MAX) {
+    const oldest = wnacgProxyJars.keys().next().value
+    if (oldest !== undefined && oldest !== token) wnacgProxyJars.delete(oldest)
+  }
+}
+setInterval(() => {
+  const now = Date.now()
+  for (const [tok, jar] of wnacgProxyJars) {
+    const at = Number(jar && jar.__at) || 0
+    if (at && now - at > WNACG_PROXY_JAR_TTL) wnacgProxyJars.delete(tok)
+  }
+}, 60 * 60 * 1000).unref?.()
 
 const wnacgProxyHost = () => {
   const s = (typeof getSetting === 'function' ? getSetting() : {}) || {}
@@ -128,10 +150,16 @@ const wnacgProxySessionOf = (req, res) => {
   let token = known && wnacgProxyJars.has(known) ? known : ''
   if (!token) {
     token = Math.random().toString(36).slice(2) + Date.now().toString(36)
-    wnacgProxyJars.set(token, new Map())
+  }
+  let jar = wnacgProxyJars.get(token)
+  if (!jar) {
+    jar = new Map()
     res.append('Set-Cookie', `${WNACG_PROXY_TOKEN_COOKIE}=${token}; HttpOnly; Path=/; SameSite=Lax`)
   }
-  return { token, jar: wnacgProxyJars.get(token) }
+  // 记录最后访问时间(给上面的 TTL 清理用),并把它顶到 LRU 末尾
+  jar.__at = Date.now()
+  touchWnacgProxyJar(token, jar)
+  return { token, jar }
 }
 const wnacgProxyJarOf = (req, res) => wnacgProxySessionOf(req, res).jar
 
@@ -682,12 +710,34 @@ const imgCacheGet = (url) => {
   imgCache.set(url, hit)
   return hit
 }
+// 写内存缓存。
+// ★ 以前这里只 imgCache.set,**从不累加 imgCacheBytes、也从不淘汰** ——
+//   IMG_CACHE_MAX_BYTES(600MB)形同虚设,Map 只增不减。
+//   绅士漫画一屏几十张封面、翻几页就上千张,内存一路涨到 V8 老生代打满,
+//   GC 疯狂停顿 → 「浏览一会儿就卡死、然后突然全部涌出来」。
+const imgCacheEvictTo = (targetBytes) => {
+  // Map 的迭代顺序 = 插入顺序,最老的在最前;删除时顺便把字节数减回去
+  for (const [k, v] of imgCache) {
+    if (imgCacheBytes <= targetBytes) break
+    imgCache.delete(k)
+    imgCacheBytes -= v.buffer.length
+  }
+}
 const imgCachePut = (url, buffer, type) => {
   if (!buffer || !buffer.length) return
+  // 单张超过总预算 1/4 的不进内存缓存(磁盘缓存仍会留住它)
   if (buffer.length > IMG_CACHE_MAX_BYTES / 4) return
   const prev = imgCache.get(url)
-  if (prev) { imgCacheBytes -= prev.buffer.length; imgCache.delete(url) }
+  if (prev) {
+    imgCacheBytes -= prev.buffer.length
+    imgCache.delete(url)
+  }
   imgCache.set(url, { buffer, type, at: Date.now() })
+  imgCacheBytes += buffer.length
+  // 超预算:一次收到 80% 以下,避免频繁触发(批量淘汰比逐张淘汰省 CPU)
+  if (imgCacheBytes > IMG_CACHE_MAX_BYTES) {
+    imgCacheEvictTo(Math.floor(IMG_CACHE_MAX_BYTES * 0.8))
+  }
 }
 
 // ---------- 在线图片磁盘缓存(与桌面版 emm-eh:// 共用 modules/ehImageCache.js) ----------
@@ -698,11 +748,40 @@ const ehImgDisk = createEhImageCache({ dir: () => path.join(STORE_PATH, 'ehimgca
 const ehImgDiskGet = (url) => ehImgDisk.get(url)
 const ehImgDiskPut = (url, buffer) => ehImgDisk.put(url, buffer)
 const trimEhImgCache = (maxFiles) => ehImgDisk.trim(maxFiles)
+// ---------- 图片并发槽 ----------
+// ★ 排队必须有超时。以前 acquireImgSlot 是裸 Promise:
+//   并发 12 个槽被慢请求(单次 15s × 2 轮 = 30s)占满后,后面所有请求无限堆积,
+//   浏览器那边早已超时/放弃,服务端队列却还在长 ——
+//   等前面的陆续结束就「一次性全放行」,表现正是用户说的
+//   「先一直转圈 → 突然全部涌出来 + 界面卡顿」。
+//   现在:排队最多等 IMG_SLOT_WAIT_MS,超时立刻回 503,浏览器会按 img 的 error 处理,
+//   不会再给服务端堆无意义的活儿;队列也有上限,超出直接拒绝。
+const IMG_SLOT_WAIT_MS = 12000
+const IMG_WAIT_QUEUE_MAX = 64
 let imgRunning = 0
 const imgWaiters = []
-const acquireImgSlot = () => new Promise((resolve) => {
-  if (imgRunning < IMG_MAX_CONCURRENCY) { imgRunning += 1; resolve() }
-  else imgWaiters.push(resolve)
+const acquireImgSlot = () => new Promise((resolve, reject) => {
+  if (imgRunning < IMG_MAX_CONCURRENCY) { imgRunning += 1; return resolve() }
+  if (imgWaiters.length >= IMG_WAIT_QUEUE_MAX) {
+    const e = new Error('img queue full'); e.code = 'QUEUE_FULL'; return reject(e)
+  }
+  let settled = false
+  const waiter = () => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    resolve()
+  }
+  const timer = setTimeout(() => {
+    if (settled) return
+    settled = true
+    // 从队列里摘掉自己(可能已经被 shift 走了,indexOf 兜底)
+    const i = imgWaiters.indexOf(waiter)
+    if (i >= 0) imgWaiters.splice(i, 1)
+    const e = new Error('img slot timeout'); e.code = 'SLOT_TIMEOUT'
+    reject(e)
+  }, IMG_SLOT_WAIT_MS)
+  imgWaiters.push(waiter)
 })
 const releaseImgSlot = () => {
   const next = imgWaiters.shift()
@@ -752,7 +831,15 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
   // 槽是否已经「交给响应」:交给响应后由上面的 close/finish/error 归还,finally 不再插手
   let slotHandedToResponse = false
   try {
-    await acquireImgSlot()
+    try {
+      await acquireImgSlot()
+    } catch (slotErr) {
+      // 排队超时 / 队列满:直接回 503,让浏览器按「图片加载失败」处理。
+      // 以前这里没有超时,请求会一直挂在内存里等槽 —— 用户切走页面后它们还在排队,
+      // 等槽空出来就一次性放行,造成「突然全部涌出 + 卡顿」。
+      res.set('Cache-Control', 'no-store')
+      return res.status(503).send('busy')
+    }
     release = releaseSlot
     slotHeld = true
     // 该账户的设置(含 proxy);拿不到就退回全局设置
@@ -773,7 +860,11 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
       raw: true,
       stream: true,
       referer: pageRef,
-      timeout: 15000,
+      // ★ 单张图 15s 太长:绅士漫画的图床(qy0.ru)正常几十毫秒到 1s 就回,
+      //   慢的都是坏节点。慢节点会把并发槽占死(还占两轮 = 30s),
+      //   后面的图只能排队 → 就是「先转圈、后突然全部涌出」。
+      //   收到 9s:快节点照样成功,坏节点尽早让出槽位。
+      timeout: 9000,
       retries: 1
     })
     const dropStream = (r) => {

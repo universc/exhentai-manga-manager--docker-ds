@@ -65,11 +65,18 @@
         <span class="book-task-text">{{ bookTaskChar }}</span>
         <span class="book-task-progress" v-if="bookTaskTotal">{{ bookTaskDone }}/{{ bookTaskTotal }}</span>
       </div>
+      <!-- ★ loading="lazy" + decoding="async" 必须有:
+           在线书架每次翻页都会整体重建 bookList(applyOnlineList),所有卡片重新挂载。
+           没有 lazy 时,42 张封面会**同时**发起请求 —— 而服务端图片并发只有 12 槽,
+           于是排长队:界面先全部转圈、等槽陆续空出来再一次性涌出,伴随明显卡顿。
+           加了 lazy 后浏览器只加载视口内的(通常 8-12 张),队列压力立刻降下来。 -->
       <img
         v-if="coverSrc"
         class="book-cover"
         :src="coverSrc"
         alt=""
+        loading="lazy"
+        decoding="async"
         @click="onCoverClickOnce"
         @dblclick="onCoverDblClick"
         @touchstart.passive="startCoverPress($event)"
@@ -170,6 +177,8 @@
         class="book-cover-fill"
         :src="coverSrc"
         alt=""
+        loading="lazy"
+        decoding="async"
         @click="onCoverClickOnce"
         @dblclick="onCoverDblClick"
         @touchstart.passive="startCoverPress($event)"
