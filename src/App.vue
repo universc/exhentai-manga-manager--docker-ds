@@ -227,7 +227,8 @@
          点工具栏搜索按钮 → 打开这个全屏搜索页;关闭后**恢复打开前的主界面状态**
          (页码 / 滚动位置 / 列表内容原样回去,不是重新加载)。
          界面本身只做一件事:输入关键词 + 给搜索历史,回车或点搜索即执行。 -->
-    <div class="search-fullpage" v-if="searchPageOpen">
+    <div class="search-fullpage" v-if="searchPageOpen" @click.self="closeSearchPage">
+      <div class="search-fullpage-inner" @click.stop>
       <div class="search-fullpage-head">
         <el-input
           ref="searchPageInputRef"
@@ -243,18 +244,27 @@
         <el-button type="primary" size="large" :icon="Search32Filled" @click="submitSearchPage">{{ $t('m.search') }}</el-button>
         <el-button size="large" @click="closeSearchPage">{{ $t('m.cancel') }}</el-button>
       </div>
+      <!-- 清空后的撤销条(替代 toast:搜索页 z-index 3000 会盖住 ElMessage) -->
+      <div v-if="searchPageHistoryUndo" class="search-fullpage-history">
+        <div class="search-fullpage-undo">
+          <span>{{ $t('m.searchHistoryCleared') }}</span>
+          <el-button size="small" text type="primary" @click="undoClearSearchHistory">{{ $t('m.searchHistoryUndo') }}</el-button>
+        </div>
+      </div>
       <!-- 搜索历史:横排芯片,点一下填入输入框 -->
-      <div v-if="searchHistory.length" class="search-fullpage-history">
+      <div v-else-if="searchHistory.length" class="search-fullpage-history">
         <div class="search-fullpage-history-title">{{ $t('m.searchHistory') }}</div>
         <div class="search-fullpage-chips">
           <el-tag
-            v-for="h in searchHistory" :key="'sfp-' + h"
+            v-for="h in searchHistory.slice(0, 12)" :key="'sfp-' + h"
             class="search-fullpage-chip" size="large" closable
+            :title="$t('m.searchHistoryRemove')"
             @click="searchPageQuery = h"
             @close="removeSearchHistory(h)"
           >{{ h }}</el-tag>
         </div>
         <el-button size="small" text type="danger" @click="clearSearchHistory">{{ $t('m.searchHistoryClear') }}</el-button>
+      </div>
       </div>
     </div>
     <RandomTags
@@ -860,6 +870,8 @@ export default defineComponent({
     searchPageOpen: false,
     searchPageQuery: '',
     searchPageSnapshot: null,
+    // 清空搜索历史后的撤销数据(面板内显示「已清空 · 撤销」,5 秒后失效)
+    searchPageHistoryUndo: null,
       // 「EH在线」/「紳士漫畫」没被勾进任何「库切换」框时的临时站位:存的是库 id(''=不在线库)
       // 勾进框之后切换库完全按框走,这个标志不再参与(见 computed onlineSource)
       onlineStopActive: '',
@@ -2071,8 +2083,13 @@ export default defineComponent({
           this.submitSearchPage()
           return
         }
-        // 焦点不在输入框时,屏蔽其余全局键位(方向键/F5/PageDown 别去打遮罩下的书架)
-        if (currentUIValue !== 'inputing') return
+        // ★ 无论焦点在哪,搜索页开着就**一律不往下传**。
+        //   焦点在输入框时:输入相关按键由输入框自己的 @keydown/@input 处理,
+        //   这里再往下走会命中 Backspace→模拟 Esc、方向键→翻书架等 home 语义;
+        //   焦点在 body 时:更要把 F5/PageDown/Enter 全部挡掉。
+        //   (评审指出的 bookEachLine 在下方无条件计算、列表区可能为 null →
+        //    getWidth(null) 得 NaN —— 这里提前 return 也一并规避了。)
+        return
       }
       const bookEachLine = Math.floor(getWidth(document.querySelector('.book-card-area div:first-child'), 'width') / getWidth(document.querySelector('.book-card'), 'full'))
       if (currentUIValue !== 'inputing') {
@@ -3217,9 +3234,27 @@ export default defineComponent({
       try { localStorage.setItem('emmSearchHistory', JSON.stringify(this.searchHistory)) } catch (e) { /* 忽略 */ }
     },
     clearSearchHistory () {
+      // ★ 不用 ElMessageBox 二次确认、也不用 toast:
+      //   搜索页 z-index 3000,而 Element 的 overlay/message 都是 2000 级,
+      //   确认框和提示都会被整屏盖住(用户只看到「点了没反应」)。
+      //   改成面板内的「已清空 + 撤销」条:5 秒内可恢复,比一条 3 秒就消失的 toast 更有用。
+      if (!this.searchHistory || !this.searchHistory.length) return
+      this.searchPageHistoryUndo = this.searchHistory.slice()
       this.searchHistory = []
       try { localStorage.removeItem('emmSearchHistory') } catch (e) { /* 忽略 */ }
-      this.printMessage('success', this.$t('m.searchHistoryCleared'))
+      clearTimeout(this._searchHistoryUndoTimer)
+      this._searchHistoryUndoTimer = setTimeout(() => {
+        this.searchPageHistoryUndo = null
+      }, 5000)
+    },
+    // 撤销「清空搜索历史」
+    undoClearSearchHistory () {
+      const prev = this.searchPageHistoryUndo
+      if (!prev || !prev.length) return
+      this.searchHistory = prev
+      try { localStorage.setItem('emmSearchHistory', JSON.stringify(prev)) } catch (e) { /* 忽略 */ }
+      this.searchPageHistoryUndo = null
+      clearTimeout(this._searchHistoryUndoTimer)
     },
     rememberSearch (s) {
       const v = String(s || '').trim()
@@ -8699,28 +8734,60 @@ html.nhentai
     background: transparent
 
 /* ================= 独立搜索界面(用户要求 7) ================= */
+/* ==========================================================================
+ * 独立搜索页(评审建议 A:顶部锚定单卡片,而不是居中大输入框)
+ *
+ * 为什么不居中:提交后立刻关闭回主界面,它是「唤起→输入→执行→消失」的一次性面板
+ * (VS Code / Raycast / Linear 那种),不是搜索结果页。顶部锚定后,
+ * 历史/撤销等附加内容向下生长,不会把输入框挤走、也没有布局跳动。
+ *
+ * ⚠ stylus 坑:width: min(760px, 92vw) 会被 stylus 折叠成 92vw(只留最后一参),
+ *    必须用 s("min(760px,92vw)") 包一下,或者拆成 max-width + width:100%。
+ *    这里用后者的等价写法,避免依赖 s() 的写法差异。
+ * ========================================================================== */
 .search-fullpage {
   position: fixed;
   inset: 0;
   z-index: 3000;
-  background: var(--el-bg-color, #fff);
+  /* 遮罩:深浅主题都成立(模糊的是背后内容);--el-mask-color 在浅色主题是白色半透明,会提亮成灰白 */
+  background: rgba(0, 0, 0, 0.35);
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 18vh;
-  gap: 24px;
+  /* 顶部留白:避开窗口自带的 .fullscreen-button(top:39px, z-index:3000) */
+  padding-top: 12vh;
+  gap: 0;
+}
+/* 单卡片容器:输入行 + 历史/撤销 全部收在同一个盒子里,零布局跳动 */
+.search-fullpage-inner {
+  /* box-sizing 必须显式写:stylus 编译后 padding 会撑破 max-width(实测 794px > 760) */
+  box-sizing: border-box;
+  width: 92vw;
+  max-width: 760px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 12px;
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-border-color-light);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  overflow-y: auto;
+  /* 面板内滚动不要带动后面的书架 */
+  overscroll-behavior: contain;
 }
 .search-fullpage-head {
   display: flex;
   align-items: center;
   gap: 10px;
-  width: min(760px, 90vw);
+  width: 100%;
 }
 .search-fullpage-input {
   flex: 1 1 auto;
 }
 .search-fullpage-history {
-  width: min(760px, 90vw);
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -8769,6 +8836,30 @@ html.nhentai
 }
 .load-more-end.is-retry:hover {
   text-decoration: underline;
+}
+
+
+/* ==========================================================================
+ * ElMessage 必须盖在「独立搜索页」(z-index:3000)之上
+ *
+ * 为什么不用 ElMessage 的 zIndex prop:经核对 element-plus 源码,
+ *   message.mjs 确实声明了 zIndex prop,但 message2.mjs 的 customStyle 只写
+ *   `zIndex: currentZIndex.value`(全局递增计数,基数 2000),
+ *   **从不读取 props.zIndex** —— 传了是 no-op。
+ * 所以只能用 CSS 覆盖。
+ * ========================================================================== */
+.el-message {
+    z-index: 3001 !important;
+}
+
+
+/* 清空搜索历史后的撤销条 */
+.search-fullpage-undo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
 }
 
 </style>

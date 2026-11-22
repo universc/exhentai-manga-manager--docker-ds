@@ -292,14 +292,14 @@ export const useAppStore = defineStore('appStore', {
     },
     printMessage(type, msg) {
       ElMessage.closeAll()
+      // ⚠ 不要传 zIndex: 3001 —— 经核对 element-plus 源码,这个 prop 是**摆设**:
+      //   message.mjs 里声明了 zIndex prop,但 message2.mjs 的 customStyle
+      //   只写 `zIndex: currentZIndex.value`(全局递增计数,基数 2000),
+      //   **从不读取 props.zIndex**。所以传了也不生效。
+      //   抬高层级改用全局 CSS(见 App.vue 里 .el-message 的覆盖)。
       ElMessage[type]({
         message: msg,
-        offset: 50,
-        // ★ 必须高于「独立搜索页」的 z-index(3000)。
-        //   Element Plus 的 ElMessage 基数只有 2000 + 递增,
-        //   而搜索页是 3000 —— 不显式抬高的话,搜索页里触发的提示
-        //   (比如「搜索历史已清空」)会被整屏盖住,用户完全看不到,以为点了没反应。
-        zIndex: 3001
+        offset: 50
       })
     },
     returnFileNameWithExt (filepath) {
