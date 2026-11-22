@@ -9773,8 +9773,6 @@ ipcMain.handle('get-all-tags', async () => {
     //   所以以前这些界面完全看不到它。
     //   这里一并查 category(和 tags 同一批行,不多查一次数据库)。
     const rows = await Metadata.findAll({ attributes: ['tags', 'category'] })
-    // 临时诊断:确认 handler 里到底查到多少行(排查完可删)
-    console.log('[get-all-tags][diag] rows=', Array.isArray(rows) ? rows.length : 'not-array',
       'firstTagsType=', rows && rows[0] ? typeof rows[0].tags : 'n/a')
     const seen = new Set()
     const out = []
