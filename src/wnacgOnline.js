@@ -126,7 +126,7 @@ export const WNACG_CATEGORY_SPLIT = {
   18: ['', 'english'],             // 杂志&短篇／English
   19: ['韩漫', ''],                // 韩漫
   20: ['韩漫', 'chinese'],         // 韩漫／汉化
-  21: ['韩漫', 'japanese'],        // 韩漫／生肉 → 生肉=日语原版
+  21: ['韩漫', 'korean'],          // 韩漫／生肉 → 生肉=未翻译的原文,韩漫的原文是韩语
   22: ['3D漫画', ''],              // 3D&漫画
   23: ['3D漫画', 'chinese'],       // 3D&漫画／汉化
   24: ['3D漫画', ''],              // 3D&漫画／其他
@@ -151,11 +151,17 @@ export const wnacgSplitCategoryByName = (name) => {
   if (!parts.length) return { category: '', language: '' }
   const head = parts[0]
   const rest = parts.slice(1)
-  // 语言判定:汉化/中文 → chinese;日语/日文 → japanese;English/英文 → english
+  // 语言判定:
+  //   汉化/中文 → chinese ; 日语/日文 → japanese ; English/英文 → english
+  //   ★「生肉」= 未翻译的原文,语言取决于**主分类本身**:
+  //      韩漫／生肉 → 韩语(korean)   ← 漫画是韩国作品,原文当然是韩语
+  //      同人志／生肉 → 日语(japanese)
+  const isKoreanHead = /^韩漫$|^韓漫$/.test(head)
   let language = ''
   for (const p of rest) {
     if (/^(汉化|漢化|中文|中譯|中译)$/i.test(p)) language = 'chinese'
-    else if (/^(日语|日語|日文|生肉)$/i.test(p)) language = 'japanese'
+    else if (/^生肉$/i.test(p)) language = isKoreanHead ? 'korean' : 'japanese'
+    else if (/^(日语|日語|日文)$/i.test(p)) language = 'japanese'
     else if (/^english$/i.test(p)) language = 'english'
   }
   // 类别:按用户规则归一

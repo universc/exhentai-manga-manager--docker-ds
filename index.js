@@ -6999,10 +6999,13 @@ const wnacgSplitCategoryText = (name) => {
   if (!parts.length) return { category: '', language: '' }
   const head = parts[0]
   const rest = parts.slice(1)
+  // ★「生肉」= 未翻译的原文,语言取决于主分类:韩漫／生肉 → korean,其余 → japanese
+  const isKoreanHead = /^韩漫$|^韓漫$/.test(head)
   let language = ''
   for (const p of rest) {
     if (/^(汉化|漢化|中文|中譯|中译)$/i.test(p)) language = 'chinese'
-    else if (/^(日语|日語|日文|生肉)$/i.test(p)) language = 'japanese'
+    else if (/^生肉$/i.test(p)) language = isKoreanHead ? 'korean' : 'japanese'
+    else if (/^(日语|日語|日文)$/i.test(p)) language = 'japanese'
     else if (/^english$/i.test(p)) language = 'english'
   }
   let category = head
@@ -7638,7 +7641,7 @@ ipcMain.handle('wnacg-download', async (event, arg) => {
         // ★ 语言标签:分类拆分出来的语言要以「语言」类别写进标签,
         //   这样下载记录和本地书库都能按语言筛选(用户要求:汉化→语言)。
         if (detail.language) {
-          const langLabel = ({ chinese: 'chinese', japanese: 'japanese', english: 'english' })[detail.language] || ''
+          const langLabel = ({ chinese: 'chinese', japanese: 'japanese', english: 'english', korean: 'korean' })[detail.language] || ''
           if (langLabel) {
             const merged = { ...(rec.tags || {}) }
             const key = '语言'

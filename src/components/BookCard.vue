@@ -367,12 +367,13 @@ const wnacgCategoryText = (book) => {
   if (!raw) return ''
   return raw.replace(/\s*／\s*/g, '/').replace(/\s*\/\s*/g, '/')
 }
-// 绅士漫画的语言角标(由分类拆分而来):chinese→汉化 / japanese→日语 / english→English
+// 绅士漫画的语言角标(由分类拆分而来):
+//   chinese→汉化 / japanese→日语 / english→English / korean→韩语
 const wnacgLanguageText = (book) => {
   if (!book || book.site !== 'wnacg') return ''
   const lang = String(book.language || '').trim().toLowerCase()
   if (!lang) return ''
-  return ({ chinese: '汉化', japanese: '日语', english: 'English' })[lang] || ''
+  return ({ chinese: '汉化', japanese: '日语', english: 'English', korean: '韩语' })[lang] || ''
 }
 const languageBadgeText = (book) => {
   // 绅士漫画:汉化→汉,日语→日,English→英,其余分类没有语言,角标直接不显示
