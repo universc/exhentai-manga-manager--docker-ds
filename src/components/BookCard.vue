@@ -355,9 +355,14 @@ const LANG_ZH_CHAR = {
 //   UI 上不要再拆成两个标签(用户明确要求改回去)。
 const wnacgCategoryText = (book) => {
   if (!book || book.site !== 'wnacg') return ''
-  // 优先 category(拆分后的干净类别);为空时回退 fullCategory(站点角标原文),
-  // 这样「杂志&短篇」这类 category 被规则置空的书,卡片上仍然有分类可看。
-  const raw = String(book.category || book.fullCategory || '').trim()
+  // ★ 卡片显示**必须优先 fullCategory(站点原始角标)**:
+  //   「同人志／汉化」「单行本／汉化」「杂志&短篇／汉化」—— 一个标签看全。
+  //   分类拆分(category=同人志 / language=chinese)只用于**下载获取标签时写库**,
+  //   不是给卡片显示用的(用户明确要求:卡片保持原样)。
+  //   ⚠ 之前我为了修「category 为空时整块标签消失」,把优先级改成了
+  //      category || fullCategory —— 结果所有卡片都只剩「同人志」,把「／汉化」丢了。
+  //      正确的修法是:保持 fullCategory 优先,只在它也为空时才回退 category。
+  const raw = String(book.fullCategory || book.category || '').trim()
   if (!raw) return ''
   return raw.replace(/\s*／\s*/g, '/').replace(/\s*\/\s*/g, '/')
 }
