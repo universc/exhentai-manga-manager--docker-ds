@@ -465,22 +465,12 @@
                 v-for="(it, i) in previewItems"
                 :key="i"
                 class="book-preview-item"
-                :style="it.sprite ? cellBoxStyle(it.sprite) : null"
+                :class="{ 'is-sprite': !!it.sprite }"
+                :style="it.sprite ? spriteBoxStyle(it.sprite) : null"
                 @click="readFromPreview(it.pageIndex != null ? it.pageIndex : i)"
                 @contextmenu.prevent="onImageContextMenu($event, it, i)"
               >
-                <!-- 在线页预览:整本共用一张雪碧图,靠「图片按倍数放大 + 负 margin 挪位」取该格。
-                     用 <img loading="lazy"> 而不是 background-image:图直连原地址,Chromium 自己的
-                     连接池/HTTP 缓存/懒加载都能用上,也少一次跨进程转发(失败自动回退代理地址)。 -->
-                <img
-                  v-if="it.sprite"
-                  class="cell-img"
-                  :src="imgSrcOf(it.sprite)"
-                  :style="imgCropStyle(it.sprite)"
-                  loading="lazy"
-                  decoding="async"
-                  @error="onSpriteError(it.sprite)"
-                />
+                <div v-if="it.sprite" class="book-preview-sprite" :style="it.sprite" />
                 <!-- GIF 超过 5 张时:默认显示静态首帧(thumb),鼠标移上去才换成动图(见 displaySrc)。
                      displaySrc 保证只要这一页有路径就返回非空地址 —— 不会再出现「纯白空格子」 -->
                 <img
@@ -558,16 +548,6 @@
   </el-dialog>
 </template>
 
-<script>
-// 首图预热事件的「监听只注册一次」开关(必须放模块作用域,<script setup> 里的变量是每个实例一份)。
-// 为什么需要:preload 只暴露了 on / invoke / sendSync,**没有 removeListener**,注册上去就摘不掉;
-// 而详情弹窗的开关只作用于里面的 el-dialog,组件本身常驻 —— 真正要防的是「万一被重新挂载,
-// 旧监听还留着」。所以监听在模块里只挂一次,用 earlyThumbSink 指向当前那个弹窗实例的回调:
-// 卸载时置空,重挂时重新指向,监听数量恒为 1。
-let earlyThumbSink = null
-let earlyThumbHooked = false
-</script>
-
 <script setup>
 import { ref, computed, h, watch, onBeforeUnmount, onMounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -585,7 +565,7 @@ import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, retryBookCover, bookImgSrc, catDisplayName, getDisplayTagName, resolveCatKey, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName, compareCollectionBooks } from '../utils.js'
 import  { insertLocalReadRecord, toAssetUrl } from '../utils.js'
-import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, ehProxyImageSrc, fetchGalleryThumbsPage } from '../ehOnline.js'
+import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, fetchGalleryThumbsPage } from '../ehOnline.js'
 import { isWnacgUrl, parseWnacgDetail, mergeWnacgDetail, collectWnacgThumbs, wnacgHtmlLooksBroken, wnacgIsDeletedPage, parseWnacgFavDialog, wnacgAidOf, parseWnacgComments, parseWnacgChapterCover, wnacgImageSrc } from '../wnacgOnline.js'
 import { addTagToBlacklist, setBlacklistEnabled } from '../ehFilter.js'
 
@@ -628,36 +608,11 @@ const recomputePreviewCell = () => {
 onMounted(() => {
   recomputePreviewCell()
   window.addEventListener('resize', recomputePreviewCell)
-  bindEarlyThumb()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', recomputePreviewCell)
   if (previewCellRaf) { cancelAnimationFrame(previewCellRaf); previewCellRaf = 0 }
-  if (earlyThumbSink === prewarmThumb) earlyThumbSink = null
 })
-
-// ---------- 首图预热(主进程边收 HTML 边扫出详情页第一张缩略图) ----------
-// 详情页 HTML 有 90KB 量级:以前整包收完才开始解析、才开始发图片请求,首图白等一整趟页面下载。
-// 主进程一发现 #gdt 里的第一张缩略图就发 eh-early-thumb,这里把地址提前交给 Chromium 抓
-// (只 new Image(),**不进 DOM**),等预览格真正挂上 <img> 时直接命中缓存。
-const prewarmThumb = ({ pageUrl, thumb } = {}) => {
-  const b = bookDetail.value
-  // 串书防护:事件是主进程按「谁发的请求」回的,但仍要确认这条 HTML 就是当前这本的详情页,
-  // 否则快速切书时会把上一本的首图塞进缓存(白下一张,还可能占住连接)
-  if (!b || !thumb || String(pageUrl || '') !== String(b.url || '')) return
-  try {
-    const img = new Image()
-    img.decoding = 'async'
-    img.src = ehImageSrc(thumb, '', b.url)
-  } catch (e) { /* 预热是锦上添花,失败绝不影响主流程 */ }
-}
-const bindEarlyThumb = () => {
-  earlyThumbSink = prewarmThumb
-  if (earlyThumbHooked) return
-  if (typeof ipcRenderer === 'undefined' || !ipcRenderer || typeof ipcRenderer.on !== 'function') return
-  earlyThumbHooked = true
-  ipcRenderer.on('eh-early-thumb', (e, payload) => { if (earlyThumbSink) earlyThumbSink(payload) })
-}
 
 const {
   printMessage,
@@ -1188,16 +1143,18 @@ const ensurePreviewThumbs = async () => {
   }
 }
 
-// 雪碧图切片:所有页共用一张图,靠「图片按倍数放大 + 负 margin 挪位」取到该格。
-// ★ 只记 4 个数(图片地址 / 单格宽高 / 整张图总宽 / 该格偏移),缩放全交给 CSS 百分比:
-//   预览格跟着 --preview-cell 放大到 190px 时,图片和偏移等比跟着变,不用重算任何 style。
-// ⚠ 裁切必须是纯百分比(别用 calc 把 % 和 px 混在一起除):混算除不尽会逐格错位,
-//   而「图片宽 = 总宽/格宽、左移 = 偏移/格宽」两者都是相对格子宽度的比例,天然是百分比。
-//   单图(非雪碧图)时 sw === w 且 ox === 0,两个值自然变成 100% / 0,不用单独分支。
-const cellBoxStyle = (s) => ({ height: `calc(var(--preview-cell, 118px) * ${s.h} / ${s.w})` })
-const imgCropStyle = (s) => ({
-  width: (s.sw / s.w * 100).toFixed(4) + '%',
-  marginLeft: s.ox ? -(s.ox / s.w * 100).toFixed(4) + '%' : '0'
+// 雪碧图:所有页共用一张图,靠 -Npx 偏移定位。
+// ★ 缩放交给 CSS 变量(--cell)驱动,和侧栏预览(SideDetailPanel)同一套做法:
+//   以前这里用 transform: scale() + 负 margin 把原尺寸层压到 118px,格子大小一变就得
+//   整片重算 style;现在只记「第几格 / 格宽高 / 整张图多宽」,缩放全由 calc(var(--cell) …) 完成,
+//   预览格放大到 190px 时雪碧图跟着等比放大,不糊也不重排。
+// 雪碧图的 4 个尺寸变量要从「子元素」复制到「格子本身」:
+// 格子的 height 用 calc(var(--th)/var(--tw)),而 CSS 变量只向下继承,写在子元素上父级读不到。
+const spriteBoxStyle = (s) => ({
+  '--ox': s['--ox'],
+  '--tw': s['--tw'],
+  '--th': s['--th'],
+  '--sw': s['--sw'],
 })
 
 // 统一写缩略图并记录「这份数据属于哪本书」。
@@ -1208,26 +1165,24 @@ const setPreviewThumbnails = (thumbs, ownerId) => {
   bookDetail.value.thumbnails = Array.isArray(thumbs) ? thumbs : []
   bookDetail.value.thumbsOwnerId = ownerId || ''
 }
-const spriteDataOf = (th) => {
+const spriteStyleOf = (th) => {
   const w = Number(th.width) || 200
   const h = Number(th.height) || 287
   // 整张雪碧图总宽(解析时算好);缺失时退化成一格宽
   const sw = Number(th.spriteWidth) || w
   // ★ EH 的页预览是整本共用一张雪碧图:referer 必须统一成画廊 URL,和侧栏(SideDetailPanel)
-  //   用同一个值 —— 否则同一张图在两个组件里是 2 个不同 URL,回退到代理时主进程缓存
-  //   (按完整 URL 存)会各存一份、各下载一次。wnacg 每页是独立缩略图,保持原来的「不带 referer」不变。
+  //   用同一个值 —— 否则同一张图在两个组件里是 2 个不同 URL,主进程缓存(按完整 URL 存)
+  //   会各存一份、各下载一次。wnacg 每页是独立缩略图,保持原来的「不带 referer」不变。
   const galleryUrl = (bookDetail.value && bookDetail.value.url) || ''
   const referer = isWnacgUrl(galleryUrl) ? '' : galleryUrl
-  const rawUrl = th.thumb || ''
-  return { rawUrl, referer, url: ehImageSrc(rawUrl, '', referer), w, h, sw, ox: Number(th.offsetX) || 0 }
+  return {
+    backgroundImage: `url(${ehImageSrc(th.thumb, '', referer)})`,
+    '--ox': String(th.offsetX || 0),
+    '--tw': String(w),
+    '--th': String(h),
+    '--sw': String(sw)
+  }
 }
-
-// 直连失败(图床被墙 / 代理规则没生效 / Referer 被拒)就回退到代理地址:
-// 宁可多一次跨进程转发,也不能让预览整片空白 —— 那正是改造前的老行为,兜底不会更差。
-// ⚠ 用「整体换新 Set」而不是 add:Set 的增删不是响应式的,换引用才会重新求值 imgSrcOf。
-const failedSprites = ref(new Set())
-const imgSrcOf = (s) => failedSprites.value.has(s.url) ? ehProxyImageSrc(s.rawUrl, '', s.referer) : s.url
-const onSpriteError = (s) => { failedSprites.value = new Set(failedSprites.value).add(s.url) }
 
 // get-ex-webpage 失败时主进程返回 null(B 线),具体原因在只读通道 eh-webpage-last-error 里。
 // 统一拼成「从 EH 取列表失败…: <原因>」,不要只给一句没有信息量的「失败」。
@@ -1265,7 +1220,7 @@ const loadMoreOnlineThumbs = async () => {
     for (const t of (b.thumbnails || [])) {
       if (!t || !t.href || seenThumbHrefs.has(t.href)) continue
       seenThumbHrefs.add(t.href)
-      previewItems.value.push({ sprite: spriteDataOf(t) })
+      previewItems.value.push({ sprite: spriteStyleOf(t) })
     }
     // 回填后已经够数:不必再发请求
     if (previewItems.value.length >= previewTotal.value) {
@@ -1289,7 +1244,7 @@ const loadMoreOnlineThumbs = async () => {
     for (const th of fresh) {
       seenThumbHrefs.add(th.href)
       // 增量 push,不整体替换数组:整体替换会让已经显示出来的格子重排、重解码
-      previewItems.value.push({ sprite: spriteDataOf(th) })
+      previewItems.value.push({ sprite: spriteStyleOf(th) })
     }
     added = fresh.length
     // 同步回 book.thumbnails:侧栏预览复用同一份数据,不必自己再拉一遍
@@ -1341,7 +1296,7 @@ const enrichOnlineBook = async (book) => {
     if (!stillMine()) return
     Object.assign(bookDetail.value, mergeDetailIntoBook(bookDetail.value, detail))
     const firstThumbs = detail.thumbnails || []
-    previewItems.value = firstThumbs.map(th => ({ sprite: spriteDataOf(th) }))
+    previewItems.value = firstThumbs.map(th => ({ sprite: spriteStyleOf(th) }))
     // 详情页一页只给 20 张缩略图:总数按页数算,剩下的由 loadMoreOnlineThumbs() 按需逐页追加
     const pages = Number(detail.pageCount) || firstThumbs.length
     previewTotal.value = Math.max(pages, firstThumbs.length)
@@ -1420,7 +1375,7 @@ const enrichWnacgBook = async (book) => {
     }
     if (!stillMine()) return
     const first = detail.thumbnails || []
-    previewItems.value = first.map(th => ({ sprite: spriteDataOf(th) }))
+    previewItems.value = first.map(th => ({ sprite: spriteStyleOf(th) }))
     const pages = Number(detail.pageCount) || first.length
     previewTotal.value = Math.max(pages, first.length)
     previewRawTotal.value = previewTotal.value
@@ -1442,7 +1397,7 @@ const enrichWnacgBook = async (book) => {
         onUpdate: (thumbs) => {
           if (token !== previewToken) return
           setPreviewThumbnails(thumbs, book && book.id)
-          previewItems.value = thumbs.map(th => ({ sprite: spriteDataOf(th) }))
+          previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
         },
         // ★ 缩略图分页最终失败(重试也救不回来):记下来给界面显示「点此重试」,
         //   以前是静默 break —— 用户只看到一堆转圈的空格子,不知道发生了什么。
@@ -1455,7 +1410,7 @@ const enrichWnacgBook = async (book) => {
       }).then((thumbs) => {
         if (token !== previewToken) return
         setPreviewThumbnails(thumbs, book && book.id)
-        previewItems.value = thumbs.map(th => ({ sprite: spriteDataOf(th) }))
+        previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
         // 全部拿到就清掉错误标记
         if (thumbs.length >= previewTotal.value) wnacgThumbsError.value = false
       }).catch(() => { /* 某页拉不到就算了,已显示的先留着 */ })
@@ -1582,8 +1537,6 @@ watch(() => bookDetail.value?.id, (id) => {
   cancelReq('wnacg-thumbs')
   cancelReq('eh-thumbs')
   previewItems.value = []
-  // 换书就把「直连失败过」的记录清掉:否则上一本的失败地址会一直留在 Set 里(只增不减)
-  failedSprites.value = new Set()
   previewRawTotal.value = 0
   previewAutoLimit.value = PREVIEW_AUTO_PAGES
   currentPreviewBook = null
@@ -1609,7 +1562,7 @@ watch(() => bookDetail.value?.id, (id) => {
     //   只有 thumbsOwnerId === b.id 才认这个缓存。
     const thumbsOwner = b.thumbsOwnerId || ''
     if ((b.thumbnails || []).length && thumbsOwner && thumbsOwner === b.id) {
-      previewItems.value = b.thumbnails.map(th => ({ sprite: spriteDataOf(th) }))
+      previewItems.value = b.thumbnails.map(th => ({ sprite: spriteStyleOf(th) }))
       previewTotal.value = previewItems.value.length
       // EH 在线的缓存只是「上次打开时已拉到的位置」:总数按页数算,剩下的继续按需逐页拉。
       // 游标从共用位置接着走(侧栏/本弹窗谁拉过都算),不从头重拉已看过的分页。
@@ -2778,7 +2731,6 @@ defineExpose({
   // ★ 高度必须给**显式值**:以前是 height:auto + aspect-ratio:3/4,而 img 又是 height:100% ——
   //   百分比高度在「auto 高度父级」里会退化成 auto,于是图片按自身比例把格子撑高,
   //   同一行格子高低参差。给死 3:4 的高度后,img 的 100% 才有参照,整墙才是等高网格。
-  // 雪碧图格子的高度由 cellBoxStyle 按切片比例内联覆盖(见模板),不跟这里的 3:4。
   height: calc(var(--preview-cell, 118px) * 4 / 3)
   overflow: hidden
   border-radius: 4px
@@ -2791,12 +2743,18 @@ defineExpose({
     // ★ cover -> contain:cover 会把长页裁成中间一条(看着更小),改成完整显示整页
     object-fit: contain
     display: block
-  // 雪碧图切片:宽度/左移由 imgCropStyle 按百分比内联给出(跟着格子宽度等比缩放),
-  // 这里只把上面 img 的 height:100% 顶掉 —— 切片高度必须按图片自身比例走,
-  // 否则整张雪碧图会被压成格子高度,切出来的那一格是变形的。
-  .cell-img
-    height: auto
-    display: block
+.book-preview-sprite
+  background-repeat: no-repeat
+  // 雪碧图切片:跟着 --preview-cell 等比缩放(数值来自 spriteStyleOf 的 --tw/--th/--sw/--ox)
+  width: var(--preview-cell, 118px)
+  height: calc(var(--preview-cell, 118px) * var(--th, 1) / var(--tw, 1))
+  background-size: calc(var(--sw, 1) * var(--preview-cell, 118px) / var(--tw, 1)) auto
+  background-position: calc(var(--ox, 0) * var(--preview-cell, 118px) / var(--tw, 1) * -1) 0
+// 雪碧图格子:高度交给切片自己算(EH 页多为 100x140,比 3/4 高),
+// 不然 3/4 的盒子会把长页底部切掉一条
+.book-preview-item.is-sprite
+  aspect-ratio: auto
+  height: calc(var(--preview-cell, 118px) * var(--th, 1.4) / var(--tw, 1))
 // 预览格的「空白占位」:图还没解码出来 / 没有图时铺一层极淡的底,
 // 只表示「这里有一格」,不是破图也不是转圈(用户要求加载时不要残缺图)
 .book-preview-pending

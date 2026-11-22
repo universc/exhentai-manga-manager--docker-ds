@@ -52,6 +52,9 @@ const ehLogin = require('./modules/ehLogin.js')
 // 在线图片磁盘缓存:桌面版(本文件)与网页版(web-server.js)共用同一份实现
 // MAX_BYTES = 磁盘缓存的单张上限(4MB):流式路径要不要「整包攒下来落盘」按它判,别在本地另写一份
 const { createCache: createEhImageCache, MAX_BYTES: EH_IMG_DISK_MAX_BYTES } = require('./modules/ehImageCache.js')
+// EH 取图限速器(令牌桶 + 熔断冷却)与魔数嗅探,与网页版 web-server.js 共用同一份实现
+const { createEhRateLimiter, sniffUpstreamHead, isImageMagic, isBanPage } = require('./modules/ehRateLimit.js')
+const ehRate = createEhRateLimiter({})
 const ehDownload = require('./modules/ehDownload.js')
 const collectionAuto = require('./modules/collectionAuto.js')
 const {
@@ -90,10 +93,9 @@ const WNACG_IMG_HOST_RE = /^https:\/\/([^/]+\.)?(qy0\.ru|wnacg[0-9a-z.-]*\.(com|
 // 与网页版 /api/ex-image 同一套策略:翻回上一页不再重新下载,并发过多不会被 EH 限速打死。
 const EH_IMG_CACHE_MAX_BYTES = 600 * 1024 * 1024
 const EH_IMG_CACHE_TTL = 30 * 60 * 1000
-// 提到 12:实测「直连优先 + 代理兜底」时,并发 12 的墙钟比 6 更快且成功率不降
-// (20 张图:并发6 3 115ms → 并发12 2 572ms,都是 20/20)。
-// 旧值 6 是「只走代理、失败还要重试」时代的经验值,那条路已经不在了。
-const EH_IMG_MAX_CONCURRENCY = 12
+// 回到 6:12 是「磁盘缓存全命中」时代的经验值,冷启动补抓几千张时会被 EH 判
+// excessive request rate 封出口 IP;6 + 令牌桶(8/s)能把补抓压到 EH 的容忍线内。
+const EH_IMG_MAX_CONCURRENCY = 6
 const ehImgCache = new Map()
 let ehImgCacheBytes = 0
 const ehImgCacheGet = (url) => {
@@ -1813,6 +1815,15 @@ if (!WEB_MODE) {
                 headers: { 'Content-Type': diskHit.type, 'X-Img-Cache': 'disk', 'Cache-Control': 'private, max-age=86400' }
               })
             }
+            // 熔断冷却期:快速失败,不打上游也不占并发槽 —— 排队等冷却结束会把槽占满。
+            // 503 让 Chromium 按「这张图加载失败」处理,冷却结束自动恢复。
+            const cooldownMs = ehRate.cooldownLeftMs()
+            if (cooldownMs > 0) {
+              return new Response(JSON.stringify({ error: 'EH 已限流本出口,请稍后或换代理节点', cooldownMs }), {
+                status: 503,
+                headers: { 'Retry-After': String(Math.ceil(cooldownMs / 1000)) }
+              })
+            }
             try {
               await ehImgAcquire()
             } catch (e) {
@@ -1866,6 +1877,8 @@ if (!WEB_MODE) {
               }
               // 返回 200 的响应;拿不到就抛(带 .status,供上层判断值不值得换节点)
               const openUpstream = async (target) => {
+                // 每次真正发起上游请求都消耗一个令牌(换节点重试也算),8/s 之外的排队等窗口
+                await ehRate.takeToken()
                 const r = await fetchUpstream(target)
                 if (r && r.status === 200) return r
                 const st = Number((r && r.status) || 0)
@@ -1899,7 +1912,30 @@ if (!WEB_MODE) {
                   break
                 }
                 try {
-                  // 限速页 / 删图页返回的是 HTML:不能当图片交出去,更不能写进缓存
+                  // 魔数嗅探:封禁页/限速页的 HTML 可能带着 image/* 的 content-type 回来,
+                  // 不能只信响应头 —— 摘前 4KB 看字节;rest 是含 head 在内的完整续传流,
+                  // 下游(转码整包读/收集落盘/pipe)无感知。
+                  const sniffed = await sniffUpstreamHead(r.stream)
+                  r.stream = sniffed.rest
+                  if (!isImageMagic(sniffed.head)) {
+                    dropStream(r)
+                    if (isBanPage(sniffed.head)) {
+                      ehRate.noteBan()
+                      const cd = ehRate.cooldownLeftMs()
+                      // 封禁页 HTML 绝不发给渲染进程、也绝不进 mem/disk 缓存;
+                      // 返回错误让 Chromium 显示「加载失败」,冷却结束自动恢复。
+                      return new Response(JSON.stringify({ error: 'EH 返回了限流/封禁页', cooldownMs: cd }), {
+                        status: 503,
+                        headers: { 'Retry-After': String(Math.ceil(cd / 1000)) }
+                      })
+                    }
+                    // 200 但不是图片(删图页等):换一个 H@H 节点再试一轮
+                    lastErr = new Error('not-image:' + sniffed.head.toString('latin1').slice(0, 30).replace(/\s+/g, ' '))
+                    if (isHathNode && attempt === 0) continue
+                    break
+                  }
+                  // 真图到手:限流已解除,熔断计数清零
+                  ehRate.noteOk()
                   const ctype = String((r.headers && r.headers['content-type']) || '')
                   // WebP 转 progressive JPEG(默认关闭,见 webpTranscodeEnabled):
                   //   老行为是「整张收完 → sharp 转码 → 才返回」,换来「先糊后清晰」;
@@ -1953,13 +1989,6 @@ if (!WEB_MODE) {
                     } catch (e) {
                       // 太大或取流出错:继续走下面的通用流式路径
                     }
-                  }
-                  if (!/^image\//i.test(ctype)) {
-                    lastErr = new Error('not-image:' + ctype.slice(0, 30))
-                    dropStream(r)
-                    // 200 但回 HTML = 限速页 / 删图页:换一个 H@H 节点再试一轮
-                    if (isHathNode && attempt === 0) continue
-                    break
                   }
                   // ★ 关键改造:边收边转,而不是等整包收完再回 Response。
                   //   浏览器直接看 EH 之所以「从不失败」,很大一部分原因是首块到达就开始画;

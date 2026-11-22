@@ -34,6 +34,9 @@ const ehLogin = require('./modules/ehLogin.js')
 // 在线图片磁盘缓存(与桌面版 index.js 共用同一份实现)
 // MAX_BYTES = 磁盘缓存的单张上限(4MB):流式路径要不要「整包攒下来落盘」按它判,别在本地另写一份
 const { createCache: createEhImageCache, MAX_BYTES: IMG_DISK_MAX_BYTES } = require('./modules/ehImageCache.js')
+// EH 取图限速器(令牌桶 + 熔断冷却)与魔数嗅探,与桌面版 index.js 共用同一份实现
+const { createEhRateLimiter, sniffUpstreamHead, isImageMagic, isBanPage } = require('./modules/ehRateLimit.js')
+const ehRate = createEhRateLimiter({})
 auth.loadUsers(STORE_PATH)
 iprules.loadRules(STORE_PATH)
 
@@ -699,9 +702,9 @@ const WNACG_IMAGE_HOST_RE = /^https:\/\/([^/]+\.)?(qy0\.ru|wnacg[0-9a-z.-]*\.(co
 // 这里补齐:LRU 内存缓存(TTL)、同时最多 N 个取图、失败快速重试一次、超时下调。
 const IMG_CACHE_MAX_BYTES = 600 * 1024 * 1024
 const IMG_CACHE_TTL = 30 * 60 * 1000
-// 提到 12:实测「直连优先 + 代理兜底」时并发 6/12/20 的成功率都是 20/20,
-// 而并发 12 的墙钟比 6 快(2 572ms vs 3 115ms)。之前卡 6 是「只走代理」时代的经验值。
-const IMG_MAX_CONCURRENCY = 12
+// 回到 6:12 是「磁盘缓存全命中」时代的经验值,冷启动补抓几千张时会被 EH 判
+// excessive request rate 封出口 IP;6 + 令牌桶(8/s)能把补抓压到 EH 的容忍线内。
+const IMG_MAX_CONCURRENCY = 6
 const imgCache = new Map()
 let imgCacheBytes = 0
 const imgCacheGet = (url) => {
@@ -829,6 +832,14 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
     res.set('X-Img-Cache', 'disk')
     return res.send(diskHit.buffer)
   }
+  // 熔断冷却期:快速失败,不打上游也不占并发槽 —— 排队等冷却结束会把槽占满,
+  // 重演「全部转圈 → 突然涌出」;浏览器按图片加载失败处理,冷却结束自动恢复。
+  const cooldownMs = ehRate.cooldownLeftMs()
+  if (cooldownMs > 0) {
+    res.set('Cache-Control', 'no-store')
+    res.set('Retry-After', String(Math.ceil(cooldownMs / 1000)))
+    return res.status(503).json({ error: 'EH 已限流本出口,请稍后或换代理节点', cooldownMs })
+  }
   // ★ 并发槽的归还:整个请求只还一次。
   //   以前是在 finally 里还 —— 而 finally 在 `upstream.pipe(res); return` 的**那一刻**就执行了
   //   (图片才刚开始往浏览器传),等于 IMG_MAX_CONCURRENCY 完全没生效:几十张图同时打 EH,必被限速。
@@ -889,6 +900,8 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
     }
     // 返回 200 的响应;拿不到就抛(带 .status 供上层判断值不值得换节点)
     const openUpstream = async (target) => {
+      // 每次真正发起上游请求都消耗一个令牌(换节点重试也算),8/s 之外的排队等窗口
+      await ehRate.takeToken()
       const r = await fetchUpstream(target)
       if (r && r.status === 200) return r
       const st = Number((r && r.status) || 0)
@@ -917,14 +930,29 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
         break
       }
       try {
-        const type = String((r.headers && r.headers['content-type']) || '')
-        if (!/^image\//i.test(type)) {
-          lastErr = new Error('not-image:' + type.slice(0, 30))
+        // 魔数嗅探:封禁页/限速页的 HTML 可能带着 image/* 的 content-type 回来
+        // (本次事故的根因),不能只信响应头 —— 摘前 4KB 看字节;
+        // rest 是含 head 在内的完整续传流,下游(pipe/落盘收集/转码)无感知。
+        const sniffed = await sniffUpstreamHead(r.stream)
+        r.stream = sniffed.rest
+        if (!isImageMagic(sniffed.head)) {
           dropStream(r)
-          // 200 但回 HTML = 限速页/删图页:换一个节点再试一轮
+          if (isBanPage(sniffed.head)) {
+            ehRate.noteBan()
+            const cd = ehRate.cooldownLeftMs()
+            res.set('Cache-Control', 'no-store')
+            res.set('Retry-After', String(Math.ceil(cd / 1000)))
+            // 封禁页 HTML 绝不发给浏览器、也绝不进 mem/disk 缓存
+            return res.status(503).json({ error: 'EH 返回了限流/封禁页', cooldownMs: cd })
+          }
+          // 200 但不是图片(删图页等):换一个节点再试一轮
+          lastErr = new Error('not-image:' + sniffed.head.toString('latin1').slice(0, 30).replace(/\s+/g, ' '))
           if (attempt === 0) continue
           break
         }
+        // 真图到手:限流已解除,熔断计数清零
+        ehRate.noteOk()
+        const type = String((r.headers && r.headers['content-type']) || '')
         // ★ WebP 先整张取回并转成 progressive JPEG:浏览器对 WebP 是整张解码的,
         //   流式喂进去也不会逐段显示;progressive JPEG 才会先糊后清晰。
         // ★ 2026-11:默认关闭(见文件头说明),只有设置里打开 ehWebpTranscode 才转码。
