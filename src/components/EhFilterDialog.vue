@@ -28,24 +28,15 @@
           <span class="ehf-label-text">{{ $t('m.keyword') }}</span>
           <SettingHint :text="$t('m.filterKeywordTip')" />
         </div>
-        <!-- ★ 关键词输入框:输入时弹出「已有标签」供选择(用户要求 5)
-             从 store.tagList 里取全部标签值做联想,点一下追加进关键词。
-             用 el-autocomplete 而不是 el-input:它就是干这个的,键盘上下选+回车都有。 -->
-        <el-autocomplete
-          v-model="model.keyword"
-          class="ehf-keyword-input"
-          clearable
-          :fetch-suggestions="queryKeywordSuggestions"
-          :placeholder="$t('m.filterKeywordPlaceholder')"
-          :fit-input-width="false"
-          popper-class="ehf-keyword-popper"
-          @select="onKeywordSelect"
-        >
-          <template #default="{ item }">
-            <span class="ehf-sug-label">{{ item.label }}</span>
-            <span v-if="item.cat" class="ehf-sug-cat">{{ item.cat }}</span>
-          </template>
-        </el-autocomplete>
+        <!-- ★ 关键词输入框 + 「选标签」按钮(用户要求 5)
+             ⚠ 不要用 el-autocomplete 的竖排下拉 —— 本软件所有选标签的地方
+             都是横排标签网格(TagList.vue),这里必须复用同一个组件,保持一致。 -->
+        <div class="ehf-keyword-row">
+          <el-input v-model="model.keyword" clearable :placeholder="$t('m.filterKeywordPlaceholder')" class="ehf-keyword-input" />
+          <el-button class="ehf-tag-pick-btn" :icon="TagGroup" @click="openKeywordTagPicker">
+            {{ $t('m.pickTag') }}
+          </el-button>
+        </div>
       </div>
 
       <div class="ehf-field">
@@ -142,6 +133,15 @@
       <el-button type="primary" @click="apply">{{ $t('m.confirm') }}</el-button>
     </template>
   </el-dialog>
+
+  <!-- 选标签弹窗:复用本软件统一的横排标签网格(TagList.vue)
+       ⚠ 不用 el-autocomplete 的竖排下拉 —— 软件里所有选标签的地方都是横排。
+       TagList 内部自己管 dialogVisible,通过 defineExpose 暴露,所以用 ref 控制。 -->
+  <TagList
+    ref="keywordTagPickerRef"
+    :title="$t('m.pickTag')"
+    @search="onKeywordTagPicked"
+  />
 </template>
 
 <script setup>
@@ -152,6 +152,8 @@ import { galleryCategoryName } from '../utils.js'
 import { useAppStore } from '../pinia.js'
 // 统一的「!」说明图标(设置页同款)
 import SettingHint from './SettingHint.vue'
+import TagList from './TagList.vue'
+import { TagGroup } from '@vicons/carbon'
 
 const { t, te } = useI18n()
 
@@ -176,51 +178,42 @@ const emit = defineEmits(['update:visible', 'apply'])
 const appStore = useAppStore()
 
 // 从 tagList 里取某个标签类别的全部取值
+// 从「全量标签」里取某个类别的所有取值。
+// ★ 必须用 tagListRaw(全库标签,来自 get-all-tags),不能用 tagList ——
+//   tagList 只从**当前书架的书**聚合,书没加载完/切到在线库时就是空的,
+//   于是筛选的类别按钮和语言下拉会退回写死的常量,看起来「没生效」。
 const valuesOfTagCat = (cat) => {
-  const list = Array.isArray(appStore.tagList) ? appStore.tagList : []
+  const list = Array.isArray(appStore.tagListRaw) ? appStore.tagListRaw : []
   const out = new Set()
+  const want = String(cat).toLowerCase()
   for (const item of list) {
-    const v = String((item && item.value) || '')
-    // tagList 的 value 形如 `"标签值"$`
-    const m = /^"(.*)"\$?$/.exec(v)
-    if (!m) continue
-    const label = String((item && item.label) || '')
-    // label 形如 `类别:值`,用前半段判断属于哪个类别
-    const head = label.split(':')[0]
-    if (String(head).toLowerCase() !== String(cat).toLowerCase()) continue
-    out.add(m[1])
+    if (!item) continue
+    const c = String(item.cat || '')
+    if (c.toLowerCase() !== want) continue
+    const tag = String(item.tag || '')
+    if (tag) out.add(tag)
   }
   return [...out]
 }
 
-// 关键词联想池:把 tagList 展开成 {label, value, cat} 供 el-autocomplete 用
-// (用户要求 5:点击关键词进入输入状态后,弹出标签栏供选择)
-const keywordPool = computed(() => {
-  const list = Array.isArray(appStore.tagList) ? appStore.tagList : []
-  return list.map(it => {
-    const label = String((it && it.label) || '')
-    const value = String((it && it.value) || '')
-    const m = /^"(.*)"\$?$/.exec(value)
-    const keyword = m ? m[1] : value
-    const cat = label.includes(':') ? label.split(':')[0] : ''
-    return { label: label, keyword, cat, lowerLabel: label.toLowerCase(), lowerKeyword: String(keyword).toLowerCase() }
-  }).filter(x => x.keyword)
-})
-const queryKeywordSuggestions = (queryString, cb) => {
-  const q = String(queryString || '').trim().toLowerCase()
-  const pool = keywordPool.value
-  let out = pool
-  if (q) {
-    out = pool.filter(x => x.lowerLabel.includes(q) || x.lowerKeyword.includes(q))
-  }
-  if (!out.length) { cb([]); return }
-  // 最多 20 条,避免弹层过长
-  cb(out.slice(0, 20))
+// 关键词「选标签」:复用本软件统一的横排标签弹窗 TagList(用户要求 5)
+// ⚠ 不用 el-autocomplete 的竖排下拉 —— 软件里所有选标签的地方都是横排网格。
+const keywordTagPickerRef = ref(null)
+const openKeywordTagPicker = () => {
+  const inst = keywordTagPickerRef.value
+  if (inst && inst.dialogVisible !== undefined) inst.dialogVisible = true
 }
-const onKeywordSelect = (item) => {
-  if (!item) return
-  // 选中后填进关键词(用标签值,不带动词库前缀)
-  model.keyword = item.keyword
+// TagList 的 @search 回传的是带引号的表达式(如 `"标签"$`),这里取出纯标签名
+const onKeywordTagPicked = (expr) => {
+  const raw = String(expr || '')
+  const m = /^"(.*?)"\$?$/.exec(raw)
+  const name = m ? m[1] : raw
+  if (!name) return
+  // 追加到关键词(已有内容时用空格分隔,符合「空格 = 与」的语义)
+  const cur = String(model.keyword || '').trim()
+  model.keyword = cur ? (cur + ' ' + name) : name
+  const inst = keywordTagPickerRef.value
+  if (inst && inst.dialogVisible !== undefined) inst.dialogVisible = false
 }
 
 // 类别按钮:优先用已有标签里出现过的类别值(按 EH 常量顺序排,未知的追加在后面)
@@ -451,21 +444,19 @@ const apply = () => {
     font-size: 12px
     color: var(--el-text-color-secondary)
 
-/* 关键词联想:左标签名 + 右类别小字 */
-.ehf-keyword-input {
-  width: 100%;
+
+
+/* 关键词行:输入框 + 选标签按钮 */
+.ehf-keyword-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.ehf-sug-label {
-  display: inline-block;
-  max-width: 78%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.ehf-keyword-row .ehf-keyword-input {
+  flex: 1 1 auto;
 }
-.ehf-sug-cat {
-  float: right;
-  font-size: 11px;
-  opacity: .6;
+.ehf-tag-pick-btn {
+  flex: 0 0 auto;
 }
 
 </style>

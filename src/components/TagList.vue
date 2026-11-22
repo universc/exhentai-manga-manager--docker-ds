@@ -180,17 +180,24 @@ const getBookInfos = () => {
 // 把库里所有书的标签按「类别 + 名称」去重计数
 const collectAllTags = () => {
   const counter = new Map()
+  const bump = (cat, name) => {
+    const key = cat + '\u0000' + name
+    let one = counter.get(key)
+    if (!one) { one = { cat, name, count: 0 }; counter.set(key, one) }
+    one.count++
+  }
   for (const book of getBookInfos()) {
-    for (const [rawCat, arr] of Object.entries(book.tags)) {
+    // ★ 把书的「类别」(category)也作为 cat='category' 的一组标签算进来。
+    //   用户要求:主界面标签栏/设置-标签/筛选 都要能看到「类别」这一组。
+    //   而 category 是书的独立字段,不在 book.tags 里 —— 以前这里只遍历 tags,
+    //   所以标签栏永远没有「类别」。
+    const bookCat = String(book.category || '').trim()
+    if (bookCat) bump('category', bookCat)
+    for (const [rawCat, arr] of Object.entries(book.tags || {})) {
       if (!Array.isArray(arr)) continue
       // 归一化类别:库里同一个类别可能既有英文键又有中文键(female / 女性),不合并会列出两条
       const cat = resolveCatKey(rawCat)
-      for (const name of arr) {
-        const key = cat + '\u0000' + name
-        let one = counter.get(key)
-        if (!one) { one = { cat, name, count: 0 }; counter.set(key, one) }
-        one.count++
-      }
+      for (const name of arr) bump(cat, name)
     }
   }
   return [...counter.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)))
