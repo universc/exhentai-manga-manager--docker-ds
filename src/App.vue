@@ -748,7 +748,7 @@ import LibraryFolderPicker from './components/LibraryFolderPicker.vue'
 import { EH_ONLINE_ID, hasEhCookies, ehHost, ehListUrl, parseGalleryList, parseGalleryDetail, galleryToBook, ehImageSrc, EX_HOST, EH_HOST } from './ehOnline.js'
 import { WNACG_ONLINE_ID, WNACG_SECTIONS, wnacgHost, wnacgSectionUrl, parseWnacgList, wnacgToBook, isWnacgUrl,
   parseWnacgShelf, parseWnacgFavDialog, wnacgAidOf, findWnacgFavDel, extractWnacgAdSlot, wnacgImageSrc, WNACG_RANK_SECTIONS, WNACG_RANK_PERIODS, WNACG_CATE_BADGE, wnacgIsRankSection, extractWnacgFavClasses, wnacgHtmlLooksBroken, wnacgParentCategory, wnacgIsSeriesCategory, parseWnacgChapterCover, parseWnacgDetail } from './wnacgOnline.js'
-import { loadEhFilter, saveEhFilter, ehFilterActive as ehFilterIsActive, ehFilterMatch, ehFilterParams, normalizeEhFilter } from './ehFilter.js'
+import { loadEhFilter, saveEhFilter, ehFilterActive as ehFilterIsActive, ehFilterMatch, ehFilterParams, normalizeEhFilter, overlayGlobalBlacklist } from './ehFilter.js'
 
 import { mapWritableState, mapActions } from 'pinia'
 import { useAppStore } from './pinia.js'
@@ -1610,6 +1610,9 @@ export default defineComponent({
         next = (!hasAny && ehFilterIsActive(this.ehFilter)) ? this.ehFilter : normalizeEhFilter({})
         store(key, next)
       }
+      // ★ 黑名单是全局的,按库快照里那份可能是在别的库改之前写的 → 读出来一律用全局值覆盖,
+      //   否则切库后黑名单会「时有时无」(用户报的「保存不了」)。
+      next = overlayGlobalBlacklist(next)
       if (JSON.stringify(next) !== JSON.stringify(this.ehFilter)) {
         this.ehFilter = next
         this.$nextTick(() => {

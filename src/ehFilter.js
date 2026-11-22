@@ -30,6 +30,50 @@ export const EH_FILTER_LANGUAGES = [
 
 export const EH_FILTER_STORE_KEY = 'emmEhFilter'
 
+// 黑名单单独存一份**全局**键。★为什么必须剥离:
+// 筛选本体是「按库」保存的(App.vue 用 emmEhFilter:<库> 做整份快照、切库时整份覆盖),
+// 而黑名单是用户对「标签」的偏好,跟当前在哪个库没有关系。
+// 混在按库快照里 → 切库时被另一个库的旧快照整份盖掉 → 用户看到「保存不了 / 时有时无」。
+export const EH_BLACKLIST_STORE_KEY = 'emmEhBlacklist'
+
+// 黑名单字段的补齐:只认这两个字段,其余一律丢掉。
+// ★老版本没有 blacklistEnabled:字段缺失时按「有内容 = 启用」推断,
+//   绝不能默认 false 把老用户本来在生效的黑名单全放出来。
+const normalizeBlacklist = (raw) => {
+  const o = (raw && typeof raw === 'object') ? raw : {}
+  const blacklist = String(o.blacklist || '').trim()
+  const blacklistEnabled = (o.blacklistEnabled === undefined || o.blacklistEnabled === null)
+    ? blacklist.length > 0
+    : !!o.blacklistEnabled
+  return { blacklist, blacklistEnabled }
+}
+
+export const saveGlobalBlacklist = (v) => {
+  try {
+    localStorage.setItem(EH_BLACKLIST_STORE_KEY, JSON.stringify(normalizeBlacklist(v)))
+  } catch (e) { /* 隐私模式等写不了就算了,只是不记忆 */ }
+}
+
+export const loadGlobalBlacklist = () => {
+  try {
+    const raw = localStorage.getItem(EH_BLACKLIST_STORE_KEY)
+    if (raw) return normalizeBlacklist(JSON.parse(raw))
+  } catch (e) { /* 解析失败就往下走迁移,当作新键不存在 */ }
+  // 迁移:老版本把黑名单混在全局筛选(emmEhFilter)里,搬一次过来再落盘。
+  // 不迁移的话老用户升级后黑名单会突然变空(等于把过滤规则全放出来)。
+  let migrated = normalizeBlacklist(null)
+  try {
+    const old = JSON.parse(localStorage.getItem(EH_FILTER_STORE_KEY) || 'null')
+    if (old && typeof old === 'object') migrated = normalizeBlacklist(old)
+  } catch (e) { /* 老数据坏了就当没有 */ }
+  saveGlobalBlacklist(migrated)
+  return migrated
+}
+
+// 把全局黑名单盖到一份(可能来自按库快照的)筛选上,返回新对象。
+// 调用方拿到的永远是「补齐 + 黑名单准确」的完整筛选,不用关心它从哪个库来。
+export const overlayGlobalBlacklist = (f) => ({ ...normalize(f), ...loadGlobalBlacklist() })
+
 // 默认:分类全开、不限语言/页数、最低评分 1(即「没有任何筛选」)
 // blacklistEnabled = 黑名单总开关。默认关闭:新用户填了黑名单才勾「启用」。
 export const defaultEhFilter = (extraCats = []) => {
@@ -84,17 +128,19 @@ const normalize = (raw) => {
 export const normalizeEhFilter = normalize
 
 export const loadEhFilter = () => {
-  try {
-    return normalize(JSON.parse(localStorage.getItem(EH_FILTER_STORE_KEY) || 'null'))
-  } catch (e) {
-    return defaultEhFilter()
-  }
+  let raw = null
+  try { raw = JSON.parse(localStorage.getItem(EH_FILTER_STORE_KEY) || 'null') } catch (e) { raw = null }
+  // 先补齐,再用全局黑名单覆盖 —— 黑名单不跟库走,老位置里那份可能已经过期
+  return overlayGlobalBlacklist(raw)
 }
 
 export const saveEhFilter = (f) => {
+  const n = normalize(f)
   try {
-    localStorage.setItem(EH_FILTER_STORE_KEY, JSON.stringify(normalize(f)))
+    localStorage.setItem(EH_FILTER_STORE_KEY, JSON.stringify(n))
   } catch (e) { /* 隐私模式等写不了就算了,只是不记忆 */ }
+  // 黑名单同时落到全局键:它是全局偏好,不能只活在这份「会切库覆盖」的筛选里
+  saveGlobalBlacklist({ blacklist: n.blacklist, blacklistEnabled: n.blacklistEnabled })
 }
 
 // 把一条标签的**原始名**加进黑名单(去重,大小写不敏感)。

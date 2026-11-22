@@ -127,8 +127,9 @@
             effect="plain"
             closable
             class="ehf-tagbox-tag"
+            :title="t"
             @close="removeBlacklistTerm(t)"
-          >{{ t }}</el-tag>
+          >{{ displayTerm(t) }}</el-tag>
           <el-input
             ref="blacklistInputRef"
             v-model="newBlacklistTerm"
@@ -169,7 +170,7 @@
 import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { EH_FILTER_CATEGORIES, EH_FILTER_LANGUAGES, defaultEhFilter, normalizeEhFilter } from '../ehFilter.js'
-import { galleryCategoryName } from '../utils.js'
+import { galleryCategoryName, tagDisplayName } from '../utils.js'
 import { useAppStore } from '../pinia.js'
 // 统一的「!」说明图标(设置页同款)
 import SettingHint from './SettingHint.vue'
@@ -362,6 +363,33 @@ const onBlacklistKeyup = (e) => {
 const removeBlacklistTerm = (name) => {
   writeBlacklistTerms(blacklistTerms.value.filter(s => s !== name))
 }
+// 黑名单标签的**显示名**:跟随「设置 → 标签语言」(①手工多语言名 ②词库翻译 ③原始名)。
+// ⚠ 只影响显示:存盘与过滤一律用原始名(渲染处的 :key / :close 仍传 t),
+//   否则存进去的是翻译名,ehFilterMatch 拿 book.tags 的原值永远命不中。
+const displayTerm = (raw) => {
+  const name = String(raw || '')
+  if (!name) return name
+  const setting = appStore.setting || {}
+  const resolved = appStore.resolvedTranslation || {}
+  const lang = setting.tagTargetLang || ''
+  // 手工多语言名的键是 '类别::标签',而黑名单只存标签原值 → 找以 '::标签' 结尾的那个键
+  const suffix = '::' + name
+  const hitKey = Object.keys(setting.tagNameLangs || {}).find(k => k === suffix || k.endsWith(suffix))
+  if (hitKey) {
+    const rec = (setting.tagNameLangs || {})[hitKey] || {}
+    const picked = (lang && rec[lang]) || rec['default'] ||
+      Object.keys(rec).map(k => rec[k]).find(v => String(v || '').trim())
+    const out = String(picked || '').split('/')[0].trim()
+    if (out) return out
+  }
+  // 词库要按标签所属类别查,而黑名单不知道类别 → 遍历所有类别找到有这个标签的那个
+  for (const cat of Object.keys(resolved)) {
+    if (!resolved[cat] || !resolved[cat][name]) continue
+    const out = tagDisplayName(setting, resolved, cat, name)
+    if (out && out !== name) return out
+  }
+  return name
+}
 const focusBlacklistInput = () => {
   try { blacklistInputRef.value && blacklistInputRef.value.focus() } catch (e) { /* 忽略 */ }
 }
@@ -414,6 +442,8 @@ const resetAll = () => {
 }
 
 const apply = () => {
+  // 输入框里敲了词还没回车/没失焦就点「确定」时,那一项会丢(@blur 与按钮 click 的先后不保证)
+  commitBlacklistTerm()
   emit('apply', { ...model })
   visible_.value = false
 }
