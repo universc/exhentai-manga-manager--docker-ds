@@ -3182,13 +3182,22 @@ export default defineComponent({
         this.onlineQuery = ''
         try { this.clearOnlineListForReload() } catch (e) { /* 忽略 */ }
         this.loadOnlineList(true)
-        // 拉回来之后再按快照定位页码与滚动(列表是异步回来的,放在 then 里)
         this.$nextTick(() => {
           if (snap) this.restoreBookAreaState(snap)
         })
         return
       }
-      // 本地库:恢复全量列表,再按快照还原页码与滚动
+      // ★ 本地库:必须连 sortValue 一起还原。
+      //   searchBook 里有这么一句:
+      //     if (!sortValue || ['mark','hidden','collection'].includes(sortValue))
+      //       sortValue = 'addDescend'
+      //   也就是「搜索会顺手改排序」。如果只还原页码/滚动,排序仍停在 addDescend,
+      //   列表顺序和搜索前不一样 —— 用户看到的就是「没回到原来的界面」。
+      if (snap && snap.sortValue !== undefined && snap.sortValue !== null && snap.sortValue !== this.sortValue) {
+        this.sortValue = snap.sortValue
+        try { localStorage.setItem('sortValue', snap.sortValue) } catch (e) { /* 忽略 */ }
+      }
+      // 用快照的排序重新排全量列表(sortValue 已还原,直接传 bookList)
       this.handleSortChange(this.sortValue, this.bookList)
       this.$nextTick(() => {
         if (snap) this.restoreBookAreaState(snap)
@@ -3283,6 +3292,9 @@ export default defineComponent({
       if (!this.searchPrevState && String(this.searchString || '').trim()) {
         this.searchPrevState = {
           currentPage: this.currentPage,
+          // ★ 注意:这里记的是**进入 searchBook 之前**的 sortValue。
+          //   searchBook 内部可能会把它改成 addDescend(见下面的 reflow),
+          //   点 X 清空时要还原成这个值,否则列表顺序跟搜索前不同。
           sortValue: this.sortValue,
           scrollTop: (() => {
             try {
