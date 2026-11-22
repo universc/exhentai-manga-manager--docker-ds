@@ -6997,7 +6997,12 @@ export default defineComponent({
       // ⚠ 去重:站点分类偶尔会在一页里重复同一条(合集带子条目时),重复卡会让「到底了」永远判不出来
       const exist = new Set(this.onlineItems.map(it => it.id))
       const fresh = parsed.items.filter(it => !exist.has(it.id))
-      if (!fresh.length) {
+      // ★ 关键修复:本页全是重复条目 ≠ 已经到底了。
+      //   站点分类页确实会整页都是已出现过的条目(合集/分页边界重复),
+      //   以前这里直接 onlineHasMore=false —— 于是「明明原站还能翻下一页,我们却显示没有更多了」。
+      //   现在:只要**站点还给了下一页地址**,就继续翻(本次没有新增也没关系,下一轮会拿到新的);
+      //   只有站点确实没有 nextUrl 时才算到底。
+      if (!fresh.length && !parsed.nextUrl) {
         this.onlineHasMore = false
         return 0
       }
@@ -7013,10 +7018,18 @@ export default defineComponent({
     // 补到至少 need 条(单次最多补 8 页,避免一口气连打二十几个请求)
     async fillWnacgUpTo (need) {
       let guard = 0
+      // ★ 连续空页计数:站点偶尔会有整页都是重复条目的情况(合集/分页边界)。
+      //   现在 appendWnacgPage 遇到这种情况会「继续翻」而不是判定到底 ——
+      //   所以这里必须允许它返回 0 后继续下一轮,否则又变回原来的「一页空就停」。
+      //   但连续 3 页都没有新内容是异常(可能卡在同一个 nextUrl 上),此时才放弃。
+      let emptyRuns = 0
       while (this.onlineItems.length < need && this.onlineHasMore && guard < 8) {
         const n = await this.appendWnacgPage()
         guard += 1
-        if (!n) break
+        if (n > 0) { emptyRuns = 0; continue }
+        if (!this.onlineHasMore) break        // 站点确实没有下一页了
+        emptyRuns += 1
+        if (emptyRuns >= 3) break             // 连续 3 页无新内容:认为异常,停止
       }
     },
     // 紳士漫畫:取列表 → 映射成书 → 交给书架原本的数据流(卡片/分页/排序/详情全是原版)

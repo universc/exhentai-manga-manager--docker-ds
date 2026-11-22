@@ -5517,7 +5517,10 @@ const acquireWnacgZipSlot = (label) => new Promise((resolve) => {
     wnacgZipWaiters.push(waiter)
   }
   wnacgZipWaiters.push(waiter)
-  try { sendMessageToWebContents('等待前一个 Server 下载完成:' + who) } catch (e) { /* 忽略 */ }
+  // ★ 不再往界面上弹「等待前一个 Server 下载完成」。
+  //   批量下载时每一条排队都弹一次,一屏全是这种提示,把真正有用的信息淹没了;
+  //   排队状态在右侧「任务记录」里本来就能看出来(status/进度)。
+  //   这里只保留服务端日志,方便排查问题。
 })
 
 // ============================================================================

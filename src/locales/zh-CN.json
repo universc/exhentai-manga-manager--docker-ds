@@ -552,6 +552,7 @@
     "wnacgDlServer2": "下载(Server 2)",
     "wnacgDlStart": "开始下载…",
     "wnacgDlQueued": "已添加下载任务({mode}),进度在右侧「任务记录」里看",    "wnacgDlDone": "下载完成",
+    "seriesDlQueued": "已添加 {n} 个下载任务({mode}),进度在右侧「任务记录」里看",
     "wnacgDlFail": "下载失败",
     "wnacgReadFail": "打开阅读器失败：取不到图片列表（作品可能已被站点删除）",
     "wnacgInShelf": "已收藏",

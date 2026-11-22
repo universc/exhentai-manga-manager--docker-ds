@@ -553,6 +553,7 @@
     "wnacgDlServer2": "Download (Server 2)",
     "wnacgDlStart": "Download started…",
     "wnacgDlQueued": "Download task added ({mode}) — progress shows in the Task Records panel",
+    "seriesDlQueued": "Added {n} download tasks ({mode}); progress is in the task list on the right",
     "wnacgDlDone": "Download finished",
     "wnacgDlFail": "Download failed",
     "wnacgReadFail": "Failed to open the reader: image list unavailable (the gallery may have been deleted)",

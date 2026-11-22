@@ -553,6 +553,7 @@
     "wnacgDlServer2": "下載(Server 2)",
     "wnacgDlStart": "開始下載…",
     "wnacgDlQueued": "已新增下載任務({mode}),進度在右側「任務記錄」裡看",    "wnacgDlDone": "下載完成",
+    "seriesDlQueued": "已新增 {n} 個下載任務({mode}),進度在右側「任務記錄」裡看",
     "wnacgDlFail": "下載失敗",
     "wnacgReadFail": "開啟閱讀器失敗：取不到圖片列表（作品可能已被站點刪除）",
     "wnacgInShelf": "已收藏",
