@@ -237,6 +237,7 @@
           clearable
           size="large"
           @keyup.enter="submitSearchPage"
+          @keydown.esc.stop.prevent="closeSearchPage"
           @input="syncSearchPageSuggest"
         />
         <el-button type="primary" size="large" :icon="Search32Filled" @click="submitSearchPage">{{ $t('m.search') }}</el-button>
@@ -253,7 +254,7 @@
             @close="removeSearchHistory(h)"
           >{{ h }}</el-tag>
         </div>
-        <el-button size="small" text type="danger" @click="clearSearchHistory">{{ $t('m.clearSearchHistory') }}</el-button>
+        <el-button size="small" text type="danger" @click="clearSearchHistory">{{ $t('m.searchHistoryClear') }}</el-button>
       </div>
     </div>
     <RandomTags
@@ -2005,6 +2006,13 @@ export default defineComponent({
       if (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA') {
         return 'inputing'
       }
+      // ★ 独立搜索页开着:必须独占键盘上下文。
+      //   放在 'inputing' 之后(输入框内仍走输入框逻辑)、'home' 之前
+      //   —— 否则用户点一下搜索页空白处,焦点变成 body,currentUI() 会返回 'home',
+      //   于是 Enter 去点书架封面、F5 刷列表、PageDown 翻看不见的页码,全都乱套。
+      if (this.searchPageOpen) {
+        return 'search-page'
+      }
       if (!!document.querySelector('.is-message-box')) {
         return 'message-box'
       }
@@ -2048,6 +2056,24 @@ export default defineComponent({
     resolveKey (event) {
       // 阅读器里的翻页键由 InternalViewer.handleViewerKey 统一处理(按阅读方向)
       const currentUIValue = this.currentUI()
+      // ★ 独立搜索页:独占键盘。
+      //   Esc = 关闭(取消);Ctrl+Enter = 再提交一次;其它键一律不往下传
+      //   —— 否则遮罩下面的书架会跟着响应方向键 / F5 / PageDown。
+      if (this.searchPageOpen) {
+        // Esc 一律关闭(焦点在输入框里也算)'isComposing' 时不管,避免输入法冲突
+        if (event.key === 'Escape' && !event.isComposing) {
+          event.preventDefault()
+          this.closeSearchPage()
+          return
+        }
+        if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+          event.preventDefault()
+          this.submitSearchPage()
+          return
+        }
+        // 焦点不在输入框时,屏蔽其余全局键位(方向键/F5/PageDown 别去打遮罩下的书架)
+        if (currentUIValue !== 'inputing') return
+      }
       const bookEachLine = Math.floor(getWidth(document.querySelector('.book-card-area div:first-child'), 'width') / getWidth(document.querySelector('.book-card'), 'full'))
       if (currentUIValue !== 'inputing') {
         if (event.key === 'Backspace') {
@@ -3248,6 +3274,9 @@ export default defineComponent({
     // 打开:快照当前主界面状态(页码/列表/滚动位置),然后显示搜索页
     openSearchPage () {
       if (this.searchPageOpen) return
+      // ★ 先关掉工具栏建议弹层:它 teleport 到 body、z-index 2000,
+      //   不关会挂在搜索页(3000)下面继续存在,关掉搜索页后又诡异地冒出来。
+      try { if (typeof this.closeSearchPopper === 'function') this.closeSearchPopper() } catch (e) { /* 忽略 */ }
       this.searchPageSnapshot = {
         currentPage: this.currentPage,
         sortValue: this.sortValue,
@@ -3262,7 +3291,16 @@ export default defineComponent({
       this.searchPageQuery = this.searchString || ''
       this.searchPageOpen = true
       this.$nextTick(() => {
-        try { this.$refs.searchPageInputRef && this.$refs.searchPageInputRef.focus() } catch (e) { /* 忽略 */ }
+        // ★ focus + 全选:用户的下一步几乎总是「改词重搜」,
+        //   不选中就得先手动全选/删;全选后直接打字即覆盖(与原搜索框 Ctrl+L 行为一致)。
+        try {
+          const inp = this.$refs.searchPageInputRef
+          if (inp) {
+            inp.focus()
+            // el-input 的 select() 会把内部 <input> 内容全选
+            if (typeof inp.select === 'function') inp.select()
+          }
+        } catch (e) { /* 忽略 */ }
       })
     },
     // 关闭:还原快照(不动列表内容,只把页码/滚动位置放回去)
@@ -3281,12 +3319,41 @@ export default defineComponent({
       }
       this.searchPageSnapshot = null
     },
-    // 提交搜索:把关键词交给原来的 searchBook 流程,然后关闭搜索页
+    // 提交搜索:把关键词交给原来的 searchBook 流程,然后关闭搜索页。
+    // ★ 不能走 closeSearchPage() —— 那个是「取消」语义,会把页码/滚动位置还原成
+    //   打开搜索页之前的旧值。结果就是「搜完了却停在第 3 页、还停在半截滚动位置」。
+    //   在线库分支里 searchBook 自己会 currentPage=1,本地库分支不会(它走
+    //   handleSortChange → chunkList(true) 的 keepPage 路径),所以这里必须显式归位。
     submitSearchPage () {
       const q = String(this.searchPageQuery || '').trim()
+      const snap = this.searchPageSnapshot
+      this.searchPageOpen = false
+      this.searchPageQuery = ''
+      this.searchPageSnapshot = null
+      // 用户没输入内容:等同取消,保持原状
+      if (!q) {
+        if (snap) {
+          this.currentPage = snap.currentPage
+          this.$nextTick(() => {
+            try {
+              const el = document.querySelector('.book-card-area')
+              if (el) el.scrollTop = snap.scrollTop || 0
+            } catch (e) { /* 忽略 */ }
+          })
+        }
+        return
+      }
       this.searchString = q
-      this.closeSearchPage()
+      // 提交后回到第 1 页 + 顶部(本地库的 chunkList(true) 会保留旧页码)
+      this.currentPage = 1
       this.searchBook()
+      // searchBook 之后再把滚动位置拉回顶部(列表已经换了一批书)
+      this.$nextTick(() => {
+        try {
+          const el = document.querySelector('.book-card-area')
+          if (el) el.scrollTop = 0
+        } catch (e) { /* 忽略 */ }
+      })
     },
     // 输入时同步给 searchString,让原有的搜索建议/历史逻辑照常工作
     syncSearchPageSuggest () { /* 预留:需要时可接搜索建议 */ },

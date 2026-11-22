@@ -294,7 +294,12 @@ export const useAppStore = defineStore('appStore', {
       ElMessage.closeAll()
       ElMessage[type]({
         message: msg,
-        offset: 50
+        offset: 50,
+        // ★ 必须高于「独立搜索页」的 z-index(3000)。
+        //   Element Plus 的 ElMessage 基数只有 2000 + 递增,
+        //   而搜索页是 3000 —— 不显式抬高的话,搜索页里触发的提示
+        //   (比如「搜索历史已清空」)会被整屏盖住,用户完全看不到,以为点了没反应。
+        zIndex: 3001
       })
     },
     returnFileNameWithExt (filepath) {
