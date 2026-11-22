@@ -1461,9 +1461,12 @@ watch(() => bookDetail.value?.id, (id) => {
   //   继续占代理连接、继续耗带宽。用户连点几本 = 后台堆几个没人要的请求,
   //   越点越慢(这正是「比原网页慢很多」的一大原因)。
   //   现在切书时直接让主进程 abort 掉「详情/预览」这一组的连接。
-  try { ipcRenderer.invoke('cancel-ex-webpage', { groupId: 'wnacg-detail' }) } catch (e) { /* 忽略 */ }
-  try { ipcRenderer.invoke('cancel-ex-webpage', { groupId: 'eh-detail' }) } catch (e) { /* 忽略 */ }
-  try { ipcRenderer.invoke('cancel-ex-webpage', { groupId: 'wnacg-thumbs' }) } catch (e) { /* 忽略 */ }
+  // ⚠ .catch 必须写:invoke 返回的是 Promise,同步 try/catch 抓不到拒绝;
+  //   网页版/测试环境没有这个 IPC 通道,不 catch 会刷一堆 unhandledRejection。
+  const cancelReq = (g) => { try { const p = ipcRenderer.invoke('cancel-ex-webpage', { groupId: g }); if (p && p.catch) p.catch(() => {}) } catch (e) { /* 忽略 */ } }
+  cancelReq('wnacg-detail')
+  cancelReq('eh-detail')
+  cancelReq('wnacg-thumbs')
   previewItems.value = []
   previewRawTotal.value = 0
   previewAutoLimit.value = PREVIEW_AUTO_PAGES

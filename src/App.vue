@@ -819,8 +819,10 @@ export default defineComponent({
       _libSwitchSeq: 0,
       // home
       searchString: '',
-      // 「点搜索之前」的主界面状态(页码/排序/滚动):点 X 清空搜索时用它还原
+      // 「点搜索之前」的主界面状态(整套列表状态):点 X 清空搜索时原样贴回
       searchPrevState: null,
+      // 正在还原搜索前快照:期间屏蔽自动重排(否则 chunkDisplayBookList 会被重算)
+      _restoringSearchSnap: false,
       // 「EH在线」/「紳士漫畫」没被勾进任何「库切换」框时的临时站位:存的是库 id(''=不在线库)
       // 勾进框之后切换库完全按框走,这个标志不再参与(见 computed onlineSource)
       onlineStopActive: '',
@@ -2898,6 +2900,10 @@ export default defineComponent({
       this.handleSortChange(this.combineSortValue(base), this.displayBookList)
     },
     handleSortChange (val, bookList) {
+      // ★ 取消搜索的还原过程中,屏蔽自动重排:
+      //   那时 displayBookList / chunkDisplayBookList 刚被贴回快照,
+      //   如果再重排一次会把「渲染量/顺序」改掉,还原就白做了。
+      if (this._restoringSearchSnap) return
       if (!bookList) bookList = this.displayBookList
       // ★ 2026-11 兜底:排序/筛选期间任何一个分支抛错(Vue 的 watch/computed 里也会把异常
       //   变成「渲染失败 → 整块区域空白」),这里统一兜住并回落到「完整书架」,
@@ -3165,66 +3171,69 @@ export default defineComponent({
       try { localStorage.setItem('emmSearchHistory', JSON.stringify(this.searchHistory)) } catch (e) { /* 忽略 */ }
     },
     // 搜索框内容变化(含用户点 X 清空)。
-    // ★ 用户要求:点 X 清掉搜索文字后**回到原来的界面** —— 即恢复成未搜索前的
-    //   全量列表、回到第 1 页、滚回顶部,和从没搜过一样。
-    // 搜索框内容变化(含用户点 X 清空)。
-    // ★ 用户要求:点 X 清掉搜索词后,**完全回到点搜索之前的样子** ——
-    //   页码、排序、滚动位置都保留(不是回到第 1 页)。
-    //   所以这里用 searchBook 入口处记的快照来还原。
+    // ========================================================================
+    // 搜索框内容变化(含用户点 X 清空)
+    //
+    // 用户要求:取消搜索后,主界面必须**原封不动**地回来。
+    //
+    // 实现原则:**贴回快照,不做任何重算/重拉**。
+    //   以前的写法会走 handleSortChange / loadOnlineList 重新算或重新请求,
+    //   于是:① 在线库会重新发网络请求,页面跳一下;
+    //        ② 重排后 chunkDisplayBookList 的渲染量变了,滚动位置对不上;
+    //        ③ 有时序问题(异步回填赶不上)。
+    //   现在直接把 searchBook 入口存下的整套列表状态贴回去 —— 零计算、零请求、零闪烁。
+    // ========================================================================
     handleSearchStringChange (val) {
       this.searchTyping = String(val || '')
       if (val) return
       this.searchString = ''
       const snap = this.searchPrevState
       this.searchPrevState = null
-      // 在线库:清掉搜索词,重新拉回「无搜索」的列表
-      if (this.onlineActive) {
-        this.onlineQuery = ''
-        try { this.clearOnlineListForReload() } catch (e) { /* 忽略 */ }
-        this.loadOnlineList(true)
-        this.$nextTick(() => {
-          if (snap) this.restoreBookAreaState(snap)
-        })
-        return
-      }
-      // ★ 本地库:必须连 sortValue 一起还原。
-      //   searchBook 里有这么一句:
-      //     if (!sortValue || ['mark','hidden','collection'].includes(sortValue))
-      //       sortValue = 'addDescend'
-      //   也就是「搜索会顺手改排序」。如果只还原页码/滚动,排序仍停在 addDescend,
-      //   列表顺序和搜索前不一样 —— 用户看到的就是「没回到原来的界面」。
-      if (snap && snap.sortValue !== undefined && snap.sortValue !== null && snap.sortValue !== this.sortValue) {
+      // 没有快照(用户没搜过就清空):什么都不用做
+      if (!snap) return
+
+      // ---- 0) 屏蔽「还原过程中触发的自动重排” ----
+      //   贴回 displayBookList 会触发 bookList/displayBookList 相关 watcher →
+      //   handleSortChange → chunkList,把 chunkDisplayBookList 重新算一遍
+      //   (渲染量 42 变 36、顺序也变),看起来就是「没回到原界面」。
+      //   用标志把这一次重排挡掉,贴完再放开。
+      this._restoringSearchSnap = true
+      // ---- 1) 同步贴回所有列表状态 ----
+      //
+      // ⚠ 千万不要给 bookList 重新赋值!
+      //   App.vue 里有个 watcher:
+      //       bookList (newList, oldList) { this.handleSortChange(this.sortValue, this.bookList) }
+      //   只要 bookList 的引用变了就会重排整个列表(chunkDisplayBookList 被重算),
+      //   结果就是「取消搜索后卡片数量/顺序变了、滚动位置对不上」。
+      //   而搜索本身**从不修改 bookList**(它只过滤出 displayBookList),所以这里不用还原它。
+      if (Array.isArray(snap.displayBookList)) this.displayBookList = snap.displayBookList
+      if (Array.isArray(snap.chunkDisplayBookList)) this.chunkDisplayBookList = snap.chunkDisplayBookList
+      if (snap.renderedCount != null) this.renderedCount = snap.renderedCount
+      if (snap.currentPage != null) this.currentPage_ = snap.currentPage
+      if (snap.sortValue !== undefined && snap.sortValue !== null) {
         this.sortValue = snap.sortValue
         try { localStorage.setItem('sortValue', snap.sortValue) } catch (e) { /* 忽略 */ }
       }
-      // 用快照的排序重新排全量列表(sortValue 已还原,直接传 bookList)
-      this.handleSortChange(this.sortValue, this.bookList)
+      // 在线库:把搜索前的列表与游标一并贴回(不重新请求)
+      if (this.onlineActive) {
+        if (Array.isArray(snap.onlineItems)) this.onlineItems = snap.onlineItems
+        if (snap.onlineQuery !== undefined) this.onlineQuery = snap.onlineQuery
+        if (snap.onlineHasMore !== undefined) this.onlineHasMore = snap.onlineHasMore
+        if (snap.wnacgPage !== undefined) this.wnacgPage = snap.wnacgPage
+        if (snap.wnacgNextUrl !== undefined) this.wnacgNextUrl = snap.wnacgNextUrl
+      }
+
+      // ---- 2) 让 Vue 把这次改动渲染完,然后再贴一次 + 还原滚动 ----
+      //   为什么还要「再贴一次」:即使有 _restoringSearchSnap 挡着,
+      //   仍然可能有别的路径(集合聚合、在线补页等)在下一个 tick 里改写这两个数组。
+      //   等它们都跑完,最后再强制贴回快照 —— 保证用户看到的绝对是搜索前那一屏。
       this.$nextTick(() => {
-        if (snap) this.restoreBookAreaState(snap)
-        else this.scrollBookAreaToTop()
-      })
-    },
-    // 按快照还原书架:页码 + 滚动位置
-    //
-    // ★ 顺序很关键(踩过坑):chunkList(true) 会按**当时的 displayBookCount** 把页码
-    //   夹紧。如果先写页码再重排,而那一刻 displayBookCount 还是「搜索结果」的数量
-    //   (很少,可能只有 1 页),页码就被夹成 1 —— 快照里的第 3 页丢了。
-    //   正确做法:先在 nextTick 里让列表恢复完成(handleSortChange 已经同步写好
-    //   bookList/displayBookList),再写页码,最后重排 + 还原滚动。
-    restoreBookAreaState (snap) {
-      if (!snap) return
-      this.$nextTick(() => {
-        try {
-          const pageSize = Number(this.setting.pageSize) || 1
-          const total = Number(this.displayBookCount) || 0
-          const totalPages = Math.max(1, Math.ceil(total / pageSize))
-          const page = Math.min(Math.max(1, Number(snap.currentPage) || 1), totalPages)
-          // 直接写私有字段:绕开 setter 在「列表还没重排完」时的夹紧
-          this.currentPage_ = page
-          this.chunkDisplayBookList = this.customChunk(this.displayBookList, pageSize, page - 1)
-        } catch (e) { /* 忽略 */ }
-        // 再下一帧还原滚动(此时卡片已经按新页码渲染出来,scrollHeight 才是对的)
+        if (Array.isArray(snap.displayBookList)) this.displayBookList = snap.displayBookList
+        if (Array.isArray(snap.chunkDisplayBookList)) this.chunkDisplayBookList = snap.chunkDisplayBookList
+        if (snap.renderedCount != null) this.renderedCount = snap.renderedCount
+        if (snap.currentPage != null) this.currentPage_ = snap.currentPage
         this.$nextTick(() => {
+          this._restoringSearchSnap = false
           try {
             const el = document.querySelector('.book-card-area')
             if (!el) return
@@ -3236,18 +3245,7 @@ export default defineComponent({
         })
       })
     },
-    // 把书架滚回顶部(清空搜索后"回到原界面"的一部分)
-    scrollBookAreaToTop () {
-      try {
-        const el = document.querySelector('.book-card-area')
-        if (!el) return
-        // 临时关掉 smooth,避免「缓缓滚上去」看起来像卡住
-        const prev = el.style.scrollBehavior
-        el.style.scrollBehavior = 'auto'
-        el.scrollTop = 0
-        requestAnimationFrame(() => { el.style.scrollBehavior = prev || '' })
-      } catch (e) { /* 忽略 */ }
-    },
+
     handleInput (val) {
       this.searchTyping = String(val || '')
       this.syncSearchPopperWidth()
@@ -3284,18 +3282,35 @@ export default defineComponent({
       }
     },
     searchBook (addToHistory = true) {
-      // ★ 记录「搜索前」的主界面状态:页码 + 滚动位置。
-      //   用户要求:点 X 清掉搜索词后,要**完全回到点搜索之前的样子**
-      //   (页码、滚动位置都保留),而不是回到第 1 页。
-      //   只在「从无搜索 → 开始搜索」这一下记录,连续改词重搜不覆盖,
-      //   否则快照会被中间那次搜索的状态污染。
-      if (!this.searchPrevState && String(this.searchString || '').trim()) {
+      // ======================================================================
+      // 「搜索前快照」——用户要求:取消搜索(点 X)后,主界面必须**原封不动**地回来。
+      //
+      // 做法:不做任何「重新加载 / 重新计算」,直接把搜索前的整套列表状态存下来,
+      // 取消时原样贴回去。这样无论本地库还是在线库、无论排序/页码/滚动/筛选,
+      // 都保证和搜索前一模一样 —— 不依赖任何 async 回填,也就没有时序问题。
+      //
+      // 为什么必须存「列表本身」而不只是页码:
+      //   搜索会改 displayBookList(过滤后的结果),取消时如果靠 handleSortChange
+      //   或 loadOnlineList 重新算/重新拉:① 在线库会重新发网络请求,页面会跳;
+      //   ② 本地库重排后 chunkDisplayBookList 的渲染量也会变,滚动位置对不上。
+      //   存下来再贴回去 = 零计算、零请求、零闪烁。
+      // ======================================================================
+      const hasQuery = !!String(this.searchString || '').trim()
+      if (!this.searchPrevState && hasQuery) {
         this.searchPrevState = {
           currentPage: this.currentPage,
-          // ★ 注意:这里记的是**进入 searchBook 之前**的 sortValue。
-          //   searchBook 内部可能会把它改成 addDescend(见下面的 reflow),
-          //   点 X 清空时要还原成这个值,否则列表顺序跟搜索前不同。
           sortValue: this.sortValue,
+          // 列表状态(贴回去用)。注意**不存 bookList**:
+          // 搜索不改它,而给它重新赋值会触发 bookList watcher 重排整个列表。
+          displayBookList: this.displayBookList,
+          chunkDisplayBookList: this.chunkDisplayBookList,
+          renderedCount: this.renderedCount,
+          // 在线库相关
+          onlineItems: this.onlineItems,
+          onlineQuery: this.onlineQuery,
+          onlineHasMore: this.onlineHasMore,
+          wnacgPage: this.wnacgPage,
+          wnacgNextUrl: this.wnacgNextUrl,
           scrollTop: (() => {
             try {
               const el = document.querySelector('.book-card-area')
