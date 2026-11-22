@@ -28,14 +28,43 @@
           <span class="ehf-label-text">{{ $t('m.keyword') }}</span>
           <SettingHint :text="$t('m.filterKeywordTip')" />
         </div>
-        <!-- ★ 关键词输入框 + 「选标签」按钮(用户要求 5)
-             ⚠ 不要用 el-autocomplete 的竖排下拉 —— 本软件所有选标签的地方
-             都是横排标签网格(TagList.vue),这里必须复用同一个组件,保持一致。 -->
-        <div class="ehf-keyword-row">
-          <el-input v-model="model.keyword" clearable :placeholder="$t('m.filterKeywordPlaceholder')" class="ehf-keyword-input" />
-          <el-button class="ehf-tag-pick-btn" :icon="TagGroup" @click="openKeywordTagPicker">
-            {{ $t('m.pickTag') }}
-          </el-button>
+        <!-- ★ 关键词:点进输入状态自动弹出「标签选择栏」(用户要求 2)
+             复用详情界面「编辑信息」里的那套 el-select 弹层样式
+             (filterable + popper-class="tag-select-dropdown"),
+             选项 = 全库已有标签,按类别分组;选中后把标签名追加进关键词。
+             聚焦即展开,不需要额外按钮。 -->
+        <el-select
+          ref="keywordSelectRef"
+          v-model="keywordPicked"
+          class="ehf-keyword-select"
+          filterable
+          clearable
+          default-first-option
+          :reserve-keyword="false"
+          popper-class="tag-select-dropdown"
+          :placeholder="$t('m.filterKeywordPlaceholder')"
+          @change="onKeywordPick"
+          @visible-change="onKeywordDropVisible"
+        >
+          <el-option-group
+            v-for="g in keywordTagGroups"
+            :key="'kwg-' + g.cat"
+            :label="g.label"
+          >
+            <el-option
+              v-for="it in g.tags"
+              :key="'kw-' + g.cat + '-' + it"
+              :label="it"
+              :value="g.cat + '##' + it"
+            />
+          </el-option-group>
+        </el-select>
+        <!-- 已选关键词(可单条移除) -->
+        <div v-if="keywordTerms.length" class="ehf-keyword-chips">
+          <el-tag
+            v-for="(t, i) in keywordTerms" :key="'kwt-' + i"
+            size="small" closable @close="removeKeywordTerm(i)"
+          >{{ t }}</el-tag>
         </div>
       </div>
 
@@ -134,26 +163,17 @@
     </template>
   </el-dialog>
 
-  <!-- 选标签弹窗:复用本软件统一的横排标签网格(TagList.vue)
-       ⚠ 不用 el-autocomplete 的竖排下拉 —— 软件里所有选标签的地方都是横排。
-       TagList 内部自己管 dialogVisible,通过 defineExpose 暴露,所以用 ref 控制。 -->
-  <TagList
-    ref="keywordTagPickerRef"
-    :title="$t('m.pickTag')"
-    @search="onKeywordTagPicked"
-  />
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { EH_FILTER_CATEGORIES, EH_FILTER_LANGUAGES, defaultEhFilter, normalizeEhFilter } from '../ehFilter.js'
 import { galleryCategoryName } from '../utils.js'
 import { useAppStore } from '../pinia.js'
 // 统一的「!」说明图标(设置页同款)
 import SettingHint from './SettingHint.vue'
-import TagList from './TagList.vue'
-import { TagGroup } from '@vicons/carbon'
+
 
 const { t, te } = useI18n()
 
@@ -198,26 +218,73 @@ const valuesOfTagCat = (cat) => {
 
 // 关键词「选标签」:复用本软件统一的横排标签弹窗 TagList(用户要求 5)
 // ⚠ 不用 el-autocomplete 的竖排下拉 —— 软件里所有选标签的地方都是横排网格。
-const keywordTagPickerRef = ref(null)
-const openKeywordTagPicker = () => {
-  const inst = keywordTagPickerRef.value
-  if (inst && inst.dialogVisible !== undefined) inst.dialogVisible = true
-}
-// TagList 的 @search 回传的是带引号的表达式(如 `"标签"$`),这里取出纯标签名
-const onKeywordTagPicked = (expr) => {
-  const raw = String(expr || '')
-  const m = /^"(.*?)"\$?$/.exec(raw)
-  const name = m ? m[1] : raw
+// ---------- 关键词:标签选择栏(复用「编辑信息」那套 el-select 弹层) ----------
+const keywordSelectRef = ref(null)
+const keywordPicked = ref('')          // el-select 的当前值,形如 'cat##tag'
+const keywordDirty = ref(false)        // 用户手动改过关键词(避免被 select 覆盖)
+
+// 已选关键词拆成词条(以空格分隔,符合 EH「空格 = 与」)
+const keywordTerms = computed(() =>
+  String(model.keyword || '').split(/\s+/).map(s => s.trim()).filter(Boolean)
+)
+
+// 标签选择栏的选项:按类别分组,来自全库标签
+const keywordTagGroups = computed(() => {
+  const list = Array.isArray(appStore.tagListRaw) ? appStore.tagListRaw : []
+  const map = new Map()
+  for (const it of list) {
+    if (!it) continue
+    const cat = String(it.cat || '')
+    const tag = String(it.tag || '')
+    if (!cat || !tag) continue
+    if (!map.has(cat)) map.set(cat, [])
+    map.get(cat).push(tag)
+  }
+  const out = []
+  for (const [cat, tags] of map) {
+    out.push({
+      cat,
+      label: appStore.categoryLabel ? appStore.categoryLabel(cat) : cat,
+      tags: tags.slice(0, 500).sort()
+    })
+  }
+  return out.sort((a, b) => a.cat.localeCompare(b.cat))
+})
+
+const onKeywordPick = (val) => {
+  if (!val) return
+  const i = String(val).indexOf('##')
+  const name = i >= 0 ? String(val).slice(i + 2) : String(val)
   if (!name) return
-  // 追加到关键词(已有内容时用空格分隔,符合「空格 = 与」的语义)
   const cur = String(model.keyword || '').trim()
-  model.keyword = cur ? (cur + ' ' + name) : name
-  const inst = keywordTagPickerRef.value
-  if (inst && inst.dialogVisible !== undefined) inst.dialogVisible = false
+  if (!keywordTerms.value.includes(name)) {
+    model.keyword = cur ? (cur + ' ' + name) : name
+  }
+  keywordDirty.value = true
+  // 清空 select 的选中值,方便继续选下一个
+  nextTick(() => { keywordPicked.value = '' })
+}
+
+// 点进输入框(下拉展开)时,自动滚动到已有标签处 —— 用户要求「点击进入输入状态后弹出标签栏」
+const onKeywordDropVisible = (open) => {
+  if (!open) return
+  // el-select 聚焦即展开,这里不用额外动作;保留钩子便于将来需要时扩展
+}
+
+const removeKeywordTerm = (idx) => {
+  const arr = keywordTerms.value.slice()
+  arr.splice(idx, 1)
+  model.keyword = arr.join(' ')
+  keywordDirty.value = true
 }
 
 // 类别按钮:优先用已有标签里出现过的类别值(按 EH 常量顺序排,未知的追加在后面)
+// ★ EH 在线筛选必须保持原样(EH 的 10 个分类 / 14 种语言是站点命名空间)。
+//   只有**本地库**筛选才改成「由已有标签决定」—— 这是两个完全不同的语义,
+//   混在一起会把 EH 筛选污染成「AI图集」「绅士漫画分类」这种站点不认的值。
 const categories = computed(() => {
+  // 在线:永远用 EH 常量
+  if (props.online) return EH_FILTER_CATEGORIES
   const used = valuesOfTagCat('category')
   if (!used.length) return EH_FILTER_CATEGORIES
   const byName = new Map(EH_FILTER_CATEGORIES.map(c => [c.name.toLowerCase(), c]))
@@ -230,18 +297,17 @@ const categories = computed(() => {
   return out
 })
 
-// 语言下拉:优先用已有标签里出现过的语言值(EH 英文标识),没有就退回常量
+// 语言:在线用 EH 常量;本地库用「已有标签里出现过的语言」
 const languages = computed(() => {
+  if (props.online) return EH_FILTER_LANGUAGES
   const used = valuesOfTagCat('language')
   if (!used.length) return EH_FILTER_LANGUAGES
-  // 只保留 EH 认识的语言标识(其它值会给站点发无效参数),未知的也列出来但排在后面
   const known = new Set(EH_FILTER_LANGUAGES)
-  const sorted = [...used].sort((a, b) => {
+  return [...used].sort((a, b) => {
     const ia = known.has(String(a).toLowerCase()) ? 0 : 1
     const ib = known.has(String(b).toLowerCase()) ? 0 : 1
     return ia - ib
   })
-  return sorted
 })
 
 const visible_ = ref(props.visible)
@@ -249,7 +315,18 @@ watch(() => props.visible, v => { visible_.value = v })
 watch(visible_, v => emit('update:visible', v))
 
 // 每次打开都用外面那份筛选值重置一遍,避免上一次的临时改动留在界面上
-const model = reactive(defaultEhFilter())
+// ★ 本地库的动态类别(由已有标签生成):默认全部勾上 = 不筛选
+const dynamicCatKeys = computed(() => {
+  if (props.online) return []
+  return categories.value.map(c => c.key).filter(k => !EH_FILTER_CATEGORIES.some(e => e.key === k))
+})
+const model = reactive(defaultEhFilter(dynamicCatKeys.value))
+// 每次打开时把动态类别也补进 model(否则界面上勾了但 model 里没这个 key)
+const ensureDynamicCats = () => {
+  for (const k of dynamicCatKeys.value) {
+    if (!Object.prototype.hasOwnProperty.call(model, k)) model[k] = true
+  }
+}
 
 // 评分 0.5 步进:1(不限)/1.5/2/…/5
 const ratingOptions = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5]
@@ -293,7 +370,11 @@ const syncFromProps = () => {
   // 用 normalize 而不是 {...default, ...props.filter}:外面传进来的可能是老数据
   // (没有 blacklistEnabled 字段),normalize 会按「黑名单非空 = 启用」补齐,不会误关老用户的黑名单
   const src = normalizeEhFilter(props.filter)
-  for (const k of Object.keys(model)) model[k] = src[k]
+  // ★ 先把动态类别补进 model,再用 src 覆盖 —— 否则动态类别的勾选状态会被丢掉
+  ensureDynamicCats()
+  for (const k of Object.keys(model)) {
+    model[k] = (k in src) ? src[k] : (dynamicCatKeys.value.includes(k) ? true : model[k])
+  }
 }
 syncFromProps()
 watch(() => props.visible, v => { if (v) syncFromProps() })
@@ -446,17 +527,17 @@ const apply = () => {
 
 
 
-/* 关键词行:输入框 + 选标签按钮 */
-.ehf-keyword-row {
+
+
+/* 关键词:标签选择栏 + 已选词条 */
+.ehf-keyword-select {
+  width: 100%;
+}
+.ehf-keyword-chips {
   display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.ehf-keyword-row .ehf-keyword-input {
-  flex: 1 1 auto;
-}
-.ehf-tag-pick-btn {
-  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 </style>

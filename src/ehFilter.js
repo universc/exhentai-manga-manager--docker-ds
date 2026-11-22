@@ -32,9 +32,13 @@ export const EH_FILTER_STORE_KEY = 'emmEhFilter'
 
 // 默认:分类全开、不限语言/页数、最低评分 1(即「没有任何筛选」)
 // blacklistEnabled = 黑名单总开关。默认关闭:新用户填了黑名单才勾「启用」。
-export const defaultEhFilter = () => {
+export const defaultEhFilter = (extraCats = []) => {
   const f = { keyword: '', language: '', pageAtLeast: null, pageAtMost: null, minimumRating: 1, expunged: false, torrents: false, blacklist: '', blacklistEnabled: false }
   for (const c of EH_FILTER_CATEGORIES) f[c.key] = true
+  // 本地库的动态类别(按已有标签生成的)默认也是「全部勾上」= 不筛选
+  for (const k of (Array.isArray(extraCats) ? extraCats : [])) {
+    if (k && !Object.prototype.hasOwnProperty.call(f, k)) f[k] = true
+  }
   return f
 }
 
@@ -43,6 +47,18 @@ const normalize = (raw) => {
   if (!raw || typeof raw !== 'object') return base
   const out = { ...base }
   for (const c of EH_FILTER_CATEGORIES) out[c.key] = raw[c.key] !== false
+  // ★ 保留「动态类别」的勾选状态(本地库的类别按钮由已有标签生成,
+  //   key 可能是任意类别值,不在 EH_FILTER_CATEGORIES 里)。
+  //   以前这里只遍历 EH 常量,动态 key 会被整个丢掉 ——
+  //   于是用户点「AI图集」这类按钮,apply 之后 normalize 一过就没了 → 点了不生效。
+  const RESERVED = new Set(['keyword', 'language', 'pageAtLeast', 'pageAtMost',
+    'minimumRating', 'expunged', 'torrents', 'blacklist', 'blacklistEnabled'])
+  for (const k of Object.keys(raw)) {
+    if (RESERVED.has(k)) continue
+    if (EH_FILTER_CATEGORIES.some(c => c.key === k)) continue
+    if (typeof raw[k] !== 'boolean') continue
+    out[k] = raw[k]
+  }
   out.keyword = String(raw.keyword || '')
   out.language = EH_FILTER_LANGUAGES.includes(raw.language) ? raw.language : ''
   const num = (v) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v))) ? null : Number(v)
@@ -111,6 +127,13 @@ export const setBlacklistEnabled = (on) => {
 export const ehFilterActive = (f) => {
   const x = normalize(f)
   if (EH_FILTER_CATEGORIES.some(c => !x[c.key])) return true
+  // 动态类别:任意一个被关掉也算筛选生效(否则漏斗按钮不高亮,用户以为没开)
+  if (Object.keys(x).some(k => {
+    if (['keyword', 'language', 'pageAtLeast', 'pageAtMost', 'minimumRating',
+         'expunged', 'torrents', 'blacklist', 'blacklistEnabled'].includes(k)) return false
+    if (EH_FILTER_CATEGORIES.some(c => c.key === k)) return false
+    return typeof x[k] === 'boolean' && x[k] === false
+  })) return true
   if (x.language) return true
   if (x.pageAtLeast != null || x.pageAtMost != null) return true
   if (x.minimumRating > 1) return true
@@ -126,11 +149,36 @@ const blacklistCache = new WeakMap()
 // ⚠️ 逐本书调用,传入的 f 必须是 normalizeEhFilter() 过的(不再在这里重复 normalize)。
 export const ehFilterMatch = (f, book) => {
   const x = f
-  const enabled = EH_FILTER_CATEGORIES.filter(c => x[c.key])
   if (!book) return false
-  if (enabled.length !== EH_FILTER_CATEGORIES.length) {
-    const cat = String(book.category || '').trim().toLowerCase() || 'misc'
-    if (!enabled.some(c => c.name.toLowerCase() === cat)) return false
+  // ★ 类别筛选:支持「动态类别」。
+  //   本地库的类别按钮是由已有标签生成的,key 可能是任意类别值(如 'AI图集'),
+  //   不一定在 EH_FILTER_CATEGORIES 里。以前只认 EH 的 10 个 key:
+  //       const enabled = EH_FILTER_CATEGORIES.filter(c => x[c.key])
+  //   于是点上「AI图集」这类动态按钮,model['AI图集'] 变了但这里读不到 → 点了没反应。
+  //   现在:把「被关掉的类别」和「被勾上的额外类别」都从 x 里读出来,统一按名字比。
+  const isCatKey = (k) => {
+    if (Object.prototype.hasOwnProperty.call(x, k) === false) return false
+    if (k === 'keyword' || k === 'language' || k === 'pageAtLeast' || k === 'pageAtMost' ||
+        k === 'minimumRating' || k === 'expunged' || k === 'torrents' ||
+        k === 'blacklist' || k === 'blacklistEnabled') return false
+    return true
+  }
+  const catKeys = Object.keys(x).filter(isCatKey)
+  if (catKeys.length) {
+    const onKeys = catKeys.filter(k => x[k])
+    const allOn = onKeys.length === catKeys.length
+    if (!allOn) {
+      const cat = String(book.category || '').trim().toLowerCase() || 'misc'
+      // 命中的判定:key 本身(动态值)或 EH 分类名 任一对上即可
+      const hit = catKeys.some(k => {
+        if (!x[k]) return false
+        const kl = String(k).toLowerCase()
+        if (kl === cat) return true
+        const eh = EH_FILTER_CATEGORIES.find(c => c.key === k)
+        return !!(eh && String(eh.name).toLowerCase() === cat)
+      })
+      if (!hit) return false
+    }
   }
   if (x.language) {
     // ★ 2026-11 容错:book.tags 正常情况下是 {类别: [标签]} 对象,但被外部写坏的书
