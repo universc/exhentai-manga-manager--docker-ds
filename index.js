@@ -4517,7 +4517,9 @@ ipcMain.handle('test-proxy', async (event, arg) => {
 // ⚠️ 以前失败时 catch 里没有 return → 调用方拿到 `undefined`,丢进 DOMParser 得到空文档,
 //    界面就是「在线列表/详情/评论全空」而且一点提示都没有(原因只进了主进程日志)。
 // 为什么失败返回 null 而不是 `{ ok:false }` 对象:
-//    现有消费方(在线列表/详情/评论的取页逻辑)都是 `if (!html) break` 这套写法。
+//    现有消费方(详情页/缩略图分页/评论的取页逻辑,见 src/ehOnline.js、
+//    src/wnacgOnline.js 的 `if (!html || typeof html !== 'string')` 与 `if (html) break`)
+//    都是按「空值 = 没取到」写的。
 //    ★真值对象会绕过这个判断★ —— 失败会被当成「取到了一条空页面」,接着白跑几十个分页请求
 //    (每个还要等超时),比原来的空文档更糟。null 让既有判断立刻生效、零回归;
 //    想要具体原因的调用方走下面新增的 `eh-webpage-last-error` 通道(带 error/url/时间)。

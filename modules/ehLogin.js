@@ -32,11 +32,11 @@ const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const DEFAULT_TIMEOUT = 15000
 // 流式响应(图片)的总预算换算:
 // 「首字节预算」直接拿去卡整包会硬切慢但仍在传的大图(阅读器拿到半张 = 破图),
-// 所以流式路径按体积折算预算 —— 只有平均吞吐低于这个保底速率,才算坏节点。
+// 所以流式路径按体积折算预算 —— 只有平均吞吐低于这个容忍下限,才算坏节点。
 const STREAM_MIN_RATE = 50 * 1024           // 50KB/s
-// 不管体积多大,流式响应都有一个绝对硬上限:再慢也在 90s 收工,别把并发槽占几分钟。
-// (体积未知/分块传输时也直接用它)
-const STREAM_MAX_BUDGET_MS = 90 * 1000
+// 不管体积多大,流式响应都有一个绝对硬上限:再慢也在这个时间收工,别把并发槽占几分钟。
+// (体积未知/分块传输时也用它 —— 折不出来就别猜,否则「合法但慢」的分块大图会被首字节预算截断)
+const STREAM_MAX_BUDGET_MS = 180 * 1000
 
 // EH 的两个「偏好」Cookie,必须无条件带上 —— 照 JHenTai 的做法
 // (002/JHenTai-8.0.16-334/lib/src/network/eh_cookie_manager.dart:14)。
@@ -134,8 +134,11 @@ const agentFor = (proxy) => {
 
 // 值得重试的错误:EH 的图片/图片页在高并发下常见 TLS reset、连接被断、超时。
 // 这类「网络层抖动」重试一次基本就能过;4xx(403/404)重试没有意义,不重试。
+// ⚠️ total-timeout 例外:那是「预算已经花完」,再试一次只会立刻超时,
+//    却把占着并发槽的墙钟时间翻倍 —— 必须显式排除(它的字面量里带 "timeout",会被下面的正则命中)。
 const isRetriableError = (e) => {
   const s = String((e && (e.code || e.message)) || '')
+  if (/total-timeout/.test(s)) return false
   return /ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|ESOCKETTIMEDOUT|socket hang up|aborted|timeout|EAI_AGAIN|ENOTFOUND|Client network socket disconnected/i.test(s)
 }
 
@@ -247,14 +250,15 @@ const requestOnce = (url, options = {}) => new Promise((resolveOuter, rejectOute
     //   这样图片可以「一段一段地出来」(照浏览器 <img> 的行为),而不是等整包收完。
     //   注意:这个模式下重试只能覆盖「连不上/首字节前」的错误,一旦已开始推流就不能重来。
     if (options.stream) {
-      // ★ 拿到响应头才可能知道体积,所以流式路径在这里**重算**预算:
-      //   4MB@50KB/s → 80s,而不是「20s 一刀切」把还在正常传输的大图截成破图;
-      //   体积未知(分块传输)或体积巨大时,收口到 STREAM_MAX_BUDGET_MS 这个绝对硬上限。
-      //   真正「坏节点」由两个下限兜住:timeout(15s 无新字节) + 这里的平均速率。
+      // ★ 拿到响应头才可能知道体积,所以流式路径在这里**重新武装**这个 timer(从「响应头到」起算):
+      //   4MB@50KB/s → 82s,而不是「20s 一刀切」把还在正常下载的大图截成破图。
+      //   体积未知(分块传输,有的代理会剥掉 content-length)时折不出来,直接用宽松上限。
+      //   完全不出数据的坏节点仍由 req.on('timeout')(socket 空闲 15s)兜住,这里只管总时长。
       if (totalMs > 0) {
-        const size = Number(res.headers['content-length']) || 0
-        const bySize = size > 0 ? Math.ceil((size / STREAM_MIN_RATE) * 1000) : STREAM_MAX_BUDGET_MS
-        armTotal(Math.min(Math.max(leftMs, bySize), STREAM_MAX_BUDGET_MS))
+        const bytes = Number(res.headers['content-length']) || 0
+        const bySize = bytes > 0 ? (bytes / STREAM_MIN_RATE) * 1000 : STREAM_MAX_BUDGET_MS
+        const allowMs = Math.min(STREAM_MAX_BUDGET_MS, Math.max(totalMs, bySize))
+        armTotal(allowMs)
       }
       if (typeof options.onProgress === 'function') {
         try {
