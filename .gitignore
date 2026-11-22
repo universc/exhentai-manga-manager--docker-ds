@@ -60,3 +60,7 @@ out-build
 
 # Vite 依赖预构建缓存(dev 模式)
 .vite-cache/
+
+# secret doc (plaintext keys) - local only, never commit
+*.local.md
+docs/RELEASE-MANUAL.local.md

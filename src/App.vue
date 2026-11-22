@@ -248,7 +248,8 @@
                class="wnacg-ad-img" :src="wnacgAdBannerSrc" alt="">
           <!-- 第二条:广告联盟的 728x90 位。放进 iframe 有两个好处:
                ① 广告脚本不跟我们自己的页面混在一起;② 换版块时重建 iframe 就等于重新请求广告 -->
-          <iframe v-if="wnacgAdSlot && !setting.wnacgDisableAds" :key="'wnacg-ad-slot-' + wnacgAdKey"
+          <!-- 广告没填充时隐藏(留白条比不显示更难看;见 wnacgAdEmpty 的说明) -->
+          <iframe v-if="wnacgAdSlot && !setting.wnacgDisableAds && !wnacgAdEmpty" :key="'wnacg-ad-slot-' + wnacgAdKey"
                   class="wnacg-ad-frame" :width="wnacgAdSlot.width" :height="wnacgAdSlot.height"
                   sandbox="allow-scripts allow-same-origin" :srcdoc="wnacgAdFrameHtml"></iframe>
         </div>
@@ -863,6 +864,9 @@ export default defineComponent({
       // 都从列表页 HTML 里抠出来,渲染成一张不可点击的卡片。
       wnacgAdSlot: null,
       wnacgAdBanner: '',
+      // 广告联盟没给广告(iframe 里是空白):收到 iframe 的 postMessage 后置真,
+      // 用于把这条空白隐藏掉,不留 90px 白条
+      wnacgAdEmpty: false,
       // 换广告时递增:让 Vue 重建广告容器(只改 id 属性换不掉里面的 iframe)
       wnacgAdKey: 0,
       onlineHasMore: true,
@@ -1406,6 +1410,30 @@ export default defineComponent({
       const slot = this.wnacgAdSlot
       if (!slot) return ''
       const host = wnacgHost(this.setting)
+      // ★ 广告没填充时把这块**收掉**,而不是留一条 90px 的空白(用户截图反馈的问题)。
+      //   广告联盟不保证每次都给广告(填充率有限),没给的时候 iframe 里就是纯空白,
+      //   而 iframe 有固定高度 → 卡片上留一道白条,看起来像界面坏了。
+      //   做法:轮询检查广告位里有没有实际内容;超过时限还没有就 postMessage 通知父页面隐藏。
+      const check = [
+        '(function(){',
+        '  var el=document.getElementById(' + JSON.stringify(slot.id) + ');',
+        '  var tries=0, maxTries=40;',            // 40 x 500ms = 20 秒
+        '  function hasAd(){',
+        '    if(!el) return false;',
+        '    if(el.children.length) return true;',
+        '    var img=el.querySelector("img,iframe,canvas,video");',
+        '    return !!img;',
+        '  }',
+        '  function done(){',
+        '    try{ parent.postMessage({__wnacgAdEmpty:true},"*") }catch(e){}',
+        '  }',
+        '  var t=setInterval(function(){',
+        '    if(hasAd()){ clearInterval(t); return }',
+        '    tries++;',
+        '    if(tries>=maxTries){ clearInterval(t); done() }',
+        '  },500);',
+        '})();'
+      ].join('\n')
       return '<!doctype html><html><head><meta charset="utf-8">'
         + '<base href="https://' + host + '/">'
         + '<style>html,body{margin:0;padding:0;overflow:hidden;background:transparent}</style>'
@@ -1413,6 +1441,7 @@ export default defineComponent({
         + '<div id="' + slot.id + '" data-adxad-v3="' + slot.spot + '"'
         + ' style="width:' + slot.width + 'px;height:' + slot.height + 'px"></div>'
         + '<script src="' + slot.script + '" data-site-id="' + host + '"><\/script>'
+        + '<script>' + check + '<\/script>'
         + '</body></html>'
     },
     // 静态广告图也走应用自己的图片代理(网站在境外,直连多半不通)
@@ -1712,6 +1741,14 @@ export default defineComponent({
     },
   },
   mounted () {
+    // ★ 广告 iframe 的空填充上报:iframe 里检测到广告位一直没内容会 postMessage 过来,
+    //   我们把这条广告隐藏掉(否则卡片上留一条 90px 白条,看起来像界面坏了)。
+    this._onAdEmptyMessage = (ev) => {
+      if (ev && ev.data && ev.data.__wnacgAdEmpty) {
+        this.wnacgAdEmpty = true
+      }
+    }
+    window.addEventListener('message', this._onAdEmptyMessage)
     // ★未登录门禁(网页版账户系统):必须在读设置/读书架之前。
     //   以前 mounted 无条件 load-setting → load-book-list,而 LoginDialog 只是半透明遮罩,
     //   于是登录框后面把整库的书都露出来了(隐私问题)。
@@ -1916,6 +1953,7 @@ export default defineComponent({
     })
   },
   beforeUnmount () {
+    if (this._onAdEmptyMessage) window.removeEventListener('message', this._onAdEmptyMessage)
     clearTimeout(this._toolbarRecalcTimer)
     clearTimeout(this._toolbarRecalcTimer2)
     if (this._toolbarOnResize) window.removeEventListener('resize', this._toolbarOnResize)
@@ -6915,6 +6953,8 @@ export default defineComponent({
       clearTimeout(this._wnacgAdTimer)
       this._wnacgAdTimer = setTimeout(() => {
         if (!this.wnacgActive || this.setting.wnacgDisableAds) return
+        // 重新请求广告前清掉「空填充」标记,让 iframe 重新走一次检测
+        this.wnacgAdEmpty = false
         this.wnacgAdKey += 1
       }, 400)
     },
@@ -6996,6 +7036,7 @@ export default defineComponent({
           if (!this.wnacgAdSlot) {
             this.wnacgAdSlot = ad
             this.wnacgAdBanner = ad.banner || ''
+            this.wnacgAdEmpty = false
           } else if (ad.banner && ad.banner !== this.wnacgAdBanner) {
             // 静态广告每条不一样:翻页时跟着换,和原站一致
             this.wnacgAdBanner = ad.banner
