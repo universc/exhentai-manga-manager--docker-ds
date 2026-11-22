@@ -1,5 +1,49 @@
 # 更新记录
 
+## v1.18.8(2026-11-22)
+
+### 修复:EH 登录老是过不了 Cloudflare —— profile 改成持久化
+
+**真因**:Cloudflare 过验证后下发的 `cf_clearance` 是存在浏览器 profile 目录里的。
+JHenTai 用的是长期目录,所以过了第一次之后一年内都直接放行。
+上一版把 profile 放在 `%TEMP%` 随机目录,并在 cleanup 里 `rmSync` ——
+每次都是白纸 profile,永远攒不到 `cf_clearance`,于是每次都卡在人机验证。
+
+实测证据(直接读本地 WebView2 数据库,未联网):
+`%APPDATA%\top.jtmonster\jhentai\EBWebView\Default\Network\Cookies`
+里 `.e-hentai.org | cf_clearance | created=2026-11-22T14:05Z | expires=2027-11-22T14:05Z`(一年)。
+
+**改动**:
+
+- profile 固定到 `%APPDATA%\exhentai-manga-manager\eh-login-profile`,登录结束不再删除
+- cleanup 只等进程写完 lockfile,不再 `rmSync`
+- 新增 `clearLoginProfile()`:`eh-logout` 时清空(对齐 JHenTai 的 `requestLogout` 删目录)
+- 去掉 `--remote-allow-origins`(本地 CDP 直连用不到)
+- `eh-login-diagnose` 增加 `profileDir` / `profileExists`
+
+### 修复:EH 登录改为借系统真浏览器
+
+移植 JHenTai 的登录方式:不再用内置 WebView,而是拉起系统里的真 Chrome/Edge
+(走本地 CDP),这样 Cloudflare 看到的是完全正常的浏览器指纹。
+
+### 性能:EH 在线图片与详情页
+
+- **图片交给 Chromium 直连** —— 不再让主进程逐张代理转发,减少一层中转与内存拷贝
+- **详情页 HTML 流式预热** —— 打开详情前先把 HTML 拉起来,缩略图按需分页
+- **预览图改按需分页**,修连接/超时/缓存五处根因
+- 总时长预算两处收口:流式按体积折算,封顶 180 秒
+
+### 修复:其它
+
+- `get-all-tags` 一直返回空 —— JSON 字段是字符串没被解析(这才是后续 6 项功能失效的根因)
+- 类别作为标签类别 + 筛选动态化 + 修复 NAS 工具栏缺按钮(6 项)
+- 恢复 EH 筛选 + 本地类别按钮生效 + 关键词标签栏改用编辑信息那套
+- 分类拆成「类别 + 语言」两个标签;韩漫／生肉 的语言应为韩语(korean),不是日语
+- 快速切换漫画时详情串台(点 A 没加载完就点 B,B 显示成 A 的内容)
+- 映射盘(NAS 网络盘)在本进程不可见时,自动改走 UNC
+- 元数据库路径在离线盘时崩溃(`unhandledRejection ENOENT mkdir`)
+- 清理诊断日志时留下的残缺行导致 `index.js` 语法错误(容器无限重启)
+
 ## v1.18.6(2026-11-19)
 
 ### 新增:EH 登录三种方式(账号密码 / Cookie / 网页)
