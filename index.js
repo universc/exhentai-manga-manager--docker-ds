@@ -50,7 +50,8 @@ const ehLogin = require('./modules/ehLogin.js')
 // 出网分流(图片直连 / 站点走代理)由 modules/ehLogin.js 的 request() 统一负责,
 // 与 JHenTai 同一口径,这里不再单独做「腿健康度」判断。
 // 在线图片磁盘缓存:桌面版(本文件)与网页版(web-server.js)共用同一份实现
-const { createCache: createEhImageCache } = require('./modules/ehImageCache.js')
+// MAX_BYTES = 磁盘缓存的单张上限(4MB):流式路径要不要「整包攒下来落盘」按它判,别在本地另写一份
+const { createCache: createEhImageCache, MAX_BYTES: EH_IMG_DISK_MAX_BYTES } = require('./modules/ehImageCache.js')
 const ehDownload = require('./modules/ehDownload.js')
 const collectionAuto = require('./modules/collectionAuto.js')
 const {
@@ -107,9 +108,15 @@ const ehImgCacheGet = (url) => {
   ehImgCache.set(url, hit)
   return hit
 }
+// 内存缓存单张上限 512KB(与网页版 web-server.js 的 IMG_MEM_MAX_BYTES 同一口径)。
+// ★ 以前是「单张 > 总预算/4(=150MB)才不收」,等于什么图都往 Map 里塞:
+//   一屏几十张原图很快把 600MB 预算打满,淘汰抖动 + Buffer.concat 峰值翻倍,
+//   主进程老生代被打满 → 卡顿。内存缓存只该服务「翻回上一页立刻出图」的小图/缩略图,
+//   大图交给磁盘缓存(仍然收)和浏览器的 private 缓存。
+const EH_IMG_MEM_MAX_BYTES = 512 * 1024
 const ehImgCachePut = (url, buffer, type) => {
   if (!buffer || !buffer.length) return
-  if (buffer.length > EH_IMG_CACHE_MAX_BYTES / 4) return
+  if (buffer.length > EH_IMG_MEM_MAX_BYTES) return
   const prev = ehImgCache.get(url)
   if (prev) { ehImgCacheBytes -= prev.buffer.length; ehImgCache.delete(url) }
   ehImgCache.set(url, { buffer, type, at: Date.now() })
@@ -127,15 +134,41 @@ const ehImgCachePut = (url, buffer, type) => {
 // 摘要:EH 图片 URL 里的 keystamp 实测 5–6 分钟就失效,但 /h/<sha1>-<bytes>-<w>-<h>/ 是内容寻址的,
 //      抹掉 keystamp / fileindex / xres 再哈希 → key 长期有效;翻回上一页/重进/重试全走本地读盘。
 const ehImgDisk = createEhImageCache({ dir: () => path.join(STORE_PATH, 'ehimgcache') })
+// get() 是 async(读盘不能阻塞主进程),凡是调用点都必须 await
 const ehImgDiskGet = (url) => ehImgDisk.get(url)
 const ehImgDiskPut = (url, buffer) => ehImgDisk.put(url, buffer)
 const trimEhImgCache = (maxFiles) => ehImgDisk.trim(maxFiles)
 
+// 图片并发槽。★ 排队必须有超时与上限(与网页版 web-server.js 的 acquireImgSlot 同一口径):
+//   以前 ehImgAcquire 是裸 Promise,12 个槽被慢请求占满后,后面的请求无限堆积 ——
+//   渲染进程早就放弃/换成别的页了,队列还在长;等前面的陆续结束就「一次性全放行」。
+//   现在:最多等 EH_IMG_SLOT_WAIT_MS,超时回 503;队列也有上限,超出直接拒绝。
+const EH_IMG_SLOT_WAIT_MS = 12000
+const EH_IMG_WAIT_QUEUE_MAX = 64
 let ehImgRunning = 0
 const ehImgWaiters = []
-const ehImgAcquire = () => new Promise((resolve) => {
-  if (ehImgRunning < EH_IMG_MAX_CONCURRENCY) { ehImgRunning += 1; resolve() }
-  else ehImgWaiters.push(resolve)
+const ehImgAcquire = () => new Promise((resolve, reject) => {
+  if (ehImgRunning < EH_IMG_MAX_CONCURRENCY) { ehImgRunning += 1; return resolve() }
+  if (ehImgWaiters.length >= EH_IMG_WAIT_QUEUE_MAX) {
+    const e = new Error('img queue full'); e.code = 'QUEUE_FULL'; return reject(e)
+  }
+  let settled = false
+  const waiter = () => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    resolve()
+  }
+  const timer = setTimeout(() => {
+    if (settled) return
+    settled = true
+    // 从队列里摘掉自己(可能已经被 shift 走了,indexOf 兜底)
+    const i = ehImgWaiters.indexOf(waiter)
+    if (i >= 0) ehImgWaiters.splice(i, 1)
+    const e = new Error('img slot timeout'); e.code = 'SLOT_TIMEOUT'
+    reject(e)
+  }, EH_IMG_SLOT_WAIT_MS)
+  ehImgWaiters.push(waiter)
 })
 const ehImgRelease = () => {
   const next = ehImgWaiters.shift()
@@ -1748,6 +1781,11 @@ if (!WEB_MODE) {
             const pageRef = reqUrl.searchParams.get('r') || 'https://e-hentai.org/'
             const isEhImg = EH_IMG_HOST_RE.test(raw)
             if (!isEhImg && !WNACG_IMG_HOST_RE.test(raw)) return new Response('bad url', { status: 400 })
+            // 换节点的窄判据:只有 *.hath.network 的地址才可能「回图片页重新解析」换到别的节点。
+            // ★ 以前这几处用的是上面的宽判据 isEhImg → ehgt.org 的雪碧图一 403 也去换节点:
+            //   拿站点根页解析必然找不到 <img id="img">,白等 20s×3 之后再撞同一个地址,
+            //   一张失败图就这么按死 1/12 并发槽 75–90 秒。
+            const isHathNode = ehLogin.isEhImageHost(raw)
             // 缓存命中:①内存(同一会话最快)②磁盘(跨重启/跨会话,key 已抹掉 keystamp)
             // ★ Cache-Control 从 no-store 改成 private,max-age:让 Chromium 自己也能留住,
             //   来回滚动/翻回上一页时连协议处理都不用进(no-store 等于把浏览器缓存整个扔掉)。
@@ -1759,7 +1797,7 @@ if (!WEB_MODE) {
                 headers: { 'Content-Type': cached.type, 'X-Img-Cache': 'mem', 'Cache-Control': 'private, max-age=86400' }
               })
             }
-            const diskHit = ehImgDiskGet(raw)
+            const diskHit = await ehImgDiskGet(raw)
             if (diskHit) {
               ehImgCachePut(raw, diskHit.buffer, diskHit.type)
               return new Response(diskHit.buffer, {
@@ -1767,7 +1805,13 @@ if (!WEB_MODE) {
                 headers: { 'Content-Type': diskHit.type, 'X-Img-Cache': 'disk', 'Cache-Control': 'private, max-age=86400' }
               })
             }
-            await ehImgAcquire()
+            try {
+              await ehImgAcquire()
+            } catch (e) {
+              // 排队超时 / 队列满:回 503,让 Chromium 按「这张图加载失败」处理。
+              // 不能让它变成 Promise 的 rejection —— 那会变成协议层的未捕获异常。
+              return new Response('busy', { status: 503 })
+            }
             // ★ 并发槽只归一次。
             //   以前把归还写在 finally 里,而 finally 在 `return new Response(imgStream)` 的**那一刻**
             //   就执行了 —— 图片才刚开始往渲染进程传,槽已经还掉,于是 EH_IMG_MAX_CONCURRENCY=6
@@ -1803,6 +1847,10 @@ if (!WEB_MODE) {
                 stream: true,
                 referer: pageRef,
                 timeout: 15000,
+                // ★ 总时长上限(15s 首字节 + 余量)。只靠 timeout(socket 空闲超时)治不住
+                //   「还在慢慢滴数据」的坏节点:那种连接永远不触发空闲超时,
+                //   一张图能把 1/12 的并发槽占到几分钟。
+                totalTimeout: 20000,
                 retries: 1
               })
               const dropStream = (r) => {
@@ -1821,11 +1869,13 @@ if (!WEB_MODE) {
               // 两轮:第一轮原地址;第二轮(仅 403/429/509/限速页)回图片页换节点
               for (let attempt = 0; attempt < 2; attempt++) {
                 let target = raw
-                if (attempt >= 1 && isEhImg) {
+                if (attempt >= 1 && isHathNode) {
                   // 必须回到「图片页」读 return nl('...') 才能真正换节点(?nl 拼到图片 URL 上无效)
                   try {
                     const fresh = await ehLogin.resolvePageImageInfo(pageRef, {
-                      proxy: setting.proxy, cookie: ehCookieHeader(), reloadKey: ''
+                      // 这一步是占着图片并发槽做的,给总预算:默认重试能跑到 60.9s,
+                      // 慢站点会把 1/12 的槽白占一分钟
+                      proxy: setting.proxy, cookie: ehCookieHeader(), reloadKey: '', totalTimeout: 30000
                     })
                     if (fresh && fresh.url && fresh.url !== raw) target = fresh.url
                   } catch (e) { /* 拿不到新节点就沿用原地址 */ }
@@ -1837,7 +1887,7 @@ if (!WEB_MODE) {
                   lastErr = e
                   const st = Number((e && e.status) || 0)
                   // 只有「被 EH 挡住」(403/429/509)才值得换节点;网络层全挂就到此为止
-                  if (isEhImg && attempt === 0 && (st === 403 || st === 429 || st === 509)) continue
+                  if (isHathNode && attempt === 0 && (st === 403 || st === 429 || st === 509)) continue
                   break
                 }
                 try {
@@ -1900,7 +1950,7 @@ if (!WEB_MODE) {
                     lastErr = new Error('not-image:' + ctype.slice(0, 30))
                     dropStream(r)
                     // 200 但回 HTML = 限速页 / 删图页:换一个 H@H 节点再试一轮
-                    if (isEhImg && attempt === 0) continue
+                    if (isHathNode && attempt === 0) continue
                     break
                   }
                   // ★ 关键改造:边收边转,而不是等整包收完再回 Response。
@@ -1910,13 +1960,19 @@ if (!WEB_MODE) {
                   const sink = r.stream
                   let received = 0
                   const collect = []
+                  // 口径分两层,别看混:
+                  //   · 能不能进内存 Map → 512KB(EH_IMG_MEM_MAX_BYTES)
+                  //   · 能不能整包攒下来落磁盘 → EH_IMG_DISK_MAX_BYTES(4MB,与磁盘缓存单张上限同口径)
+                  // 所以这里按磁盘上限攒:4MB 以内的图收完后能落盘(跨会话命中靠它);
+                  // 超过 4MB 的磁盘缓存本来也不收,再攒就是白占内存。
+                  const COLLECT_MAX = EH_IMG_DISK_MAX_BYTES
                   // 进度节流状态(每 5% 或 120ms 才发一次 IPC)
                   let lastRatio = -1
                   let lastEmit = 0
                   const imgStream = new ReadableStream({
                     start (controller) {
                       const endWith = (err) => {
-                        if (!err && received <= EH_IMG_CACHE_MAX_BYTES / 8 && collect.length) {
+                        if (!err && received <= COLLECT_MAX && collect.length) {
                           const whole = Buffer.concat(collect)
                           try { ehImgCachePut(raw, whole, ctype) } catch (e) { /* 忽略 */ }
                           // 同一份字节落磁盘:下次重进/重启直接命中,不再打 H@H
@@ -1929,7 +1985,7 @@ if (!WEB_MODE) {
                       }
                       sink.on('data', (chunk) => {
                         received += chunk.length
-                        if (received <= EH_IMG_CACHE_MAX_BYTES / 8) collect.push(chunk)
+                        if (received <= COLLECT_MAX) collect.push(chunk)
                         // 进度节流:不是每块都发 IPC(几百条会把渲染进程压垮)
                         if (progressTag) {
                           const now = Date.now()
@@ -4461,7 +4517,7 @@ ipcMain.handle('test-proxy', async (event, arg) => {
 // ⚠️ 以前失败时 catch 里没有 return → 调用方拿到 `undefined`,丢进 DOMParser 得到空文档,
 //    界面就是「在线列表/详情/评论全空」而且一点提示都没有(原因只进了主进程日志)。
 // 为什么失败返回 null 而不是 `{ ok:false }` 对象:
-//    现有消费方(如 src/ehOnline.js 的 collectGalleryThumbs)都是 `if (!html) break` 这套写法。
+//    现有消费方(在线列表/详情/评论的取页逻辑)都是 `if (!html) break` 这套写法。
 //    ★真值对象会绕过这个判断★ —— 失败会被当成「取到了一条空页面」,接着白跑几十个分页请求
 //    (每个还要等超时),比原来的空文档更糟。null 让既有判断立刻生效、零回归;
 //    想要具体原因的调用方走下面新增的 `eh-webpage-last-error` 通道(带 error/url/时间)。
@@ -4484,15 +4540,38 @@ const setEhWebpageError = (url, e) => {
 //   原网页之所以快:浏览器 HTTP 缓存直接复用,根本不会重复下载同一页。
 //
 // 做法:
-//   · 成功结果按 URL 缓存 60 秒(详情页/列表页的内容在这个尺度上不会变)
-//   · 同一个 URL 正在飞行时,后来的调用**复用同一个 Promise**,不再发新请求
+//   · 成功结果按「URL + 账号」缓存 5 分钟(详情页/列表页的内容在这个尺度上不会变)
+//   · 同一个 key 正在飞行时,后来的调用**复用同一个 Promise**,不再发新请求
 //   · 失败不缓存(用户重试要能真的重试)
 //   · 只缓存 GET 语义的 HTML(本 handler 本来就只抓页面)
 // ============================================================================
-const EX_WEBPAGE_TTL = 60 * 1000
+// ★ 60s → 5 分钟:用户的真实动作是「点开→看几眼→退回→再点开」,
+//   60s 的窗口根本兜不住,结果就是每次都重新下载同一个详情页。
+const EX_WEBPAGE_TTL = 5 * 60 * 1000
 const EX_WEBPAGE_CACHE_MAX = 200
-const exWebpageCache = new Map()   // url -> { html, at }(Map 插入序 = LRU 顺序)
-const exWebpageInflight = new Map() // url -> Promise
+// EH 页面请求的「浏览器头」。为什么必须有:
+//   · node-fetch@2 不给 UA 时会自报 "node-fetch/1.0 (+https://github.com/bitinn/node-fetch)",
+//     EH 对这种请求直接回限速页/空页;
+//   · Referer 是站点校验收图/取页来源的一部分,缺了容易被拒。
+// UA 从 ehLogin 复用同一份常量 —— 别在这里抄第二串。
+const EH_PAGE_HEADERS = {
+  'User-Agent': ehLogin.BROWSER_UA,
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9'
+}
+// Referer 取「目标站点根」而不是写死 e-hentai.org:同一个 handler 也给绅士漫画(wnacg)用,
+// 给它发外站 referer 等于自己踩盗链拦截。
+const refererOf = (u) => {
+  try { return new URL(u).origin + '/' } catch (e) { return 'https://e-hentai.org/' }
+}
+const exWebpageCache = new Map()   // key -> { html, at }(Map 插入序 = LRU 顺序)
+const exWebpageInflight = new Map() // key -> Promise
+// ★ 缓存键必须带账号:url 只是裸页面地址,不同账号(A/B)看到的页面不同 ——
+//   以前只用 url 做 key,5 分钟内会把 A 账号的页面原样返给 B(串号/串库)。
+//   拼上 cookie 的 md5 后各账号一份,同一账号内照样命中;用哈希而不是原文是为了不让
+//   会话 Cookie 明文留在内存 Map 的键里(日志/快照更容易被翻出来)。
+const exWebpageKey = (url, cookieHeader) =>
+  String(url || '') + '|' + createHash('md5').update(String(cookieHeader || '')).digest('hex')
 const exWebpageCacheGet = (url) => {
   const hit = exWebpageCache.get(url)
   if (!hit) return null
@@ -4560,24 +4639,26 @@ ipcMain.handle('cancel-ex-webpage', async (event, { groupId } = {}) => {
 })
 
 ipcMain.handle('get-ex-webpage', async (event, { url, cookie, groupId } = {}) => {
+  // ★ Cookie 必须过一遍 ehLogin.ensureEhCookies:
+  //   前端传上来的只是「登录那几项」,少了 nw=1 / datatags=1 ——
+  //   而 nw=1 正是跳过「成人内容确认」拦截页的关键(照 JHenTai 的做法)。
+  //   以前这里直接原样用,于是部分画廊拿到的是确认页,解析不出详情/页列表 →
+  //   「有的漫画能看、有的加载和下载都失败」。
+  //   已经带了的不会被重复添加(ensure 里做了去重)。
+  //   (现在提到最前面:缓存键要用它算 md5)
+  const cookieHeader = ehLogin.ensureEhCookies(cookie)
+  const cacheKey = exWebpageKey(url, cookieHeader)
   // ① 缓存命中:直接返回,一个字节都不用重新下载
-  const cached = exWebpageCacheGet(url)
+  const cached = exWebpageCacheGet(cacheKey)
   if (cached) return cached
-  // ② 同一 URL 正在飞:复用同一个 Promise(连点同一本不再重复请求)
-  const inflight = exWebpageInflight.get(url)
+  // ② 同一 key 正在飞:复用同一个 Promise(连点同一本不再重复请求)
+  const inflight = exWebpageInflight.get(cacheKey)
   if (inflight) return inflight
   const task = (async () => {
     try {
     // ★复用 ehLogin.agentFor(按代理地址缓存 + keep-alive):以前每次调用都 new HttpsProxyAgent,
     //   等于每个 EH 页面(在线列表一屏十几次)都重新跟代理建一次 TCP+TLS,是「EH 在线很慢」的大头。
     const agent = setting.proxy ? ehLogin.agentFor(setting.proxy) : undefined
-    // ★ Cookie 必须过一遍 ehLogin.ensureEhCookies:
-    //   前端传上来的只是「登录那几项」,少了 nw=1 / datatags=1 ——
-    //   而 nw=1 正是跳过「成人内容确认」拦截页的关键(照 JHenTai 的做法)。
-    //   以前这里直接原样用,于是部分画廊拿到的是确认页,解析不出详情/页列表 →
-    //   「有的漫画能看、有的加载和下载都失败」。
-    //   已经带了的不会被重复添加(ensure 里做了去重)。
-    const cookieHeader = ehLogin.ensureEhCookies(cookie)
     // ★ 必须有超时 + 重试。
     //   以前这里是裸 fetch:Node 20 的 fetch **没有总超时**,代理卡住/站点握手不响应时
     //   请求会一直挂着 —— 用户看到的就是「点进去等半天、然后加载失败」。
@@ -4590,9 +4671,9 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie, groupId } = {}) =>
       trackAbort(groupId, ac)
       const timer = setTimeout(() => { try { ac.abort() } catch (e) { /* 忽略 */ } }, EX_FETCH_TIMEOUT)
       try {
-        const res = agent
-          ? await fetch(url, { headers: { Cookie: cookieHeader }, agent, signal: ac.signal })
-          : await fetch(url, { headers: { Cookie: cookieHeader }, signal: ac.signal })
+        const opts = { headers: { ...EH_PAGE_HEADERS, Referer: refererOf(url), Cookie: cookieHeader }, signal: ac.signal }
+        if (agent) opts.agent = agent
+        const res = await fetch(url, opts)
         return await res.text()
       } finally {
         clearTimeout(timer)
@@ -4614,7 +4695,7 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie, groupId } = {}) =>
     }
     if (!result) throw (lastErr || new Error('Empty response'))
     // ③ 成功才写缓存(失败不缓存:用户重试要能真的重试)
-    exWebpageCachePut(url, result)
+    exWebpageCachePut(cacheKey, result)
     return result
   } catch (e) {
     // ★ 主动取消不算错误:切书时旧请求被 abort 是正常行为,不该刷日志、
@@ -4629,12 +4710,12 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie, groupId } = {}) =>
     return null
   }
   })()
-  exWebpageInflight.set(url, task)
+  exWebpageInflight.set(cacheKey, task)
   try {
     return await task
   } finally {
     // ④ 无论成败都要摘掉 inflight,否则后续请求会永远拿到一个旧 Promise
-    exWebpageInflight.delete(url)
+    exWebpageInflight.delete(cacheKey)
   }
 })
 
@@ -4650,10 +4731,14 @@ ipcMain.handle('post-ex-form', async (event, arg) => {
     const agent = setting.proxy ? ehLogin.agentFor(setting.proxy) : undefined
     const m = String(method || 'POST').toUpperCase()
     const headers = {
+      // 与 get-ex-webpage 同一套浏览器头(Accept/Accept-Language;UA 见 EH_PAGE_HEADERS):
+      // 少了 UA 的话 node-fetch 会自报 "node-fetch/1.0",站点直接当爬虫拦。
+      ...EH_PAGE_HEADERS,
+      // 表单提交的来源页由调用方给(弹窗页地址);没给就用站点根
+      Referer: referer || refererOf(url),
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
       'X-Requested-With': 'XMLHttpRequest'
     }
-    if (referer) headers.Referer = referer
     if (cookie) headers.Cookie = cookie
     const body = new URLSearchParams(fields || {}).toString()
     const opt = { method: m, headers, agent, redirect: 'follow' }

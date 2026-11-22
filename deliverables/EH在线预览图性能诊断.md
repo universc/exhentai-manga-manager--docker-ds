@@ -1,8 +1,8 @@
 # EH 在线预览图为什么比原站慢 —— 代码级诊断
 
-> 诊断对象：`exhentai-manga-manager`（Electron 26 桌面版 + web-server 网页版）
-> 对照样本：`https://e-hentai.org/g/4347685/4fee639e33/`
-> 对照实现：`JHenTai-8.0.16-334`（Flutter/Dart，同一网络下预览图为瞬时）
+> 诊断对象：`exhentai-manga-manager`（Electron 26 桌面版 + web-server 网页版）  
+> 对照样本：`https://e-hentai.org/g/4347685/4fee639e33/`  
+> 对照实现：`JHenTai-8.0.16-334`（Flutter/Dart，同一网络下预览图为瞬时）  
 > 结论日期：2026-11-22
 
 ---
@@ -17,13 +17,15 @@ EM 的每一张缩略图都要经历「渲染进程 → 自定义协议 → 主�
 
 ## 1. 链路对比（首屏 20~40 张缩略图）
 
-| 环节 | 原站（浏览器） | JHenTai | EM（桌面版） |
-|---|---|---|---|
-| 图片由谁发起 | 渲染/网络进程 | Flutter 图片栈 | 渲染进程 → **主进程**（自定义协议） |
-| 连接 | HTTP/2，一条连接多路复用 | 共享 HttpClient（keep-alive） | **每请求新建** TCP+CONNECT+TLS（见 B1） |
-| 抓多少 | 只抓视口内 | 只 build 视口内 | 首屏 + **整本分页预取**（见 B2） |
-| 图片缓存 | 浏览器 HTTP + 解码缓存 | extended_image 内存/磁盘 | 已有 mem+disk（这块不弱） |
-| 中间拷贝 | 0 次 | 0 次 | 至少 2 次（chunk 列表 → Buffer → ReadableStream） |
+| 环节     | 原站（浏览器）         | JHenTai                   | EM（桌面版）                                    |
+| ------ | --------------- | ------------------------- | ------------------------------------------ |
+| 图片由谁发起 | 渲染/网络进程         | Flutter 图片栈               | 渲染进程 → **主进程**（自定义协议）                      |
+| 连接     | HTTP/2，一条连接多路复用 | 共享 HttpClient（keep-alive） | **每请求新建** TCP+CONNECT+TLS（见 B1）            |
+| 抓多少    | 只抓视口内           | 只 build 视口内               | 首屏 + **整本分页预取**（见 B2）                      |
+| 图片缓存   | 浏览器 HTTP + 解码缓存 | extended_image 内存/磁盘      | 已有 mem+disk（这块不弱）                          |
+| 中间拷贝   | 0 次             | 0 次                       | 至少 2 次（chunk 列表 → Buffer → ReadableStream） |
+
+
 
 ---
 
@@ -82,6 +84,10 @@ await ehLogin.resolvePageImageInfo(pageRef, { proxy, cookie, reloadKey: '' })
 
 后果：只要 EH 的缩略图 CDN 开始 429/509（12 并发裸握手很容易触发），首屏就会整段停住一分钟以上。这与「先一直转圈、然后突然全出来」的现象完全吻合。
 
+**真因（M9）**：`index.js:1749` 的 `isEhImg` 用的是**宽正则** `EH_IMG_HOST_RE`（`index.js:83`，含 `ehgt.org` / `e-hentai.org` / `exhentai.org`），而「换 H@H 节点」这件事只有 `*.hath.network` 才有意义 —— `modules/ehLogin.js:83` 的 `isEhImageHost()` 才是那个窄判据。于是 `ehgt.org` 的雪碧图一旦 403，也会去「换节点」：拿站点根页解析必然拿不到 `#img`，白等 60s，再拿同一个地址撞一次。
+
+**修法（一行）**：把 `index.js:1824`、`1840`（以及「200 但回 HTML」的 `1903`）的条件从 `isEhImg` 换成 `ehLogin.isEhImageHost(raw)`。**不要**按「给 20 格各带 referer」去修 —— 那会在弹窗里复刻 B3（同一张图 20 个 URL）。
+
 ### M2 🟡 桌面版图片并发槽：无超时、无上限、不可取消（中，已证实）
 
 `index.js:130-136` 是裸 Promise（`ehImgWaiters.push(resolve)`）；网页版有 12s 超时 + 64 队列上限（`web-server.js:702-772`），桌面版没有。慢节点会把 12 个槽占死，队列无限增长，切书也不中断。
@@ -122,14 +128,14 @@ EH 侧会按请求特征区别对待（`ehLogin.js:454-468` 的 `cf-mitigated` �
 
 ## 4. JHenTai 为什么也是「瞬间」
 
-| 能力 | 证据 | 性质 |
-|---|---|---|
-| 图片由 App 图片栈直接发起，无中间进程 | `lib/src/widget/eh_image.dart:210-214` `ExtendedNetworkImageProvider` | Flutter 运行时红利 |
-| 共享 HttpClient（默认 keep-alive、按需并发） | 同上（extended_image 内部单例 client） | Flutter 运行时红利 |
-| 预览区按视口懒构建 | `lib/src/pages/details/details_page.dart:1379-1435` `SliverGrid + SliverChildBuilderDelegate` | 策略 |
-| 滚到底才拉下一页 | `lib/src/pages/details/details_page_logic.dart:301-347` | 策略 |
-| 打开详情只解析首页 | 同上 `nextPageIndexToLoadThumbnails = 1` | 策略 |
-| 图片按 URL 去重（雪碧图 10 格只下一次） | `lib/src/widget/eh_thumbnail.dart` + Flutter ImageCache | 运行时红利 |
+| 能力                                | 证据                                                                                            | 性质            |
+| --------------------------------- | --------------------------------------------------------------------------------------------- | ------------- |
+| 图片由 App 图片栈直接发起，无中间进程             | `lib/src/widget/eh_image.dart:210-214` `ExtendedNetworkImageProvider`                         | Flutter 运行时红利 |
+| 共享 HttpClient（默认 keep-alive、按需并发） | 同上（extended_image 内部单例 client）                                                                | Flutter 运行时红利 |
+| 预览区按视口懒构建                         | `lib/src/pages/details/details_page.dart:1379-1435` `SliverGrid + SliverChildBuilderDelegate` | 策略            |
+| 滚到底才拉下一页                          | `lib/src/pages/details/details_page_logic.dart:301-347`                                       | 策略            |
+| 打开详情只解析首页                         | 同上 `nextPageIndexToLoadThumbnails = 1`                                                        | 策略            |
+| 图片按 URL 去重（雪碧图 10 格只下一次）          | `lib/src/widget/eh_thumbnail.dart` + Flutter ImageCache                                       | 运行时红利         |
 
 ---
 
@@ -139,48 +145,56 @@ EH 侧会按请求特征区别对待（`ehLogin.js:454-468` 的 `cf-mitigated` �
 
 **能复用、而且值得复用的是它的三条策略：**
 
-| JHenTai 概念 | EM 落点 | 判定 |
-|---|---|---|
-| 连接复用（共享 HttpClient） | `modules/ehLogin.js:110` agentFor / `index.js:4571` | **可移植（收益最大）** |
-| 按视口懒构建 | `BookDetailDialog.vue:465` 预览格子 | **可移植（收益大）** |
-| 滚到底再拉分页 | `src/ehOnline.js:394` collectGalleryThumbs | **可移植（收益大）** |
-| 同 URL 去重 | `SideDetailPanel.vue:866` | **可移植（修 B3）** |
-| 磁盘/内存图片缓存 | `modules/ehImageCache.js` | 已具备（比 JHenTai 更强） |
-| `#gdt` 解析（含 isLarge 判定） | `src/ehOnline.js:275` | 已具备 |
-| sourceRect 裁图、Codec 暂停、ImageCache | — | 不值得（CSS background-position 已等价） |
+| JHenTai 概念                        | EM 落点                                               | 判定                               |
+| --------------------------------- | --------------------------------------------------- | -------------------------------- |
+| 连接复用（共享 HttpClient）               | `modules/ehLogin.js:110` agentFor / `index.js:4571` | **可移植（收益最大）**                    |
+| 按视口懒构建                            | `BookDetailDialog.vue:465` 预览格子                     | **可移植（收益大）**                     |
+| 滚到底再拉分页                           | `src/ehOnline.js:394` collectGalleryThumbs          | **可移植（收益大）**                     |
+| 同 URL 去重                          | `SideDetailPanel.vue:866`                           | **可移植（修 B3）**                    |
+| 磁盘/内存图片缓存                         | `modules/ehImageCache.js`                           | 已具备（比 JHenTai 更强）                |
+| `#gdt` 解析（含 isLarge 判定）           | `src/ehOnline.js:275`                               | 已具备                              |
+| sourceRect 裁图、Codec 暂停、ImageCache | —                                                   | 不值得（CSS background-position 已等价） |
 
 ---
 
 ## 6. 改造方案
 
+### 先做哪一步：两类收益是互斥的
+
+- 若先做 **B2 / B3 / B5**（把请求条数从「39 页 + 19 张背景图 + 20× 重复」砍到「1 页 + 1 张」），那么 **B1 的握手税几乎自动归零**——只剩 1 页 + 1 张图 ≈ 0.25–0.5s。
+- 反之，如果因为产品原因保留「打开即看完整本缩略图」，那 **B1 必须提到最前**，否则没人替那 20–480 次握手买单。
+
+不写清这一点，最容易出现的返工是：先花大力气换掉代理实现（B1，风险最高），做完发现首屏几乎没变——因为真正多出来的请求还在。
+
 ### P0（改动小、收益最大）
 
-1. **让代理连接真正复用**（对应 B1）
+1. **换节点判据收窄（一行，最先做）**：`index.js:1824/1840/1903` 的 `isEhImg` → `ehLogin.isEhImageHost(raw)`。消除「一张 403 缩略图钉死槽位 60–90 秒」。改完再谈别的。
+2. **让代理连接真正复用**（对应 B1）
    - 方案 A：引入 `undici`，用 `ProxyAgent({ uri, connections: 32 })` + `undici.request`；
-   - 方案 B（推荐，无新依赖）：图片与 HTML 都改走 Electron `net.request`，配合
+   - 方案 B（推荐，无新依赖）：图片与 HTML 都改走 Electron `net.request`，配合  
      `session.setProxy({ proxyRules, proxyBypassRules: '*.hath.network' })` —— Chromium 自带 HTTP/2、连接池、磁盘缓存。
    - 预期：单张缩略图从「握手占大头」变成「复用连接」，首屏 20 张从 2 批 × 3~4 RTT 降到 1 批 1 RTT。
-2. **预取改按需**（对应 B2/M5）：首屏只保留详情页返回的那一批；`?p=N` 由哨兵到底再拉 1 页、并发 2。
-3. **侧栏去掉 per-cell `r=`**（对应 B3）：雪碧图不需要 referer，改成 `ehImageSrc(th.thumb)`。
+3. **预取改按需**（对应 B2/M5）：首屏只保留详情页返回的那一批；`?p=N` 由哨兵到底再拉 1 页、并发 2。
+4. **侧栏去掉 per-cell `r=`**（对应 B3）：雪碧图不需要 referer，改成 `ehImageSrc(th.thumb)`。
 
 ### P1
 
-4. 桌面版 `ehImgAcquire` 加 12s 超时 + 64 队列上限（照 `web-server.js:702`），并让首屏请求插队。
-5. 图片超时改成「总时长」：现在 `reqOptions.timeout` 是 socket 空闲超时（`ehLogin.js:190/256`），慢节点可以占槽上百秒。
-6. `exWebpageCache` 的 key 加上 cookie 摘要、TTL 提到 5–10 分钟（`index.js:4494`）。
+1. 桌面版 `ehImgAcquire` 加 12s 超时 + 64 队列上限（照 `web-server.js:702`），并让首屏请求插队。
+2. 图片超时改成「总时长」：现在 `reqOptions.timeout` 是 socket 空闲超时（`ehLogin.js:190/256`），慢节点可以占槽上百秒。
+3. `exWebpageCache` 的 key 加上 cookie 摘要、TTL 提到 5–10 分钟（`index.js:4494`）。
 
 ### P2
 
-7. 预览区虚拟化（`content-visibility: auto` 或只渲染前 N 段）。
-8. 补上在线书的「加载更多」分支（`BookDetailDialog.vue:1411`）。
+1. 预览区虚拟化（`content-visibility: auto` 或只渲染前 N 段）。
+2. 补上在线书的「加载更多」分支（`BookDetailDialog.vue:1411`）。
 
 ### 预期总账（三条一起做）
 
-| 指标 | 现状 | 改后 |
-|---|---|---|
-| 首屏可见时间（估算） | 0.8–2.3s | 0.4–0.9s（与原站 0.25–0.7s 同一量级） |
-| 打开一次详情的页面请求数 | 1 + 39 | 1 |
-| 首屏字节 | 3–16MB | 0.15–0.6MB |
+| 指标           | 现状       | 改后                           |
+| ------------ | -------- | ---------------------------- |
+| 首屏可见时间（估算）   | 0.8–2.3s | 0.4–0.9s（与原站 0.25–0.7s 同一量级） |
+| 打开一次详情的页面请求数 | 1 + 39   | 1                            |
+| 首屏字节         | 3–16MB   | 0.15–0.6MB                   |
 
 单做「连接复用」约省 2.5–5.6s 握手税；单做「懒加载 + 按需分页」约省 20–50× 字节。
 
@@ -194,3 +208,28 @@ EH 侧会按请求特征区别对待（`ehLogin.js:454-468` 的 `cf-mitigated` �
 2. **看缓存**：响应头 `X-Img-Cache: mem|disk|miss`。
 3. **验证 B1**（最直接）：请求前 `netstat -ano | findstr :7890` 数一下 ESTABLISHED，请求后再数一次——不复用的话连接数会随请求数线性增长。
 4. **A/B 判定瓶颈在握手还是带宽**：把 `EH_IMG_MAX_CONCURRENCY` 从 12 临时改成 2，若总耗时几乎不变，说明瓶颈在每次请求的固定开销（握手），不是在带宽。
+
+---
+
+## 8. 实施记录（2026-11-22）
+
+以下改动已落在工作区，`node --check` ×4 / `npx eslint` / `npx vite build` 均通过。
+
+| 编号 | 落点 | 做法 |
+|---|---|---|
+| M9/B4 | `index.js`（图片协议 3 处）、`web-server.js`（3 处） | 换节点判据从宽（4 域名）收窄为 `ehLogin.isEhImageHost()`，只有 `*.hath.network` 才回图片页换节点 |
+| B2/M5 | `src/ehOnline.js`、`BookDetailDialog.vue`、`SideDetailPanel.vue` | 新增 `fetchGalleryThumbsPage()`（一次一页）；删除 `collectGalleryThumbs`；弹窗补 online 分支，哨兵驱动逐页追加 |
+| B3 | `SideDetailPanel.vue` | 雪碧图整本共用 `book.url` 当 referer（20 个 URL → 1 个）；wnacg 仍按每格，行为不变 |
+| B5 | 两个组件的预览格 | `content-visibility: auto` + `contain-intrinsic-size: auto <w> <h>` |
+| M2 | `index.js` `ehImgAcquire` | 12s 排队超时 + 64 队列上限，超时/满队列回 503 |
+| M3 | `modules/ehImageCache.js` | `get()` 改 async（stat/readFile/utimes），两处调用点均 await |
+| M4 | `index.js`、`web-server.js` | 内存 Map 只收 ≤512KB；整包攒下来落盘的上限改为磁盘单张上限（4MB） |
+| M6 | `modules/ehLogin.js` + 图片路径 | 新增 `totalTimeout`（总时长，流式/缓冲都会清定时器），图片路径传 20s |
+| M1/M7/M8 | `index.js` `get-ex-webpage` | 缓存键 = URL + cookie 的 md5，TTL 60s→5min；补 Chrome UA / Accept-Language / 站点根 Referer；`BROWSER_UA` 从 `ehLogin` 导出复用 |
+| B1（直连半） | `modules/ehLogin.js` | 直连时挂 `https.Agent({keepAlive})`；代理隧道池化未做（`agent-base` 不池化，硬改会破坏隧道生命周期），已在注释里写明 |
+| L2 | 两个组件 | `previewItems` 改增量 append；侧栏 `syncOnlinePreview` 返回真实新增条数 |
+| L3 | `src/ehOnline.js` | 分页 URL 改用 `URL.searchParams.set('p', n)` |
+| L4 | `modules/ehLogin.js` | 删除死代码 `EH_IMAGE_HOST_RE_JS` |
+| 额外 | `modules/ehImageCache.js` `keyOf` | 修复「路径段形式的 keystamp 抹不掉」——这是「磁盘缓存跨会话有效」的前提；改后老缓存一次性失效 |
+
+未做：**代理隧道连接池化**（B1 的另一半）。理由与触发条件见第 6 节「两类收益互斥」——先把请求条数砍到 1 页 + 1 图，它的收益已被摊薄；若后续仍要提速，再单独立项（需要改 Electron 网络栈或引入 undici，风险面是整个 EH 出网）。

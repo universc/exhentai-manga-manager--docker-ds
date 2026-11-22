@@ -32,7 +32,8 @@ const iprules = require('./modules/iprules.js')
 const ehLogin = require('./modules/ehLogin.js')
 // 出网分流(图片直连 / 站点走代理)由 modules/ehLogin.js 的 request() 统一负责
 // 在线图片磁盘缓存(与桌面版 index.js 共用同一份实现)
-const { createCache: createEhImageCache } = require('./modules/ehImageCache.js')
+// MAX_BYTES = 磁盘缓存的单张上限(4MB):流式路径要不要「整包攒下来落盘」按它判,别在本地另写一份
+const { createCache: createEhImageCache, MAX_BYTES: IMG_DISK_MAX_BYTES } = require('./modules/ehImageCache.js')
 auth.loadUsers(STORE_PATH)
 iprules.loadRules(STORE_PATH)
 
@@ -728,10 +729,13 @@ const imgCacheEvictTo = (targetBytes) => {
     imgCacheBytes -= v.buffer.length
   }
 }
+// 内存缓存单张上限 512KB(与桌面版 index.js 的 EH_IMG_MEM_MAX_BYTES 同一口径)。
+// 大图交给磁盘缓存(仍然收)和浏览器自己的 private 缓存,内存 Map 只服务「翻回上一页立刻出图」。
+const IMG_MEM_MAX_BYTES = 512 * 1024
 const imgCachePut = (url, buffer, type) => {
   if (!buffer || !buffer.length) return
-  // 单张超过总预算 1/4 的不进内存缓存(磁盘缓存仍会留住它)
-  if (buffer.length > IMG_CACHE_MAX_BYTES / 4) return
+  // 单张超过 512KB 的不进内存缓存(磁盘缓存仍会留住它)
+  if (buffer.length > IMG_MEM_MAX_BYTES) return
   const prev = imgCache.get(url)
   if (prev) {
     imgCacheBytes -= prev.buffer.length
@@ -750,6 +754,7 @@ const imgCachePut = (url, buffer, type) => {
 // 摘要:EH 图片 URL 里的 keystamp 实测 5–6 分钟失效,但 /h/<sha1>-<bytes>-<w>-<h>/ 是内容寻址的,
 //      抹掉 keystamp/fileindex/xres 再哈希 → key 长期有效,重启后依然命中。
 const ehImgDisk = createEhImageCache({ dir: () => path.join(STORE_PATH, 'ehimgcache') })
+// get() 是 async(读盘不能阻塞事件循环),调用点必须 await
 const ehImgDiskGet = (url) => ehImgDisk.get(url)
 const ehImgDiskPut = (url, buffer) => ehImgDisk.put(url, buffer)
 const trimEhImgCache = (maxFiles) => ehImgDisk.trim(maxFiles)
@@ -798,6 +803,10 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
   const url = String(req.query.url || '')
   const isEhImg = EX_IMAGE_HOST_RE.test(url)
   if (!isEhImg && !WNACG_IMAGE_HOST_RE.test(url)) return res.status(400).send('bad url')
+  // 换节点的窄判据(与桌面版 index.js 的 isHathNode 同一口径):只有 *.hath.network 才值得
+  // 「回图片页重新解析」换节点。ehgt.org 的雪碧图/e-hentai 资源换不到节点 ——
+  // 拿站点根当图片页解析必然拿不到 #img,白等一轮 20s×3 再撞同一个地址,白占 1/12 并发槽。
+  const isHathNode = ehLogin.isEhImageHost(url)
   // r = 图片页 URL(/s/<hash>/<gid>-<n>);EH 的 H@H 节点会校验来源,用站点根当 referer 容易被拒。
   // ⚠️ 它会被当作 Referer 发给上游、并交给 resolvePageImageInfo 二次解析 —— 必须走同一份域名白名单,
   //    否则 url 拦得再严也没用:r 就是一个完整的 SSRF 入口(已实测服务端会真的发出请求)。
@@ -812,7 +821,7 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
     res.set('X-Img-Cache', 'mem')
     return res.send(hit.buffer)
   }
-  const diskHit = ehImgDiskGet(url)
+  const diskHit = await ehImgDiskGet(url)
   if (diskHit) {
     imgCachePut(url, diskHit.buffer, diskHit.type)
     res.set('Content-Type', diskHit.type)
@@ -870,6 +879,9 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
       //   后面的图只能排队 → 就是「先转圈、后突然全部涌出」。
       //   收到 9s:快节点照样成功,坏节点尽早让出槽位。
       timeout: 9000,
+      // 总时长上限(与桌面版一致):socket 空闲超时治不住「一直慢慢滴数据」的节点,
+      // 那种连接能把 1/12 的槽占到几分钟。
+      totalTimeout: 20000,
       retries: 1
     })
     const dropStream = (r) => {
@@ -887,9 +899,10 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
     }
     for (let attempt = 0; attempt < 2; attempt += 1) {
       let target = url
-      if (attempt >= 1 && isEhImg) {
+      if (attempt >= 1 && isHathNode) {
         try {
-          const fresh = await ehLogin.resolvePageImageInfo(pageRef, { proxy: prof.proxy, cookie: prof.cookie || '', reloadKey: '' })
+          // totalTimeout 与桌面版同口径:换节点那一步占着图片并发槽,不能按默认重试跑满 60.9s
+          const fresh = await ehLogin.resolvePageImageInfo(pageRef, { proxy: prof.proxy, cookie: prof.cookie || '', reloadKey: '', totalTimeout: 30000 })
           // 上游页面里解析出来的图片地址同样要过白名单 —— 否则被投毒的页面能把请求引到内网
           if (fresh && fresh.url && EX_IMAGE_HOST_RE.test(fresh.url)) target = fresh.url
         } catch (e) { /* 拿不到新节点就沿用原地址 */ }
@@ -900,7 +913,7 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
       } catch (e) {
         lastErr = e
         const st = Number((e && e.status) || 0)
-        if (isEhImg && attempt === 0 && (st === 403 || st === 429 || st === 509)) continue
+        if (isHathNode && attempt === 0 && (st === 403 || st === 429 || st === 509)) continue
         break
       }
       try {
@@ -959,7 +972,9 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
         res.on('finish', releaseSlot)
         res.on('error', releaseSlot)
         res.flushHeaders()
-        const CACHE_LIMIT = IMG_CACHE_MAX_BYTES / 8
+        // 口径分两层(与桌面版一致):进内存 Map 看 512KB,整包攒下来落磁盘看 4MB(IMG_DISK_MAX_BYTES)。
+        // 4MB 以内的图收完要能落盘 —— 跨会话命中靠的就是磁盘缓存。
+        const CACHE_LIMIT = IMG_DISK_MAX_BYTES
         const collect = []
         let received = 0
         const upstream = r.stream

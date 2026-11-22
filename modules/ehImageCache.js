@@ -39,11 +39,22 @@ const sniffImageType = (buf) => {
 }
 
 // key:抹掉 keystamp / fileindex / xres 后取 md5
+//
+// ⚠️ 为什么不能用「查询参数」那一套正则一把梭:
+//   EH 的 H@H 链接把通行证拼成了**路径段**(不是 ?a=b):
+//     /h/<sha1>-<bytes>-<w>-<h>-wbp/keystamp=<ts>-<rand>;fileindex=<n>;xres=<w>/01.webp
+//   `keystamp=` 前面是 `/`,而旧的 `([?&;])keystamp=` 要求前置 ? & ; —— 一个都匹配不上,
+//   于是 key 里原样带着那个 **5–6 分钟就过期**的通行证:「跨会话/重启命中」这个前提其实是假的
+//   (实测:同一个 URL 只换 keystamp,两次 key 不相等 → 必然 miss)。
+//   所以这里对路径段写法要连分隔的 '/' 一起吃掉,同时保留末尾的图片文件名。
 const keyOf = (url) => {
   const clean = String(url || '')
-    .replace(/([?&;])keystamp=[^;&]*/gi, '$1keystamp=*')
-    .replace(/([?&;])fileindex=[^;&]*/gi, '$1fileindex=*')
-    .replace(/;?xres=\d+/gi, '')
+    // ① 路径段写法 /keystamp=…;fileindex=…;xres=…(三者通常挤在同一段里,一次吃掉)
+    .replace(/\/(?:keystamp|fileindex|xres)=[^/?#]*/gi, '')
+    // ② 查询串写法 ?keystamp=…&fileindex=…&xres=…
+    .replace(/([?&;])(?:keystamp|fileindex|xres)=[^&#;]*/gi, '$1')
+    // ② 会留下 '?&&' 这类空分隔符(值相同则残留也相同,不影响命中,但 key 难看/难核对)
+    .replace(/[?&;]+$/, '')
   return createHash('md5').update(clean).digest('hex')
 }
 
@@ -58,22 +69,25 @@ const createCache = ({ dir }) => {
   }
   const fileOf = (url) => path.join(cacheDir(), keyOf(url) + '.bin')
 
-  const get = (url, opts = {}) => {
+  // ★ 必须 async:缓存命中是「热路径」(翻回上一页会连着命中几十张),
+  //   以前用 statSync + readFileSync + utimesSync —— 单张最大 4MB,同步读盘期间
+  //   **整个 Electron 主进程**都停住(窗口/其它 IPC 一起卡),网络盘/机械盘上尤其明显。
+  const get = async (url, opts = {}) => {
     if (!cacheDir()) return null
     try {
       const f = fileOf(url)
       const ttl = Number.isFinite(opts.ttlMs) ? Number(opts.ttlMs) : DEFAULT_TTL_MS
       if (ttl > 0) {
         // 过期文件当作未命中(JHenTai 也是按天数过期后再删)
-        const st = fs.statSync(f)
+        const st = await fs.promises.stat(f)
         if (Date.now() - st.mtimeMs > ttl) return null
       }
-      const buf = fs.readFileSync(f)
+      const buf = await fs.promises.readFile(f)
       if (!buf || !buf.length) return null
       const type = sniffImageType(buf)
       if (!type) return null
       // 命中就刷新 mtime:trim 按 mtime 淘汰「最久没用过」的,近似 LRU
-      try { const now = new Date(); fs.utimesSync(f, now, now) } catch (e) { /* 忽略 */ }
+      try { const now = new Date(); await fs.promises.utimes(f, now, now) } catch (e) { /* 忽略 */ }
       return { buffer: buf, type }
     } catch (e) { return null }
   }

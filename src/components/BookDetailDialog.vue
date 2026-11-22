@@ -565,7 +565,7 @@ import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, retryBookCover, bookImgSrc, catDisplayName, getDisplayTagName, resolveCatKey, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName, compareCollectionBooks } from '../utils.js'
 import  { insertLocalReadRecord, toAssetUrl } from '../utils.js'
-import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, collectGalleryThumbs } from '../ehOnline.js'
+import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, fetchGalleryThumbsPage } from '../ehOnline.js'
 import { isWnacgUrl, parseWnacgDetail, mergeWnacgDetail, collectWnacgThumbs, wnacgHtmlLooksBroken, wnacgIsDeletedPage, parseWnacgFavDialog, wnacgAidOf, parseWnacgComments, parseWnacgChapterCover, wnacgImageSrc } from '../wnacgOnline.js'
 import { addTagToBlacklist, setBlacklistEnabled } from '../ehFilter.js'
 
@@ -1170,8 +1170,13 @@ const spriteStyleOf = (th) => {
   const h = Number(th.height) || 287
   // 整张雪碧图总宽(解析时算好);缺失时退化成一格宽
   const sw = Number(th.spriteWidth) || w
+  // ★ EH 的页预览是整本共用一张雪碧图:referer 必须统一成画廊 URL,和侧栏(SideDetailPanel)
+  //   用同一个值 —— 否则同一张图在两个组件里是 2 个不同 URL,主进程缓存(按完整 URL 存)
+  //   会各存一份、各下载一次。wnacg 每页是独立缩略图,保持原来的「不带 referer」不变。
+  const galleryUrl = (bookDetail.value && bookDetail.value.url) || ''
+  const referer = isWnacgUrl(galleryUrl) ? '' : galleryUrl
   return {
-    backgroundImage: `url(${ehImageSrc(th.thumb)})`,
+    backgroundImage: `url(${ehImageSrc(th.thumb, '', referer)})`,
     '--ox': String(th.offsetX || 0),
     '--tw': String(w),
     '--th': String(h),
@@ -1188,6 +1193,76 @@ const ehFailedText = async () => {
   return t('m.ehOnlineFailed') + (detail ? ': ' + detail : '')
 }
 
+// ---------- 在线画廊的页预览:首屏只渲染详情页自带的那一批,滑到底再拉下一页 ----------
+// 照 JHenTai:一次只请求 1 页(?p=N),滚到最后一格才拉下一批。
+// 以前一打开就把整本分页(最多 40 页 × 每页 20~400 张)全部预取 —— 首屏被拖慢、代理请求白耗。
+let nextThumbPage = 1          // 下一次要拉的分页号(?p=N)
+let seenThumbHrefs = new Set() // 已渲染的缩略图 href:分页之间有重复,靠它去重
+let onlineThumbsBusy = false   // 重入保护:同一时刻只允许一个分页请求在飞
+let thumbsExhausted = false    // 连续两页都没有新增 → 已到头,本次打开不再请求
+let thumbEmptyStreak = 0       // 连续「没有新增」的次数(见 loadMoreOnlineThumbs 的说明)
+const ehCookieStr = () => ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star']
+  .map(k => k + '=' + (setting.value[k] || ''))
+  .join('; ')
+
+// 拉下一页缩略图并「增量」追加;返回新增条数,供哨兵判断有没有进展(没进展就停,防死循环)
+const loadMoreOnlineThumbs = async () => {
+  const b = bookDetail.value
+  if (!b || !b.online || isWnacgUrl(b.url) || thumbsExhausted || onlineThumbsBusy) return 0
+  onlineThumbsBusy = true
+  const token = previewToken
+  const host = String(b.url).replace(/^https?:\/\//i, '').split('/')[0] || 'e-hentai.org'
+  let added = 0
+  try {
+    // ★ 先回填「别的入口(侧栏)已经拉进 book.thumbnails、但本弹窗还没显示」的项。
+    //   少了这一步,下面按 max(cursor) 取页会直接从第 N 页开始,第 2..N-1 页永远补不回来
+    //   —— 网格上表现为「第 1-20 张 + 第 61-80 张」中间缺一段(共游标的留洞缺口)。
+    for (const t of (b.thumbnails || [])) {
+      if (!t || !t.href || seenThumbHrefs.has(t.href)) continue
+      seenThumbHrefs.add(t.href)
+      previewItems.value.push({ sprite: spriteStyleOf(t) })
+    }
+    // 回填后已经够数:不必再发请求
+    if (previewItems.value.length >= previewTotal.value) {
+      thumbsExhausted = true
+      return 0
+    }
+    // 与侧栏共用游标:侧栏已经拉过更多页时,直接接在它后面继续(避免同页两边各拉一次)
+    const page = Math.max(nextThumbPage, Number(b.thumbPageCursor) || 1)
+    const more = await fetchGalleryThumbsPage({
+      url: b.url,
+      page,
+      host,
+      fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie: ehCookieStr(), groupId: 'eh-thumbs' })
+    })
+    if (token !== previewToken) return 0
+    nextThumbPage = page + 1
+    // 游标与侧栏共用同一条(存在 book 上):谁拉过这一页,另一边就从下一页开始,
+    // 不会各记一个游标、互相把对方钉在首屏
+    b.thumbPageCursor = Math.max(Number(b.thumbPageCursor) || 1, page + 1)
+    const fresh = more.filter(th => th && th.href && !seenThumbHrefs.has(th.href))
+    for (const th of fresh) {
+      seenThumbHrefs.add(th.href)
+      // 增量 push,不整体替换数组:整体替换会让已经显示出来的格子重排、重解码
+      previewItems.value.push({ sprite: spriteStyleOf(th) })
+    }
+    added = fresh.length
+    // 同步回 book.thumbnails:侧栏预览复用同一份数据,不必自己再拉一遍
+    if (added) setPreviewThumbnails((b.thumbnails || []).concat(fresh), b.id)
+    // ⚠ 「本页没有新增」不能立刻判到头:EH 的 ?p=1 有可能就是详情页自带的那一批
+    //   (站点对 ?p 的起算口径不统一),此时整页都是重复、新增数为 0,直接停会让
+    //   画廊永远只显示 20 张。所以连续两页都没进展才算到头。
+    thumbEmptyStreak = added ? 0 : thumbEmptyStreak + 1
+    if (thumbEmptyStreak >= 2 || previewItems.value.length >= previewTotal.value) thumbsExhausted = true
+  } catch (e) {
+    // 单页失败就停:本次打开不再继续请求,避免滚到底时无限重试
+    thumbsExhausted = true
+  } finally {
+    onlineThumbsBusy = false
+  }
+  return added
+}
+
 // 在线画廊:详情弹窗自己把 EH 详情页拉回来补齐(日文标题 / 上传者 / 时间 / 大小 / 标签 / 页预览)
 const enrichOnlineBook = async (book) => {
   // 紳士漫畫走另一套详情页解析(分类 / 页数 / 标签 / 简介 / 全页缩略图)
@@ -1199,9 +1274,7 @@ const enrichOnlineBook = async (book) => {
   const stillMine = () => myToken === previewToken && !!bookDetail.value && bookDetail.value.id === myBookId
   previewLoading.value = true
   try {
-    const cookie = ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star']
-      .map(k => k + '=' + (setting.value[k] || ''))
-      .join('; ')
+    const cookie = ehCookieStr()
     const host = String(book.url).replace(/^https?:\/\//i, '').split('/')[0] || 'e-hentai.org'
     const html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie, groupId: 'eh-detail' })
     if (!stillMine()) return
@@ -1224,31 +1297,19 @@ const enrichOnlineBook = async (book) => {
     Object.assign(bookDetail.value, mergeDetailIntoBook(bookDetail.value, detail))
     const firstThumbs = detail.thumbnails || []
     previewItems.value = firstThumbs.map(th => ({ sprite: spriteStyleOf(th) }))
-    // 详情页一页只给 20 张缩略图:总数按页数算,剩下的按 ?p=1.. 续拉(边拉边显示)
+    // 详情页一页只给 20 张缩略图:总数按页数算,剩下的由 loadMoreOnlineThumbs() 按需逐页追加
     const pages = Number(detail.pageCount) || firstThumbs.length
     previewTotal.value = Math.max(pages, firstThumbs.length)
     previewRawTotal.value = previewTotal.value
-    // ★ 同 enrichWnacgBook:必须用入口处领的令牌,否则切书后旧分页仍会写进新书
-    const token = myToken
-    if (previewTotal.value > firstThumbs.length) {
-      collectGalleryThumbs({
-        url: book.url,
-        host,
-        pageCount: previewTotal.value,
-        first: firstThumbs,
-        fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie, groupId: 'eh-detail' }),
-        shouldStop: () => token !== previewToken,
-        onUpdate: (thumbs) => {
-          if (token !== previewToken) return
-          setPreviewThumbnails(thumbs, book && book.id)
-          previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
-        }
-      }).then((thumbs) => {
-        if (token !== previewToken) return
-        setPreviewThumbnails(thumbs, book && book.id)
-        previewItems.value = thumbs.map(th => ({ sprite: spriteStyleOf(th) }))
-      }).catch(() => { /* 某页拉不到就算了,已显示的先留着 */ })
-    }
+    setPreviewThumbnails(firstThumbs, book && book.id)
+    // ⚠ 共用游标必须与「已经加载到第几页」一致:上面这次详情解析已经把 thumbnails
+    //   换回了首批 20 张,所以游标(侧栏也读它)要一并归 1。
+    //   继承旧游标会从第 N 页直接开始拉,第 2..N-1 页的图永远补不回来(网格中间留洞)。
+    book.thumbPageCursor = 1
+    nextThumbPage = 1
+    seenThumbHrefs = new Set(firstThumbs.map(t => t && t.href).filter(Boolean))
+    thumbEmptyStreak = 0
+    thumbsExhausted = previewTotal.value <= firstThumbs.length
   } catch (e) {
     if (stillMine()) previewError.value = t('m.ehOnlineFailed')
   } finally {
@@ -1378,9 +1439,14 @@ let previewAutoBusy = false
 const autoLoadMoreIfNeeded = async () => {
   if (previewAutoBusy || previewLoading.value) return
   if (previewItems.value.length >= previewTotal.value) return
+  if (bookDetail.value?.online && thumbsExhausted) return
   previewAutoBusy = true
   try {
+    const before = previewItems.value.length
     await loadMorePreview()
+    // ★ 没有新增就停:在线画廊每拉一页都是一次网络请求,哨兵还留在可视区时
+    //   若继续递归就成了「一个请求接一个」的死循环(旧版这里没有进展判断)。
+    if (previewItems.value.length <= before) return
     // 内容还不够高、哨兵仍然在可视区里:继续加载,直到撑满或加载完
     await nextTick()
     const el = previewSentinel.value
@@ -1406,6 +1472,8 @@ watch(previewSentinel, (el) => { if (el) setupPreviewObserver() })
 onBeforeUnmount(() => { if (previewObserver) previewObserver.disconnect() })
 
 const loadMorePreview = async () => {
+  // 在线画廊(EH):一次只拉一页缩略图;本地书仍按 PREVIEW_AUTO_PAGES 批量取图
+  if (bookDetail.value?.online && !isWnacgUrl(bookDetail.value.url)) return loadMoreOnlineThumbs()
   const target = Math.min(previewTotal.value, previewItems.value.length + PREVIEW_AUTO_PAGES)
   previewAutoLimit.value = Math.max(previewAutoLimit.value, target)
   if (currentPreviewBook) loadLocalPreview(currentPreviewBook)
@@ -1467,6 +1535,7 @@ watch(() => bookDetail.value?.id, (id) => {
   cancelReq('wnacg-detail')
   cancelReq('eh-detail')
   cancelReq('wnacg-thumbs')
+  cancelReq('eh-thumbs')
   previewItems.value = []
   previewRawTotal.value = 0
   previewAutoLimit.value = PREVIEW_AUTO_PAGES
@@ -1474,6 +1543,11 @@ watch(() => bookDetail.value?.id, (id) => {
   previewTotal.value = 0
   previewError.value = ''
   hoveredGif.value = null
+  nextThumbPage = 1
+  seenThumbHrefs = new Set()
+  onlineThumbsBusy = false
+  thumbsExhausted = false
+  thumbEmptyStreak = 0
   const b = bookDetail.value
   if (!id || !b) return
   // 合集没有「页预览」这回事:它的 filepath 是多个路径逗号拼接的,拿去解压必然失败。
@@ -1490,6 +1564,16 @@ watch(() => bookDetail.value?.id, (id) => {
     if ((b.thumbnails || []).length && thumbsOwner && thumbsOwner === b.id) {
       previewItems.value = b.thumbnails.map(th => ({ sprite: spriteStyleOf(th) }))
       previewTotal.value = previewItems.value.length
+      // EH 在线的缓存只是「上次打开时已拉到的位置」:总数按页数算,剩下的继续按需逐页拉。
+      // 游标从共用位置接着走(侧栏/本弹窗谁拉过都算),不从头重拉已看过的分页。
+      if (!isWnacgUrl(b.url)) {
+        previewTotal.value = Math.max(Number(b.pageCount) || 0, previewItems.value.length)
+        previewRawTotal.value = previewTotal.value
+        nextThumbPage = Math.max(1, Number(b.thumbPageCursor) || 1)
+        seenThumbHrefs = new Set(b.thumbnails.map(th => th && th.href).filter(Boolean))
+        thumbEmptyStreak = 0
+        thumbsExhausted = previewTotal.value <= previewItems.value.length
+      }
     } else {
       // 归属不明 / 属于别的书:清掉脏缓存,重新拉
       if ((b.thumbnails || []).length && thumbsOwner !== b.id) {
@@ -3191,5 +3275,7 @@ defineExpose({
      也没有 is-ready 开关)—— 加载过程也不再有任何转圈占位。 */
 .book-preview-item
   content-visibility: auto
-  contain-intrinsic-size: var(--preview-cell, 118px) calc(var(--preview-cell, 118px) * 4 / 3)
+  // auto = 记住上次渲染出来的真实尺寸:雪碧图格子的高度跟切片比例走(不是 4/3),
+  // 不加 auto 时离屏格子按 4/3 占位,滚到跟前会跳一下
+  contain-intrinsic-size: auto var(--preview-cell, 118px) calc(var(--preview-cell, 118px) * 4 / 3)
 </style>

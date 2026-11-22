@@ -411,7 +411,7 @@ import { MdAttach, MdSearch } from '@vicons/ionicons4'
 import { MdRefresh } from '@vicons/ionicons4'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, collectGalleryThumbs } from '../ehOnline.js'
+import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, fetchGalleryThumbsPage } from '../ehOnline.js'
 import { isWnacgUrl, parseWnacgDetail, mergeWnacgDetail, collectWnacgThumbs, wnacgHtmlLooksBroken, wnacgIsDeletedPage, parseWnacgFavDialog, wnacgAidOf, parseWnacgComments, parseWnacgChapterCover, wnacgImageSrc } from '../wnacgOnline.js'
 import SeriesDownloadPicker from './SeriesDownloadPicker.vue'
 import { catDisplayName, toAssetUrl, bookImgSrc, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName, sortContextMenuItems, isContextMenuItemEnabled, resolveCatKey } from '../utils.js'
@@ -862,8 +862,15 @@ const spriteStyleOf = (th) => {
   const h = Number(th.height) || 287
   // sw = 整张雪碧图总宽(解析时算好);缺失时退化成一格宽(至少不错位到离谱)
   const sw = Number(th.spriteWidth) || w
+  // ★ EH 的页预览是「整本共用一张雪碧图」:referer 必须整本统一,否则同一张图会被当成
+  //   20 个不同 URL 重复下载(以前用每格的 th.href 当 referer,已证实的高危缺陷)。
+  //   EH 详情页自己加载这张图时的 referer 就是画廊 URL,站点认这个来源。
+  //   wnacg 每页是独立缩略图,沿用每格的页面地址当 referer,保持原行为不变。
+  const referer = isWnacgUrl((book.value && book.value.url) || '')
+    ? (th.href || th.pageUrl || '')
+    : ((book.value && book.value.url) || '')
   return {
-    backgroundImage: 'url(' + ehImageSrc(th.thumb, '', th.href || th.pageUrl || '') + ')',
+    backgroundImage: 'url(' + ehImageSrc(th.thumb, '', referer) + ')',
     '--ox': String(th.offsetX || 0),
     '--tw': String(w),
     '--th': String(h),
@@ -871,31 +878,48 @@ const spriteStyleOf = (th) => {
   }
 }
 // ---------- 在线书预览 ----------
-// 关键:previewItems **派生自** bookDetail.thumbnails,而不是只认自己那次 onUpdate。
-// 以前 previewItems 只在「自己启动的 collectGalleryThumbs 回调」里赋值,而 thumbnails
+// 关键:previewItems **派生自** bookDetail.thumbnails,而不是只认自己那次的分页回调。
+// 以前 previewItems 只在「自己启动的整本预取回调」里赋值,而 thumbnails
 // 还会被详细界面的补页/详情刷新写(同一个对象)→ 两边各跑一套,侧栏永远卡在第一页 20 张,
 // 滑到底也没有后续(用户反馈的「只能加载部分,滑动到底根本不继续加载」)。
+// 现在改成**增量**:已有格子原样保留,只把新增的 thumbnails 追加进去(按 href 去重),
+// 顺序仍以 book.thumbnails 为准 —— 以前整体重建会让已显示的格子重排/重解码。
+// 返回「真正追加进网格的条数」:外层用它判断有没有进展(thumbnails 里可能有网格早就显示过的项)
 const syncOnlinePreview = () => {
   const b = book.value
-  if (!b || !b.online) return
+  if (!b || !b.online) return 0
   const th = b.thumbnails || []
   previewTotal.value = Math.max(Number(b.pageCount) || 0, th.length)
-  if (th.length) previewItems.value = th.map(x => ({ sprite: spriteStyleOf(x) }))
+  if (!th.length) return 0
+  const seen = new Set(previewItems.value.map(x => x && x.href).filter(Boolean))
+  let added = 0
+  for (const t of th) {
+    const key = t && t.href
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    previewItems.value.push({ href: key, sprite: spriteStyleOf(t) })
+    added += 1
+  }
+  return added
 }
 let onlineThumbsRunning = false
 let onlineThumbsToken = 0
+// 一次只拉**一页**缩略图(照 JHenTai:滚到最后一格才拉下一批),
+// 游标存在 book.thumbPageCursor 上 —— 详细界面/侧栏共用同一个 book 对象,不会重复拉同一页。
+// 返回本页真正新增的条数,供 autoLoadMorePreview 判断「有没有进展」(没进展就停)。
 const ensureOnlineThumbs = async () => {
   const b = book.value
-  if (!b || !b.online || !b.url) return
+  if (!b || !b.online || !b.url) return 0
   const th = b.thumbnails || []
   const want = Number(b.pageCount) || 0
   // 已经够数 / 没有标注页数但已经拉过一批 → 不重复启动
-  if (onlineThumbsRunning) return
-  if (want && th.length >= want) return
-  if (!want && th.length >= 20 && onlineThumbsToken > 0) return
+  if (onlineThumbsRunning) return 0
+  if (want && th.length >= want) return 0
+  if (!want && th.length >= 20 && onlineThumbsToken > 0) return 0
   onlineThumbsRunning = true
   const token = ++onlineThumbsToken
   const host = String(b.url || '').replace(/^https?:\/\//i, '').split('/')[0]
+  const cookie = ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star'].map(k => k + '=' + (setting.value[k] || '')).join('; ')
   if (isWnacgUrl(b.url)) {
     try {
       await collectWnacgThumbs({
@@ -911,22 +935,45 @@ const ensureOnlineThumbs = async () => {
     } catch (e) { /* 某一页拉不到就算了 */ } finally {
       if (token === onlineThumbsToken) onlineThumbsRunning = false
     }
-    return
+    return 0
   }
+  let added = 0
   try {
-    await collectGalleryThumbs({
-      url: b.url, host, pageCount: want, first: th,
-      fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie: ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star'].map(k => k + '=' + (setting.value[k] || '')).join('; ') }),
-      shouldStop: () => token !== onlineThumbsToken,
-      onUpdate: (thumbs) => {
-        if (token !== onlineThumbsToken) return
-        b.thumbnails = thumbs
-        syncOnlinePreview()
+    // ⚠ 一次调用最多连拉 2 页:游标可能与「已经加载到的位置」不同步 ——
+    //   ① EH 的 ?p=1 有可能就是详情页自带的那一批(整页重复);
+    //   ② 详细弹窗先拉过几页(共用 book.thumbPageCursor,正常不会落后,但跨入口仍可能差一页)。
+    //   只拉 1 页时遇到重复页会返回 0 → 外层「无进展就停」把侧栏钉死在首屏,
+    //   所以这里允许跳过一页重复再试一次。
+    let page = Number(b.thumbPageCursor) || 1
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const more = await fetchGalleryThumbsPage({
+        url: b.url, page, host,
+        fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie })
+      })
+      if (token !== onlineThumbsToken) return 0
+      // 游标只随「真正发出的请求」前进(与详细弹窗共用同一条:谁拉过,另一边就从下一页开始)。
+      // 用 Math.max:两个入口可能并发,旧请求的响应后到时不能把游标写回去(否则重拉已看过的页)
+      b.thumbPageCursor = Math.max(Number(b.thumbPageCursor) || 1, page + 1)
+      page += 1
+      // 去重基于「await 之后的最新 thumbnails」:这段时间里详细界面可能也补了同一页
+      const cur = b.thumbnails || []
+      const seen = new Set(cur.map(t => t && t.href).filter(Boolean))
+      const fresh = more.filter(t => t && t.href && !seen.has(t.href))
+      if (fresh.length) {
+        b.thumbnails = cur.concat(fresh)
+        // 只算「真正出现在网格里的」条数:thumbnails 可能被详情刷新换回首屏那批,
+        // 此时 fresh 不空但网格早就显示过 → 不能当进展,继续试下一页(仍受 2 页上限约束)
+        added = syncOnlinePreview()
+        if (added) break
+        continue
       }
-    })
+      // 这一页没有新增:页数还没凑够就再试下一页,凑够了就没必要再拉
+      if (want && (b.thumbnails || []).length >= want) break
+    }
   } catch (e) { /* 某一页拉不到就算了,已显示的先留着 */ } finally {
     if (token === onlineThumbsToken) onlineThumbsRunning = false
   }
+  return added
 }
 // 本地书:分批取页预览。先自动加载 PREVIEW_AUTO 页,滑到底部哨兵再继续
 // (以前是一次 while 把所有页全拉完:几百页的书要把整本解压一遍才显示,侧栏直接卡住;
@@ -1044,8 +1091,8 @@ const autoLoadMorePreview = async () => {
     const before = previewItems.value.length + previewQueue.length
     let fetched = 0
     if (book.value && book.value.online) {
-      // 在线书:后台补页没在跑就再启动一次(它自己会从当前 thumbnails 继续)
-      await ensureOnlineThumbs()
+      // 在线书:一次只补一页缩略图(它自己按 book.thumbPageCursor 接着往下拉,返回新增条数)
+      fetched = await ensureOnlineThumbs()
     } else {
       fetched = await loadLocalPreview(book.value, false)
     }
@@ -1746,7 +1793,7 @@ const refreshDetail = async () => {
           } catch (e) { /* 探不到就保持原样 */ }
         }
         if ((detail.thumbnails || []).length) {
-          previewItems.value = detail.thumbnails.map(th => ({ sprite: spriteStyleOf(th) }))
+          syncOnlinePreview()
           ensureOnlineThumbs()
         }
       } else {
@@ -1768,10 +1815,8 @@ const refreshDetail = async () => {
     const detail = parseGalleryDetail(html, host)
     if (detail.ok) {
       Object.assign(bookDetail.value, mergeDetailIntoBook(bookDetail.value, detail))
-      // 详情页的雪碧缩略图 → 侧栏预览
-      if ((detail.thumbnails || []).length) {
-        previewItems.value = detail.thumbnails.map(th => ({ sprite: spriteStyleOf(th) }))
-      }
+      // 详情页的雪碧缩略图 → 侧栏预览(走统一入口:增量追加 + 去重,避免与 watch 重复写入)
+      if ((detail.thumbnails || []).length) syncOnlinePreview()
     } else {
       // html 为 null(主进程失败,B 线)或解析不出详情:都带上具体原因,别只说「失败」
       if (!html) await warnEhFailed()

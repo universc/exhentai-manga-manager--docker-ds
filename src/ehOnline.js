@@ -389,50 +389,22 @@ export const galleryToBook = (g) => {
 }
 
 // EH 详情页的缩略图是**分页**的(每页 20 张,?p=1/2/3...)。
-// 这里按页续拉,边拉边通过 onUpdate 回传,直到页数够或某页没有新图。
+// 只取**一页**:这是「滚到底才拉下一页」的基础能力(照 JHenTai 的做法),
+// 以前一次性把整本分页预取完,首屏被拖慢、代理请求被白耗。
 //   fetchHtml(url) -> Promise<html>   由调用方注入(渲染进程用 get-ex-webpage)
-export const collectGalleryThumbs = async ({
-  url, host = EH_HOST, pageCount = 0, first = [], fetchHtml,
-  onUpdate = null, shouldStop = null, maxPages = 40, perPage = 20
-} = {}) => {
-  const out = Array.isArray(first) ? first.slice() : []
-  const seen = new Set(out.map(t => t && t.href).filter(Boolean))
-  const total = Math.max(Number(pageCount) || 0, out.length)
-  const pages = Math.min(Math.ceil(total / Math.max(1, perPage)), maxPages)
-  // ★ 并发抓分页,而不是一页一页等:实测 12 页缩略图分页串行 3 455 ms,并发 6 只要 1 057 ms。
-  // 每页之间相互独立(都是同一个画廊的 ?p=N),所以可以放心并发;
-  // 但「某一页没有新图」仍然代表到头了 —— 所以按窗口推进,窗口内没有新增就停。
-  const CONCURRENCY = 6
-  for (let base = 1; base < pages; base += CONCURRENCY) {
-    if (shouldStop && shouldStop()) break
-    const batch = []
-    for (let p = base; p < Math.min(base + CONCURRENCY, pages); p++) {
-      batch.push(String(url).replace(/#.*$/, '') + (String(url).includes('?') ? '&' : '?') + 'p=' + p)
-    }
-    let htmls = []
-    try {
-      htmls = await Promise.all(batch.map(async (pageUrl) => {
-        try { return await fetchHtml(pageUrl) } catch (e) { return '' }
-      }))
-    } catch (e) { break }
-    let added = 0
-    for (const html of htmls) {
-      if (!html) continue
-      let doc
-      try { doc = new DOMParser().parseFromString(html, 'text/html') } catch (e) { continue }
-      const more = parseGalleryThumbs(doc, host)
-      for (const th of more) {
-        if (!th || !th.href || seen.has(th.href)) continue
-        seen.add(th.href)
-        out.push(th)
-        added++
-      }
-    }
-    if (shouldStop && shouldStop()) break
-    if (!added) break
-    if (onUpdate) onUpdate(out.slice())
+// ⚠ 必须用 URL + searchParams 拼分页地址:以前是字符串拼接 `url + '?p=N'`,
+//   遇到「URL 已带 query」就会生成 ?p=1&p=2,站点按其中一个取值 → 翻页恒返回同一批。
+export const fetchGalleryThumbsPage = async ({ url, page = 1, host = EH_HOST, fetchHtml } = {}) => {
+  try {
+    const u = new URL(String(url || '').replace(/#.*$/, ''))
+    u.searchParams.set('p', String(page))
+    const html = await fetchHtml(u.toString())
+    if (!html || typeof html !== 'string') return []
+    return parseGalleryThumbs(new DOMParser().parseFromString(html, 'text/html'), host)
+  } catch (e) {
+    // 预览是锦上添花:单页失败不抛到界面,当作「这一页没有」
+    return []
   }
-  return out
 }
 
 // 把详情页解析结果合并进卡片对象(详情界面要用:日文标题 / 上传者 / 时间 / 大小 / 页预览)

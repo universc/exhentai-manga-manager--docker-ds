@@ -30,6 +30,13 @@ const EH_BASES = {
 }
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 const DEFAULT_TIMEOUT = 15000
+// 流式响应(图片)的总预算换算:
+// 「首字节预算」直接拿去卡整包会硬切慢但仍在传的大图(阅读器拿到半张 = 破图),
+// 所以流式路径按体积折算预算 —— 只有平均吞吐低于这个保底速率,才算坏节点。
+const STREAM_MIN_RATE = 50 * 1024           // 50KB/s
+// 不管体积多大,流式响应都有一个绝对硬上限:再慢也在 90s 收工,别把并发槽占几分钟。
+// (体积未知/分块传输时也直接用它)
+const STREAM_MAX_BUDGET_MS = 90 * 1000
 
 // EH 的两个「偏好」Cookie,必须无条件带上 —— 照 JHenTai 的做法
 // (002/JHenTai-8.0.16-334/lib/src/network/eh_cookie_manager.dart:14)。
@@ -78,8 +85,6 @@ const ensureEhCookies = (cookieString) => {
 //   · 站点页 e-hentai.org:直连 15s 超时,经代理 443ms–4s 成功
 // 所以这里不再做「健康度/heuristic 探测」,直接按目标域名硬分:
 //   图片节点 → 直连;其余 → 用调用方给的 proxy(没配就直连)。
-const EH_IMAGE_HOST_RE_JS = /^(?:[^/]+\.[^/]*\.hath\.network|.*\.hath\.network)(?::\d+)?$/i
-
 const isEhImageHost = (urlOrHost) => {
   const raw = String(urlOrHost || '').trim()
   if (!raw) return false
@@ -105,7 +110,16 @@ const normalizeProxyUrl = (proxy) => {
   return 'http://' + raw
 }
 
-// 代理 agent 缓存:同一个代理地址复用同一个 agent(keep-alive),避免每张图都重建 TLS。
+// 直连用的 agent:必须开 keepAlive。
+// Node 18+ 的全局 agent 默认 keepAlive=false,等于**每一个** H@H 图片请求都要重新
+// TCP+TLS 握手(H@H 节点还多用非标端口,握手更贵)。图片并发 12 时这批握手就是纯浪费。
+const directAgent = new https.Agent({ keepAlive: true, maxSockets: 32, maxFreeSockets: 16, timeout: 60000 })
+
+// 代理 agent 缓存:同一个代理地址复用同一个 agent 实例(避免每请求 new)。
+// ⚠️ 下面传的 keepAlive / maxSockets / maxFreeSockets 对 HttpsProxyAgent **不生效**:
+//    它继承自 agent-base,不实现连接池,每个请求仍是一条独立的 CONNECT 隧道
+//    (硬把池化套上去会破坏隧道的生命周期)。真正能复用连接的是上面的 directAgent,
+//    所以直连(含 *.hath.network 强制直连)那一半才是连接数的优化点。
 const agentCache = new Map()
 const agentFor = (proxy) => {
   const key = normalizeProxyUrl(proxy)
@@ -150,11 +164,22 @@ const discardRedirectBody = (res) => {
 // ⚠ 这里只负责「一发一收」;301/302/303/307/308 的跟随在下面 request() 里做。
 const requestOnce = (url, options = {}) => new Promise((resolveOuter, rejectOuter) => {
   const maxRetries = Number.isFinite(options.retries) ? Number(options.retries) : 2
+  // ★ totalTimeout 是**整个 requestOnce** 的预算,不是「每次尝试」的预算。
+  //   写在 sendOnce 里的话 retries 会把它放大:20s → 40s,再叠上调用方「换节点再来一轮」= 80s,
+  //   「总时长上限」等于没闭合(评审实测口径)。所以入口记一个 deadline,
+  //   每次尝试只花「剩余时间」,退避 sleep 也算在里面。
+  const totalMs = Number(options.totalTimeout) > 0 ? Number(options.totalTimeout) : 0
+  const deadline = totalMs > 0 ? Date.now() + totalMs : 0
+  const budgetLeft = () => (deadline ? Math.max(0, deadline - Date.now()) : 0)
   let attempt = 0
   const runOnce = () => {
     sendOnce().then(resolveOuter, (e) => {
-      // 网络层抖动 → 短退避重试(0.3s、0.9s);4xx 之类的业务错误直接抛出
-      if (attempt < maxRetries && isRetriableError(e)) {
+      // 网络层抖动 → 短退避重试(0.3s、0.9s);4xx 之类的业务错误直接抛出。
+      // 预算已经花完(或这一次就是被总时长掐掉的)时不再重试 —— 再试一次只会立刻超时,
+      // 只会把「槽被占住的时间」白白翻倍。
+      const exhausted = /total-timeout/i.test(String((e && e.message) || '')) ||
+        (deadline > 0 && budgetLeft() <= 0)
+      if (!exhausted && attempt < maxRetries && isRetriableError(e)) {
         attempt += 1
         setTimeout(runOnce, 300 * attempt)
         return
@@ -194,11 +219,43 @@ const requestOnce = (url, options = {}) => new Promise((resolveOuter, rejectOute
   //   很容易被 reset(实测报 ECONNRESET: Client network socket disconnected before secure
   //   TLS connection was established)。复用后 keep-alive 生效,连接数大幅下降。
   if (options.proxy) reqOptions.agent = agentFor(options.proxy)
+  // 直连(没配代理 / *.hath.network 强制直连)用开了 keepAlive 的 agent:
+  // 不挂 agent 就会落到 Node 全局 agent(Node 18+ 默认 keepAlive:false),
+  // 每张 H@H 图都要重握手。http 目标不能挂 https.Agent(TLS 建连会失败),所以判一下协议。
+  else if (u.protocol === 'https:') reqOptions.agent = directAgent
+  // ★ totalTimeout:总时长上限(含收包),与 timeout(socket 空闲超时)并存。
+  //   为什么不能只靠 timeout:那个只看「多久没收到字节」,一个慢慢滴数据的坏节点
+  //   永不触发它 —— 实测能占着并发槽几百秒,后面的图全在排队。
+  const leftMs = totalMs > 0 ? budgetLeft() : 0
+  // 预算已经花完(上一次尝试吃掉了):不建连,直接按超时失败
+  if (totalMs > 0 && leftMs <= 0) return reject(new Error('total-timeout'))
+  let totalTimer = null
+  const clearTotal = () => { if (totalTimer) { clearTimeout(totalTimer); totalTimer = null } }
+  const armTotal = (ms) => {
+    clearTotal()
+    totalTimer = setTimeout(() => { totalTimer = null; req.destroy(new Error('total-timeout')) }, ms)
+  }
   const req = lib.request(u, reqOptions, (res) => {
+    // 计时器挂到响应的生命周期上:流式模式下 res 的 'end'/'close' 是「调用方读完/断开」时才来,
+    // 所以总时长同样覆盖了推流阶段(缓冲模式则是收完 body 就清)。
+    if (totalMs > 0) {
+      res.on('end', clearTotal)
+      res.on('error', clearTotal)
+      res.on('close', clearTotal)
+    }
     // ★ 流式模式:把原始 IncomingMessage 直接交出去,调用方边收边转,
     //   这样图片可以「一段一段地出来」(照浏览器 <img> 的行为),而不是等整包收完。
     //   注意:这个模式下重试只能覆盖「连不上/首字节前」的错误,一旦已开始推流就不能重来。
     if (options.stream) {
+      // ★ 拿到响应头才可能知道体积,所以流式路径在这里**重算**预算:
+      //   4MB@50KB/s → 80s,而不是「20s 一刀切」把还在正常传输的大图截成破图;
+      //   体积未知(分块传输)或体积巨大时,收口到 STREAM_MAX_BUDGET_MS 这个绝对硬上限。
+      //   真正「坏节点」由两个下限兜住:timeout(15s 无新字节) + 这里的平均速率。
+      if (totalMs > 0) {
+        const size = Number(res.headers['content-length']) || 0
+        const bySize = size > 0 ? Math.ceil((size / STREAM_MIN_RATE) * 1000) : STREAM_MAX_BUDGET_MS
+        armTotal(Math.min(Math.max(leftMs, bySize), STREAM_MAX_BUDGET_MS))
+      }
       if (typeof options.onProgress === 'function') {
         try {
           const t = Number(res.headers['content-length']) || 0
@@ -254,7 +311,9 @@ const requestOnce = (url, options = {}) => new Promise((resolveOuter, rejectOute
     })
   })
   req.on('timeout', () => req.destroy(new Error('timeout')))
-  req.on('error', (e) => reject(e))
+  req.on('error', (e) => { clearTotal(); reject(e) })
+  // 首次装表用「剩余预算」;流式路径在响应头到达后会按体积重算(见上面的 armTotal)
+  if (totalMs > 0) armTotal(leftMs)
   if (body) req.write(body)
   req.end()
   })
@@ -663,7 +722,10 @@ const resolvePageImageInfo = async (pageUrl, opts = {}) => {
   // 不能沿用默认的 20s×3 次(单页最坏 60.9s,4 轮就是 245 秒)。
   const timeout = Number.isFinite(opts.timeout) ? Number(opts.timeout) : 20000
   const retries = Number.isFinite(opts.retries) ? Number(opts.retries) : undefined
-  const res = await request(u, { proxy, cookie, timeout, retries, referer: pageUrl })
+  // totalTimeout 同样透传:阅读器「换节点」时会调这里,那一步是占着图片并发槽做的,
+  // 不能让它按默认重试跑满 60.9s。(注意:重定向跟随是逐跳调用,预算是**每跳**一份)
+  const totalTimeout = Number.isFinite(opts.totalTimeout) ? Number(opts.totalTimeout) : undefined
+  const res = await request(u, { proxy, cookie, timeout, retries, totalTimeout, referer: pageUrl })
   const body = res.body || ''
   const m = /<img[^>]*id="img"[^>]*src="([^"]+)"/i.exec(body) || /<img[^>]*src="([^"]+)"[^>]*id="img"/i.exec(body)
   const om = /href="(https?:\/\/[^"]+)"[^>]*>[^<]*Download\s+original/i.exec(body)
@@ -793,6 +855,9 @@ const galleryTorrents = async ({ gid, token, site = '', proxy, cookie, bases = E
 module.exports = {
   EH_COOKIE_NAMES,
   EH_BASES,
+  // 浏览器 UA:index.js 的 get-ex-webpage / post-ex-form 用 node-fetch 发页面请求,
+  // 必须带同一份 UA(否则 node-fetch 自报 "node-fetch/1.0",EH 直接回限速页)。别复制第二份。
+  BROWSER_UA,
   cookieHeaderOf,
   // 已有 "a=1; b=2" 串补上 nw/datatags(渲染进程传来的 Cookie 只含登录四项)
   ensureEhCookies,
