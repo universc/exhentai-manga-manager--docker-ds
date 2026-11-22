@@ -430,22 +430,37 @@ export const mergeDetailIntoBook = (book, detail) => {
   }
 }
 
-// ---------- 在线图片统一走应用自己的代理 ----------
-// 实测:EH 的原图主机(*.hath.network)浏览器直连基本不可达(DNS/端口被挡),
-// 所以在线读图与页预览不能直接把原地址丢给 <img>,一律改写成应用自己的取图地址:
-//   网页版 → /api/ex-image(服务端带 Cookie 与代理取回再转发)
-//   桌面版 → emm-eh:// 自定义协议(主进程同样带 Cookie 与代理)
-// opts.tracker:可选的「进度标识」(通常是这一页的 id)。带上它,主进程就能在读取图片时
-//   按这个 id 回推下载进度,占位上的环形进度条就显示真实百分比(照 JHenTai 的 loadingProgress)。
-// opts.referer:这一页的**图片页 URL**(/s/<hash>/<gid>-<n>)。
-//   ⚠ 很重要:EH 的 H@H 节点会校验收图来源。以前统一用站点根当 referer,实测更容易被拒;
-//   浏览器读图时 referer 天然就是图片页本身。现在把它透传给主进程。
-export const ehImageSrc = (url, tracker, referer) => {
+// ---------- 在线图片地址:能直连就直连,直连不通再回退到应用自己的代理 ----------
+// 取图有两条路,选哪条取决于「这个地址由谁去取」:
+//   ① 直连:把归一化后的 https 原地址交给 <img>,由 Chromium 自己的网络栈取 ——
+//      连接池、HTTP 缓存、并发全都回来了(以前每个预览格都要跨进程转发一次)。
+//      前提在主进程侧:defaultSession 配了用户设置的代理,并把 *.hath.network 放进
+//      proxyBypassRules(见 index.js 的 PROXY_BYPASS_RULES),ehgt.org / e-hentai.org 的
+//      图片请求由 webRequest 补 Referer(站点校验收图来源,缺了 403)。
+//   ② 代理:emm-eh:// 自定义协议(桌面)/ /api/ex-image(网页版),由主进程/服务端带 Cookie 与代理取回。
+// ⚠ 绅士漫画(wnacg)的图床不在那份 bypass 名单里,直连会被代理截断 → 必须继续走代理。
+// ⚠ exhentai.org 同样不直连:EX 的图必须带 sadpanda 那套登录 Cookie,而 Chromium 的
+//   defaultSession 里**没有** EH 登录态(主进程只往独立的登录分区写过 Cookie,从没往
+//   defaultSession 写过)。补 Referer 也救不回来 → 直连必然 403,只会让每张图白跑一次
+//   注定失败的请求(+ 闪一下空白),所以这类地址一律继续走代理(那条链路主进程自己带 Cookie)。
+//   直连只保留「公开图床」:hath.network / ehgt.org / e-hentai.org。
+//   hath.network 虽然阅读器走 tracker 分支用不到直连,仍留着 —— 将来无 tracker 取大图时要用。
+const EH_IMG_HOST_RE = /^https?:\/\/([^/]+\.)?(hath\.network|ehgt\.org|e-hentai\.org)(:\d+)?\//i
+const isEhImageUrl = (u) => EH_IMG_HOST_RE.test(String(u || ''))
+
+const normalizeImageUrl = (url) => {
   let u = String(url || '').trim()
   // ★ 列表页的缩略图常是协议相对地址(//ehgt.org/…):直接丢给 <img> 会被解析成
   //   file://ehgt.org/… → 必然失败;主进程的 emm-eh 也只放行 https,所以统一补成 https。
   if (u.startsWith('//')) u = 'https:' + u
   if (/^http:\/\//i.test(u)) u = u.replace(/^http:/i, 'https:')
+  return u
+}
+
+// 一律走代理(旧行为):桌面版 → emm-eh://,网页版 → /api/ex-image。
+// 直连失败时由调用方回退到它,保证「不比以前差」。
+export const ehProxyImageSrc = (url, tracker, referer) => {
+  const u = normalizeImageUrl(url)
   if (!u || !/^https?:\/\//i.test(u)) return u
   const tr = tracker ? '&t=' + encodeURIComponent(String(tracker)) : ''
   const rf = referer ? '&r=' + encodeURIComponent(String(referer)) : ''
@@ -453,4 +468,23 @@ export const ehImageSrc = (url, tracker, referer) => {
     return '/api/ex-image?url=' + encodeURIComponent(u) + tr + rf
   }
   return 'emm-eh://img/?u=' + encodeURIComponent(u) + tr + rf
+}
+
+// opts.tracker:可选的「进度标识」(通常是这一页的 id)。带上它,主进程就能在读取图片时
+//   按这个 id 回推下载进度,占位上的环形进度条就显示真实百分比(照 JHenTai 的 loadingProgress)。
+// opts.referer:这一页的**图片页 URL**(/s/<hash>/<gid>-<n>)。
+//   ⚠ 很重要:EH 的 H@H 节点会校验收图来源。以前统一用站点根当 referer,实测更容易被拒;
+//   浏览器读图时 referer 天然就是图片页本身。现在把它透传给主进程(直连时用不到,
+//   直连的 Referer 由主进程 webRequest 补 —— 但回退到代理时还要靠它)。
+export const ehImageSrc = (url, tracker, referer) => {
+  const u = normalizeImageUrl(url)
+  if (!u || !/^https?:\/\//i.test(u)) return u
+  // 网页版:浏览器和站点之间没有代理,图只能由服务器取 → 保持原样
+  if (typeof window !== 'undefined' && window.__WEB_MODE__) return ehProxyImageSrc(u, tracker, referer)
+  // 阅读器要按 tracker 回推进度:只有 emm-eh:// 认 t / r 参数,不能直连
+  if (tracker) return ehProxyImageSrc(u, tracker, referer)
+  // 桌面版 + 公开图床:交给 Chromium 直连(见上面两条路的取舍与前提)
+  if (isEhImageUrl(u)) return u
+  // 其余一律走代理:绅士漫画的图床不在 bypass 名单里、exhentai 的图需要登录 Cookie
+  return ehProxyImageSrc(u, tracker, referer)
 }

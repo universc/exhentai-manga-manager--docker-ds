@@ -320,6 +320,7 @@ import ContextMenu from '@imengyu/vue3-context-menu'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
 import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, retryBookCover, bookImgSrc, getDisplayTagName, tagDisplayName, resolveCatKey, galleryCategoryName, tagDisplayPrefix } from '../utils.js'
+import { ehProxyImageSrc } from '../ehOnline.js'
 const appStore = useAppStore()
 const TASK_CHARS = { translate: '翻', colorize: '色', upscale: '分', extract: '字' }
 const bookTaskProgress = computed(() => (appStore.bookTaskProgress && appStore.bookTaskProgress[props.book && props.book.id]) || null)
@@ -521,6 +522,12 @@ watchEffect(() => {
 //   · 不写书级放弃标记:翻页/滚动回来要能重新尝试,否则一本当时没生成好的书永远坏在界面上。
 const coverLoading = ref(false)
 const coverFailed = ref(false)
+// 封面是否已从「直连图床」退回「应用自己的代理」。
+// 为什么需要:ehImageSrc 对 EH 域名给的是直连地址,直连依赖主进程给 session 配的代理 +
+// ehgt.org 的 Referer 兜底 —— 任何一环没生效,书架就是一整墙空白。封面不像页预览那样
+// 有逐格回退,所以这里补一次:第一次直连失败就换回「慢但一定出图」的老路径。
+// 换书 / coverPath 变化时复位(见下方 watch),否则一本书的失败会污染后面所有的书。
+const coverViaProxy = ref(false)
 let coverFailCount = 0      // <img> 连续 error 次数
 let coverGenAttempt = 0     // 封面生成尝试次数
 let coverTaskToken = 0
@@ -573,9 +580,24 @@ const triggerEnsureCover = () => {
     .then((next) => { if (token === coverTaskToken) afterCoverEnsure(next) })
     .catch(() => { if (token === coverTaskToken) afterCoverEnsure(null) })
 }
+// 「这个封面地址值得换代理再试一次」的判定:EH 系图床全算。
+// ⚠ 这里**故意比** ehOnline.js 的直连白名单多一个 exhentai.org:ehImageSrc 已经不会把
+//   exhentai 交给直连了(那域要登录 Cookie),但万一遇到裸的 exhentai 地址(老数据/其它入口),
+//   「切代理」正是我们想要的兜底 —— 少判这一条只会让那张图一直直连失败到判死。
+const EH_COVER_HOST_RE = /^https?:\/\/([^/]+\.)?(hath\.network|ehgt\.org|e-hentai\.org|exhentai\.org)(:\d+)?\//i
 // <img> 读不出来。绝大多数是「封面正在生成 / 刚写完还没落盘」,不是坏图 ——
 // 继续转圈并让后台重做,不要立刻写「加载失败」。
 const onCoverError = () => {
+  // ★ 直连图床失败:先退回代理地址重试一次,别急着烧重试次数。
+  //   必须放在下面所有计数之前 —— 否则直连被拒时会一路数到「加载失败」,
+  //   而其实换成 emm-eh:// 就能出图(封面没有别的兜底,判死就是一格空白)。
+  //   只在「当前确实是直连的 EH 地址」时才切,本地封面(file://)与 wnacg 图床不受影响。
+  if (!coverViaProxy.value && EH_COVER_HOST_RE.test(String((props.book && props.book.coverPath) || ''))) {
+    coverViaProxy.value = true
+    coverLoading.value = true
+    coverFailed.value = false
+    return
+  }
   // 在线画廊封面走 emm-eh:// 由主进程带 Cookie/代理去取,EH 节点抖动、
   // 限速、keystamp 过期都会让第一次请求失败 —— 这不是「封面坏了」。
   // 以前这里一次 error 就直接判死,表现就是「一进在线画廊,满屏加载失败」。
@@ -608,6 +630,9 @@ watch(() => props.book.coverPath, (v) => {
   clearCoverRetry()
   coverFailCount = 0
   coverGenAttempt = 0
+  // 换书 / 换封面:回退标记必须复位 —— 否则上一本「直连失败过」会让这本一上来就走代理,
+  // 或者新地址明明能直连却一直在用老路径(每本书都要自己重新判断一次)
+  coverViaProxy.value = false
   if (v) {
     // 有地址了:不管之前失败过几次,立刻恢复成「转圈等图」
     if (props.book && props.book._coverFailed) retryBookCover(props.book)
@@ -637,10 +662,13 @@ watch(() => props.book.coverPath, (v) => {
 const coverSrc = computed(() => {
   const p0 = props.book && props.book.coverPath
   if (!p0) return ''
-  const base = bookImgSrc(p0)
+  let base = bookImgSrc(p0)
   const n = props.book._coverNonce
-  if (!n) return base
-  return base + (base.includes('?') ? '&' : '?') + 'r=' + n
+  if (n) base += (base.includes('?') ? '&' : '?') + 'r=' + n
+  // 直连失败过一次 → 换成应用自己的代理地址。nonce 要先加在「原地址」上:
+  // emm-eh:// 的缓存键就是 u 里的地址,nonce 进 u 才能真正绕开上一次的失败缓存。
+  // 已经是 emm-eh:// / file:// / /api/file 的非 http 地址,ehProxyImageSrc 会原样返回,不会二次包装。
+  return coverViaProxy.value ? ehProxyImageSrc(base) : base
 })
 
 // ---------- 封面单击/双击分离:双击时取消单击动作 ----------

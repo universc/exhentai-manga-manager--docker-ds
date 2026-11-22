@@ -355,12 +355,22 @@
             v-for="(it, i) in previewItems"
             :key="'p' + i"
             class="detail-preview-item"
-            :class="{ 'is-sprite': !!it.sprite }"
-            :style="it.sprite ? spriteBoxStyle(it.sprite) : null"
+            :style="it.sprite ? cellBoxStyle(it.sprite) : null"
             @click="emit('read', book, it.pageIndex != null ? it.pageIndex : i)"
             @contextmenu.prevent="onImageContextMenu($event, it, it.pageIndex != null ? it.pageIndex : i)"
           >
-            <div v-if="it.sprite" class="detail-preview-sprite" :style="it.sprite" />
+            <!-- 在线页预览:整本共用一张雪碧图,靠「图片按倍数放大 + 负 margin 挪位」取该格。
+                 用 <img loading="lazy"> 而不是 background-image:图直连原地址,Chromium 自己的
+                 连接池/HTTP 缓存/懒加载都能用上,也少一次跨进程转发(失败自动回退代理地址)。 -->
+            <img
+              v-if="it.sprite"
+              class="cell-img"
+              :src="imgSrcOf(it.sprite)"
+              :style="imgCropStyle(it.sprite)"
+              loading="lazy"
+              decoding="async"
+              @error="onSpriteError(it.sprite)"
+            />
             <!-- GIF 超过 5 张时:默认显示静态首帧(thumb),鼠标移上去才换成动图(见 displaySrc)。
                  displaySrc 保证只要这一页有路径就返回非空地址 —— 不再出现「纯白空格子」。 -->
             <img
@@ -411,7 +421,7 @@ import { MdAttach, MdSearch } from '@vicons/ionicons4'
 import { MdRefresh } from '@vicons/ionicons4'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, fetchGalleryThumbsPage } from '../ehOnline.js'
+import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, ehProxyImageSrc, fetchGalleryThumbsPage } from '../ehOnline.js'
 import { isWnacgUrl, parseWnacgDetail, mergeWnacgDetail, collectWnacgThumbs, wnacgHtmlLooksBroken, wnacgIsDeletedPage, parseWnacgFavDialog, wnacgAidOf, parseWnacgComments, parseWnacgChapterCover, wnacgImageSrc } from '../wnacgOnline.js'
 import SeriesDownloadPicker from './SeriesDownloadPicker.vue'
 import { catDisplayName, toAssetUrl, bookImgSrc, tagDisplayName, tagColorOf, tagCatRank, galleryCategoryName, categoryDisplayName, sortContextMenuItems, isContextMenuItemEnabled, resolveCatKey } from '../utils.js'
@@ -843,21 +853,19 @@ const ensurePreviewThumbs = async () => {
     }
   }
 }
-// 雪碧图切片:交给 CSS 的 --cell 变量缩放。
-// 以前每次算 style 都带 transform:scale + 负 margin,而且 watch(width) 在拖拽时
-// 每个 mousemove 都要把整张网格的 style 重算一遍 —— 这就是「拖动侧栏时预览卡」的根因。
-// 现在每格只需在**插入时**记下自己的原图偏移与尺寸,缩放完全由 CSS 变量驱动:
-//   background-size / background-position 都用 calc(var(--cell) * ...) 表达,
+// 雪碧图切片:交给 CSS 百分比缩放。
+// 以前每格都带 transform:scale + 负 margin,而且 watch(width) 在拖拽时每个 mousemove 都要
+// 把整张网格的 style 重算一遍 —— 这就是「拖动侧栏时预览卡」的根因。
+// 现在每格只在**插入时**记下自己的地址/尺寸/偏移,缩放完全由百分比 + --cell 驱动:
+//   图片宽 = 总宽/格宽,左移 = 偏移/格宽(都是相对格子宽度的比例,纯百分比不用 calc 混算),
 //   拖宽时只改根节点的 --cell,零 JS 重算。
-// 雪碧图的 4 个尺寸变量要复制到「格子本身」:格子的 height 用 calc(var(--th)/var(--tw)),
-// 而 CSS 变量只向下继承 —— 写在切片子元素上,父级格子读不到,高度会塌回 3/4 把长页切掉。
-const spriteBoxStyle = (s) => ({
-  '--ox': s['--ox'],
-  '--tw': s['--tw'],
-  '--th': s['--th'],
-  '--sw': s['--sw'],
+// 单图(非雪碧图)时 sw === w 且 ox === 0,两个值自然变成 100% / 0,不用单独分支。
+const cellBoxStyle = (s) => ({ height: `calc(var(--cell, 150px) * ${s.h} / ${s.w})` })
+const imgCropStyle = (s) => ({
+  width: (s.sw / s.w * 100).toFixed(4) + '%',
+  marginLeft: s.ox ? -(s.ox / s.w * 100).toFixed(4) + '%' : '0'
 })
-const spriteStyleOf = (th) => {
+const spriteDataOf = (th) => {
   const w = Number(th.width) || 200
   const h = Number(th.height) || 287
   // sw = 整张雪碧图总宽(解析时算好);缺失时退化成一格宽(至少不错位到离谱)
@@ -869,14 +877,15 @@ const spriteStyleOf = (th) => {
   const referer = isWnacgUrl((book.value && book.value.url) || '')
     ? (th.href || th.pageUrl || '')
     : ((book.value && book.value.url) || '')
-  return {
-    backgroundImage: 'url(' + ehImageSrc(th.thumb, '', referer) + ')',
-    '--ox': String(th.offsetX || 0),
-    '--tw': String(w),
-    '--th': String(h),
-    '--sw': String(sw)
-  }
+  const rawUrl = th.thumb || ''
+  return { rawUrl, referer, url: ehImageSrc(rawUrl, '', referer), w, h, sw, ox: Number(th.offsetX) || 0 }
 }
+// 直连失败(图床被墙 / 代理规则没生效 / Referer 被拒)就回退到代理地址:
+// 宁可多一次跨进程转发,也不能让预览整片空白 —— 那正是改造前的老行为,兜底不会更差。
+// ⚠ 用「整体换新 Set」而不是 add:Set 的增删不是响应式的,换引用才会重新求值 imgSrcOf。
+const failedSprites = ref(new Set())
+const imgSrcOf = (s) => failedSprites.value.has(s.url) ? ehProxyImageSrc(s.rawUrl, '', s.referer) : s.url
+const onSpriteError = (s) => { failedSprites.value = new Set(failedSprites.value).add(s.url) }
 // ---------- 在线书预览 ----------
 // 关键:previewItems **派生自** bookDetail.thumbnails,而不是只认自己那次的分页回调。
 // 以前 previewItems 只在「自己启动的整本预取回调」里赋值,而 thumbnails
@@ -897,7 +906,7 @@ const syncOnlinePreview = () => {
     const key = t && t.href
     if (!key || seen.has(key)) continue
     seen.add(key)
-    previewItems.value.push({ href: key, sprite: spriteStyleOf(t) })
+    previewItems.value.push({ href: key, sprite: spriteDataOf(t) })
     added += 1
   }
   return added
@@ -1709,6 +1718,8 @@ watch(() => book.value.id, async (id) => {
   if (!props.visible) return
   previewToken++
   previewItems.value = []
+  // 换书就把「直连失败过」的记录清掉:否则上一本的失败地址会一直留在 Set 里(只增不减)
+  failedSprites.value = new Set()
   previewError.value = ''
   previewTotal.value = 0
   previewAutoLimit.value = PREVIEW_AUTO
@@ -2044,6 +2055,7 @@ const startResize = (e) => {
     width: 100%
     // ★ 同弹窗:高度必须是显式值。aspect-ratio + height:auto 配 img{height:100%} 会让
     //   百分比高度退化,格子被图片自身比例撑高,一行高低参差。
+    // 雪碧图格子的高度由 cellBoxStyle 按切片比例内联覆盖(见模板),不跟这里的 4/3。
     height: calc(var(--cell, 150px) * 4 / 3)
     overflow: hidden
     background: transparent
@@ -2060,19 +2072,12 @@ const startResize = (e) => {
       object-fit: contain
       display: block
       // 用户要求取消加载淡入:图片解码完直接显示,不做 opacity 过渡
-  // 雪碧图格子:高度按切片本身的比例走(EH 页多为 100x140,比 3/4 高)
-  .detail-preview-item.is-sprite
-    aspect-ratio: auto
-    height: calc(var(--cell) * var(--th, 1.4) / var(--tw, 1))
-  .detail-preview-sprite
-    position: absolute
-    top: 0
-    left: 0
-    width: var(--cell)
-    height: calc(var(--cell) * var(--th) / var(--tw))
-    background-repeat: no-repeat
-    background-size: calc(var(--sw) * var(--cell) / var(--tw)) auto
-    background-position: calc(var(--ox) * var(--cell) / var(--tw) * -1) 0
+    // 雪碧图切片:宽度/左移由 imgCropStyle 按百分比内联给出(跟着 --cell 等比缩放),
+    // 这里只把上面 img 的 height:100% 顶掉 —— 切片高度必须按图片自身比例走,
+    // 否则整张雪碧图会被压成格子高度,切出来的那一格是变形的。
+    .cell-img
+      height: auto
+      display: block
   .detail-preview-sentinel
     height: 1px
   // 预览加载期间不显示任何转圈/占位(用户要求取消加载动画)

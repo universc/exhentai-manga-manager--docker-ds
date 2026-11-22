@@ -318,8 +318,10 @@ localModels.init(STORE_PATH)
 // H@H 图片节点(*.hath.network,多用非标端口)经代理会 ECONNRESET —— 这正是
 // modules/ehLogin.js 的 shouldBypassProxy() 单独放行它的原因。图片现在由 Chromium
 // 自己的网络栈直连,所以浏览器侧的 bypass 列表必须与之一致,否则图片又全被塞进代理。
-// <-loopback>:连本机地址也不走代理(内置服务/网页版是同机 http)。
-const PROXY_BYPASS_RULES = '*.hath.network,<-loopback>'
+// ⚠ 这里**不能**加 `<-loopback>`:它是「减去隐式规则」,含义是让 localhost 也走代理
+//   (Chromium 默认已隐式 bypass loopback)。加上就会把远程模式的 http://127.0.0.1:<port>
+//   界面地址塞进用户的代理 → 远程模式直接打不开。
+const PROXY_BYPASS_RULES = '*.hath.network'
 
 // ---------- 系统代理兜底 ----------
 // 用户经常是「浏览器能上 EH、应用上不了」:浏览器走系统代理(Clash 等),而 setting.proxy 是空的。
@@ -2065,13 +2067,20 @@ if (!WEB_MODE) {
       // 否则会先按旧目录读一次封面、再按新目录重新生成一遍。
       // 库盘离线时跳过:它会对不可达的库路径做 mkdir/rename,只会刷一堆失败日志。
       if (!libraryOfflineInfo) ensureCoverDirsMigrated()
-      // 缩略图现在由前端直接把 https://ehgt.org/... 交给 Chromium 走(拿回连接池 + HTTP 缓存),
+      // 缩略图/在线封面现在由前端直接把 https://... 交给 Chromium 走(拿回连接池 + HTTP 缓存),
       // 但站点会校验图片来源,少了 Referer 一律 403。这里统一补一个站点根 Referer。
-      // ⚠ 只对 ehgt.org 注册:*.hath.network 走 emm-eh:// 协议,那条链路自己带的是正确的
-      //   /s/<hash>/ 图片页来源,这里再覆盖反而会把它冲掉。
+      // 两个域对齐前端直连白名单:封面偶尔落在站点域而不是 ehgt.org,少一条就会缺 Referer 被拒。
+      // 封面也吃这条规则;直连失败时前端会一次性切回 emm-eh://(BookCard 的 coverViaProxy),
+      // 所以这里漏一条域不会导致整墙空白。
+      // ⚠ 不含 exhentai.org:那个域必须有 sadpanda Cookie,而 defaultSession 里没有 EH 登录态
+      //   (全文件无 cookies.set),补了 Referer 也拿不到图,回退由前端走 emm-eh://。
+      // ⚠ 不含 *.hath.network:阅读器仍走 emm-eh://,那条链路自己带正确的 /s/<hash>/ 图片页
+      //   来源(且带 Cookie),这里再覆盖反而会把它冲掉。
+      // ⚠ types 限定 image:只碰图片请求,HTML/XHR/导航一律不动。
+      // ⚠ 只影响 Chromium 的请求;主进程 get-ex-webpage 走 node-fetch,不经过 webRequest。
       // ⚠ webRequest 同一 session 只能注册一次同名监听,所以只放在这里(whenReady 内,单次执行)。
       session.defaultSession.webRequest.onBeforeSendHeaders(
-        { urls: ['*://*.ehgt.org/*'] },
+        { urls: ['*://*.ehgt.org/*', '*://*.e-hentai.org/*'], types: ['image'] },
         (details, cb) => {
           const h = details.requestHeaders || {}
           if (!h.Referer && !h.referer) h.Referer = 'https://e-hentai.org/'

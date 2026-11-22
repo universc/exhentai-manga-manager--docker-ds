@@ -241,3 +241,24 @@ EH 侧会按请求特征区别对待（`ehLogin.js:454-468` 的 `cf-mitigated` �
 | 额外 | `modules/ehImageCache.js` `keyOf` | 修复「路径段形式的 keystamp 抹不掉」——这是「磁盘缓存跨会话有效」的前提；改后老缓存一次性失效 |
 
 未做：**代理隧道连接池化**（B1 的另一半）。理由与触发条件见第 6 节「两类收益互斥」——先把请求条数砍到 1 页 + 1 图，它的收益已被摊薄；若后续仍要提速，再单独立项（需要改 Electron 网络栈或引入 undici，风险面是整个 EH 出网）。
+
+---
+
+## 9. 第二轮：结构性改造（去掉跨进程转发 + 连接复用）
+
+第一轮把「请求条数」对齐到了 1 页 + 1 图，但取图路径仍是「渲染进程 → emm-eh 自定义协议 → 主进程 Node https → 代理隧道」。第二轮把这条路径整体交给 Chromium。
+
+| 项 | 做法 | 效果 |
+|---|---|---|
+| 图片发起方 | `ehImageSrc()` 在「桌面 + 无 tracker + EH 三域（`hath.network`/`ehgt.org`/`e-hentai.org`）」时**直接返回原 https 地址**，由 `<img>` 交给 Chromium 网络栈 | 去掉一次跨进程转发；拿回 Chromium 的连接池、并发调度、HTTP 缓存 |
+| 代理复用 | 复用已有的 `session.setProxy`，补 `proxyBypassRules: '*.hath.network'` | 缩略图走用户代理，H@H 原图仍直连，且由 Chromium 统一复用连接 |
+| Referer | `webRequest.onBeforeSendHeaders`（仅 `types: ['image']`，仅 `ehgt.org` / `e-hentai.org`）补 `Referer: https://e-hentai.org/` | 图床校验收图来源；不碰导航/XHR |
+| 失败回退 | 预览按 URL 记失败 → 切 `ehProxyImageSrc()`（老路径）；封面在 `BookCard` 里同样一次性切回代理 | 直连不通时退回改造前的行为，不会比原来差 |
+| 不直连的两种 | 阅读器（带 tracker，需要进度回推）与 **exhentai 域**（需 sadpanda Cookie，`defaultSession` 无登录态，直连必 403） | 避免「注定失败再回退」的额外请求 |
+| 正文流式 | `get-webpage` 改为边收边扫：用 `TextDecoder(stream)` 增量解码，命中 `#gdt` 里第一张缩略图就发 `eh-early-thumb`，渲染进程 `new Image()` 预热 | 首图请求不再等整页 HTML 收完（实测：命中 10ms / 全文 316ms） |
+
+**保留不变**：`emm-eh://` 协议整体保留（阅读器进度 + 失败回退 + 网页版 `/api/ex-image` 共用同一套缓存与并发控制）。
+
+**代价与取舍**：
+- 直连的图不再进我们自建的 7 天磁盘缓存，改由 Chromium 的 HTTP 缓存负责——首屏更快，重复打开取决于 CDN 的缓存头。
+- `session.setProxy` 是会话级设置，会影响该 session 的所有出网：因此 bypass 只放 `*.hath.network`，**不能**加 `<-loopback>`（它的语义是「让 localhost 也走代理」，会让远程模式的 `http://127.0.0.1:<port>` 打不开）。
