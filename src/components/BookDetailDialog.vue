@@ -1203,7 +1203,7 @@ const enrichOnlineBook = async (book) => {
       .map(k => k + '=' + (setting.value[k] || ''))
       .join('; ')
     const host = String(book.url).replace(/^https?:\/\//i, '').split('/')[0] || 'e-hentai.org'
-    const html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie })
+    const html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie, groupId: 'eh-detail' })
     if (!stillMine()) return
     // ★主进程失败时返回 null(B 线):以前这里直接把 null 丢给 parseGalleryDetail,
     //   结果只显示一句「获取失败」,用户不知道是网络、代理还是 Cookie 的问题。
@@ -1236,7 +1236,7 @@ const enrichOnlineBook = async (book) => {
         host,
         pageCount: previewTotal.value,
         first: firstThumbs,
-        fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie }),
+        fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie, groupId: 'eh-detail' }),
         shouldStop: () => token !== previewToken,
         onUpdate: (thumbs) => {
           if (token !== previewToken) return
@@ -1269,11 +1269,11 @@ const enrichWnacgBook = async (book) => {
   previewLoading.value = true
   try {
     const host = String(book.url).replace(/^https?:\/\//i, '').split('/')[0] || 'www.wnacg.com'
-    let html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: String(setting.value.wnacgCookie || '') })
+    let html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: String(setting.value.wnacgCookie || ''), groupId: 'wnacg-detail' })
     if (!stillMine()) return
     // Cookie 失效时站点回一个没正文的壳页:匿名重试一次(详情页游客也能看)
     if (html && wnacgHtmlLooksBroken(html)) {
-      html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: '' })
+      html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: '', groupId: 'wnacg-detail' })
       if (!stillMine()) return
     }
     // 作品已被站点删除:匿名重试也是同一句「漫畫不存在」,直接说明
@@ -1331,7 +1331,7 @@ const enrichWnacgBook = async (book) => {
         nextUrl: detail.thumbsNextUrl,
         pageCount: previewTotal.value,
         host,
-        fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie: String(setting.value.wnacgCookie || '') }),
+        fetchHtml: (u) => ipcRenderer.invoke('get-ex-webpage', { url: u, cookie: String(setting.value.wnacgCookie || ''), groupId: 'wnacg-thumbs' }),
         shouldStop: () => token !== previewToken,
         onUpdate: (thumbs) => {
           if (token !== previewToken) return
@@ -1456,6 +1456,14 @@ const loadLocalPreview = async (book) => {
 // 换书就重新准备预览(在线书先拉详情页,本地书直接取图)
 watch(() => bookDetail.value?.id, (id) => {
   previewToken++
+  // ★ 真正取消上一本书还在飞的网络请求。
+  //   以前只有 previewToken++ —— 那只是让回调不生效,主进程里的 fetch 还在跑:
+  //   继续占代理连接、继续耗带宽。用户连点几本 = 后台堆几个没人要的请求,
+  //   越点越慢(这正是「比原网页慢很多」的一大原因)。
+  //   现在切书时直接让主进程 abort 掉「详情/预览」这一组的连接。
+  try { ipcRenderer.invoke('cancel-ex-webpage', { groupId: 'wnacg-detail' }) } catch (e) { /* 忽略 */ }
+  try { ipcRenderer.invoke('cancel-ex-webpage', { groupId: 'eh-detail' }) } catch (e) { /* 忽略 */ }
+  try { ipcRenderer.invoke('cancel-ex-webpage', { groupId: 'wnacg-thumbs' }) } catch (e) { /* 忽略 */ }
   previewItems.value = []
   previewRawTotal.value = 0
   previewAutoLimit.value = PREVIEW_AUTO_PAGES

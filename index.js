@@ -4517,7 +4517,49 @@ const exWebpageCachePut = (url, html) => {
   }
 }
 
-ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
+// ============================================================================
+// 请求取消(用户反馈的核心:「点了别的漫画,上一个请求根本没停」)
+//
+// 以前只有前端的 previewToken++ —— 那只是让**回调**不生效,
+// 主进程里的 fetch 仍然在跑:继续占着代理连接、继续消耗带宽,
+// 用户连点几本就是在后台堆几个没人要的请求,越点越慢。
+//
+// 现在:前端每次发起「打开详情」时带一个 groupId(比如 'detail' / 'preview' / 'list'),
+// 主进程按 groupId 记录所有在飞的 AbortController;
+// 前端切书时调 cancel-ex-webpage 把该组全部 abort,连接立刻断,不等超时。
+// ============================================================================
+const exAbortByGroup = new Map()   // groupId -> Set<AbortController>
+const exGroupOfAbort = new WeakMap() // AbortController -> groupId
+const trackAbort = (groupId, ac) => {
+  if (!groupId) return
+  let set = exAbortByGroup.get(groupId)
+  if (!set) { set = new Set(); exAbortByGroup.set(groupId, set) }
+  set.add(ac)
+  exGroupOfAbort.set(ac, groupId)
+}
+const untrackAbort = (ac) => {
+  const groupId = exGroupOfAbort.get(ac)
+  if (!groupId) return
+  const set = exAbortByGroup.get(groupId)
+  if (set) {
+    set.delete(ac)
+    if (!set.size) exAbortByGroup.delete(groupId)
+  }
+}
+ipcMain.handle('cancel-ex-webpage', async (event, { groupId } = {}) => {
+  const g = String(groupId || '')
+  if (!g) return 0
+  const set = exAbortByGroup.get(g)
+  if (!set || !set.size) return 0
+  let n = 0
+  for (const ac of Array.from(set)) {
+    try { ac.abort() ; n += 1 } catch (e) { /* 忽略 */ }
+  }
+  exAbortByGroup.delete(g)
+  return n
+})
+
+ipcMain.handle('get-ex-webpage', async (event, { url, cookie, groupId } = {}) => {
   // ① 缓存命中:直接返回,一个字节都不用重新下载
   const cached = exWebpageCacheGet(url)
   if (cached) return cached
@@ -4543,6 +4585,9 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
     const EX_FETCH_TIMEOUT = 15000
     const fetchOnce = async () => {
       const ac = new AbortController()
+      // ★ 加入分组:前端切书时会通过 cancel-ex-webpage 直接 abort 掉这些请求,
+      //   不必等 15 秒超时(那段时间里连接还在跑,越点越慢)
+      trackAbort(groupId, ac)
       const timer = setTimeout(() => { try { ac.abort() } catch (e) { /* 忽略 */ } }, EX_FETCH_TIMEOUT)
       try {
         const res = agent
@@ -4551,6 +4596,7 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
         return await res.text()
       } finally {
         clearTimeout(timer)
+        untrackAbort(ac)
       }
     }
     let result = ''
@@ -4571,10 +4617,15 @@ ipcMain.handle('get-ex-webpage', async (event, { url, cookie }) => {
     exWebpageCachePut(url, result)
     return result
   } catch (e) {
-    // 不弹系统提示:在线列表/预览拉不到时由调用方按「有没有已显示内容」决定要不要打扰用户,
-    // 这里每条失败都弹一次,就是「EH在线老是弹错误提示」的直接原因。
-    console.error('get-ex-webpage failed', e)
-    setEhWebpageError(url, e)
+    // ★ 主动取消不算错误:切书时旧请求被 abort 是正常行为,不该刷日志、
+    //   也不该记进「最近一次失败原因」(否则用户会看到莫名其妙的上一次错误)。
+    const aborted = e && (e.name === 'AbortError' || /aborted/i.test(String(e.message || '')))
+    if (!aborted) {
+      // 不弹系统提示:在线列表/预览拉不到时由调用方按「有没有已显示内容」决定要不要打扰用户,
+      // 这里每条失败都弹一次,就是「EH在线老是弹错误提示」的直接原因。
+      console.error('get-ex-webpage failed', e)
+      setEhWebpageError(url, e)
+    }
     return null
   }
   })()
