@@ -28,7 +28,24 @@
           <span class="ehf-label-text">{{ $t('m.keyword') }}</span>
           <SettingHint :text="$t('m.filterKeywordTip')" />
         </div>
-        <el-input v-model="model.keyword" clearable :placeholder="$t('m.filterKeywordPlaceholder')" />
+        <!-- ★ 关键词输入框:输入时弹出「已有标签」供选择(用户要求 5)
+             从 store.tagList 里取全部标签值做联想,点一下追加进关键词。
+             用 el-autocomplete 而不是 el-input:它就是干这个的,键盘上下选+回车都有。 -->
+        <el-autocomplete
+          v-model="model.keyword"
+          class="ehf-keyword-input"
+          clearable
+          :fetch-suggestions="queryKeywordSuggestions"
+          :placeholder="$t('m.filterKeywordPlaceholder')"
+          :fit-input-width="false"
+          popper-class="ehf-keyword-popper"
+          @select="onKeywordSelect"
+        >
+          <template #default="{ item }">
+            <span class="ehf-sug-label">{{ item.label }}</span>
+            <span v-if="item.cat" class="ehf-sug-cat">{{ item.cat }}</span>
+          </template>
+        </el-autocomplete>
       </div>
 
       <div class="ehf-field">
@@ -132,6 +149,7 @@ import { ref, reactive, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { EH_FILTER_CATEGORIES, EH_FILTER_LANGUAGES, defaultEhFilter, normalizeEhFilter } from '../ehFilter.js'
 import { galleryCategoryName } from '../utils.js'
+import { useAppStore } from '../pinia.js'
 // 统一的「!」说明图标(设置页同款)
 import SettingHint from './SettingHint.vue'
 
@@ -145,8 +163,93 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:visible', 'apply'])
 
-const categories = EH_FILTER_CATEGORIES
-const languages = EH_FILTER_LANGUAGES
+// ============================================================================
+// 类别按钮 / 语言下拉 —— 改成「由已有标签决定」(用户要求 4、6)
+//
+// 以前是写死的常量(EH 的 10 个分类 / 14 种语言),本地库里根本没有的分类也会列出来,
+// 选了一本书都没有,用户以为坏了。
+// 现在:从当前书架的标签数据里提取「实际出现过的类别值 / 语言值」。
+//   · 类别:tagList 里 cat='category' 的那一组(见 utils.withCategoryTag)
+//   · 语言:tagList 里 cat='language' 的那一组
+// 一个都没有时退回原来的常量,保证界面不会空着。
+// ============================================================================
+const appStore = useAppStore()
+
+// 从 tagList 里取某个标签类别的全部取值
+const valuesOfTagCat = (cat) => {
+  const list = Array.isArray(appStore.tagList) ? appStore.tagList : []
+  const out = new Set()
+  for (const item of list) {
+    const v = String((item && item.value) || '')
+    // tagList 的 value 形如 `"标签值"$`
+    const m = /^"(.*)"\$?$/.exec(v)
+    if (!m) continue
+    const label = String((item && item.label) || '')
+    // label 形如 `类别:值`,用前半段判断属于哪个类别
+    const head = label.split(':')[0]
+    if (String(head).toLowerCase() !== String(cat).toLowerCase()) continue
+    out.add(m[1])
+  }
+  return [...out]
+}
+
+// 关键词联想池:把 tagList 展开成 {label, value, cat} 供 el-autocomplete 用
+// (用户要求 5:点击关键词进入输入状态后,弹出标签栏供选择)
+const keywordPool = computed(() => {
+  const list = Array.isArray(appStore.tagList) ? appStore.tagList : []
+  return list.map(it => {
+    const label = String((it && it.label) || '')
+    const value = String((it && it.value) || '')
+    const m = /^"(.*)"\$?$/.exec(value)
+    const keyword = m ? m[1] : value
+    const cat = label.includes(':') ? label.split(':')[0] : ''
+    return { label: label, keyword, cat, lowerLabel: label.toLowerCase(), lowerKeyword: String(keyword).toLowerCase() }
+  }).filter(x => x.keyword)
+})
+const queryKeywordSuggestions = (queryString, cb) => {
+  const q = String(queryString || '').trim().toLowerCase()
+  const pool = keywordPool.value
+  let out = pool
+  if (q) {
+    out = pool.filter(x => x.lowerLabel.includes(q) || x.lowerKeyword.includes(q))
+  }
+  if (!out.length) { cb([]); return }
+  // 最多 20 条,避免弹层过长
+  cb(out.slice(0, 20))
+}
+const onKeywordSelect = (item) => {
+  if (!item) return
+  // 选中后填进关键词(用标签值,不带动词库前缀)
+  model.keyword = item.keyword
+}
+
+// 类别按钮:优先用已有标签里出现过的类别值(按 EH 常量顺序排,未知的追加在后面)
+const categories = computed(() => {
+  const used = valuesOfTagCat('category')
+  if (!used.length) return EH_FILTER_CATEGORIES
+  const byName = new Map(EH_FILTER_CATEGORIES.map(c => [c.name.toLowerCase(), c]))
+  const out = []
+  for (const name of used) {
+    const hit = byName.get(String(name).toLowerCase())
+    // 已知类别沿用 EH 的 key/bit(过滤逻辑依赖它们);未知类别用名字本身当 key
+    out.push(hit || { key: name, name, bit: 0 })
+  }
+  return out
+})
+
+// 语言下拉:优先用已有标签里出现过的语言值(EH 英文标识),没有就退回常量
+const languages = computed(() => {
+  const used = valuesOfTagCat('language')
+  if (!used.length) return EH_FILTER_LANGUAGES
+  // 只保留 EH 认识的语言标识(其它值会给站点发无效参数),未知的也列出来但排在后面
+  const known = new Set(EH_FILTER_LANGUAGES)
+  const sorted = [...used].sort((a, b) => {
+    const ia = known.has(String(a).toLowerCase()) ? 0 : 1
+    const ib = known.has(String(b).toLowerCase()) ? 0 : 1
+    return ia - ib
+  })
+  return sorted
+})
 
 const visible_ = ref(props.visible)
 watch(() => props.visible, v => { visible_.value = v })
@@ -347,4 +450,22 @@ const apply = () => {
   .ehf-rating-text
     font-size: 12px
     color: var(--el-text-color-secondary)
+
+/* 关键词联想:左标签名 + 右类别小字 */
+.ehf-keyword-input {
+  width: 100%;
+}
+.ehf-sug-label {
+  display: inline-block;
+  max-width: 78%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ehf-sug-cat {
+  float: right;
+  font-size: 11px;
+  opacity: .6;
+}
+
 </style>

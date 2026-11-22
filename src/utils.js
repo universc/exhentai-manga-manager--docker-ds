@@ -818,6 +818,30 @@ const galleryCategoryName = (cat, t) => {
   return out && out !== 'm.' + key ? out : cat
 }
 
+// ============================================================================
+// 把书的「类别」(category:同人志 / 漫画 / 画师CG / 图集 …)也当成一种**标签类别**。
+//
+// 用户需求:设置→标签→类别标签、主界面标签栏、本地筛选的类别按钮、筛选的关键词
+// 联想、筛选的语言下拉 —— 都应该能用到「类别」这一组。
+// 而原来 category 只是书的独立字段,不进 tags,所以在这些标签类界面里完全看不到它。
+//
+// 做法:统一在这里把 category 注入成 cat='category' 的一个标签值,
+// 所有聚合标签的地方都走这个函数,保证口径一致。
+// ============================================================================
+const CATEGORY_TAG_CAT = 'category'
+// 把一本书的 tags 展开成「带类别标签」的新对象(不改原对象)
+const withCategoryTag = (book) => {
+  const tags = (book && book.tags && typeof book.tags === 'object') ? book.tags : {}
+  const cat = String((book && book.category) || '').trim()
+  if (!cat) return tags
+  // 已经有 category 组就合并(避免覆盖),没有就新建
+  const exist = tags[CATEGORY_TAG_CAT]
+  if (Array.isArray(exist) && exist.includes(cat)) return tags
+  return { ...tags, [CATEGORY_TAG_CAT]: [...(Array.isArray(exist) ? exist : []), cat] }
+}
+// 用来显示「类别」这个分组名的默认名(设置里没自定义时)
+const CATEGORY_TAG_CAT_DEFAULT_NAME = '类别'
+
 // 标签颜色:设置 → 标签设置 → 编辑标签 里挑的颜色,对**所有出现这个标签的地方**生效。
 // 新键 setting.tagColors['分类::标签'];兼容老数据(收藏标签自带的 color)。
 const tagColorOf = (setting, cat, tag) => {
@@ -1256,6 +1280,10 @@ export {
   tagDisplayName,
   tagColorOf,
   galleryCategoryName,
+  // 「类别」作为标签类别:把 book.category 注入成 cat='category' 的标签
+  withCategoryTag,
+  CATEGORY_TAG_CAT,
+  CATEGORY_TAG_CAT_DEFAULT_NAME,
   tagNameVariants,
   tagDisplayPrefix,
   categoryDisplayName,

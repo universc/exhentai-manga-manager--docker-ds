@@ -754,8 +754,19 @@ const viewerToolbarList = computed(() => {
   const rawShown = setting.value.viewerToolbarButtons
   const hasShownConfig = Array.isArray(rawShown) && rawShown.length > 0
   const hasOrderConfig = Array.isArray(setting.value.viewerToolbarOrder) && setting.value.viewerToolbarOrder.length > 0
-  // 从未配置过 → 全部显示;配置过(哪怕一个都不勾选)→ 严格按配置来
-  const shown = hasShownConfig ? rawShown.map(normalizeViewerToolbarId) : (hasOrderConfig ? [] : null)
+  // ★ 配置过 → 按配置来,但要**自动补齐后来新增的默认按钮**。
+  //   踩过的坑:老配置是几年前存的(那时还没有「繁简转换」novelZhConvert),
+  //   于是「严格按配置」会让新按钮永远不出现 —— 用户看到的差异是
+  //   「NAS 版少几个按钮、Win 版正常」(Win 那份配置是 undefined,走全显示)。
+  //   现在:配置过的项保留用户选择, DEFAULT_VIEWER_TOOLBAR 里没出现在配置中的
+  //   新按钮补进去(用户仍可在设置里手动取消)。
+  let shown = hasShownConfig ? rawShown.map(normalizeViewerToolbarId) : (hasOrderConfig ? [] : null)
+  if (shown !== null) {
+    const known = new Set(order)
+    for (const id of DEFAULT_VIEWER_TOOLBAR) {
+      if (known.has(id) && !shown.includes(id)) shown.push(id)
+    }
+  }
   const visible = order.filter(id => (shown === null || shown.includes(id))
     && !(showThumbnail.value && HIDDEN_IN_THUMBNAIL.includes(id)))
   // 文字模式:thumbnail 与 sidebar 是两个完全重复的「章节目录」按钮 → 去掉 thumbnail(默认顺序里它在前);

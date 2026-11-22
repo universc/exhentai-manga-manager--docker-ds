@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
-import { catDisplayName, resolveCatKey } from './utils.js'
+import { catDisplayName, resolveCatKey, withCategoryTag } from './utils.js'
 import { runBookAiTask } from './aiTasks.js'
 
 export const useAppStore = defineStore('appStore', {
@@ -95,7 +95,7 @@ export const useAppStore = defineStore('appStore', {
       const uniqedTagMap = new Map()
       state.bookList.filter(b => {
         return !b.hiddenBook && !b.folderHide
-      }).forEach(b => _.forEach(b.tags, (tags, cat) => {
+      }).forEach(b => _.forEach(withCategoryTag(b), (tags, cat) => {
         const tagSet = uniqedTagMap.get(cat) || uniqedTagMap.set(cat, new Set()).get(cat)
         tags.forEach(tag => tagSet.add(tag))
       }))
@@ -123,7 +123,7 @@ export const useAppStore = defineStore('appStore', {
       const tagArray = (Array.isArray(state.allTags) && state.allTags.length)
         ? state.allTags.map(t => `${t.cat}##${t.tag}`)
         : _(state.bookList.map(b => {
-            return _.map(b.tags, (tags, cat) => {
+            return _.map(withCategoryTag(b), (tags, cat) => {
               return _.map(tags, tag => `${cat}##${tag}`)
             })
           }))
@@ -176,7 +176,7 @@ export const useAppStore = defineStore('appStore', {
     tag2cat (state) {
       const temp = {}
       const tagArray = _(state.bookList.map(b => {
-        return _.map(b.tags, (tags, cat) => {
+        return _.map(withCategoryTag(b), (tags, cat) => {
           return _.map(tags, tag => `${cat}##${tag}`)
         })
       }))
