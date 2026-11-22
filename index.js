@@ -4711,12 +4711,23 @@ ipcMain.handle('post-data-ex', async (event, { url, data }) => {
 })
 
 // ---------- EH 登录(设置 → 常用 → EH设置)----------
-// 两条路:
+// 三条路(与 JHenTai 的 LoginType { password, cookie, web } 一一对应):
 //   ① 账号密码登录(eh-password-login):纯 HTTP POST 到论坛登录表单,桌面版与网页版都能用
 //      (逻辑在 modules/ehLogin.js,可离线单测);
-//   ② 打开登录窗口(eh-login,仅桌面版):开一个用独立分区(persist:eh-login)的窗口打开论坛登录页,
-//      轮询该分区的 Cookie;拿到 ipb_member_id + ipb_pass_hash 后再访问一次 exhentai.org 取 igneous,
-//      最后用论坛 showuser 页取用户名,连同四项 Cookie 一起回给前端写进设置。
+//   ② Cookie 登录(eh-cookie-login):手填/粘贴后线上验证或直接保存;
+//   ③ 打开登录窗口(eh-login,仅桌面版)—— **现在默认借系统里的真浏览器**(modules/browserLogin.js)。
+//      拿到 ipb_member_id + ipb_pass_hash 后再用 HTTP 补 igneous / star,最后用论坛 showuser 页取用户名,
+//      连同四项 Cookie 一起回给前端写进设置。
+//
+// ★★ 为什么③不再用 Electron 的 BrowserWindow(2026-11 实测根因,别改回去)★★
+//   EH 论坛整站挂在 Cloudflare 托管挑战后面,而 Electron 26 带的是 Chromium 116。
+//   CF 对「过期内核 + 半自动指纹」会无限重发挑战:同一个代理、同一台机器上实测,
+//   Electron 窗口 120 秒里 did-navigate 刷了 6~7 次,永远停在「正在进行安全验证」;
+//   还给它 setUserAgent 成 Chrome/120 更糟 —— UA 说 120、navigator.userAgentData 说 116,
+//   自相矛盾等于主动自曝。同一时刻用系统里装的 Chrome 打开同一个 URL,首次加载就出登录表单。
+//   JHenTai 在 Windows 上走 desktop_webview_window(系统 WebView2,常青 Chromium),
+//   所以它一直能登 —— 这就是「同一个网络里 JHenTai 能登、这里卡在验证界面」的全部原因。
+//   现在的做法与 JHenTai 相同:不自己造浏览器,借系统里的真浏览器登录,再用 CDP 把 Cookie 取回来。
 const EH_LOGIN_PARTITION = 'persist:eh-login'
 // 紳士漫畫登录窗口的独立分区(与 EH 分开,互不影响)
 const WNACG_LOGIN_PARTITION = 'persist:wnacg-login'
@@ -4724,11 +4735,16 @@ const EH_LOGIN_URL = ehLogin.EH_BASES.forum + '/index.php?act=Login&CODE=00'
 const EH_EX_URL = ehLogin.EH_BASES.ex + '/'
 let ehLoginInFlight = false
 
-// 浏览器内的 User-Agent。
-// ★ 必须伪装成普通 Chrome:Electron 默认 UA 里带 "Electron/26.x",论坛挂在 Cloudflare 后面,
-//   会被直接判成自动化流量 —— 表现就是「正在进行安全验证」反复刷新、永远过不去。
-//   同一个串也用于 HTTP 请求(下面 passwordLogin 用它),保证两条路口径一致。
-const EMU_BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+// 纯 HTTP 请求(modules/ehLogin.js)用的 User-Agent。
+// 注意:它**只**用于不走浏览器的请求。以前这里还拿去 setUserAgent 登录窗口,那是错的 ——
+//   UA 说 Chrome/120 而内核是 Chromium 116(navigator.userAgentData 会诚实报 116),
+//   Cloudflare 一眼就能看出是伪装的自动化流量,挑战于是无限重发。
+//   现在登录窗口直接借系统里的真浏览器(modules/browserLogin.js),不再需要伪造 UA。
+const EMU_BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+
+// 系统里可用于过 Cloudflare 挑战的真浏览器(Chrome / Edge / Brave / Chromium / Vivaldi)。
+// 登录窗口优先用它;一个都没有时才回退到 Electron 自带窗口(那条路大概率过不去,但至少能用)。
+const browserLogin = require('./modules/browserLogin.js')
 
 // 登录窗口分区的 Cookie 全量(短命窗口,分区里只有我们自己的 Cookie)
 const ehCookieMapOf = async (ses) => {
@@ -7925,12 +7941,48 @@ if (!WEB_MODE) {
     }
   })
 
+  // 系统真浏览器登录(默认路径)。抽出成独立函数,是为了让 'eh-login' 保持
+  // 「只有一条对外返回值口径」—— 浏览器路径和 Electron 回退路径必须回同样的结构,
+  // 前端 applyEhLoginResult 才不用分情况。
+  const ehLoginViaBrowser = async ({ username, password }) => {
+    const res = await browserLogin.launchBrowserLogin({
+      username,
+      password,
+      proxy: String(setting.proxy || '').trim(),
+      browserPath: String(setting.ehLoginBrowserPath || '').trim(),
+      timeoutMs: 5 * 60 * 1000
+    })
+    if (!res || !res.ok) return res
+    // 与 Electron 路径同一口径:igneous / star 用独立 HTTP 请求补(窗口里那一跳会打断 CF 挑战)
+    const picked = Object.assign({ igneous: '', star: '' }, res.cookies || {})
+    try {
+      const extra = await ehLogin.fetchExtraCookies(picked, { proxy: setting.proxy })
+      for (const k of ['igneous', 'star']) {
+        if (extra && extra[k] && extra[k] !== 'mystery' && extra[k] !== 'deleted') picked[k] = extra[k]
+      }
+    } catch (e) { /* 取不到 igneous 不影响登录成功 */ }
+    const user = res.user || await ehLogin.fetchUserName(picked.ipb_member_id, picked, { proxy: setting.proxy })
+    return { ok: true, cookies: picked, user }
+  }
+
   ipcMain.handle('eh-login', async (event, arg) => {
     const { username, password } = arg || {}
     if (ehLoginInFlight) return { ok: false, error: 'busy' }
     ehLoginInFlight = true
     let win = null
     try {
+      // ★ 优先借系统里的真浏览器:这是唯一能稳定过 Cloudflare 托管挑战的路
+      //   (它与 JHenTai 用的 WebView2 同为常青 Chromium,见文件顶部那段实测说明)。
+      //   只有「一台现代浏览器都没装」时才回退到下面的 Electron 窗口 —— 回退路径留着,
+      //   是因为它至少还能让用户看到页面、手动登录并复制 Cookie。
+      if (browserLogin.listBrowsers().length) {
+        const viaBrowser = await ehLoginViaBrowser({ username, password })
+        if (viaBrowser && viaBrowser.ok) return viaBrowser
+        // 浏览器路径失败:只有「用户关掉了窗口」直接返回,其它错误也先如实报,
+        // 不再悄悄换成 Electron 窗口重来一遍(那会让用户莫名多等 5 分钟)。
+        if (viaBrowser && viaBrowser.error === 'canceled') return viaBrowser
+        return viaBrowser || { ok: false, error: 'launchFailed' }
+      }
       const ses = session.fromPartition(EH_LOGIN_PARTITION)
       // ★ 登录窗口是**独立分区**(persist:eh-login),不会继承 defaultSession 的代理设置。
       //   以前这里漏了 —— 主界面走代理、登录窗口却直连,论坛挂在 Cloudflare 后面,
@@ -7958,9 +8010,20 @@ if (!WEB_MODE) {
           contextIsolation: true
         }
       })
-      // 伪装成普通 Chrome(见 EMU_BROWSER_UA 的注释):不改的话 Cloudflare 会把窗口
-      // 判成自动化流量,安全验证无限循环。
-      try { win.webContents.setUserAgent(EMU_BROWSER_UA) } catch (e) { /* 忽略 */ }
+      // ★ 回退窗口(只在没装任何现代浏览器时才会走到):这里**不能**再伪造 Chrome/120。
+      //   伪造的后果是 UA 说 120、navigator.userAgentData 说 116(内核真实版本),
+      //   Cloudflare 一眼看穿 —— 挑战无限重发,正是用户报的「一直卡在人机验证界面」。
+      //   这里只做「最小清理」:去掉 Electron/xx 与自家应用名这类明摆着的自动化标记,
+      //   保留真实的 Chromium 版本号,让 UA 与内核版本自洽。
+      try {
+        const selfName = String(pkgJson.name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const cleanUa = String(app.userAgentFallback || '')
+          .replace(/\s*Electron\/[\w.]+/i, '')
+          .replace(selfName ? new RegExp('\\s*' + selfName + '\\/[\\w.]+', 'i') : /$^/, '')
+          .replace(/\s{2,}/g, ' ')
+          .trim()
+        if (cleanUa) win.webContents.setUserAgent(cleanUa)
+      } catch (e) { /* 忽略 */ }
       // ★ 已有登录态就直接种进窗口(照 JHenTai 的
       //   addScriptToExecuteOnDocumentCreated('document.cookie = "ipb_..."') 做法)。
       //   好处:用户之前登录过、只是 igneous 失效时,不用再走一遍 Cloudflare 挑战 ——
@@ -8092,6 +8155,25 @@ if (!WEB_MODE) {
       return { ok: false, error: String((e && e.message) || e) }
     } finally {
       ehLoginInFlight = false
+    }
+  })
+
+  // 诊断:告诉设置界面「这台机器上有哪些可用浏览器」。
+  // 登录卡在 Cloudflare 验证时,用户第一眼就能看到「借的是哪个浏览器」,
+  // 而不是对着一个转圈的窗口猜(实测根因就是 Electron 26 的 Chromium 116 过不了挑战)。
+  ipcMain.handle('eh-login-diagnose', async () => {
+    const browsers = browserLogin.listBrowsers()
+    let electronUa = ''
+    try { electronUa = app.userAgentFallback || '' } catch (e) { /* 忽略 */ }
+    return {
+      ok: true,
+      browsers,
+      using: browsers[0] || null,
+      fallbackToElectron: browsers.length === 0,
+      electronUa,
+      // 用户手动指定了某个浏览器路径(设置里可填,给「装在奇葩位置」的情况留口子)
+      customPath: String(setting.ehLoginBrowserPath || '').trim(),
+      proxy: String(setting.proxy || '').trim()
     }
   })
 

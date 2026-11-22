@@ -395,6 +395,11 @@ const VIEWER_ALLOWED_CHANNELS = new Set([
   'post-ex-form',
   // 绅士漫画账号密码直登:只 POST 到站点换回 Cookie,不写本地文件
   'wnacg-password-login',
+  // EH 登录诊断:只列出本机装了哪些浏览器 + Electron 的 UA,是纯读(给设置界面显示
+  // 「登录窗口借的是哪个浏览器」)。没装浏览器时它很重要 —— 那就是「过不了人机验证」的原因。
+  'eh-login-diagnose',
+  // EH 账号密码直登 / Cookie 登录:只 POST 到站点换回 Cookie,不写本地文件(与 wnacg 同性质)
+  'eh-password-login', 'eh-cookie-login',
   // ---------- EH 下载 ----------
   // ⚠ 下载是会**写文件**的操作(往下载目录写图片、写 downloads.json),
   //   按「读放行 / 写限管理员」的既有语义本不该放给只读账户;

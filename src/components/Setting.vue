@@ -1947,6 +1947,17 @@
                     <el-button type="primary" size="small" :loading="ehLoginLoading" :disabled="!isDesktopClient" @click="doEhWebLogin">{{$t('m.ehWebLoginOpen')}}</el-button>
                     <el-button size="small" @click="pasteEhCookie">{{$t('m.ehPasteCookie')}}</el-button>
                   </div>
+                  <!-- ★ 借哪个浏览器去登录:必须显示出来。EH 论坛挂在 Cloudflare 托管挑战后面,
+                       只有现代内核(Chrome/Edge 这类常青浏览器)能过;以前登录窗口用的是 Electron 自带内核,
+                       于是「一直卡在人机验证界面」。这里把实际用的浏览器摆出来,用户一眼能判断是不是这个原因。 -->
+                  <div v-if="isDesktopClient" class="setting-line toolbar-tip">
+                    <template v-if="ehLoginBrowser && ehLoginBrowser.name">
+                      {{ $t('m.ehLoginBrowserUsing', { name: ehLoginBrowser.name }) }}
+                    </template>
+                    <template v-else-if="ehLoginBrowserChecked">
+                      <span style="color: var(--el-color-danger, #f56c6c)">{{ $t('m.ehLoginNoBrowser') }}</span>
+                    </template>
+                  </div>
                   <div class="setting-line toolbar-tip">{{ isDesktopClient ? $t('m.ehWebTabHint') : $t('m.ehWebLoginDisabled') }}</div>
                 </el-tab-pane>
               </el-tabs>
@@ -5377,7 +5388,22 @@ const doEhCookieLogin = async () => {
   }
 }
 
-// ③ Web 登录:开真浏览器窗口,登录后从 document.cookie 取回
+// ③ Web 登录:借系统里的**真浏览器**登录(HenTai/WebView2 同口径),登录后把 Cookie 取回。
+//
+// ★ 为什么不再用 Electron 自带窗口:Electron 26 的内核是 Chromium 116,
+//   EH 论坛的 Cloudflare 托管挑战会一直重发 —— 窗口永远停在「正在进行安全验证」。
+//   实测(同一代理、同一台机器):同一个 URL 用系统 Chrome 打开,首次加载就出登录表单。
+//   端口/Cookie 的取法见 modules/browserLogin.js(CDP 直读,含 HttpOnly)。
+const ehLoginBrowser = ref(null)
+const ehLoginBrowserChecked = ref(false)
+const loadEhLoginBrowser = async () => {
+  if (!window.ipcRenderer || !window.ipcRenderer.invoke) return
+  try {
+    const r = await window.ipcRenderer.invoke('eh-login-diagnose')
+    ehLoginBrowserChecked.value = true
+    ehLoginBrowser.value = (r && r.using) || null
+  } catch (e) { /* 网页版/旧版没有该通道:不显示即可 */ }
+}
 const doEhWebLogin = async () => {
   if (ehLoginLoading.value) return
   if (!isDesktopClient.value) { printMessage('warning', t('m.ehWebLoginDisabled')); return }
@@ -5549,7 +5575,7 @@ const featureTabs = computed(() => [
 ])
 // 打开设置 / 切到「账户」页时,把上次用的 EH 账号带出来(密码永不回填)
 watch([dialogVisibleSetting, activeSettingPanel], ([open, panel]) => {
-  if (open && panel === 'accounts') seedEhUsername()
+  if (open && panel === 'accounts') { seedEhUsername(); loadEhLoginBrowser() }
 })
 
 // 设置页内容区惯性滚动(对话框打开/挂载后各尝试一次)
