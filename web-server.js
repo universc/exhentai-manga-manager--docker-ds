@@ -890,9 +890,11 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
       //   后面的图只能排队 → 就是「先转圈、后突然全部涌出」。
       //   收到 9s:快节点照样成功,坏节点尽早让出槽位。
       timeout: 9000,
-      // 总时长上限(与桌面版一致):socket 空闲超时治不住「一直慢慢滴数据」的节点,
-      // 那种连接能把 1/12 的槽占到几分钟。
-      totalTimeout: 20000,
+      // 总时长上限:socket 空闲超时治不住「一直慢慢滴数据」的节点。
+      // ★ 实测 H@H 的预览雪碧图(235KB)经代理要 16~31s 才传完,20s 会在半途掐断 ——
+      //   掐断时已收到的字节被当完整图以 200 发给浏览器 →「加载完又变破图」。
+      //   慢节点占槽改由 6 槽 + 8/s 令牌桶 + 12s 排队超时兜底,不靠掐断传输。
+      totalTimeout: 75000,
       retries: 1
     })
     const dropStream = (r) => {
@@ -989,23 +991,54 @@ app.get('/api/ex-image', requireLogin, async (req, res) => {
           } catch (e) { /* 太大或出错,落回流式路径 */ }
         }
         const total = Number((r.headers && r.headers['content-length']) || 0)
+        const CACHE_LIMIT = IMG_DISK_MAX_BYTES
+        const upstream = r.stream
+        // ★ 小图(含 235KB 的预览雪碧图)**整包收完再发**。以前边收边 flushHeaders + 发完整
+        //   Content-Length,上游一旦中途被掐断(20s totalTimeout),浏览器收到的半张图配着
+        //   "完整大小"的头 → 等不到剩余字节 → 显示破图。现在:没收全就不发任何图片字节,
+        //   宁可回 502 让浏览器重试(下次会更快),也绝不把半张图当完整图。
+        if (total > 0 && total <= 2 * 1024 * 1024) {
+          const bufs = []
+          let received = 0
+          let done = false
+          try {
+            const whole = await new Promise((resolve, reject) => {
+              upstream.on('data', (chunk) => {
+                received += chunk.length
+                if (received > total + 64 * 1024) { try { upstream.destroy() } catch (e) { /* 忽略 */ } ; reject(new Error('oversize')); return }
+                bufs.push(chunk)
+              })
+              upstream.on('end', () => resolve(Buffer.concat(bufs)))
+              upstream.on('error', reject)
+            })
+            done = true
+            if (received < total) throw new Error('incomplete')
+            try { imgCachePut(url, whole, type) } catch (e) { /* 忽略 */ }
+            if (whole.length <= CACHE_LIMIT) { try { ehImgDiskPut(url, whole) } catch (e) { /* 忽略 */ } }
+            res.set('Content-Type', type)
+            res.set('Cache-Control', 'private, max-age=3600')
+            res.set('X-Img-Cache', 'miss')
+            res.set('Content-Length', String(whole.length))
+            res.send(whole)
+          } catch (e) {
+            try { if (!upstream.destroyed) upstream.destroy() } catch (e2) { /* 忽略 */ }
+            if (!done) res.status(502).send('upstream incomplete')
+          }
+          if (release) release()
+          return
+        }
+        // 大图/未知大小:沿用流式。★ 不设 Content-Length —— 掐断时不会留下「声称完整实则残缺」
+        // 的响应;浏览器按 chunked 结束处理,配合 image error 重试。
         res.set('Content-Type', type)
         res.set('Cache-Control', 'private, max-age=3600')
         res.set('X-Img-Cache', 'miss')
-        if (total) res.set('Content-Length', String(total))
-        // 槽的归还交给响应:图片传完(finish)/ 浏览器断开(close)/ 出错(error)时各触发一次,
-        // releaseSlot 内部有 released 标志,只会真正归还一次。
         slotHandedToResponse = true
         res.on('close', releaseSlot)
         res.on('finish', releaseSlot)
         res.on('error', releaseSlot)
         res.flushHeaders()
-        // 口径分两层(与桌面版一致):进内存 Map 看 512KB,整包攒下来落磁盘看 4MB(IMG_DISK_MAX_BYTES)。
-        // 4MB 以内的图收完要能落盘 —— 跨会话命中靠的就是磁盘缓存。
-        const CACHE_LIMIT = IMG_DISK_MAX_BYTES
         const collect = []
         let received = 0
-        const upstream = r.stream
         upstream.on('data', (chunk) => {
           received += chunk.length
           if (received <= CACHE_LIMIT) collect.push(chunk)

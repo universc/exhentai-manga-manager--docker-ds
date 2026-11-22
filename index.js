@@ -1866,10 +1866,9 @@ if (!WEB_MODE) {
                 stream: true,
                 referer: pageRef,
                 timeout: 15000,
-                // ★ 总时长上限(15s 首字节 + 余量)。只靠 timeout(socket 空闲超时)治不住
-                //   「还在慢慢滴数据」的坏节点:那种连接永远不触发空闲超时,
-                //   一张图能把 1/12 的并发槽占到几分钟。
-                totalTimeout: 20000,
+                // ★ 总时长上限:H@H 预览雪碧图(235KB)实测 16~31s 才传完,20s 会掐成半张图
+                //   并以 200 发出去 → 浏览器显示破图。慢节点占槽交给并发槽排队超时兜底。
+                totalTimeout: 75000,
                 retries: 1
               })
               const dropStream = (r) => {
