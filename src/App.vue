@@ -67,7 +67,8 @@
               </template>
             </el-autocomplete>
             <!-- 搜索按钮 -->
-            <el-button v-else-if="id === 'searchButton'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" type="primary" :icon="Search32Filled" plain @click="searchBook" :title="$t('m.search')"></el-button>
+            <!-- 搜索按钮:改成打开**独立搜索界面**(用户要求),关闭后回到刚才的主界面 -->
+            <el-button v-else-if="id === 'searchButton'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" type="primary" :icon="Search32Filled" plain @click="openSearchPage" :title="$t('m.search')"></el-button>
             <!-- 排序/筛选:方向由箭头单独切换 -->
             <div v-else-if="id === 'sortSelect'"  v-show="!toolbarCollapsedIds.includes(id)" :data-tb-id="id" class="sort-select-wrap">
               <el-select :class="['sort-select', { 'is-wnacg': wnacgActive }]"
@@ -222,6 +223,39 @@
         </div>
       </el-col>
     </el-row>
+    <!-- ================= 独立搜索界面(用户要求 7) =================
+         点工具栏搜索按钮 → 打开这个全屏搜索页;关闭后**恢复打开前的主界面状态**
+         (页码 / 滚动位置 / 列表内容原样回去,不是重新加载)。
+         界面本身只做一件事:输入关键词 + 给搜索历史,回车或点搜索即执行。 -->
+    <div class="search-fullpage" v-if="searchPageOpen">
+      <div class="search-fullpage-head">
+        <el-input
+          ref="searchPageInputRef"
+          v-model="searchPageQuery"
+          class="search-fullpage-input"
+          :placeholder="$t('m.searchPlaceholder')"
+          clearable
+          size="large"
+          @keyup.enter="submitSearchPage"
+          @input="syncSearchPageSuggest"
+        />
+        <el-button type="primary" size="large" :icon="Search32Filled" @click="submitSearchPage">{{ $t('m.search') }}</el-button>
+        <el-button size="large" @click="closeSearchPage">{{ $t('m.cancel') }}</el-button>
+      </div>
+      <!-- 搜索历史:横排芯片,点一下填入输入框 -->
+      <div v-if="searchHistory.length" class="search-fullpage-history">
+        <div class="search-fullpage-history-title">{{ $t('m.searchHistory') }}</div>
+        <div class="search-fullpage-chips">
+          <el-tag
+            v-for="h in searchHistory" :key="'sfp-' + h"
+            class="search-fullpage-chip" size="large" closable
+            @click="searchPageQuery = h"
+            @close="removeSearchHistory(h)"
+          >{{ h }}</el-tag>
+        </div>
+        <el-button size="small" text type="danger" @click="clearSearchHistory">{{ $t('m.clearSearchHistory') }}</el-button>
+      </div>
+    </div>
     <RandomTags
       ref="randomTagsRef"
       v-if="!manageView && (setting.randomTagsEnabled || setting.showCollectTag)"
@@ -313,10 +347,21 @@
         </template>
         <!-- 逐排加载哨兵:滚动到这里时继续加载下一排 -->
         <div ref="renderSentinel" class="render-sentinel"></div>
-        <!-- 触底加载的底部状态:加载中转圈;EH在线全部加载完写「没有更多了」 -->
-        <div class="load-more-footer" v-if="visibleChunkDisplayBookList.length && (listLoadingMore || (onlineActive && !onlineHasMore))">
+        <!-- 触底加载的底部状态:加载中转圈;在线库全部加载完且**已到最后一页**才写「没有更多了」。
+             ★ 两个用户反馈都在这:
+               ① 以前只要 onlineHasMore 变 false 就显示(比如第 2/3 页还没翻完就显示),
+                  现在必须 currentPage 已经到最后那一页才显示;
+               ② 加载失败时也显示「没有更多了」,用户没法再试 ——
+                  现在失败状态显示成可点击的「加载失败,点击重试」,点一下重新拉。 -->
+        <div class="load-more-footer" v-if="visibleChunkDisplayBookList.length && (listLoadingMore || (onlineActive && showLoadMoreEnd))">
           <el-icon v-if="listLoadingMore" class="is-loading" :size="20"><Loading /></el-icon>
-          <span v-else-if="onlineActive && !onlineHasMore" class="load-more-end">{{ $t('m.noMoreData') }}</span>
+          <template v-else-if="onlineActive && showLoadMoreEnd">
+            <!-- 上次加载失败(onlineLoadFailed)→ 可点击重试,不再骗用户说「没有更多了」 -->
+            <span v-if="onlineLoadFailed" class="load-more-end is-retry" :title="$t('m.loadMoreRetryHint')" @click="retryLoadMoreOnline">
+              ⚠ {{ $t('m.loadMoreFailedRetry') }}
+            </span>
+            <span v-else class="load-more-end" :title="$t('m.loadMoreClickHint')" @click="retryLoadMoreOnline">{{ $t('m.noMoreData') }}</span>
+          </template>
         </div>
         <!-- 空列表:以前这里有两套提示(历史为空 / 筛选为空 +「清除筛选」),
              还有一个 EH 在线的「这一页没有内容」弹窗 —— 用户要求全部去掉,
@@ -363,6 +408,7 @@
         v-show="detailPanelVisible"
         :visible="detailPanelVisible"
         :width="detailPanelWidth"
+        :can-navigate-back="sideDetailCanGoBack"
         @close="detailPanelVisible = false"
         @update:width="onDetailPanelWidthChange"
         @read="onSideDetailRead"
@@ -376,6 +422,8 @@
         @search-from-tag="searchFromTag"
         @refresh-list="refreshAfterFilterChange"
         @open-book-detail="onSideDetailOpenDetail"
+        @open-book-detail-in-panel="onSideDetailOpenInPanel"
+        @navigate-back="onSideDetailNavigateBack"
         @get-metadata="(b) => $refs.SearchDialogRef.getBookInfo(b)"
         @toggle-hidden="onSideDetailToggleHidden"
         @rescan="onSideDetailRescan"
@@ -805,6 +853,12 @@ export default defineComponent({
       _libSwitchSeq: 0,
       // home
       searchString: '',
+    // ---------- 独立搜索界面(用户要求 7) ----------
+    // 打开时先快照主界面状态,关闭时原样还原 —— 用户要求「关闭搜索后返回刚才的主界面」,
+    // 是**回到当时的界面**,不是重新加载一遍列表。
+    searchPageOpen: false,
+    searchPageQuery: '',
+    searchPageSnapshot: null,
       // 「EH在线」/「紳士漫畫」没被勾进任何「库切换」框时的临时站位:存的是库 id(''=不在线库)
       // 勾进框之后切换库完全按框走,这个标志不再参与(见 computed onlineSource)
       onlineStopActive: '',
@@ -848,6 +902,8 @@ export default defineComponent({
       // 换广告时递增:让 Vue 重建广告容器(只改 id 属性换不掉里面的 iframe)
       wnacgAdKey: 0,
       onlineHasMore: true,
+    // 上一次「补下一页」是否失败:界面据此显示「加载失败,点击重试」而不是「没有更多了」
+    onlineLoadFailed: false,
       onlineQuery: '',
       onlineLoading: false,
       // 搜索框弹出的下拉底部的「搜索历史」(只存本机),排成横排芯片
@@ -1158,6 +1214,24 @@ export default defineComponent({
       if (this.onlineActive) return this.onlineHasMore
       const pageSize = Number(this.setting.pageSize) || 1
       return this.currentPage < Math.max(1, Math.ceil(this.displayBookCount / pageSize))
+    },
+    // 是否已经翻到「在线库的最后一页」。
+    // 在线库的分页是按「每页数量」切 onlineItems 的,所以最后一页 = 总页数那页。
+    onlineAtLastPage () {
+      if (!this.onlineActive) return false
+      const pageSize = Math.max(1, Number(this.setting.pageSize) || 42)
+      const totalPages = Math.max(1, Math.ceil((this.onlineItems || []).length / pageSize))
+      return (Number(this.currentPage) || 1) >= totalPages
+    },
+    // 底部「没有更多了」/「加载失败,点击重试」是否要显示。
+    // ★ 用户要求:只有**最后一页**才显示「没有更多了」。
+    //   以前只要 onlineHasMore===false 就显示(第 2 页就可能出现),
+    //   而且加载失败时也显示,用户没法知道其实是失败了、更没法重试。
+    showLoadMoreEnd () {
+      if (!this.onlineActive) return false
+      if (this.onlineLoadFailed) return true          // 失败:总是给重试入口
+      if (this.onlineHasMore) return false            // 还有更多:不显示
+      return this.onlineAtLastPage                    // 没更多了:只在最后一页显示
     },
     // 「筛选」(JHenTai 那个筛选对话框)里有条件在生效 → 漏斗按钮高亮
     ehFilterActive () {
@@ -2397,7 +2471,7 @@ export default defineComponent({
     // ⋯ 菜单项的动作:必须与模板里对应分支的 @click 完全一致
     runToolbarAction (id) {
       switch (id) {
-        case 'searchButton': return this.searchBook()
+        case 'searchButton': return this.openSearchPage()
         case 'filter': this.ehFilterVisible = true; return
         case 'downloads': return this.toggleDownloadDrawer()
         case 'detailPanel': this.detailPanelVisible = !this.detailPanelVisible; return
@@ -3170,6 +3244,52 @@ export default defineComponent({
         this.searchString = val
       }
     },
+    // ---------- 独立搜索界面 ----------
+    // 打开:快照当前主界面状态(页码/列表/滚动位置),然后显示搜索页
+    openSearchPage () {
+      if (this.searchPageOpen) return
+      this.searchPageSnapshot = {
+        currentPage: this.currentPage,
+        sortValue: this.sortValue,
+        searchString: this.searchString,
+        scrollTop: (() => {
+          try {
+            const el = document.querySelector('.book-card-area')
+            return el ? el.scrollTop : 0
+          } catch (e) { return 0 }
+        })()
+      }
+      this.searchPageQuery = this.searchString || ''
+      this.searchPageOpen = true
+      this.$nextTick(() => {
+        try { this.$refs.searchPageInputRef && this.$refs.searchPageInputRef.focus() } catch (e) { /* 忽略 */ }
+      })
+    },
+    // 关闭:还原快照(不动列表内容,只把页码/滚动位置放回去)
+    closeSearchPage () {
+      const snap = this.searchPageSnapshot
+      this.searchPageOpen = false
+      this.searchPageQuery = ''
+      if (snap) {
+        this.currentPage = snap.currentPage
+        this.$nextTick(() => {
+          try {
+            const el = document.querySelector('.book-card-area')
+            if (el) el.scrollTop = snap.scrollTop || 0
+          } catch (e) { /* 忽略 */ }
+        })
+      }
+      this.searchPageSnapshot = null
+    },
+    // 提交搜索:把关键词交给原来的 searchBook 流程,然后关闭搜索页
+    submitSearchPage () {
+      const q = String(this.searchPageQuery || '').trim()
+      this.searchString = q
+      this.closeSearchPage()
+      this.searchBook()
+    },
+    // 输入时同步给 searchString,让原有的搜索建议/历史逻辑照常工作
+    syncSearchPageSuggest () { /* 预留:需要时可接搜索建议 */ },
     searchBook (addToHistory = true) {
       this.rememberSearch(this.searchString)
       // EH在线:搜索框就是「去 EH 上找」,结果照样进书架原本的数据流
@@ -3474,8 +3594,37 @@ export default defineComponent({
     // 打开侧边详细信息(点击策略 / 面板自身的入口都走这)
     openSideDetail (book) {
       if (!book) return
+      // 打开新书时清空返回栈(除非是从侧栏内部跳进来的 —— 那个走 onSideDetailOpenInPanel)
+      this._sideDetailNavStack = []
       this.bookDetail = book
       this.detailPanelVisible = true
+    },
+    // ★ 侧栏内部跳转(点合集成员 / 点合集里的一话):**留在侧栏**切换到那本书,
+    //   并把「上一本」压进返回栈 —— 用户可以点返回退回合集。
+    //   用户要求:侧栏里点合集预览图应进侧栏;只有详情弹窗里点才进那本书的详情。
+    // 侧栏「返回」按钮是否显示(有历史才显示)
+    sideDetailCanGoBack () {
+      return Array.isArray(this._sideDetailNavStack) && this._sideDetailNavStack.length > 0
+    },
+    onSideDetailOpenInPanel (book) {
+      if (!book) return
+      const cur = this.bookDetail
+      if (cur && cur.id !== book.id) {
+        if (!Array.isArray(this._sideDetailNavStack)) this._sideDetailNavStack = []
+        // 最多记 20 层,防止连点把栈撑爆
+        this._sideDetailNavStack.push(cur)
+        if (this._sideDetailNavStack.length > 20) this._sideDetailNavStack.shift()
+      }
+      this.bookDetail = book
+      this.detailPanelVisible = true
+    },
+    // 侧栏「返回」:退回上一本(通常是合集)
+    onSideDetailNavigateBack () {
+      const stack = this._sideDetailNavStack
+      if (!Array.isArray(stack) || !stack.length) return false
+      const prev = stack.pop()
+      if (prev) this.bookDetail = prev
+      return true
     },
     // 侧边详情里的「查看详情」:合集走合集详情(不写阅读历史),普通书照旧
     onSideDetailOpenDetail (b) {
@@ -6077,9 +6226,12 @@ export default defineComponent({
       //   (它是长作业),等它回来再说「已开始」等于任务都结束了才提示。
       //   这里先给一句「已加入队列」,后续进度/成败全部由右侧任务记录呈现。
       const modeLabel = { read: '阅读', server1: 'Server 1', server2: 'Server 2' }[mode] || mode
+      // opts.quiet:批量下载(合集多话)时用 —— 不再逐条提示「已加入队列」,
+      // 也不再逐条弹「重复下载?」确认框(几话就弹几次没法用);查重仍由主进程把关。
+      const quiet = !!(opts && opts.quiet)
       // ★ 先自动查一次下载记录表(明文提示放在真正发起之前,避免「提示已加入」之后才说重复)。
       //   主进程也会查(那是权威),这里提前查只是为了不让「已加入队列」和「重复」提示互相打架。
-      if (!(opts && opts.ignoreHistory)) {
+      if (!quiet && !(opts && opts.ignoreHistory)) {
         try {
           const pre = await ipcRenderer.invoke('download-history-check', { url: book && book.url })
           if (pre && pre.hit) {
@@ -6100,7 +6252,7 @@ export default defineComponent({
           }
         } catch (e) { /* 查重失败就当没重复,不阻断下载 */ }
       }
-      this.printMessage('success', this.$t('m.wnacgDlQueued', { mode: modeLabel }))
+      if (!quiet) this.printMessage('success', this.$t('m.wnacgDlQueued', { mode: modeLabel }))
       try {
         const res = await ipcRenderer.invoke('wnacg-download', {
           book: {
@@ -6139,24 +6291,31 @@ export default defineComponent({
       }
     },
     // ---------- 绅士漫画合集:多选下载 / 阅读某一话 ----------
-    // 一次点「下载」可以勾选多话,逐条交给 startWnacgDownload。
-    // ⚠ 必须逐条串行发起:站点对整本压缩包有并发限制(见后端 wnacgZipSlot),
-    //   同时糊一堆请求上去后面的会失败。这里用 for..of + await,一条一条排。
+    // ★ 合集里的多话要「**依次加入队列**」,而不是等着前一本下完才加下一本。
+    //   以前是这样:
+    //       for (const c of list) { await this.startWnacgDownload(...) }
+    //   而 startWnacgDownload 内部 await 的是 wnacg-download ——
+    //   那是个**长作业 IPC,要等整本 zip 下完才 resolve**(本文件里到处都有这条注释)。
+    //   于是「选了 5 话」实际表现成:下完第 1 话才开始下第 2 话,
+    //   用户看到任务记录里永远只有一条,还以为「只下载了合集里的一个」。
+    //   现在:并发地把所有话都**先建好任务**(主进程的 wnacgZipSlot 本来就保证
+    //   zip 下载串行执行,后加的任务会自然排队,不会真的并发打站点)。
+    //   ⚠ 用 Promise.allSettled 而不是 await 循环:一次把请求都发出去,
+    //     每个请求各自立刻建记录 + 广播 → 任务记录里立刻能看到全部 N 条「排队中」。
     async startSeriesDownload (chapters, mode) {
       const list = Array.isArray(chapters) ? chapters.filter(c => c && c.url) : []
       if (!list.length) return
       const m = ['read', 'server1', 'server2'].includes(mode) ? mode : 'read'
-      let ok = 0
-      for (const c of list) {
-        try {
-          await this.startWnacgDownload(
-            { id: 'wnacg:' + (c.chid || Date.now()), url: c.url, title: c.title, cover: '', tags: {} },
-            m
-          )
-          ok += 1
-        } catch (e) { /* 单话失败不阻塞后面的 */ }
-      }
-      if (ok > 1) this.printMessage('success', this.$t('m.seriesDlQueued', { n: ok }))
+      // 先提示一次总数(避免每话都弹一条「已加入队列」刷屏)
+      const modeLabel = { read: '阅读', server1: 'Server 1', server2: 'Server 2' }[m] || m
+      this.printMessage('success', this.$t('m.seriesDlQueued', { n: list.length, mode: modeLabel }))
+      // 逐条发起(不 await 结果):让主进程自己按 wnacgZipSlot 串行排队
+      const jobs = list.map(c => this.startWnacgDownload(
+        { id: 'wnacg:' + (c.chid || Date.now() + Math.random()), url: c.url, title: c.title, cover: '', tags: {} },
+        m,
+        { quiet: true }
+      ))
+      await Promise.allSettled(jobs)
     },
     // ---------- 绅士漫画合集:打开「和本地合集一样的抽屉」 ----------
     // 抽屉本身复用 collection-bottom-drawer + BookCard 那套渲染,这里只是把
@@ -6628,6 +6787,7 @@ export default defineComponent({
       if (parsed.nextGid) this.onlineCursors = [...this.onlineCursors, parsed.nextGid]
       this.onlinePagesFetched += 1
       this.onlineHasMore = !!parsed.nextGid
+      this.onlineLoadFailed = false
       return fresh.length
     },
     // 补到至少 need 条(单次最多补 8 页,避免一口气连打二十几个请求)
@@ -6783,6 +6943,16 @@ export default defineComponent({
       if (!url) { this.onlineHasMore = false; return 0 }
       const html = await this.fetchWnacgHtml(url)
       if ((this._wnacgGen || 0) !== gen) return 0
+      // ★ 取列表页失败(网络/代理/站点抖动):以前直接静默 return,
+      //   外层把 onlineHasMore 当成「到底了」→ 底部显示「没有更多了」,
+      //   用户再怎么滚也加载不出新漫画,还以为真的没有了。
+      //   现在打上失败标记,底部改成「加载失败,点击重试」,点一下能重新拉。
+      if (!html) {
+        this.onlineLoadFailed = true
+        this.onlineHasMore = true   // 保持「还有更多」,才能重试
+        return 0
+      }
+      this.onlineLoadFailed = false
       // 账号的书架分类(我的书架下拉用):进绅士漫画后拉一次,加过分类会重拉
       if (!this._wnacgFavClassesFetched && String(this.setting.wnacgCookie || '')) {
         this._wnacgFavClassesFetched = true
@@ -6835,6 +7005,7 @@ export default defineComponent({
       this.wnacgPage += 1
       this.wnacgNextUrl = parsed.nextUrl
       this.onlineHasMore = !!parsed.nextUrl
+      this.onlineLoadFailed = false
       // 翻页也像原站那样换一次广告(首页由首次注入负责,这里只管第 2 页起)
       if (this.wnacgPage > 1) this.scheduleWnacgAdRefresh()
       return fresh.length
@@ -6912,6 +7083,22 @@ export default defineComponent({
       }
     },
     // 滚到底 / 翻页时再补下一页(在线「无限往下看」)
+    // 点「没有更多了」/「加载失败,点击重试」:重新尝试拉下一批。
+    // ★ 用户要求:加载失败后不能卡在「没有更多了」死循环,要能点了再试。
+    //   做法:清掉失败标记、把 hasMore 重新置 true,然后强推一次补页。
+    async retryLoadMoreOnline () {
+      if (!this.onlineActive) return
+      if (this.onlineLoading) return
+      this.onlineLoadFailed = false
+      this.onlineHasMore = true
+      try {
+        await this.appendOnlinePageIfNeeded(true)
+      } catch (e) {
+        this.onlineLoadFailed = true
+      }
+      // 补完之后如果还是没有新内容,说明确实到头了(或仍然失败)
+      if (!this.onlineHasMore) this.onlineLoadFailed = false
+    },
     async appendOnlinePageIfNeeded (force = false) {
       if (!this.onlineActive || this.onlineLoading || !this.onlineHasMore) return
       // ★必须翻到**分页器的最后一页**才拉下一批 EH 数据:
@@ -8430,4 +8617,61 @@ html.nhentai
     border-radius: 4px
     max-width: 100%
     background: transparent
+
+/* ================= 独立搜索界面(用户要求 7) ================= */
+.search-fullpage {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  background: var(--el-bg-color, #fff);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 18vh;
+  gap: 24px;
+}
+.search-fullpage-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(760px, 90vw);
+}
+.search-fullpage-input {
+  flex: 1 1 auto;
+}
+.search-fullpage-history {
+  width: min(760px, 90vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.search-fullpage-history-title {
+  font-size: 13px;
+  opacity: .65;
+}
+.search-fullpage-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.search-fullpage-chip {
+  cursor: pointer;
+}
+/* 详情界面「返回」按钮:贴在 el-dialog 自带 ✕ 的左边 */
+.dialog-detail .detail-nav-back {
+  position: absolute;
+  top: 12px;
+  right: 56px;
+  z-index: 10;
+  font-size: 14px;
+}
+/* 「加载失败,点击重试」要看起来能点 */
+.load-more-end.is-retry {
+  cursor: pointer;
+  color: var(--el-color-warning);
+}
+.load-more-end.is-retry:hover {
+  text-decoration: underline;
+}
+
 </style>

@@ -981,6 +981,9 @@ const defaultUiSettings = () => ({
   clickDuAction: 'content',
   clickPageCountAction: 'thumbnail',
   dblClickCoverAction: 'content',
+  // 合集预览图点击策略(详情界面/侧栏里那些成员封面):
+  //   detail = 进入详情(默认,与原有行为一致) / read = 直接开始阅读
+  collectionPreviewClickAction: 'detail',
   // 「编辑信息」里信息块的显示顺序(可拖动调整)
   detailEditBlockOrder: ['title', 'status', 'url', 'category', 'tags'],
   language: 'default',

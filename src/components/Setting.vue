@@ -1185,6 +1185,19 @@
               </NameFormItem>
             </div>
           </el-col>
+          <!-- ★ 合集预览图点击策略(用户要求):合集详情/侧栏里那些成员封面,点一下
+               是「进入详情」还是「直接开始阅读」。默认进详情(与现在的行为一致)。 -->
+          <el-col :span="12">
+            <div class="setting-line">
+              <NameFormItem class="label-input" prependWidth="110px">
+                <template #prepend><span class="setting-label">{{$t('m.collectionPreviewClick')}}</span></template>
+                <el-select placeholder=" " v-model="setting.collectionPreviewClickAction" @change="saveSetting">
+                  <el-option :label="$t('m.collectionPreviewClickDetail')" value="detail"></el-option>
+                  <el-option :label="$t('m.collectionPreviewClickRead')" value="read"></el-option>
+                </el-select>
+              </NameFormItem>
+            </div>
+          </el-col>
           <el-col :span="12">
             <div class="setting-line">
               <NameFormItem class="label-input" prependWidth="110px">
@@ -3334,6 +3347,8 @@ onMounted(() => {
         setting.value.clickPolicyDefaultsV2 = true
       }
       if (res.clickTitleAction === undefined) setting.value.clickTitleAction = 'detail'
+  // 合集预览图点击策略:默认「进入详情」
+  if (res.collectionPreviewClickAction === undefined) setting.value.collectionPreviewClickAction = 'detail'
       if (res.pixelCoverLevel === undefined) setting.value.pixelCoverLevel = 60
       if (res.pixelBlockSize === undefined) setting.value.pixelBlockSize = 4
       if (res.pixelColorCount === undefined) setting.value.pixelColorCount = 32

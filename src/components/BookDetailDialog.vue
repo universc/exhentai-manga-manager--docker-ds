@@ -5,6 +5,17 @@
     modal-class="dialog-detail-modal"
     @close="exitEditMode"
   >
+    <!-- 返回:从合集预览图点进来的书,可以退回合集详情。
+         用户要求放在 ✕ 左边;没有可返回的历史时自动隐藏。
+         (el-dialog 的 ✕ 在 header 右上角,这里用绝对定位贴在它左边) -->
+    <el-button
+      v-if="canNavigateBack"
+      class="detail-nav-back"
+      size="small"
+      text
+      :title="$t('m.goBack')"
+      @click="navigateBack"
+    >← {{ $t('m.goBack') }}</el-button>
     <el-row :gutter="20" class="book-detail-card">
       <el-col :span="6">
         <!-- 标题:与封面同宽居中显示(与图片、按钮对齐) -->
@@ -1583,6 +1594,28 @@ const createNewTagHere = async () => {
 // 暂未实现的功能(仅按钮占位)
 const notImplemented = (name) => printMessage('info', name + ' ' + t('c.featureComingSoon'))
 
+// 详情弹窗内部的返回栈:从合集预览图点进某一本时,记下合集,点 ← 可以退回去。
+// 用户要求:详情界面和侧边详情都要在 ✕ 左边加返回按钮。
+const navBackStack = ref([])
+const canNavigateBack = computed(() => navBackStack.value.length > 0)
+const navigateBack = () => {
+  const prev = navBackStack.value.pop()
+  if (!prev) return
+  // 直接换书(不再压栈),并作废在飞的请求
+  previewToken++
+  bookDetail.value = prev
+  navBackStack.value = [...navBackStack.value]
+}
+// 由内部入口(合集成员 / 合集某一话)打开时压栈
+let _keepNavStack = false
+const openBookDetailFromParent = (book) => {
+  const cur = bookDetail.value
+  if (cur && cur.id && cur.id !== book.id) {
+    navBackStack.value = [...navBackStack.value, cur].slice(-20)
+  }
+  _keepNavStack = true    // 别让 openBookDetail 把刚压的栈清掉
+  openBookDetail(book, false)
+}
 const openBookDetail = (book, addToHistory = true) => {
   // ★ 立刻作废上一本书正在飞的所有异步请求。
   //   以前只有 watch(bookDetail.id) 会 previewToken++,而 Vue 的 watch 是**异步**的:
@@ -1591,6 +1624,10 @@ const openBookDetail = (book, addToHistory = true) => {
   //   用户看到的就是「点下一个,详情变成上一个还没加载完的那本」。
   //   在这里同步 +1 一次,彻底堵死空窗;watch 里那次 ++ 保留(换书路径不止这一处)。
   previewToken++
+  // 从外部(书架/侧栏)打开一本新书:清空返回栈 —— 除非是内部跳转
+  // (openBookDetailFromParent 会先把当前书压栈,这里用 _keepNavStack 标识)
+  if (!_keepNavStack) navBackStack.value = []
+  _keepNavStack = false
   bookDetail.value = book
   dialogVisibleBookDetail.value = true
   comments.value = []
@@ -2087,7 +2124,8 @@ const isCollectionCover = (m) => {
 // 在册页上站内同样能取到标签/页数/封面;「阅读」仍然留在右键菜单里。
 const onSeriesChapterClick = (sv) => {
   const b = seriesChapterBook(sv)
-  if (b) openBookDetail(b)
+  // 从合集某一话点进详情:同样压栈,← 可退回合集
+  if (b) openBookDetailFromParent(b)
 }
 // 一话 → 「书」的形状:字段与 wnacgToBook 同口径,详细界面/侧边详情都直接认这套。
 // 已经在书里的章节(带 tags)就用现成的,避免每次点击都重抓详情页。
@@ -2157,7 +2195,16 @@ const onSeriesDownloadBtn = (mode) => {
 
 const onMemberClick = (m) => {
   if (editingTag.value && !viewerRole.value) return
-  openBookDetail(m)
+  // ★ 合集预览图点击策略(设置 → 高级 → 点击策略):进入详情 / 开始阅读。
+  //   默认 detail,与原有行为一致。
+  const act = setting.value.collectionPreviewClickAction || 'detail'
+  if (act === 'read') {
+    // 直接阅读这本成员书(合集不是磁盘文件,交给内容界面)
+    emit('openContentView', m)
+    return
+  }
+  // 从合集预览图点进成员:**压栈**,这样 ← 能退回合集详情
+  openBookDetailFromParent(m)
 }
 
 const emitRemoveMember = (m) => {
@@ -2180,7 +2227,7 @@ const confirmDeleteMember = async (m) => {
 // 成员封面右键:设为合集封面 / 移出合集 / 删除文件
 const onMemberContextMenu = (e, m) => {
   if (!m) return
-  if (viewerRole.value) { openBookDetail(m); return }
+  if (viewerRole.value) { openBookDetailFromParent(m); return }
   const items = [
     { label: t('m.setAsCollectionCover'), onClick: () => emit('collection-set-cover', { collection: bookDetail.value, member: m }) },
     { label: t('m.removeFromCollection'), onClick: () => emitRemoveMember(m) },

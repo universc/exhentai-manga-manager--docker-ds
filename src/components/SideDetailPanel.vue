@@ -7,6 +7,16 @@
     <div class="detail-panel-header">
       <span class="detail-panel-title">{{ $t('m.sideDetailTitle') }}</span>
       <span class="detail-panel-actions">
+        <!-- 返回:从合集成员/某一话点进来时,退回上一本(通常是合集)。
+             用户要求在 ✕ 左边加这个按钮;没有可返回的历史时自动隐藏。 -->
+        <el-button
+          v-if="canNavigateBack"
+          size="small"
+          text
+          class="detail-panel-back"
+          :title="$t('m.goBack')"
+          @click="emit('navigate-back')"
+        >←</el-button>
         <el-button v-if="book.online" size="small" text :icon="MdRefresh" :title="$t('m.sideDetailRefresh')" :loading="detailLoading" @click="refreshDetail"></el-button>
         <el-button size="small" text class="detail-panel-close" :title="$t('m.close')" @click="$emit('close')">✕</el-button>
       </span>
@@ -321,7 +331,7 @@
             class="detail-preview-item detail-collection-member"
             :class="{ 'is-editing': collectionEditing }"
             :title="m.title"
-            @click="collectionEditing ? null : emit('open-book-detail', m)"
+            @click="collectionEditing ? null : openCollectionMemberInPanel(m)"
           >
             <img v-if="m.coverPath" :src="bookImgSrc(m.coverPath)" loading="lazy" decoding="async" />
             <div v-else class="detail-preview-pending"></div>
@@ -413,7 +423,9 @@ const props = defineProps({
   // 面板宽度(px):App.vue 持有并持久化,拖动时双向同步
   width: { type: Number, default: 360 },
   // 面板是否可见:藏起来时不自动拉 EH 详情(省请求,也少给 EH 添乱)
-  visible: { type: Boolean, default: true }
+  visible: { type: Boolean, default: true },
+  // 是否有「上一本」可返回(由 App 的侧栏导航栈决定):决定 ✕ 左边的 ← 按钮显不显示
+  canNavigateBack: { type: Boolean, default: false }
 })
 const emit = defineEmits([
   'close', 'update:width', 'read', 'download-gallery', 'open-torrents', 'favorite',
@@ -424,8 +436,13 @@ const emit = defineEmits([
   // 绅士漫画:点上传者 → 主界面切到他的投稿列表
   'open-uploader',
   'search-from-tag', 'refresh-list',
-  // 本地库:与「详细界面」同一套操作
+  // 本地库:与「详细界面」同一套操作(open-book-detail = 打开全屏详细弹窗)
   'open-book-detail', 'get-metadata', 'toggle-hidden', 'rescan', 'delete-book', 'toggle-comments',
+  // 合集成员在本面板内就地切换(不弹详情弹窗)—— 用户要求:
+  // 侧栏里点合集预览图应留在侧栏,只有详情弹窗里点才进那本书的详情。
+  'open-book-detail-in-panel',
+  // 返回上一本(从合集成员进来时可退回合集)
+  'navigate-back',
   // 评论里的 EH 画廊链接:交给软件内部跳转
   'open-gallery-url', 'open-hh-download',
   // 标签右键菜单「编辑标签」:冒泡到 App.vue 走现成的 openQuickTagEdit(不新写弹窗)
@@ -622,8 +639,21 @@ const commentHtml = (c) => {
 // 点封面 = 进入**那一话的详细界面**(用户要求:不再直接开读);
 // 右键 = 下载 / 阅读 / 在浏览器中打开(「阅读」还在右键里)。
 const onSeriesChapterClick = (sv) => {
+  // 侧栏内的合集(多话作品)点一话:同样留在侧栏切换,不弹全屏详情 ——
+  // 与上面「本地合集成员」保持一致(用户要求:侧栏里点进侧栏)。
   const b = seriesChapterBook(sv)
-  if (b) emit('open-book-detail', b)
+  if (b) emit('open-book-detail-in-panel', b)
+}
+// 侧栏内点合集成员(本地合集):留在侧栏切换。
+const openCollectionMemberInPanel = (m) => {
+  if (!m) return
+  // 合集预览图点击策略:进入详情(在侧栏内切换)/ 开始阅读
+  const act = (setting.value && setting.value.collectionPreviewClickAction) || 'detail'
+  if (act === 'read') {
+    emit('read', m)
+    return
+  }
+  emit('open-book-detail-in-panel', m)
 }
 // 一话 → 「书」的形状(与 wnacgToBook 同口径):侧边详情/详细界面都直接认这套。
 const seriesChapterBook = (sv) => {
