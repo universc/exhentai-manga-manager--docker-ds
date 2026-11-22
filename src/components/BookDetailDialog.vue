@@ -1173,6 +1173,11 @@ const ehFailedText = async () => {
 const enrichOnlineBook = async (book) => {
   // 紳士漫畫走另一套详情页解析(分类 / 页数 / 标签 / 简介 / 全页缩略图)
   if (isWnacgUrl(book.url)) return enrichWnacgBook(book)
+  // ★ 与 enrichWnacgBook 同一套竞态防护:EH 在线同样会出现
+  //   「点开 A 还没加载完就点 B → B 的详情显示成 A」的问题。
+  const myToken = previewToken
+  const myBookId = book && book.id
+  const stillMine = () => myToken === previewToken && !!bookDetail.value && bookDetail.value.id === myBookId
   previewLoading.value = true
   try {
     const cookie = ['igneous', 'ipb_pass_hash', 'ipb_member_id', 'star']
@@ -1180,6 +1185,7 @@ const enrichOnlineBook = async (book) => {
       .join('; ')
     const host = String(book.url).replace(/^https?:\/\//i, '').split('/')[0] || 'e-hentai.org'
     const html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie })
+    if (!stillMine()) return
     // ★主进程失败时返回 null(B 线):以前这里直接把 null 丢给 parseGalleryDetail,
     //   结果只显示一句「获取失败」,用户不知道是网络、代理还是 Cookie 的问题。
     if (!html) {
@@ -1195,6 +1201,7 @@ const enrichOnlineBook = async (book) => {
         : t('m.ehOnlineFailed')
       return
     }
+    if (!stillMine()) return
     Object.assign(bookDetail.value, mergeDetailIntoBook(bookDetail.value, detail))
     const firstThumbs = detail.thumbnails || []
     previewItems.value = firstThumbs.map(th => ({ sprite: spriteStyleOf(th) }))
@@ -1223,21 +1230,31 @@ const enrichOnlineBook = async (book) => {
       }).catch(() => { /* 某页拉不到就算了,已显示的先留着 */ })
     }
   } catch (e) {
-    previewError.value = t('m.ehOnlineFailed')
+    if (stillMine()) previewError.value = t('m.ehOnlineFailed')
   } finally {
-    previewLoading.value = false
+    if (stillMine()) previewLoading.value = false
   }
 }
 
 // 紳士漫畫:详情页一次给 12 张缩略图,剩下的按「後頁」链接续拉
 const enrichWnacgBook = async (book) => {
+  // ★ 竞态防护:进函数就领一个「本次请求」的令牌。
+  //   以前这里只在后面的缩略图分页用了 previewToken,而**详情页本身的 await 完全不校验** ——
+  //   用户点开 A(请求还在飞)立刻点 B,等 A 的响应回来时会把 A 的详情
+  //   Object.assign 到 B 的对象上,于是「B 的详情显示成 A 的内容」。
+  //   现在每个 await 之后都确认「还是同一次请求 + 还是同一本书」,否则整个丢弃。
+  const myToken = previewToken
+  const myBookId = book && book.id
+  const stillMine = () => myToken === previewToken && !!bookDetail.value && bookDetail.value.id === myBookId
   previewLoading.value = true
   try {
     const host = String(book.url).replace(/^https?:\/\//i, '').split('/')[0] || 'www.wnacg.com'
     let html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: String(setting.value.wnacgCookie || '') })
+    if (!stillMine()) return
     // Cookie 失效时站点回一个没正文的壳页:匿名重试一次(详情页游客也能看)
     if (html && wnacgHtmlLooksBroken(html)) {
       html = await ipcRenderer.invoke('get-ex-webpage', { url: book.url, cookie: '' })
+      if (!stillMine()) return
     }
     // 作品已被站点删除:匿名重试也是同一句「漫畫不存在」,直接说明
     if (html && wnacgIsDeletedPage(html)) {
@@ -1254,6 +1271,7 @@ const enrichWnacgBook = async (book) => {
       previewError.value = t('m.wnacgFailed')
       return
     }
+    if (!stillMine()) return
     Object.assign(bookDetail.value, mergeWnacgDetail(bookDetail.value, detail))
     // 收藏状态:同侧栏 —— 问一次「加入書架」弹窗(站点不给作品级收藏数)
     if (!bookDetail.value.inShelf) {
@@ -1265,6 +1283,8 @@ const enrichWnacgBook = async (book) => {
             cookie: String(setting.value.wnacgCookie || '')
           })
           const dlg = parseWnacgFavDialog(dlgHtml || '', host)
+          // 收藏弹窗那次 await 之后也要确认没换书(它比详情页还慢)
+          if (!stillMine()) return
           if (dlg.needLogin || dlg.already || dlg.removeUrl || dlg.form) {
             bookDetail.value.inShelf = !!(dlg.already || dlg.removeUrl)
             bookDetail.value.favProbed = true
@@ -1272,6 +1292,7 @@ const enrichWnacgBook = async (book) => {
         }
       } catch (e) { /* 探不到就保持原样 */ }
     }
+    if (!stillMine()) return
     const first = detail.thumbnails || []
     previewItems.value = first.map(th => ({ sprite: spriteStyleOf(th) }))
     const pages = Number(detail.pageCount) || first.length
@@ -1308,9 +1329,11 @@ const enrichWnacgBook = async (book) => {
       }).catch(() => { /* 某页拉不到就算了,已显示的先留着 */ })
     }
   } catch (e) {
-    previewError.value = t('m.wnacgFailed')
+    if (stillMine()) previewError.value = t('m.wnacgFailed')
   } finally {
-    previewLoading.value = false
+    // 只有「还是本次请求」才关 loading —— 否则会把用户新点开的那本也关掉,
+    // 新书的预览就永远停在「加载中」的占位状态。
+    if (stillMine()) previewLoading.value = false
   }
 }
 
@@ -1561,6 +1584,13 @@ const createNewTagHere = async () => {
 const notImplemented = (name) => printMessage('info', name + ' ' + t('c.featureComingSoon'))
 
 const openBookDetail = (book, addToHistory = true) => {
+  // ★ 立刻作废上一本书正在飞的所有异步请求。
+  //   以前只有 watch(bookDetail.id) 会 previewToken++,而 Vue 的 watch 是**异步**的:
+  //   从 bookDetail.value = book 到 watch 回调执行之间有一段空窗,
+  //   期间上一本(尤其慢的在线详情页)的响应回来,就会把内容合并进新书 ——
+  //   用户看到的就是「点下一个,详情变成上一个还没加载完的那本」。
+  //   在这里同步 +1 一次,彻底堵死空窗;watch 里那次 ++ 保留(换书路径不止这一处)。
+  previewToken++
   bookDetail.value = book
   dialogVisibleBookDetail.value = true
   comments.value = []
