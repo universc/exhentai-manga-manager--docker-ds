@@ -228,15 +228,14 @@
       @search="handleSearchString"
     />
     <el-row :gutter="20" class="book-card-area" v-if="!authBlocked">
-      <!-- card-style-3 = 三号条状样式(用户要求,类似下载记录的一行):
-           卡片变横向长条,网格按条宽自适应排布。
-           --style3-row-h / --style3-cover-w 由设置里的两个数值驱动。 -->
+      <!-- card-style-3 = 三号条状样式(类似下载记录的一行):
+           ★ --style3-* 六个变量由 utils.js 的 applyCoverStyle 写到 :root(唯一写入方)。
+             这里绝不能内联覆盖 —— 行内 z=1 会盖掉全局,界面缩放静默失效。 -->
       <el-col :span="24" v-if="!manageView" class="book-card-list"
         :class="{ 'card-style-2': setting.cardStyle2, 'card-style-3': setting.cardStyle3 }"
+        :role="setting.cardStyle3 ? 'list' : undefined"
         :style="{
-          height: (setting.randomTagsEnabled || setting.showCollectTag) ? 'calc(100vh - 134px)' : 'calc(100vh - 96px)',
-          '--style3-row-h': (Number(setting.style3RowHeight) || 96) + 'px',
-          '--style3-cover-w': (Number(setting.style3CoverWidth) || 64) + 'px'
+          height: (setting.randomTagsEnabled || setting.showCollectTag) ? 'calc(100vh - 134px)' : 'calc(100vh - 96px)'
         }">
         <!-- 绅士漫画:站点自己的广告位,做成卡片样式放在列表最上面。
              pointer-events: none —— 只曝光、不产生点击(误点属于无效点击,扣的是站点的钱)。
@@ -500,7 +499,8 @@
           </span>
         </div>
         <div class="collection-drawer-body">
-          <div v-if="collectionDrawerList.length" class="collection-book-card-list" :class="{ 'card-style-2': setting.collectionCardStyleEnabled && setting.collectionCardStyle2 }" :style="collectionCardStyleVars">
+          <!-- 合集抽屉始终读合集自己的配置;collectionCardStyleEnabled 只保留字段,不再做渲染守卫 -->
+          <div v-if="collectionDrawerList.length" class="collection-book-card-list" :class="{ 'card-style-2': setting.collectionCardStyle2, 'card-style-3': setting.collectionCardStyle3 }" :role="setting.collectionCardStyle3 ? 'list' : undefined" :style="collectionCardStyleVars">
             <div v-for="(book, index) in collectionDrawerList" :key="book.id != null ? book.id : book.hash" class="book-card-frame">
               <BookCard
                 :book="book"
@@ -1207,21 +1207,75 @@ export default defineComponent({
     },
     // 合集抽屉卡片的第二套尺寸(只作用在打开合集后的底部抽屉):
     // 写成 CSS 变量给列表,主界面怎么调都不会影响抽屉,反之亦然。
+    // ★ collectionCardStyleEnabled 只保留字段,不再是渲染守卫 —— 抽屉始终读合集自己的配置。
     collectionCardStyleVars () {
       const s = this.setting || {}
-      // 合集界面卡片的总开关没开 → 什么都不覆盖,抽屉直接跟随主界面卡片的尺寸/间距
-      if (!s.collectionCardStyleEnabled) return {}
+      // 取第一个有效正数 / 非负整数:新字段优先、老字段兜底(老配置升级后观感不跳变)
+      const firstPos = (...vals) => {
+        for (const v of vals) {
+          if (typeof v === 'boolean' || v === '' || v == null) continue
+          const n = Number(v)
+          if (isFinite(n) && n > 0) return n
+        }
+        return 0
+      }
+      const firstNonNeg = (...vals) => {
+        for (const v of vals) {
+          if (typeof v === 'boolean' || v === '' || v == null) continue
+          const n = Number(v)
+          if (isFinite(n) && n >= 0) return n
+        }
+        return undefined
+      }
+      // ---------- 合集三号:条状行 ----------
+      // 公式必须与 utils.js 的 applyCoverStyle 三号分支逐字一致。
+      // 变量作用域只在抽屉容器上,不污染 :root 的主界面 --style3-*。
+      if (s.collectionCardStyle3) {
+        const zoom = Math.max(50, Math.min(300, firstPos(s.collectionStyle3UiZoom, 100))) / 100
+        const rowSetting = firstPos(s.collectionStyle3RowHeight, 96)
+        // 渲染行高 = round(设置值 × zoom),不设 64 下限 —— 否则缩放 50% 时被钉在 64,缩放失效。
+        // 64 是设置输入下限;触控底线由内高 (64-12)×0.5=26≥24 保证。与 utils.js / Setting.vue 三处一致。
+        const rowH = Math.round(rowSetting * zoom)
+        const innerH = (rowSetting - 12) * zoom
+        const cap = firstPos(s.collectionStyle3CoverWidth, 64)
+        // 宽度必须 floor、高度由宽反推(留小数),保证 h/w ≡ 4/3
+        const cw = Math.max(24, Math.floor(Math.min(cap * zoom, innerH * 0.75)))
+        const ch = cw / 0.75
+        const gv = firstNonNeg(s.collectionStyle3GapV)
+        const gh = firstNonNeg(s.collectionStyle3GapH)
+        const gapV = Math.max(Math.round((gv === undefined ? 8 : gv) * zoom), 4)
+        const gapH = Math.round((gh === undefined ? 8 : gh) * zoom)
+        return {
+          '--style3-row-h': rowH + 'px',
+          '--style3-cover-w': cw + 'px',
+          '--style3-cover-h': ch + 'px',
+          '--style3-gap-v': gapV + 'px',
+          '--style3-gap-h': gapH + 'px',
+          '--style3-zoom': String(zoom),
+          // 下面是通用兜底;条状封面高度直接读 --style3-cover-h,这里只给隐藏的经典元素用
+          '--emm-cover-size': cw + 'px',
+          '--emm-card-width': cw + 'px',
+          '--emm-card-height': rowH + 'px',
+          // 第三个口径:条状没有底部按钮行,不走一号的 84 / 二号的 34
+          '--emm-cover-height': Math.max(40, rowH - Math.round(18 * zoom)) + 'px',
+          '--emm-card-gap-v': gapV + 'px',
+          '--emm-card-gap-h': gapH + 'px',
+          '--emm-card-gap': gapV + 'px'
+          // 不写 --emm-card-zoom:它归一号/二号使用,三号字号只吃 --style3-zoom
+        }
+      }
+      // ---------- 合集二号 / 一号:沿用原有竖卡口径 ----------
       const style2 = !!s.collectionCardStyle2
-      const baseW = Number(s.collectionCoverWidth) > 0 ? Number(s.collectionCoverWidth) : (Number(s.coverWidth) || 220)
-      const baseH = Number(s.collectionCoverHeight) > 0 ? Number(s.collectionCoverHeight) : (Number(s.coverHeight) || 360)
-      const baseGapV = Number(s.collectionCardGapV) >= 0 ? Number(s.collectionCardGapV) : 6
-      const baseGapH = Number(s.collectionCardGapH) >= 0 ? Number(s.collectionCardGapH) : 6
+      const baseW = firstPos(style2 && s.collectionStyle2CoverWidth, s.collectionCoverWidth, s.coverWidth, 220)
+      const baseH = firstPos(style2 && s.collectionStyle2CoverHeight, s.collectionCoverHeight, s.coverHeight, 360)
+      const baseGapV = firstNonNeg(style2 && s.collectionStyle2CardGapV, s.collectionCardGapV)
+      const baseGapH = firstNonNeg(style2 && s.collectionStyle2CardGapH, s.collectionCardGapH)
       // 界面缩放:按比例放大宽/高/间距(标题字号也跟着放大),不用 CSS zoom
-      const zoom = Math.max(50, Math.min(300, Number(s.collectionUiZoom) || 100)) / 100
+      const zoom = Math.max(50, Math.min(300, firstPos(style2 && s.collectionStyle2UiZoom, s.collectionUiZoom, 100))) / 100
       const w = Math.round(baseW * zoom)
       const h = Math.round(baseH * zoom)
-      const gapV = Math.round(baseGapV * zoom)
-      const gapH = Math.round(baseGapH * zoom)
+      const gapV = Math.round((baseGapV === undefined ? 6 : baseGapV) * zoom)
+      const gapH = Math.round((baseGapH === undefined ? 6 : baseGapH) * zoom)
       return {
         '--emm-cover-size': w + 'px',
         '--emm-card-width': w + 'px',
@@ -5953,6 +6007,9 @@ export default defineComponent({
       if (task.phase === 'links' && task.status === 'downloading') return ''
       if ((task.fallback | 0) > 0) return this.$t('m.downloadFallback', { n: task.fallback | 0 })
       if (task.status === 'waiting' && task.error === 'gp') return this.$t('m.downloadErrGpShort')
+      // 站点级封禁/IP 限速:照 JHenTai 的 pause 语义停在「等待中」,文案要说清「不是坏了,是等解封」
+      if (task.status === 'waiting' && task.error === 'banned') return this.$t('m.downloadErrBannedShort')
+      if (task.status === 'waiting' && task.error === 'imageLimit') return this.$t('m.downloadErrImageLimitShort')
       if (task.error) return this.downloadErrorText(task.error)
       return ''
     },
@@ -7443,6 +7500,10 @@ html
   .book-card-frame
     content-visibility: auto
     contain-intrinsic-size: calc(var(--emm-cover-size, 220px) + 14px) calc(var(--emm-cover-size, 220px) * 1.72 + 30px)
+  // 三号条状:屏外占位按条高 + 纵向间距,不能再用竖卡的 cover-size×1.72
+  // (否则滚动条长度按 400px 算、实际只有 96px,滚起来一跳一跳)
+  .card-style-3 .book-card-frame
+    contain-intrinsic-size: auto calc(var(--style3-row-h, 96px) + var(--style3-gap-v, 8px))
 
 // el-scrollbar 内部滚动(阅读器缩略图、标签列表等)
 .el-scrollbar__wrap
@@ -8316,6 +8377,11 @@ html.theme-custom
   // 卡片框最小宽度 = 卡片宽度 + 左右间距 —— 以前固定 +14px,所以间距调到 0 也贴不到一起
   min-width: calc(var(--emm-cover-size, 220px) + var(--emm-card-gap-h, 0px) * 2)
   display: inline-block
+
+// 三号条状:列宽由 grid 的 minmax 决定,竖卡的 min-width 会把列撑破
+.card-style-3 .book-card-frame
+  min-width: 0
+  width: 100%
 
 // 逐排加载哨兵(占位一行,进入视口即触发下一排加载)
 .render-sentinel

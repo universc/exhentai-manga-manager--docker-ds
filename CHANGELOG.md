@@ -1,5 +1,48 @@
 # 更新记录
 
+## v1.18.11(2026-11-24)
+
+### 修复:管理界面「更改类别 / 更改元数据状态」弹「应用出现错误」(用户报)
+
+真因在主进程 `saveBookToDatabase()`,两个独立缺口任一命中就会让整次保存抛错:
+
+1. **没有 hash 的书写不进元数据库**(这次命中的那一类)。`metadata.sqlite` 以 `hash` 为主键且 NOT NULL,
+   而 `saveBookToDatabase` 无条件 `Metadata.upsert`。两阶段扫描还没探测到的书 hash 为 null,
+   点一次应用就抛 `notNull Violation: Metadata.hash cannot be null` → HTTP 500 → 「应用出现错误」。
+   而 `Mangas` 那一行**已经写成功**,所以出现「报错但实际已改」的错位。
+2. **只读时间戳被照原样写回**。客户端回传的 `createdAt/updatedAt` 可能是 `null`(元数据合并拿到
+   Invalid Date 时就是这样),而 `Mangas.createdAt` 是 NOT NULL,于是
+   `NOT NULL constraint failed: Mangas.createdAt`。即 `docs/redesign/03-qa-report.md` 里记的 FAIL-1。
+
+**修法**:
+
+- `saveBookToDatabase()` 剔除 `createdAt/updatedAt`(`updatedAt` 交给 sequelize,`createdAt` 保留库里原值)
+- 没有 hash 就跳过元数据(与 `loadBookListFromDatabase` 既有口径一致,扫描补上 hash 后自然会写进去)
+- 元数据写入失败只记 warning,不再让整次保存失败(它本来只是书架缓存)
+- 前端 `applyCategory` / `applyStatus` 合成一个逐本处理的实现:失败那本回滚字段,
+  提示里带上书名与真实原因;部分成功弹警告、全失败弹错误(以前只有一句笼统的「应用出现错误」)
+
+实测(真实数据 14944 本,未修复 / 已修复同一套 UI 操作对照):
+未修复 = 3 × 500 `notNull Violation: Metadata.hash cannot be null`;
+已修复 = 3 × 200 + 「已应用」,库里 category 确实写入。
+
+### 新增:卡片「三号条状样式」(主界面 + 合集抽屉)
+
+- 主界面与合集抽屉各自一套卡片配置(普通 / 紧凑 / 条状三选一),条状样式对应新字段
+  `cardStyle3` / `collectionCardStyle3` 与 `style3*` / `collectionStyle3*`。
+- 条状行每本占一行:左小封面 + 右信息(标题 / 类别标签 / 标签 chip / 页数 / 阅读),
+  尺寸完全由 CSS 变量推导:行高、封面上限、宽高间距、界面缩放全可调。
+- 展示信息独立开关(`style3Hide*` / `collectionStyle3Hide*`),不再被一号/二号的开关连带。
+- 设置页拆成「主界面卡片」与「合集抽屉」两块,各带实时汇总行与「恢复默认值」。
+  公式在 `utils.js`、`App.vue`、`BookCard.vue`、`Setting.vue` 四处必须逐字一致。
+
+### 修复:下载「全局闸门」+ IP 封禁归为「等待中」
+
+- 照 JHenTai 的单一 executor:进程级并发槽(`ehSlot`)+ 滑动窗口限速(`ehGlobalRequestGuard`),
+  多本同时下不再各开一份并发(以前 3 本 = 3×6=18 并发,直接触发 EH 封禁)
+- 站点级封禁 / 图片配额识别为 `siteBlocked`,任务停成「等待中」并按重试间隔自动再来,
+  而不是标 `failed` 让用户看到一堆 ✕(旧实现把 ban 当逐页失败,每页砸 8 次重试)
+
 ## v1.18.10(2026-11-23)
 
 ### 修复:在线预览「加载慢、加载完突然变破图」—— 预览格改回 background-image

@@ -413,6 +413,11 @@ const pageCachePut = (key, entry) => {
   }
 }
 
+// 删掉某个 URL(忽略一次性参数后)的缓存。照 JHenTai removeCacheByUrl:
+// 限速页/空页被缓存 1 小时 = 重试永远拿到同一份坏响应,必须先删。
+const pageCacheDelete = (url, cookie) => {
+  try { pageCache.delete(pageCacheKey(url, cookie)) } catch (e) { /* 忽略 */ }
+}
 const pageCacheClear = () => pageCache.clear()
 const pageCacheStats = () => ({ entries: pageCache.size, ttlMs: PAGE_CACHE_TTL_MS })
 
@@ -597,8 +602,103 @@ const fetchDetailInlineLinks = async (galleryUrl, { proxy, cookie } = {}) => {
   out.status = res && res.status
   return out
 }
+// ---------- 缩略图分页(照 JHenTai parseImageHrefTask)----------
+// JHenTai 的口径(gallery_download_task_runner.dart:110-165):
+//   ① 第 serialNo 页属于第 serialNo ~/ thumbnailsCountPerPage 个缩略图分页;
+//   ② 只请求那一个分页 ?p=N,用「Showing a - b of c images」拿到这页覆盖的页号区间;
+//   ③ c(tmp)同时给出**真实总页数**,不用再把每个 ?p= 都翻一遍去数;
+//   ④ 这一页解析失败只重试这一页,绝不用「没解析到新链接 = 到头了」来收工。
+//
+// 旧实现是「从 ?p=0 一路并发扫到没有新链接为止」,有两个致命口子(实测复现):
+//   · EH 限速/封禁时回的是 **HTTP 200 + 一句纯文本**(不是 4xx),stats.failed 仍是 0,
+//     于是第二遍补扫不触发 —— 尾页链接静默丢失,那几页永远「页链接缺失」;
+//   · 一个分页里哪怕只有 1 条被挤掉,也会让「整段没有新链接」提前 break,
+//     后面所有分页一条都不再请求 —— 这就是「最后几张卡住」。
+// 现在分页数由详情页给出,每页独立解析、独立重试,一个分页坏掉不会牵连其它分页。
+const detailRangeOf = (body) => {
+  const s = String(body || '')
+  // <p class="gpc">Showing 161 - 200 of 1,034 images</p>
+  const m = /Showing\s+([\d,]+)\s*-\s*([\d,]+)\s+of\s+([\d,]+)\s+images/i.exec(s)
+  if (!m) return null
+  const n = (v) => Number(String(v).replace(/,/g, ''))
+  return { from: n(m[1]), to: n(m[2]), count: n(m[3]) }
+}
+
+// 缩略图分页总数(照 JHenTai _detailPageDocument2ThumbnailsPageCount:分页条倒数第二个格子的数字)
+const detailPageCountOf = (body) => {
+  const s = String(body || '')
+  const tds = s.match(/<td[^>]*class="[^"]*ptds?[^"]*"[^>]*>[\s\S]*?<\/td>/gi)
+  if (tds && tds.length) {
+    for (let i = tds.length - 1; i >= Math.max(0, tds.length - 4); i--) {
+      const t = /<a[^>]*>([\s\S]*?)<\/a>/i.exec(tds[i])
+      if (!t) continue
+      const v = Number(String(t[1]).replace(/<[^>]+>/g, '').replace(/[^\d]/g, ''))
+      if (Number.isFinite(v) && v > 0) return v
+    }
+  }
+  // 兜底:从所有 ?p=N 链接里取最大 N + 1
+  let max = 0
+  const re = /[?&]p=(\d+)/g
+  let m
+  while ((m = re.exec(s))) max = Math.max(max, Number(m[1]) || 0)
+  return max + 1
+}
+
+// 详情页的页链接:优先按 #gdt 的缩略格取(照 JHenTai),取不到再退回全局正则。
+const detailThumbLinks = (body) => {
+  const s = String(body || '')
+  const out = []
+  const seen = new Set()
+  const push = (u) => {
+    const href = String(u || '').trim()
+    if (!href || seen.has(href)) return
+    seen.add(href)
+    out.push(href)
+  }
+  const gdt = /<div[^>]*id="gdt"[\s\S]*?(?=<div[^>]*id="(?!gdt)|<\/body)/i.exec(s)
+  const region = gdt ? gdt[0] : s
+  const re = /href="(https?:\/\/[^"]*\/s\/[0-9a-f]{10}\/\d+-\d+)"/gi
+  let m
+  while ((m = re.exec(region))) push(m[1])
+  if (!out.length) {
+    const re2 = /href="(https?:\/\/[^"]*\/s\/[0-9a-f]{10}\/\d+-\d+)"/gi
+    while ((m = re2.exec(s))) push(m[1])
+  }
+  return out
+}
+
+// 请求一个缩略图分页并解析(带 JHenTai 的 maxAttempts 语义:只重试这一页,页面缓存会先清掉)
+const fetchDetailPage = async (galleryUrl, p, { proxy, cookie, maxAttempts = 5, beforeRetry = null, gate = null } = {}) => {
+  const u = p === 0 ? galleryUrl : galleryUrl + (galleryUrl.includes('?') ? '&' : '?') + 'p=' + p
+  let lastErr = null
+  for (let attempt = 0; attempt < Math.max(1, maxAttempts); attempt++) {
+    try {
+      // 重试前清掉页面缓存:否则限速页/空页会被缓存 1 小时,重试等于白试
+      if (attempt > 0 && typeof beforeRetry === 'function') beforeRetry(u)
+      // 全局速率 + 并发槽(照 JHenTai:解析分页也排在同一个 executor 里)
+      if (gate && gate.acquire) await gate.acquire()
+      const res = gate && gate.slot
+        ? await gate.slot(() => request(u, { proxy, cookie, timeout: 20000 }))
+        : await request(u, { proxy, cookie, timeout: 20000 })
+      const body = res && res.body ? res.body : ''
+      if (!body) { lastErr = new Error('empty'); continue }
+      const links = detailThumbLinks(body)
+      if (!links.length) {
+        // 200 但没缩略格 = 限速页 / 封禁页 / 成人确认页:必须当失败重试,不能当「这是最后一页」
+        lastErr = new Error('noThumbs: ' + body.replace(/\s+/g, ' ').slice(0, 80))
+        continue
+      }
+      return { links, range: detailRangeOf(body), pageCount: detailPageCountOf(body), status: res.status }
+    } catch (e) {
+      lastErr = e
+    }
+    await new Promise(r => setTimeout(r, Math.min(4000, 400 * Math.pow(2, attempt))))
+  }
+  throw lastErr || new Error('detailPageFailed')
+}
+
 // 按「页范围」抓一段页链接:给后台增量补全用(每次只推进 [from, to) 这一段,不重头再扫)。
-// 与 listGalleryPageLinks 共用同一套正则与限速口径;并发宽同样夹在 1~12。
+// 与 listGalleryPageLinks 共用同一套「分页 → 页链接」口径;并发宽同样夹在 1~12。
 //
 // ⚠ 两个必须处理的现实:
 //   ① **同一段内会重复** —— EH 的 ?p=N 在 N 超过「这个画廊的缩略图分页数」时会回同一批内容
@@ -606,8 +706,7 @@ const fetchDetailInlineLinks = async (galleryUrl, { proxy, cookie } = {}) => {
 //   ② **和已拿到的会重复** —— 调用方已经内联了前 20 条,这里必须把它们过滤掉,
 //      否则补回来的「第 21 条」其实是第 1 条,前端按序号落位就会整本错位。
 // 因此这里既做段内去重,也接收 known(已拥有的页链接)做过滤;返回的一定是**全新**的链接。
-const fetchGalleryPageRange = async (galleryUrl, { from = 0, to = 0, proxy, cookie, batch = 8, known = null, stats } = {}) => {
-  const pageUrl = (p) => (p === 0 ? galleryUrl : galleryUrl + (galleryUrl.includes('?') ? '&' : '?') + 'p=' + p)
+const fetchGalleryPageRange = async (galleryUrl, { from = 0, to = 0, proxy, cookie, batch = 8, known = null, stats, maxAttempts = 5, gate = null } = {}) => {
   const found = []
   const seen = new Set(Array.isArray(known) ? known : [])
   const width = Math.max(1, Math.min(Number(batch) || 8, 12))
@@ -615,61 +714,44 @@ const fetchGalleryPageRange = async (galleryUrl, { from = 0, to = 0, proxy, cook
   for (let base = Number(from) || 0; base < hi; base += width) {
     const idx = []
     for (let i = 0; i < width && base + i < hi; i++) idx.push(base + i)
+    // 每个分页独立请求、独立重试(照 JHenTai parseImageHrefTask):
+    // 某一页被限速不会让整段「没有新链接」从而提前收工。
     const results = await Promise.all(idx.map(async (p) => {
       try {
-        const res = await request(pageUrl(p), { proxy, cookie, timeout: 20000 })
-        if (res.status && res.status >= 400 && stats) { stats.failed = (stats.failed || 0) + 1 }
-        const body = res.body || ''
-        return body.match(/href="(https:\/\/e-hentai\.org\/s\/[0-9a-f]{10}\/\d+-\d+)"/g) || []
+        const r = await fetchDetailPage(galleryUrl, p, {
+          proxy,
+          cookie,
+          maxAttempts,
+          gate,
+          beforeRetry: (u) => pageCacheDelete(u, cookie)
+        })
+        return r.links
       } catch (e) {
-        if (stats) stats.failed = (stats.failed || 0) + 1
+        if (stats) { stats.failed = (stats.failed || 0) + 1; stats.lastError = String((e && e.message) || e) }
         return []
       }
     }))
     let added = 0
     for (const arr of results) {
-      for (const raw of arr) {
-        const href = raw.slice(6, -1)
+      for (const href of arr) {
         if (seen.has(href)) continue
         seen.add(href)
         found.push(href)
         added++
       }
     }
-    // 这一段一条全新的都没有 = 已经翻到画廊末尾(或 ?p= 越界回同一批),提前收工
-    if (!added) break
+    // ⚠ 只有「所有分页都请求失败」才提前收工;只要有一个分页成功,就不能用 added===0 判定到头
+    //   (那正是旧版丢尾页的地方:一个分页里少一条,后面所有分页都不再请求)
+    if (!added && !results.some(a => a.length)) break
   }
   return found
 }
-const listGalleryPageLinks = async (galleryUrl, { proxy, cookie, limit = 40, maxPages = 8, batch = 8, onPage, stats, shouldStop = null } = {}) => {
+const listGalleryPageLinks = async (galleryUrl, { proxy, cookie, limit = 40, maxPages = 200, batch = 8, onPage, stats, shouldStop = null, maxAttempts = 5, gate = null } = {}) => {
   const links = []
   const seen = new Set()
-  const pageUrl = (p) => (p === 0 ? galleryUrl : galleryUrl + (galleryUrl.includes('?') ? '&' : '?') + 'p=' + p)
-  // stats 是可选的出参:把「请求失败了几次、最后一次为什么」带出去,
-  // 好让上层区分「画廊真的没有页」和「被 EH 限速/网络不通」(两者现象都是 links 为空)
-  const fetchPage = async (p) => {
-    try {
-      const res = await request(pageUrl(p), { proxy, cookie, timeout: 20000 })
-      const body = res.body || ''
-      if (res.status && res.status >= 400 && stats) { stats.failed = (stats.failed || 0) + 1; stats.lastError = 'http ' + res.status }
-      const found = body.match(/href="(https:\/\/[^"]*\/s\/[0-9a-f]{10}\/\d+-\d+)"/g) || []
-      if (stats) { stats.pages = (stats.pages || 0) + 1; stats.raw = (stats.raw || 0) + found.length }
-      // 200 但一个页链接都没有:把这一份响应长什么样记下来(是限速页?登录页?空页?)
-      if (!found.length && stats && !stats.lastEmpty) {
-        stats.lastEmpty = 'http ' + res.status + ', ' + body.length + ' bytes, itg=' + /\.itg/.test(body)
-          + ', title=' + (((/<title>([^<]*)<\/title>/i.exec(body) || [])[1] || '').trim().slice(0, 60))
-          + ', head=' + body.replace(/\s+/g, ' ').slice(0, 150)
-      }
-      return found
-    } catch (e) {
-      if (stats) { stats.failed = (stats.failed || 0) + 1; stats.lastError = String((e && e.message) || e) }
-      return []
-    }
-  }
-  const addAll = (found) => {
+  const addAll = (arr) => {
     let added = 0
-    for (const raw of found) {
-      const href = raw.slice(6, -1)
+    for (const href of arr || []) {
       if (seen.has(href)) continue
       seen.add(href)
       links.push(href)
@@ -678,35 +760,71 @@ const listGalleryPageLinks = async (galleryUrl, { proxy, cookie, limit = 40, max
     }
     return added
   }
-  // ⚠️ 以前是一页一页串行翻缩略图页:1000+ 页的画廊要 30 次请求、实测 115 秒才开工。
-  // 现在一次并发翻 batch 页(默认 8,上限 12 —— 再多容易招 EH 的限速页);
-  // 某一批一张新链接都没加就说明到头了。
-  const sweep = async () => {
-    let p = 0
-    // 参数可覆盖,但要夹在 1~12:调用方传 999 会把 EH 直接打限速
-    const width = Math.max(1, Math.min(Number(batch) || 8, 12))
-    let failedBefore = (stats && stats.failed) || 0
-    while (p < maxPages && links.length < limit) {
-      // 后台补全:切书/关阅读器时 shouldStop() 变 true,立刻退出,不再空转请求
-      if (typeof shouldStop === 'function' && shouldStop()) break
-      const idx = []
-      for (let i = 0; i < width && p + i < maxPages; i++) idx.push(p + i)
-      const results = await Promise.all(idx.map(fetchPage))
-      let added = 0
-      for (const found of results) added += addAll(found)
-      if (typeof onPage === 'function') onPage(links.length)
-      if (!added) break
-      p += idx.length
-    }
-    return failedBefore
+  // ① 先取第 0 个缩略图分页:它同时给出「这页覆盖的页号区间」和**真实总页数**
+  //    (照 JHenTai:pageCount 来自 .gpc 的 "of N images",不是靠数链接数出来的)
+  let first = null
+  try {
+    first = await fetchDetailPage(galleryUrl, 0, {
+      proxy,
+      cookie,
+      maxAttempts,
+      gate,
+      beforeRetry: (u) => pageCacheDelete(u, cookie)
+    })
+  } catch (e) {
+    if (stats) { stats.failed = (stats.failed || 0) + 1; stats.lastError = String((e && e.message) || e) }
   }
-  await sweep()
-  // 这一轮有请求失败(超时/限速):整批再扫一次,把丢掉的页补回来。
-  // 以前失败就静默少收十几条,续传时 total 比实际页数小,封面显示成 235/218 这种。
-  if (stats && (stats.failed || 0) > 0 && links.length < limit) {
-    const before = links.length
-    await sweep()
-    if (links.length > before && typeof onPage === 'function') onPage(links.length)
+  if (!first || !first.links.length) {
+    if (stats && !stats.lastEmpty) stats.lastEmpty = 'http 200, 首个缩略图分页无缩略格(限速/封禁/需登录?)'
+    return links
+  }
+  addAll(first.links)
+  if (stats) { stats.pages = 1; stats.raw = (stats.raw || 0) + first.links.length }
+  if (first.range && first.range.count) {
+    // EH 给的是 1 基页号:imageNoFrom = 1 - 1 = 0
+    if (stats) stats.imageCount = first.range.count
+  }
+  // ② 分页总数:优先用第一个分页里解析到的分页条,取不到就按「总页数 / 每页条数」估算
+  const perPage = Math.max(1, first.links.length)
+  let pages = Number(first.pageCount) || 0
+  const known = Number((first.range && first.range.count) || 0)
+  if (!pages && known) pages = Math.ceil(known / perPage)
+  if (!pages) pages = 1
+  pages = Math.min(pages, Math.max(1, Number(maxPages) || 200))
+
+  // ③ 剩余分页:并发翻(上限 12 —— 再多容易招 EH 限速),每个分页独立重试。
+  //    ⚠ 判断「到头了」只看「这一页请求是否成功」,绝不看「有没有新链接」:
+  //      限速页是 200 + 纯文本,按新链接判断会把尾页整段丢掉。
+  const width = Math.max(1, Math.min(Number(batch) || 8, 12))
+  for (let p = 1; p < pages; p += width) {
+    if (typeof shouldStop === 'function' && shouldStop()) break
+    if (links.length >= limit) break
+    const idx = []
+    for (let i = 0; i < width && p + i < pages; i++) idx.push(p + i)
+    const results = await Promise.all(idx.map(async (page) => {
+      try {
+        return await fetchDetailPage(galleryUrl, page, {
+          proxy,
+          cookie,
+          maxAttempts,
+          gate,
+          beforeRetry: (u) => pageCacheDelete(u, cookie)
+        })
+      } catch (e) {
+        if (stats) { stats.failed = (stats.failed || 0) + 1; stats.lastError = String((e && e.message) || e) }
+        return null
+      }
+    }))
+    let okPages = 0
+    for (const r of results) {
+      if (!r) continue
+      okPages++
+      if (stats) { stats.pages = (stats.pages || 0) + 1; stats.raw = (stats.raw || 0) + r.links.length }
+      addAll(r.links)
+    }
+    if (typeof onPage === 'function') onPage(links.length)
+    // 整批都失败 = 网络/限速彻底不通,再翻也没意义
+    if (!okPages) break
   }
   return links
 }
@@ -872,6 +990,8 @@ module.exports = {
   // 页面 HTML 缓存(照 JHenTai 的 eh_cache_manager,TTL 1h)
   pageCacheClear,
   pageCacheStats,
+  // 单条缓存删除(照 JHenTai removeCacheByUrl):换节点重试前必须先清,否则重试拿到同一份坏响应
+  pageCacheDelete,
   // 代理 agent 缓存(index.js 的 get-ex-webpage 要复用它,别再每次 new HttpsProxyAgent)
   agentFor,
   // 代理地址补协议(host:port → http://host:port)
@@ -884,6 +1004,8 @@ module.exports = {
   fetchDetailInlineLinks,
   fetchGalleryPageRange,
   listGalleryPageLinks,
+  // 照 JHenTai parseImageHrefTask 的分页口径(整页解析 + 只重试这一页 + 用 .gpc 拿真实总页数)
+  fetchDetailPage, detailRangeOf, detailPageCountOf, detailThumbLinks,
   resolvePageImage,
   resolvePageImageInfo,
   galleryPageImages,

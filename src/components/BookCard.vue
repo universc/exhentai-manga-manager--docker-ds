@@ -1,5 +1,9 @@
 <template>
-  <div class="book-card" :class="{'fill-cover': fillCover, 'style-3': isStyle3}">
+  <div class="book-card"
+    :class="{'fill-cover': fillCover, 'style-3': isStyle3, 'compact': isStyle3 && style3Compact, 'is-selected': isStyle3 && style3Selected}"
+    :role="isStyle3 ? 'listitem' : undefined"
+    :aria-label="isStyle3 ? style3AriaLabel : undefined"
+  >
     <!-- 种子:这个画廊确实有种子时才出现。挂在**卡片框**的右下角(不在封面里),
          图标是用户给的藤蔓图,压在框角上像是藤蔓缠在框上;不显示数量 -->
     <button
@@ -20,17 +24,23 @@
         <div class="cover-loading" v-if="coverLoading"><el-icon class="is-loading" :size="18"><Loading /></el-icon></div>
       </div>
       <div class="strip-body">
-        <p class="strip-title" v-if="!viewSetting.hideTitle" :title="getDisplayTitle(book)"
-          @click="$emit('titleClick')" @contextmenu="onTitleContextMenu($event)"
-        >{{ getDisplayTitle(book) }}</p>
-        <div class="strip-tags">
-          <el-tag v-if="!viewSetting.hideNonTag" class="strip-tag is-cat" size="small" effect="plain"
+        <!-- 标题行:+N 常占位(只改透明度),hover / 键盘焦点才淡入,标题省略号不跳 -->
+        <div class="strip-title-line">
+          <p class="strip-title" v-if="!viewSetting.hideTitle" :title="getDisplayTitle(book)"
+            @click="$emit('titleClick')" @contextmenu="onTitleContextMenu($event)"
+          >{{ getDisplayTitle(book) }}</p>
+          <span v-if="!style3Compact && !viewSetting.hideNonTag" class="strip-more" :class="{ 'is-empty': !style3TagOverflow }"
+            :aria-hidden="style3TagOverflow ? undefined : 'true'"
+          >{{ style3TagOverflow ? '+' + style3TagOverflow : '' }}</span>
+        </div>
+        <!-- 标准档:分类 + 1 个收藏标签;紧凑档整行不渲染(档位只看行高设置值,与 zoom 无关) -->
+        <div class="strip-tags" v-if="!style3Compact && !viewSetting.hideNonTag">
+          <el-tag v-if="book.category || book.status" class="strip-tag is-cat" size="small" effect="plain"
             :title="book.status"
             @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
           >{{ book.site === 'wnacg' ? (wnacgCategoryText(book) || book.status) : (galleryCategoryName(book.category, $t) || book.status) }}</el-tag>
-          <el-tag v-if="!viewSetting.hideNonTag && book.site === 'wnacg' && book.isSeries" class="strip-tag" size="small" type="warning" effect="plain">{{ $t('m.seriesBadge') }}</el-tag>
           <el-tag
-            v-for="tag in filterCollectTag(book.tags).slice(0, 3)" :key="tag.id"
+            v-for="tag in filterCollectTag(book.tags).slice(0, style3TagLimit)" :key="tag.id"
             class="book-collect-tag strip-tag" size="small" effect="dark" :color="tag.color"
             @click="onCollectTagClick(tag)"
             @mousedown="startTagPress(tag)" @mouseup="cancelTagPress" @mouseleave="cancelTagPress"
@@ -39,17 +49,22 @@
           >{{tag.letter}}:{{ tagDisplayName(setting, resolvedTranslation, resolveCatKey(tag.cat), tag.tag) }}</el-tag>
         </div>
         <div class="strip-meta">
-          <span v-if="!viewSetting.hidePageCount" class="strip-meta-item" @click="$emit('pageCountClick')">{{ book.pageCount }}P</span>
-          <span v-if="book.historyTime || !viewSetting.hideReadCount" class="strip-meta-item" @click="onReadCountClick">
-            {{ book.historyTime ? historyTimeText : (book.online ? languageBadgeText(book) : book.readCount) }}
-          </span>
-          <el-rate v-if="!viewSetting.hideRating && book.site !== 'wnacg'" v-model="bookRating" size="small" allow-half :disabled="viewerRole || !!book.online" @change="onRateChange" />
-          <el-button-group class="strip-read-group" v-if="!viewSetting.hideReadButton">
-            <el-button type="success" size="small" plain @click.stop="$emit('yueClick')">{{$t('m.re')}}</el-button>
-            <el-button type="success" size="small" plain @click.stop="$emit('duClick')">{{$t('m.ad')}}</el-button>
-          </el-button-group>
+          <span v-if="!viewSetting.hidePageCount" class="strip-meta-item is-pagecount" @click="$emit('pageCountClick')">{{ book.pageCount }}P</span>
+          <template v-if="!style3Compact">
+            <span class="strip-meta-dot" aria-hidden="true">·</span>
+            <span v-if="book.historyTime || !viewSetting.hideReadCount" class="strip-meta-item is-time" :title="style3TimeTitle" @click="onReadCountClick">
+              {{ book.historyTime ? historyTimeText : (book.online ? languageBadgeText(book) : book.readCount) }}
+            </span>
+            <span class="strip-meta-dot" aria-hidden="true">·</span>
+            <el-rate v-if="!viewSetting.hideRating && book.site !== 'wnacg'" v-model="bookRating" size="small" allow-half show-text :disabled="viewerRole || !!book.online" @change="onRateChange" />
+          </template>
         </div>
       </div>
+      <!-- 固定操作列:阅/读,与封面、正文同级,宽度固定不随内容伸缩 -->
+      <el-button-group v-if="!viewSetting.hideReadButton" class="strip-actions">
+        <el-button type="success" size="small" plain @click.stop="$emit('yueClick')">{{$t('m.re')}}</el-button>
+        <el-button type="success" size="small" plain @click.stop="$emit('duClick')">{{$t('m.ad')}}</el-button>
+      </el-button-group>
     </template>
     <!-- ================= 经典卡片布局(默认;原版布局原样保留) ================= -->
     <template v-else-if="!fillCover">
@@ -376,28 +391,45 @@ const languageBadgeText = (book) => {
   return code
 }
 
+// 卡片实际生效的开关。新旧字段都可能存在(升级过程),缺失时回落到上一代同名字段。
+const pickHide = (v, fallback) => (v === undefined || v === null ? !!fallback : !!v)
+
 // 卡片实际生效的开关:
-//   · 主书架(含主界面的合集卡)→ 普通「卡片样式」
-//   · 合集界面(底部抽屉)里的卡 → 「卡片样式 → 合集界面卡片」那组开关覆盖三项
-//     (页数角标 / 阅读数角标 / 填充封面)。「隐藏合集」这种只对主界面合集卡有意义,
-//     不在这一组里。
+//   · 主书架 → 主界面卡片样式;三号有专属 style3Hide* 字段
+//   · 合集界面(底部抽屉)→ 完全独立的一套三选一 + 同款显隐字段
+//     ★ collectionCardStyleEnabled 只保留字段,不再是渲染守卫
 const viewSetting = computed(() => {
   const s = setting.value
-  // 合集界面卡片的总开关没开 → 抽屉卡片完全跟随主界面(与主界面同一套开关/尺寸)
-  if (!props.collectionView || !s.collectionCardStyleEnabled) return s
+  // ---------- 主界面:三号专属显隐;一/二号沿用原 hide* ----------
+  if (!props.collectionView) {
+    if (!s.cardStyle3) return s
+    return {
+      ...s,
+      hideTitle: pickHide(s.style3HideTitle, s.hideTitle),
+      hideNonTag: pickHide(s.style3HideNonTag, s.hideNonTag),
+      hideRating: pickHide(s.style3HideRating, s.hideRating),
+      hidePageCount: pickHide(s.style3HidePageCount, s.hidePageCount),
+      hideReadCount: pickHide(s.style3HideReadCount, s.hideReadCount),
+      hideReadButton: pickHide(s.style3HideReadButton, s.hideReadButton)
+    }
+  }
+  // ---------- 合集抽屉:合集自己的三选一 ----------
+  const mode = s.collectionCardStyle3 ? 3 : (s.collectionCardStyle2 ? 2 : 1)
+  const hidden = (v3, v2, v1) => (mode === 3 ? pickHide(v3, v1) : (mode === 2 ? pickHide(v2, v1) : !!v1))
   return {
     ...s,
-    // 合集界面卡片:整套开关独立(设置 → 高级 → 卡片样式 → 合集界面卡片)
+    // 决定根节点走 style-3 / fill-cover / 经典哪条分支
+    cardStyle3: mode === 3,
+    cardStyle2: mode === 2,
+    // 三号有自己的条状布局,永不走填充封面
+    fillCover: mode === 3 ? false : (mode === 2 ? pickHide(s.collectionStyle2FillCover, s.collectionFillCover) : !!s.collectionFillCover),
     hideBookmarkButton: !!s.collectionHideBookmarkButton,
-    hidePageCount: !!s.collectionHideCount,
-    hideReadCount: !!s.collectionHideReadCount,
-    hideReadButton: !!s.collectionHideReadButton,
-    hideNonTag: !!s.collectionHideNonTag,
-    hideTitle: !!s.collectionHideTitle,
-    hideRating: !!s.collectionHideRating,
-    fillCover: !!s.collectionFillCover,
-    // 二号样式(密集封面网格):同样只作用在抽屉里
-    cardStyle2: !!s.collectionCardStyle2
+    hideTitle: hidden(s.collectionStyle3HideTitle, s.collectionStyle2HideTitle, s.collectionHideTitle),
+    hideNonTag: hidden(s.collectionStyle3HideNonTag, undefined, s.collectionHideNonTag),
+    hideRating: hidden(s.collectionStyle3HideRating, undefined, s.collectionHideRating),
+    hidePageCount: hidden(s.collectionStyle3HidePageCount, undefined, s.collectionHideCount),
+    hideReadCount: hidden(s.collectionStyle3HideReadCount, undefined, s.collectionHideReadCount),
+    hideReadButton: hidden(s.collectionStyle3HideReadButton, undefined, s.collectionHideReadButton)
   }
 })
 
@@ -407,6 +439,43 @@ const isStyle3 = computed(() => !!viewSetting.value.cardStyle3)
 // 填充封面开关(设置 → 显示选项「填充封面」):开 = 封面铺满卡片、文字/按钮透明浮层
 // ★ 三号样式下不参与判断(它有自己的布局),避免两套模板同时命中。
 const fillCover = computed(() => !isStyle3.value && !!viewSetting.value.fillCover)
+
+// ---------- 三号双档:判据只看「行高设置值」,与缩放无关 ----------
+// 拖缩放滑杆只改大小、不改信息量 —— 行数不会突然多一行或少一行。
+const firstPositive = (v, fallback) => (Number(v) > 0 ? Number(v) : fallback)
+const style3RowSetting = computed(() => {
+  const s = viewSetting.value
+  // 合集抽屉里的三号用合集自己的行高设置;主界面用主界面的
+  if (props.collectionView && s.collectionCardStyle3) return firstPositive(s.collectionStyle3RowHeight, 96)
+  return firstPositive(s.style3RowHeight, 96)
+})
+const style3Compact = computed(() => style3RowSetting.value < 88)
+// 设计稿:标准档 = 分类 + 1 个收藏标签,其余收成 +N;紧凑档整行标签不渲染。
+// ★ 若要把标准档改成 3 个,只改这一个常量,不要散落到模板里。
+const STYLE3_STANDARD_TAG_LIMIT = 1
+const style3TagLimit = computed(() => (style3Compact.value || viewSetting.value.hideNonTag) ? 0 : STYLE3_STANDARD_TAG_LIMIT)
+const style3TagOverflow = computed(() => {
+  if (!style3TagLimit.value) return 0
+  return Math.max(0, filterCollectTag(props.book && props.book.tags).length - style3TagLimit.value)
+})
+// 完整时间只进 title,可见文案走 historyTimeText 的短格式(3天前 / 12-31)
+const style3TimeTitle = computed(() => {
+  const ts = Number(props.book && props.book.historyTime) || 0
+  return ts ? new Date(ts * 1000).toLocaleString() : ''
+})
+// role=listitem 的 aria-label 必须与可见信息一致:紧凑档不读标签/时间/评分
+const style3AriaLabel = computed(() => {
+  const b = props.book || {}
+  const s = viewSetting.value
+  const parts = [getDisplayTitle(b)]
+  if (!s.hidePageCount && b.pageCount != null) parts.push(b.pageCount + 'P')
+  if (!style3Compact.value) {
+    if (b.historyTime) parts.push(historyTimeText.value)
+    else if (!s.hideReadCount) parts.push(String(b.readCount == null ? '' : b.readCount))
+    if (!s.hideRating && b.site !== 'wnacg' && b.rating != null) parts.push('评分 ' + b.rating)
+  }
+  return parts.filter(Boolean).join('，')
+})
 
 // 填充布局:顶部/底部浮层是否有内容(各元素显隐由独立开关控制,互相不联动)
 const fillTopShown = computed(() => {
@@ -468,10 +537,13 @@ const emit = defineEmits([
 const props = defineProps({
   book: Object,
   // 这张卡是不是「合集界面」(打开合集后的底部抽屉)里的卡。
-  // 是 → 用设置里「卡片样式 → 合集界面卡片」那组开关覆盖普通卡片的三项显隐;
-  // 否 → 完全跟随普通「卡片样式」。
-  collectionView: { type: Boolean, default: false }
+  // 是 → 用「合集界面卡片」那套独立配置;否 → 用主界面卡片配置。
+  collectionView: { type: Boolean, default: false },
+  // 三号三态里的「选中」:可由外部传入,也识别 book 上的 selected / isSelected 标记。
+  // 只影响视觉(主色浅底 + 3px 左条),不位移、不改布局。
+  selected: { type: Boolean, default: false }
 })
+const style3Selected = computed(() => !!props.selected || !!(props.book && (props.book.selected || props.book.isSelected)))
 
 // 在线画廊不是本地书:本地右键菜单(移动/删除/超分…)、评分写回都不能碰
 const onTitleContextMenu = (e) => { onMangaTitleContextMenu(e, props.book) }
@@ -1197,10 +1269,13 @@ onUnmounted(() => {
 // 与一/二号互斥(由设置里的三选一保证),这里只负责容器层面的列数。
 .card-style-3
   display: grid !important
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr))
+  // min(320px,100%):窄屏时列下限不超过容器,避免横向溢出
+  grid-template-columns: repeat(auto-fill, minmax(unquote('min(320px, 100%)'), 1fr))
   align-content: start
-  gap: 8px
-  padding: 4px
+  // 行/列间距分开:--style3-gap-v / --style3-gap-h 已由唯一写入方按 zoom 算好
+  gap: var(--style3-gap-v, 8px) var(--style3-gap-h, 8px)
+  // 容器留白取纵向间距的一半,与 grid gap 不叠加成双倍
+  padding: calc(var(--style3-gap-v, 8px) / 2)
   // 三号样式下卡片自身已改成 flex 横排(见 BookCard 的 .book-card.style-3)
   .book-card
     width: 100%
@@ -1266,18 +1341,26 @@ onUnmounted(() => {
 
 
 /* ================= 三号样式:条状列表 =================
-   参考「下载记录」的每一行:左小封面 + 右信息。
-   卡片整体变成横向条状,高度由 --style3-row-h 控制(设置里可调)。
-   主界面的网格用 auto-fill 排布,一行能放多张就放多张。 */
+   ★ 13 / 11 / 18 是三号专用设计值(标题 13、元信息 11、chip 高 18);
+     一号/二号的标题基准是 12 —— 禁止后续「一致性清理」把这些数字改回 12。
+   ★ 字号只乘 --style3-zoom,不碰 --emm-card-zoom(一号/二号/合集一号靠它)。
+   ★ height 而不是 min-height,且 box-sizing:border-box —— 行高严格等于设置值。
+   双档由 .compact 控制:判据只看行高设置值(<88),与 zoom 无关。 */
 .book-card.style-3 {
   display: flex !important;
   flex-direction: row !important;
-  align-items: stretch;
-  gap: 8px;
-  padding: 6px;
-  min-height: calc(var(--style3-row-h, 96px));
+  align-items: center;
+  box-sizing: border-box;
+  height: var(--style3-row-h, 96px);
+  min-height: 0;
+  gap: calc(8px * var(--style3-zoom, 1));
+  padding: calc(6px * var(--style3-zoom, 1));
+  border: 0;
+  border-bottom: 1px solid var(--el-border-color-lighter, #ebeef5);
   border-radius: 6px;
+  background: transparent;
   overflow: hidden;
+  transition: background .15s, box-shadow .15s;
   /* 条状样式不需要原来的封面框/标题浮层 */
   .book-cover-frame,
   .book-title,
@@ -1287,21 +1370,52 @@ onUnmounted(() => {
   .book-task-mask,
   .book-card-torrent { display: none !important; }
 
+  /* 三态:hover / 键盘焦点 / 选中 —— 只改底色与描边,绝不改 margin/transform */
+  &:hover,
+  &:focus-visible,
+  &:focus-within {
+    // 覆盖 base .book-card:hover 的 translateY(-3px) 与大阴影 —— 三态全程不位移
+    transform: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
+    background: var(--el-fill-color-light, #f5f7fa);
+    .strip-title { color: var(--el-color-primary); }
+    .strip-more { opacity: 1; }
+  }
+  &:focus-visible {
+    outline: 2px solid var(--el-color-primary);
+    outline-offset: -2px;
+  }
+  &.is-selected {
+    background: var(--el-color-primary-light-9, #ecf5ff);
+    .strip-title { color: var(--el-color-primary); }
+  }
+  &.is-selected::before {
+    content: "";
+    position: absolute; left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--el-color-primary);
+    border-radius: 3px 0 0 3px;
+  }
+
   .strip-cover {
     position: relative;
     flex: 0 0 auto;
-    width: calc(var(--style3-cover-w, 64px));
-    height: 100%;
-    min-height: calc(var(--style3-row-h, 96px) - 12px);
-    border-radius: 4px;
+    align-self: center;
+    // 宽/高都由变量给定且保持 3:4 —— 不写 min-height,否则内容盒比行盒多 6px
+    width: var(--style3-cover-w, 63px);
+    height: var(--style3-cover-h, 84px);
+    border-radius: 5px;
     overflow: hidden;
     background: rgba(128, 128, 128, .12);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .14);
     cursor: pointer;
     .strip-cover-img {
       width: 100%; height: 100%;
       object-fit: cover;
       display: block;
+      transition: transform .3s;
     }
+    &:hover .strip-cover-img { transform: scale(1.03); }
     .strip-cover-empty { background: rgba(128, 128, 128, .18); }
     .cover-loading {
       position: absolute; inset: 0;
@@ -1316,37 +1430,118 @@ onUnmounted(() => {
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 4px;
+    gap: calc(4px * var(--style3-zoom, 1));
+    padding: 0 calc(2px * var(--style3-zoom, 1));
+  }
+  .strip-title-line {
+    display: flex;
+    align-items: center;
+    gap: calc(6px * var(--style3-zoom, 1));
+    min-width: 0;
   }
   .strip-title {
     margin: 0;
-    font-size: calc(12px * var(--emm-card-zoom, 1));
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: calc(13px * var(--style3-zoom, 1));
     line-height: 1.35;
     font-weight: 600;
+    letter-spacing: .1px;
     cursor: pointer;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    &:hover { color: var(--el-color-primary); }
+    transition: color .15s;
+  }
+  .strip-more {
+    flex: 0 0 auto;
+    // 常占位:有没有 +N 都占同一宽度,标题省略号不因 hover 而跳
+    min-width: calc(26px * var(--style3-zoom, 1));
+    height: calc(18px * var(--style3-zoom, 1));
+    line-height: calc(16px * var(--style3-zoom, 1));
+    padding: 0 calc(5px * var(--style3-zoom, 1));
+    border-radius: calc(9px * var(--style3-zoom, 1));
+    background: var(--el-color-primary-light-9, #ecf5ff);
+    border: 1px solid var(--el-color-primary-light-8, #d9ecff);
+    color: var(--el-color-primary);
+    font-size: calc(11px * var(--style3-zoom, 1));
+    text-align: center;
+    opacity: 0;
+    transition: opacity .12s;
+    &.is-empty { opacity: 0 !important; }
   }
   .strip-tags {
     display: flex;
     flex-wrap: nowrap;
-    gap: 3px;
+    align-items: center;
+    gap: calc(4px * var(--style3-zoom, 1));
+    height: calc(18px * var(--style3-zoom, 1));
     overflow: hidden;
-    .strip-tag { flex: 0 0 auto; font-size: 11px; height: 18px; line-height: 18px; }
+    .strip-tag {
+      flex: 0 0 auto;
+      max-width: calc(96px * var(--style3-zoom, 1));
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: calc(11px * var(--style3-zoom, 1));
+      height: calc(18px * var(--style3-zoom, 1));
+      line-height: calc(18px * var(--style3-zoom, 1));
+    }
   }
+  // 紧凑档:整行标签不渲染(模板已 v-if,这里兜底)
+  &.compact .strip-tags { display: none; }
+
   .strip-meta {
     display: flex;
     align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    font-size: 11px;
-    opacity: .8;
+    gap: calc(6px * var(--style3-zoom, 1));
+    flex-wrap: nowrap;
+    height: calc(16px * var(--style3-zoom, 1));
+    font-size: calc(11px * var(--style3-zoom, 1));
+    line-height: calc(16px * var(--style3-zoom, 1));
+    color: var(--el-text-color-secondary);
+    white-space: nowrap;
+    overflow: hidden;
     .strip-meta-item { cursor: pointer; flex: 0 0 auto; }
-    .strip-read-group { margin-left: auto; }
+    // 页数永不截;时间短格式,完整时间进 title
+    .is-pagecount { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+    .is-time { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+    .strip-meta-dot { flex: 0 0 auto; width: 3px; height: 3px; border-radius: 50%; background: var(--el-border-color); }
+    .el-rate { flex: 0 0 auto; height: calc(16px * var(--style3-zoom, 1)); }
+    .el-rate__text { color: var(--el-text-color-secondary); font-size: calc(11px * var(--style3-zoom, 1)); }
+  }
+
+  // 固定操作列:阅/读。68px 是设计固定值,不随 zoom 伸缩(热区稳定)
+  .strip-actions {
+    flex: 0 0 68px;
+    width: 68px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    justify-content: center;
+    align-self: stretch;
+    margin: 0;
+    padding: 0 0 0 8px;
+    border-left: 1px solid var(--el-border-color-lighter, #ebeef5);
+    .el-button {
+      height: 28px;
+      margin: 0;
+      padding: 0;
+      font-size: 11.5px;
+    }
   }
 }
+
+// 键盘焦点实际落在 .book-card-frame 的 tabindex 上,不是 .book-card 自身 ——
+// 把焦点环与 +N 淡入转发到内层条状卡,否则 focus-visible 永远不触发。
+.card-style-3 .book-card-frame:focus-visible
+  outline: none
+  .book-card
+    outline: 2px solid var(--el-color-primary)
+    outline-offset: -2px
+    background: var(--el-fill-color-light, #f5f7fa)
+    .strip-more
+      opacity: 1
 
 /* 绅士漫画的「合集」角标:紧跟在分类标签右边,用暖色区分 */
 .book-series-tag {

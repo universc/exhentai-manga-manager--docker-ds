@@ -4,9 +4,48 @@
        填充封面布局)。唯一的合集专属元素是右上角的「合集」标签 —— 它用绝对定位盖住标题右上角,
        这是**预期**的遮挡行为;可在 设置 → 高级 → 卡片样式 →「隐藏合集」里关掉。
        底部状态标签保持原样(显示「合集」),与普通卡的 non-tag/tagged 状态标签对齐。 -->
-  <div class="book-card book-card-collection" :class="{ 'fill-cover': cardFillCover }">
+  <div class="book-card book-card-collection"
+    :class="{ 'fill-cover': cardFillCover, 'style-3': isStyle3, 'compact': isStyle3 && style3Compact }"
+    :role="isStyle3 ? 'listitem' : undefined"
+    :aria-label="isStyle3 ? style3AriaLabel : undefined"
+  >
+    <!-- ================= 三号条状:与普通行同高同宽,混排不破格 =================
+         封面叠「N 本」角标 + 暖色左条;结构复用 BookCard 的 strip-* 类名,
+         条状样式本身由 BookCard.vue 的全局 .book-card.style-3 提供。 -->
+    <template v-if="isStyle3">
+      <div class="strip-cover" :title="book.title" @click="$emit('openCollection')" @contextmenu="onCoverContextMenu($event)">
+        <img v-if="coverSrc" class="strip-cover-img" :src="coverSrc" alt="" loading="lazy" decoding="async" @load="onCoverLoad" @error="onCoverError" />
+        <div v-else class="strip-cover-img strip-cover-empty"></div>
+        <div class="cover-loading" v-if="coverLoading"><el-icon class="is-loading" :size="18"><Loading /></el-icon></div>
+        <span class="strip-coll-count">{{ book.chapterCount }} 本</span>
+      </div>
+      <div class="strip-body">
+        <div class="strip-title-line">
+          <p class="strip-title" v-if="!viewSetting.hideTitle" :title="book.title"
+            @click.stop="$emit('titleClick')" @contextmenu="onTitleContextMenu($event)"
+          >{{ book.title }}</p>
+        </div>
+        <div class="strip-tags" v-if="!style3Compact && !viewSetting.hideNonTag">
+          <el-tag class="strip-tag is-cat" size="small" effect="plain" type="warning"
+            :title="$t('m.collection')" @click.stop="$emit('openCollectionInfo', book)"
+          >{{ $t('m.collection') }}</el-tag>
+        </div>
+        <div class="strip-meta">
+          <span v-if="!viewSetting.hidePageCount" class="strip-meta-item is-pagecount" @click.stop="$emit('pagecountClick')">{{ book.chapterCount }}C</span>
+          <template v-if="!style3Compact">
+            <span class="strip-meta-dot" aria-hidden="true">·</span>
+            <span v-if="!viewSetting.hideReadCount" class="strip-meta-item is-time">{{ book.readCount }}</span>
+          </template>
+        </div>
+      </div>
+      <el-button-group v-if="!viewSetting.hideReadButton" class="strip-actions">
+        <el-button type="success" size="small" plain @click.stop="$emit('yueClick', book)">{{$t('m.re')}}</el-button>
+        <el-button type="success" size="small" plain @click.stop="$emit('duClick', book)">{{$t('m.ad')}}</el-button>
+      </el-button-group>
+    </template>
+
     <!-- ================= 经典卡片布局(默认) ================= -->
-    <template v-if="!cardFillCover">
+    <template v-else-if="!cardFillCover">
       <p class="book-title" v-if="!setting.hideTitle"
         @click.stop="$emit('titleClick')"
         @contextmenu="onTitleContextMenu($event)"
@@ -107,7 +146,8 @@
     </template>
 
     <!-- 「合集」标签:可在 设置 → 高级 → 卡片样式 里关掉(隐藏合集) -->
-    <el-tag v-if="!setting.hideCollectionTag" effect="dark" type="warning" class="book-collection-tag">{{$t('m.collection')}}</el-tag>
+    <!-- 三号下改用封面上的「N 本」角标,右上角合集标签会让条状行变拥挤 -->
+    <el-tag v-if="!isStyle3 && !setting.hideCollectionTag" effect="dark" type="warning" class="book-collection-tag">{{$t('m.collection')}}</el-tag>
   </div>
 </template>
 
@@ -179,9 +219,36 @@ const memberBooks = computed(() => {
 
 // 第一个成员(按成员顺序):所有成员都没封面时,由它负责去生成
 const firstMember = computed(() => memberBooks.value[0] || null)
-// 主界面的合集卡跟随普通「卡片样式」的填充封面开关 ——
-// 「合集界面卡片」那组开关现在只管打开合集后底部抽屉里的那些卡(用户要求)。
-const cardFillCover = computed(() => !!setting.value.fillCover)
+// 主界面的合集卡走主界面「卡片样式」:选了三号就跟着变条状,否则跟随一/二号。
+// 「合集界面卡片」那组开关只管打开合集后底部抽屉里的那些卡。
+const isStyle3 = computed(() => !!setting.value.cardStyle3)
+// 双档判据与 BookCard 完全一致:只看行高设置值(<88 紧凑),与 zoom 无关。
+const style3Compact = computed(() => (Number(setting.value.style3RowHeight) > 0 ? Number(setting.value.style3RowHeight) : 96) < 88)
+// 三号有自己的条状布局,永不与填充封面同时命中
+const cardFillCover = computed(() => !isStyle3.value && !!setting.value.fillCover)
+
+// 条状行的显隐读主界面三号字段,缺失时回落主界面一号 hide*(升级兼容)
+const pickHide = (v, fallback) => (v === undefined || v === null ? !!fallback : !!v)
+const viewSetting = computed(() => {
+  const s = setting.value
+  if (!isStyle3.value) return s
+  return {
+    ...s,
+    hideTitle: pickHide(s.style3HideTitle, s.hideTitle),
+    hideNonTag: pickHide(s.style3HideNonTag, s.hideNonTag),
+    hidePageCount: pickHide(s.style3HidePageCount, s.hidePageCount),
+    hideReadCount: pickHide(s.style3HideReadCount, s.hideReadCount),
+    hideReadButton: pickHide(s.style3HideReadButton, s.hideReadButton)
+  }
+})
+const style3AriaLabel = computed(() => {
+  const b = props.book || {}
+  const s = viewSetting.value
+  const parts = [b.title || '']
+  if (!s.hidePageCount && b.chapterCount != null) parts.push(b.chapterCount + ' 本')
+  if (!style3Compact.value && !s.hideReadCount && b.readCount != null) parts.push(String(b.readCount))
+  return parts.filter(Boolean).join('，')
+})
 
 // 第一个**有封面**的成员:合集封面取它的实时 coverPath。
 // 以前先读聚合那一刻的 coverPath 快照 —— 第一本当时没封面、后来生成了也不回填,
@@ -291,10 +358,30 @@ const onTitleContextMenu = (e) => openMenu(e)
   z-index: 3
   white-space: nowrap
 
-// 合集卡的尺寸 / 边框 / 圆角全部继承 .book-card(BookCard.vue 里的全局样式),
-// 这里**不写任何尺寸覆盖**,保证与主界面普通卡片完全一致。
+// 合集卡的竖卡尺寸 / 边框 / 圆角全部继承 .book-card(BookCard.vue 里的全局样式),
+// 这里**不写竖卡尺寸覆盖**,保证与主界面普通卡片完全一致。
 .book-card-collection
   .book-title
     // 标签盖住标题头部是预期行为,这里只保证标题不溢出卡片右边
     overflow-x: hidden
+
+// 三号条状:布局/字号/三态全部复用 BookCard.vue 的全局 .book-card.style-3,
+// 这里只补合集专属的「N 本」封面角标 + 暖色左条(与普通行的主色选中条区分)。
+.book-card-collection.style-3
+  &::before
+    background: var(--el-color-warning, #e6a23c) !important
+  .strip-coll-count
+    position: absolute
+    left: 0
+    top: 0
+    z-index: 2
+    background: rgba(0, 0, 0, .55)
+    color: #fff
+    font-size: 10px
+    line-height: 15px
+    padding: 0 4px
+    border-radius: 4px 0 4px 0
+    white-space: nowrap
+  .strip-tag.is-cat
+    --el-tag-border-color: var(--el-color-warning-light-5)
 </style>

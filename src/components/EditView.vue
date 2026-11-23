@@ -1453,47 +1453,58 @@ const removeTagToGroup = async () => {
   }
 }
 
-const applyCategory = async () => {
+// 批量改「类别 / 元数据状态」的共同实现。
+// ★ 以前每个 id 都是「先改内存里的书、再 await saveBook」,一旦某本写库失败:
+//   ① 抛出的异常被最外层 catch 接住,只弹一句「应用出现错误」——真实原因
+//      (notNull Violation / 库已不存在 …)全被吞掉,既不知道是哪本、也不知道为什么;
+//   ② 前面已经写成功的书留在新值、后面没轮到的书还是旧值,
+//      而内存里那本被改成新值的书已经被改脏(界面显示已生效,库里却没有)。
+//   现在:逐本收集失败 → 单独回滚那一本的字段 → 汇总成一条能看懂的提示。
+const applyFieldToSelection = async (field, value, failKey) => {
   if (!ensureSelection()) return false
+  const failed = []
+  let done = 0
   try {
     updateTagsLoading.value = true
     for (const id of selectedBookIds.value) {
       const book = _.find(bookList.value, { id })
       if (!book) continue
-      book.category = categorySelected.value
-      await saveBook(book)
+      const prev = book[field]
+      book[field] = value
+      try {
+        await saveBook(book)
+        done += 1
+      } catch (e) {
+        // 写库失败:把这本改回原值,不让界面与库对不上
+        book[field] = prev
+        failed.push({ title: getDisplayTitle(book) || book.id, error: String((e && e.message) || e) })
+        console.error('[apply] 写库失败', book.id, e)
+      }
     }
-    printMessage('success', t('c.applied'))
     updateTagsLoading.value = false
-    return true
+    if (!failed.length) {
+      printMessage('success', t('c.applied'))
+      return true
+    }
+    // 一本都没成功 → 报错误;部分成功 → 报警告(避免「全错」和「部分错」都只显示一句成功)
+    const first = failed[0]
+    const detail = failed.length === 1
+      ? t('c.applyErrorDetail', { title: first.title, error: first.error })
+      : t('c.applyErrorDetailMulti', { n: failed.length, title: first.title, error: first.error })
+    printMessage(done ? 'warning' : 'error', detail)
+    console.error('[apply] ' + failKey + ' 失败明细:', failed)
+    return false
   } catch (e) {
     console.error(e)
-    printMessage('error', t('c.applyError'))
+    printMessage('error', t('c.applyError') + ':' + String((e && e.message) || e))
     updateTagsLoading.value = false
     return false
   }
 }
 
-const applyStatus = async () => {
-  if (!ensureSelection()) return false
-  try {
-    updateTagsLoading.value = true
-    for (const id of selectedBookIds.value) {
-      const book = _.find(bookList.value, { id })
-      if (!book) continue
-      book.status = statusSelected.value
-      await saveBook(book)
-    }
-    printMessage('success', t('c.applied'))
-    updateTagsLoading.value = false
-    return true
-  } catch (e) {
-    console.error(e)
-    printMessage('error', t('c.applyError'))
-    updateTagsLoading.value = false
-    return false
-  }
-}
+const applyCategory = () => applyFieldToSelection('category', categorySelected.value, 'category')
+
+const applyStatus = () => applyFieldToSelection('status', statusSelected.value, 'status')
 const applyStatusAndClose = async () => {
   if (await applyStatus()) statusDialogVisible.value = false
 }

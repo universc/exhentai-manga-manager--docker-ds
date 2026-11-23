@@ -13,7 +13,7 @@
 const fs = require('fs')
 const path = require('path')
 const { URL } = require('url')
-const { request, listGalleryPageLinks } = require('./ehLogin.js')
+const { request, listGalleryPageLinks, pageCacheDelete } = require('./ehLogin.js')
 
 const DEFAULT_CONCURRENCY = 4
 const IMAGE_TIMEOUT = 60000
@@ -116,13 +116,44 @@ const buildExistingIndex = (dir) => {
   return map
 }
 
+// ---------- 站点级错误识别(照 JHenTai eh_image_exception_matcher.dart)----------
+// JHenTai 把「这一页失败」分成两类:
+//   · 页面/节点问题(reParse)        → 换节点重试这一页
+//   · 站点/账号问题(pause/pauseAll) → **整本停下来**,别再一页一页去撞 EH
+// 实测最要命的是第二条:「This IP address has been temporarily banned due to an excessive
+// request rate」——EH 对 IP 封禁时回的是 **HTTP 200 + 一句纯文本**,状态码完全正常。
+// 旧实现把它当普通失败,于是每页再原地重试 8 次(退避合计约 19 秒)× 剩下的每一页,
+// 一边被 ban 一边继续砸请求,表现就是「最后几张图永远卡在 133/135」。
+const SITE_ERROR_PATTERNS = [
+  { re: /temporarily banned|excessive request rate|automated mirroring/i, kind: 'banned', message: 'EH 临时封禁了这个 IP(请求过于频繁)。已暂停,等封禁解除后点「继续」。' },
+  { re: /You have reached the image limit|not have sufficient GP to buy/i, kind: 'imageLimit', message: '已达图片配额上限,暂停全部下载。' },
+  { re: /Downloading original files .* requires GP|requires GP, and you do not have enough/i, kind: 'gp', message: '原图需要 GP 额度,暂停等待额度恢复。' },
+  { re: /Invalid token|Invalid request|An error has occurred/i, kind: 'reparse', message: '' }
+]
+const ehSiteErrorOf = (body) => {
+  const s = String(body || '')
+  if (!s) return null
+  for (const p of SITE_ERROR_PATTERNS) {
+    if (p.re.test(s)) return { kind: p.kind, message: p.message }
+  }
+  return null
+}
+
 // 图片页 → { url, originalUrl, reloadKey }
 // reloadKey 是页面上「重试」链接里的 nl 值:EH 每个 H@H 节点挂了的时候,重取一次会换一个节点
 // (JHenTai gallery_download_task_runner 的 _reParseImageUrlAndDownload 就是靠它换源的)
-const resolveImagePage = async (pageUrl, { proxy, cookie, reloadKey = '' } = {}) => {
+// ⚠ 换源重试必须能重新请求:request() 会把页面缓存 1 小时(照 JHenTai 的 EHCacheManager),
+//   而「限速/封禁页」也是 200 —— 不清缓存的话,8 次重试拿到的全是同一份坏响应,
+//   reloadKey 换节点的作用等于没有。JHenTai 是真重试(reParse 先 removeCacheByUrl),
+//   所以这里也先清掉这一页的缓存再取。
+const resolveImagePage = async (pageUrl, { proxy, cookie, reloadKey = '', fresh = false } = {}) => {
   const u = reloadKey
     ? pageUrl + (pageUrl.includes('?') ? '&' : '?') + 'nl=' + encodeURIComponent(reloadKey)
     : pageUrl
+  if (fresh) {
+    try { pageCacheDelete(u, cookie) } catch (e) { /* 忽略 */ }
+    try { pageCacheDelete(pageUrl, cookie) } catch (e) { /* 忽略 */ }
+  }
   const res = await request(u, { proxy, cookie, referer: pageUrl, timeout: 30000 })
   const body = res.body || ''
   const m = /<img[^>]*id="img"[^>]*src="([^"]+)"/i.exec(body) || /<img[^>]*src="([^"]+)"[^>]*id="img"/i.exec(body)
@@ -130,7 +161,11 @@ const resolveImagePage = async (pageUrl, { proxy, cookie, reloadKey = '' } = {})
   // 拿不到就留空 —— 调用方会退回正常图(与 JHenTai _downloadUrlFor 的兜底一致)。
   const om = /href="(https?:\/\/[^"]+)"[^>]*>[^<]*Download\s+original/i.exec(body)
   const nl = /return\s+nl\('([^']+)'\)/.exec(body)
-  return { url: m ? m[1] : '', originalUrl: om ? om[1] : '', reloadKey: nl ? nl[1] : '' }
+  const siteErr = ehSiteErrorOf(body)
+  return {
+    url: m ? m[1] : '', originalUrl: om ? om[1] : '', reloadKey: nl ? nl[1] : '',
+    siteError: siteErr
+  }
 }
 
 // 下到一个文件。返回字节数。
@@ -188,7 +223,10 @@ const runGalleryDownload = async ({
   dir: fixedDir = '', pageCount: knownPageCount = 0, pageRate = 0, pageRateSec = 0,
   // 请求频率限制(照 JHenTai 的 executor Rate(maximum, period)):
   // 每 periodSec 秒最多放 maxPerPeriod 个「取页/下载」请求。0 = 不限。
-  maxPerPeriod = 0, periodSec = 1
+  maxPerPeriod = 0, periodSec = 1,
+  // 进程级闸门(照 JHenTai 的单一 executor):不传就退化成「每本各自限速」(旧行为)。
+  // gate.acquire() 管全局请求速率,gate.slot(fn) 管全局并发槽。
+  gate = null
 } = {}) => {
   if (!galleryUrl) throw new Error('noUrl')
   if (!saveDir) throw new Error('noSaveDir')
@@ -216,6 +254,8 @@ const runGalleryDownload = async ({
   //    结果 options 被当成 url 传进去,一本都下不了(现象是 4 秒就 noPages)。
   const links = await listGalleryPageLinks(galleryUrl, {
     proxy, cookie, limit: 5000, maxPages: 200, stats: linkStats,
+    // 分页请求同样受进程级并发/速率约束(照 JHenTai:它连解析分页都排进同一个 executor)
+    gate,
     onPage: (n) => onProgress({ total: 0, done: 0, failed: 0, bytes: 0, phase: 'links', linkCount: n })
   })
   // 一条都没收到时,区分「请求本身失败(限速/网络)」和「页面里确实没有页链接」
@@ -325,15 +365,36 @@ const runGalleryDownload = async ({
           try {
             // 请求节流:取图片页、下图片各算一个请求(与 JHenTai 的 Rate 一致)
             if (reqTick) await reqTick.acquire()
-            const info = await resolveImagePage(links[i], { proxy, cookie, reloadKey })
+            if (gate && gate.acquire) await gate.acquire()
+            // attempt > 0 = 换节点重试:必须先清掉这一页的页面缓存(照 JHenTai reParse 的 removeCacheByUrl),
+            // 否则重试拿到的还是同一份「限速/封禁」页,8 次等于 1 次。
+            const info = await resolveImagePage(links[i], { proxy, cookie, reloadKey, fresh: attempt > 0 })
             reloadKey = info.reloadKey || reloadKey
+            // ★站点级错误(封禁 / 配额 / 账号问题):照 JHenTai _pauseOnSiteError —— 整本停下来,
+            //   别再对剩下的每一页各砸 8 次重试。这是「最后几张永远下不完」最直接的成因:
+            //   被 ban 之后继续砸请求,只会在解封前反复失败、把封禁续期。
+            if (info.siteError && info.siteError.kind !== 'reparse') {
+              const se = info.siteError
+              update.lastError = se.message || se.kind
+              update.siteBlocked = se.kind
+              state.stopped = true
+              onProgress({ ...update, dir })
+              // 交给外层:标记 waiting,并按 retry 设置自动重试
+              const err = new Error('siteError: ' + se.kind)
+              err.siteError = se.kind
+              throw err
+            }
             // 原图:只下原图。**不再退回普通图** —— 用户要的是原图,拿不到就留着让任务等
             // (EH 高峰期会说「需要 GP」,等额度恢复后点「继续」接着下即可)。
             // 只有当这一页压根没有原图链接时才用普通图(那不是失败,是 EH 就没给原图)。
             const target = original ? (info.originalUrl || info.url) : info.url
             if (!target) { lastErr = new Error('noImageUrl'); continue }
             if (reqTick) await reqTick.acquire()
-            const bytes = await downloadFile(target, path.join(dir, name + '.' + extOf(target)), { proxy, cookie, referer: links[i] })
+            if (gate && gate.acquire) await gate.acquire()
+            // 抢全局并发槽再下:全局槽数 = 设置里的「同时下载数」,不是每本各自一份
+            const bytes = gate && gate.slot
+              ? await gate.slot(() => downloadFile(target, path.join(dir, name + '.' + extOf(target)), { proxy, cookie, referer: links[i] }))
+              : await downloadFile(target, path.join(dir, name + '.' + extOf(target)), { proxy, cookie, referer: links[i] })
             update.done += 1
             update.bytes += bytes
             if (limiter) await limiter.add(bytes)
@@ -342,6 +403,8 @@ const runGalleryDownload = async ({
             break
           } catch (e) {
             lastErr = e
+            // 站点级错误(见上面的 siteError 分支):整本停,绝不再对剩下的页重试
+            if (e && e.siteError) return
             // EH 因为额度/配额拒绝原图(实测回纯文本「Downloading original files … requires GP」):
             // 这不是这一页的问题,是账号额度问题 —— 整本停下来进「等待中」,别再一页页去撞 EH
             if (original && /requires GP|not have enough|gp\b/i.test(String((e && e.message) || ''))) {
@@ -359,15 +422,21 @@ const runGalleryDownload = async ({
         }
         if (lastErr) throw lastErr
       } catch (e) {
-        update.failed += 1
-        update.lastError = String((e && e.message) || e)
+        // 站点级封禁/配额:不是「这一页失败」,不计数(failed 只记真正的坏页),
+        // 标签由上一层置为 waiting 并安排自动重试。
+        if (e && e.siteError) {
+          update.lastError = e.message
+        } else {
+          update.failed += 1
+          update.lastError = String((e && e.message) || e)
+        }
       }
       onProgress({ ...update, dir })
     }
   }
   await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, total)) }, worker))
   onProgress({ ...update, dir, finished: true, stopped: !!state.stopped })
-  return { dir, ...update, stopped: !!state.stopped }
+  return { dir, ...update, stopped: !!state.stopped, siteBlocked: update.siteBlocked || '' }
 }
 
 // 单页下载:url 已经是图片地址(阅读器里解析好的);original 时优先用 originalUrl,

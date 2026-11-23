@@ -523,12 +523,17 @@ const applyCoverStyle = (setting) => {
   if (typeof document === 'undefined') return
   const root = document.documentElement
   const s = setting || {}
+  // 三号样式(条状)优先级最高,其次二号,最后一号。三者互斥(设置里三选一保证)。
+  const style3 = !!s.cardStyle3
   // 二号样式:主界面换成「封面+标题」密集网格,尺寸取第二套(style2*)。
   //   ── 二号样式的界面缩放用 --emm-card-zoom(整张卡片 zoom),不动全局 Electron zoom
-  const style2 = !!s.cardStyle2
-  // 二号样式的「界面缩放」:直接按比例放大卡片宽/高/间距(连同标题字号),
+  const style2 = !style3 && !!s.cardStyle2
+  // 各样式的「界面缩放」:按比例放大宽/高/间距(连同标题字号),
   //   不用 CSS zoom —— Chromium 这一版 zoom 不影响 flex 布局占位,卡片会互相压住。
-  const zoom = style2 ? Math.max(50, Math.min(300, Number(s.style2UiZoom) || 100)) / 100 : 1
+  // 三号专属的 zoom 走 --style3-zoom(只给条状模板消费),不碰全局 --emm-card-zoom —— 否则会连累一号/二号/合集一号的标题字号。
+  const zoom = style3
+    ? Math.max(50, Math.min(300, Number(s.style3UiZoom) || 100)) / 100
+    : (style2 ? Math.max(50, Math.min(300, Number(s.style2UiZoom) || 100)) / 100 : 1)
   const baseSize = style2
     ? (Number(s.style2CoverWidth) > 0 ? Number(s.style2CoverWidth) : 140)
     : (Number(s.coverWidth) > 0 ? Number(s.coverWidth) : 220)
@@ -557,8 +562,44 @@ const applyCoverStyle = (setting) => {
   root.style.setProperty('--emm-card-gap-h', gapH + 'px')
   // 兼容旧引用
   root.style.setProperty('--emm-card-gap', gapV + 'px')
-  // 只给标题字号用(布局尺寸已经按 zoom 放大)
-  root.style.setProperty('--emm-card-zoom', String(zoom))
+  // 只给标题字号用(布局尺寸已经按 zoom 放大)。三号不写这里 —— 它有独立的 --style3-zoom,
+  // 避免全局改缩放时连累一号卡片/合集一号卡片的字号。
+  if (!style3) root.style.setProperty('--emm-card-zoom', String(zoom))
+
+  // ---------- 三号样式(条状)变量 ----------
+  // 公式与 BookCard.vue / 预览页共用同一套,任何改动三处必须同步:
+  //   行高 = round(行高 × zoom)
+  //   内高 = (行高 − 12) × zoom        // 12 = padding 6×2(内容盒,不是行盒)
+  //   封面宽 w = floor(min(上限 × zoom, 内高 × 0.75))
+  //   封面高 h = w / 0.75              // 宽定高反推,恒等 3:4
+  //   间距V = max(round(gapV × zoom), 4)、间距H = round(gapH × zoom)
+  if (style3) {
+    const rowBase = Number(s.style3RowHeight) > 0 ? Number(s.style3RowHeight) : 96
+    const coverMax = Number(s.style3CoverWidth) > 0 ? Number(s.style3CoverWidth) : 64
+    const gapVBase = Number(s.style3GapV) >= 0 ? Number(s.style3GapV) : 8
+    const gapHBase = Number(s.style3GapH) >= 0 ? Number(s.style3GapH) : 8
+    // 渲染行高直接 = round(设置值 × zoom),不设 64 下限 —— 否则缩放 50% 时行高被钉在 64,缩放失效。
+    // 64 是「设置输入」的下限(Setting.vue min),不是渲染值下限;触控底线由内高 26≥24 保证。
+    const rowH = Math.round(rowBase * zoom)
+    const innerH = (rowBase - 12) * zoom
+    const coverW = Math.max(24, Math.floor(Math.min(coverMax * zoom, innerH * 0.75)))
+    const coverH = coverW / 0.75
+    const gapV = Math.max(4, Math.round(gapVBase * zoom))
+    const gapH = Math.round(gapHBase * zoom)
+    root.style.setProperty('--style3-row-h', rowH + 'px')
+    root.style.setProperty('--style3-cover-w', coverW + 'px')
+    root.style.setProperty('--style3-cover-h', coverH + 'px')
+    root.style.setProperty('--style3-gap-v', gapV + 'px')
+    root.style.setProperty('--style3-gap-h', gapH + 'px')
+    // 只给三号模板的字号用(标题13 / 元信息11 / chip18 都乘这一个值)
+    root.style.setProperty('--style3-zoom', String(zoom))
+  }
+  // 切换回一/二号时,清掉三号遗留变量,避免热重载/迁移等瞬时不一致路径下被误读。
+  // 合集抽屉的三号变量写在容器上(collectionCardStyleVars),不受这里影响。
+  if (!style3) {
+    ;['--style3-row-h', '--style3-cover-w', '--style3-cover-h', '--style3-gap-v', '--style3-gap-h', '--style3-zoom']
+      .forEach(k => root.style.removeProperty(k))
+  }
 }
 
 // ---------- 工具栏按钮 ----------
@@ -1101,6 +1142,47 @@ const defaultUiSettings = () => ({
   // 卡片间距(上下)/(左右)
   cardGapV: 6,
   cardGapH: 6,
+
+  // ---------- 卡片样式:三套样式各自的显隐与尺寸 ----------
+  // 二号样式(封面+标题密集网格):只保留真正存在的两个开关
+  style2HideTitle: false,
+  style2FillCover: false,
+  // 三号样式(条状列表):5 项尺寸 + 7 项显隐(无收藏按钮、无填充封面)
+  style3UiZoom: 100,
+  style3RowHeight: 96,
+  style3CoverWidth: 64,
+  style3GapV: 8,
+  style3GapH: 8,
+  style3HideTitle: false,
+  style3HideNonTag: false,
+  style3HideRating: false,
+  style3HidePageCount: false,
+  style3HideReadCount: false,
+  style3HideReadButton: false,
+
+  // 合集界面卡片:三选一(collectionCardStyle2 旧字段沿用) + 各自一套尺寸/显隐
+  collectionCardStyle3: false,
+  // 合集二号
+  collectionStyle2UiZoom: 100,
+  collectionStyle2CoverWidth: 140,
+  collectionStyle2CoverHeight: 220,
+  collectionStyle2CardGapV: 6,
+  collectionStyle2CardGapH: 8,
+  collectionStyle2HideTitle: false,
+  collectionStyle2FillCover: false,
+  // 合集三号(条状;无角标开关 —— 抽屉里是普通书卡,不是合集卡)
+  collectionStyle3UiZoom: 100,
+  collectionStyle3RowHeight: 96,
+  collectionStyle3CoverWidth: 64,
+  collectionStyle3GapV: 8,
+  collectionStyle3GapH: 8,
+  collectionStyle3HideTitle: false,
+  collectionStyle3HideNonTag: false,
+  collectionStyle3HideRating: false,
+  collectionStyle3HidePageCount: false,
+  collectionStyle3HideReadCount: false,
+  collectionStyle3HideReadButton: false,
+
   themeCustomBg: '',
   themeCustomBgImage: '',
   themeCustomPrimary: '#409EFF',

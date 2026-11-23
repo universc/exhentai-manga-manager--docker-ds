@@ -3225,6 +3225,12 @@ const saveBookToDatabase = async (book) => {
   // 写共享数据库时路径转换为 Windows / 相对库根格式,保证两端都能读。
   // filepath / coverPath 一律按「这本书自己所属库」的根与封面目录翻译,
   // 不碰会被切库改掉的 CURRENT_COVER_DIR / setting.library。
+  // ★ createdAt/updatedAt 是**只读**时间戳:客户端回传的 book 上这两个字段可能已被抹成 null
+  //   (Metadata 合并时拿到 Invalid Date → JSON 变 null;在线书 / 老数据根本没有)。
+  //   Mangas.createdAt / updatedAt 都是 NOT NULL,直接写进去就是
+  //   "NOT NULL constraint failed: Mangas.createdAt" —— 用户看到的就是
+  //   「管理 → 更改类别 / 更改状态 → 应用出现错误」。这里一律剔除,
+  //   updatedAt 由 sequelize 自己维护,createdAt 保持库里原值。
   const extBook = {
     ...book,
     filepath: toExternalPath(book.filepath, 'filepath', ownerLib),
@@ -3232,12 +3238,28 @@ const saveBookToDatabase = async (book) => {
   }
   delete extBook.libraryId
   delete extBook.libraryName
+  delete extBook.createdAt
+  delete extBook.updatedAt
   const target = await modelForLibrary(libId)
   // update 带 where id 不会插入新行:这里不可能凭空「新增漫画」
   await target.update(extBook, { where: { id: extBook.id } })
-  // 元数据始终写全局 metadata.sqlite
-  await Metadata.upsert(extBook)
-  invalidateMetadataCache()
+  // ★ 元数据(全局 metadata.sqlite)按 **hash** 做主键:还没有 hash 的书
+  //   (扫描两阶段里还没探测到 / 手动放进库的散图)在这里 upsert 会抛
+  //   "notNull Violation: Metadata.hash cannot be null"。
+  //   与 loadBookListFromDatabase 的补写口径保持一致:没有 hash 就跳过,
+  //   等扫描补上 hash 之后自然会被写进去。
+  // ★ 并且元数据写失败**绝不能**让整次保存失败:书库那边上面已经写成功了,
+  //   抛出去前端只会看到「应用出现错误」——用户以为没生效,库里其实已经改了
+  //   (旧实现就是这样:500 报错 + Mangas 已更新)。元数据只是书架的缓存,
+  //   写不进去最多是标签/评分晚一点补上(与 loadBookListFromDatabase 同一口径)。
+  if (extBook.hash) {
+    try {
+      await Metadata.upsert(extBook)
+      invalidateMetadataCache()
+    } catch (e) {
+      console.warn(`[meta] 元数据写入失败(不影响本次保存):${String((e && e.message) || e)}`)
+    }
+  }
   console.log(`Saved ${extBook.title}`)
 }
 
@@ -5377,7 +5399,8 @@ ipcMain.handle('eh-gallery-page-links', async (event, arg) => {
       proxy: setting.proxy,
       cookie,
       limit: Math.max(1, Math.min(Number(limit) || 3000, 5000)),
-      maxPages: Math.max(1, Math.min(Number(maxPages) || 200, 500))
+      maxPages: Math.max(1, Math.min(Number(maxPages) || 200, 500)),
+      gate: ehGlobalRequestGuard
     })
     return { ok: links.length > 0, quick: false, links, total: links.length, error: links.length ? '' : 'noPages' }
   } catch (e) {
@@ -5723,6 +5746,8 @@ const publicDownload = (t) => ({
   coverPath: t.coverPath || '',
   saveDir: t.saveDir, dir: t.dir || '', total: t.total | 0, done: t.done | 0, failed: t.failed | 0,
   bytes: t.bytes | 0, status: t.status, error: t.error || '', fallback: t.fallback | 0, gpBlocked: t.gpBlocked | 0,
+  // 站点级拦截(ban / 配额):前端据此显示「等待中(IP 被限速)」而不是「失败」
+  siteBlocked: t.siteBlocked || '',
   phase: t.phase || '', linkCount: t.linkCount | 0,
   // 移动到本地库之后的目标路径(空 = 还在下载目录)
   movedTo: t.movedTo || '',
@@ -6505,6 +6530,8 @@ const runDownloadJob = (rec) => {
     // 这是「别被 EH 限速」最有效的一档;0 = 不限。
     maxPerPeriod: Math.max(0, Number(setting.downloadMaxPerPeriod) || 2),
     periodSec: Math.max(0.1, Number(setting.downloadPeriodSec) || 1),
+    // ★进程级闸门(照 JHenTai 单一 executor):多本同时下也不会各开一份并发 ×N
+    gate: ehGlobalRequestGuard,
     state,
     onProgress: (u) => {
       // ★存活判断:这条记录可能已经被用户删掉(删除时从 downloadTasks 里摘掉)。
@@ -6540,6 +6567,8 @@ const runDownloadJob = (rec) => {
       rec.bytes = u.bytes | 0
       rec.fallback = u.fallback | 0
       rec.gpBlocked = u.gpBlocked | 0
+      // 站点级封禁:记到记录上,收尾时按 waiting 处理(见下面的 siteBlocked 分支)
+      if (u.siteBlocked) rec.siteBlocked = String(u.siteBlocked)
       if (u.phase) rec.phase = u.phase
       if (u.linkCount) rec.linkCount = u.linkCount | 0
       if (u.total) { rec.phase = ''; rec.linkCount = 0 }
@@ -6551,13 +6580,24 @@ const runDownloadJob = (rec) => {
         emitToRenderer('eh-download-progress', publicDownload(rec))
       }
     }
-  }).then(() => {
+  }).then((r) => {
+    // 下载器返回值里也带一份:onProgress 的最后一帧可能落在 stop 之前,不能只靠它
+    if (r && r.siteBlocked) rec.siteBlocked = String(r.siteBlocked)
     // 自动重试的时间点:failed / waiting 都要在**这里**就算好。
     // 以前只给 failed 设,waiting 靠 autoRetryTick(每 30 秒扫一遍)「发现 nextRetryAt 是 0 就补上」——
     // 结果是等 GP 的任务要先白白多等一个 30 秒周期才开始倒计时,而且第一次扫描前 nextRetryAt=0
     // 会让界面上的「下次重试」显示不出来。
     const retryDelayMs = Math.max(1, Number(setting.retryIntervalMin) || 10) * 60000
-    if ((rec.gpBlocked | 0) > 0) {
+    // ★站点级封禁/IP 限速:照 JHenTai 的 pause 语义 —— 停成「等待中」,按重试间隔自动再来,
+    //   而不是标 failed 让用户看到一堆 ✗(旧实现把 ban 当逐页失败,结果每页砸 8 次重试)。
+    if (rec.siteBlocked) {
+      // ⚠ 必须放在「stopped → paused」之前:封禁时下载器也置了 state.stopped,
+      //   若先判 paused,用户看到的就是「已暂停」而不是「等待中(等解封)」。
+      rec.status = 'waiting'
+      rec.error = rec.siteBlocked
+      rec.nextRetryAt = Date.now() + retryDelayMs
+      rec.siteBlocked = ''
+    } else if ((rec.gpBlocked | 0) > 0) {
       // 原图被 EH 以「需要 GP」挡下:任务停在「等待中」——额度恢复后点「继续」接着下
       rec.status = 'waiting'
       rec.error = 'gp'
@@ -6613,6 +6653,59 @@ const runDownloadJob = (rec) => {
   rec.jobPromise = job
   return job
 }
+
+// ---------- 下载的「全局闸门」(照 JHenTai:一个 executor 管所有下载)----------
+// JHenTai 只有一个 EHExecutor:所有画廊、所有图片任务排在同一个队列里,共享
+//   · concurrency(downloadTaskConcurrency,默认 6)= 同时最多几个请求在飞
+//   · rate(maximum / period,默认 2 个 / 1 秒)= 每秒最多发几个请求
+// 本项目的 runGalleryDownload 是「一本一个 worker 池」,每本各自持有 concurrency 与请求节流,
+// 互相不知道对方的存在 —— 同时开 3 本 = 3×6=18 个请求在飞、18 个/秒,正好触发 EH 的
+// 「This IP address has been temporarily banned due to an excessive request rate」。
+// 这也正是「同一网络下 JHenTai 快得多」的另一面:JHenTai 从不越限,所以它从来不吃封禁,
+// 而越限的这边会被限速/封禁拖成「最后几张永远下不完」。
+// 这里补两个**进程级**的闸门,把并发与请求速率真正全局化。
+let ehActiveRequests = 0
+const ehWaitQueue = []
+const ehMaxConcurrent = () => Math.max(1, Math.min(Number(setting.downloadConcurrency) || 6, 12))
+const ehPump = () => {
+  while (ehWaitQueue.length && ehActiveRequests < ehMaxConcurrent()) {
+    const next = ehWaitQueue.shift()
+    ehActiveRequests++
+    next()
+  }
+}
+// 全局槽:拿不到就排队(不是丢弃)
+const ehSlot = (fn) => new Promise((resolve, reject) => {
+  ehWaitQueue.push(() => {
+    Promise.resolve()
+      .then(fn)
+      .then(resolve, reject)
+      .finally(() => { ehActiveRequests = Math.max(0, ehActiveRequests - 1); ehPump() })
+  })
+  ehPump()
+})
+// 全局请求节流:照 JHenTai 的 Rate(maximum, period) 滑动窗口。
+// ⚠ 不能只在模块加载时建一次:用户在设置里改了「每秒请求数」就得立刻生效,
+//   否则改完还得重启才管用(和 JHenTai 的 executor.rate 是 setter 一个道理)。
+let ehGlobalTick = null
+let ehGlobalTickKey = ''
+const ehTickFor = () => {
+  const max = Math.max(1, Number(setting.downloadMaxPerPeriod) || 2)
+  const sec = Math.max(0.1, Number(setting.downloadPeriodSec) || 1)
+  const key = max + '/' + sec
+  if (key !== ehGlobalTickKey) {
+    ehGlobalTickKey = key
+    ehGlobalTick = ehDownload.createRequestTicker(max, sec)
+  }
+  return ehGlobalTick
+}
+// 下载器用的「全局 acquire」:先过速率窗口,再抢并发槽
+const ehGlobalAcquire = async () => {
+  const tick = ehTickFor()
+  if (tick) await tick.acquire()
+}
+// 用同一个滑窗把「取图片页 + 下图片」这两步都串起来 —— 由 modules/ehDownload 通过 options 注入
+const ehGlobalRequestGuard = { acquire: ehGlobalAcquire, slot: ehSlot }
 
 ipcMain.handle('eh-download-gallery', async (event, arg) => {
   const { url, title = '', cover = '', original = false, tags = null, category = '', titleJpn = '', rating = 0 } = arg || {}
@@ -6711,6 +6804,7 @@ ipcMain.handle('eh-debug-download', async (event, arg) => {
     const r = await ehDownload.runGalleryDownload({
       galleryUrl: url, title: 'debug', saveDir, original: false,
       proxy: setting.proxy, cookie: ehCookieHeader(), concurrency: 4, state: {},
+      gate: ehGlobalRequestGuard,
       onProgress: (u) => { seen.push({ total: u.total | 0, done: u.done | 0, dir: u.dir || '', phase: u.phase || '', linkCount: u.linkCount | 0 }) }
     })
     return { ok: true, result: { dir: r.dir, total: r.total, done: r.done, failed: r.failed, bytes: r.bytes }, first: seen.slice(0, 3), last: seen.slice(-2) }
@@ -6727,7 +6821,8 @@ ipcMain.handle('eh-debug-links', async (event, arg) => {
   try {
     const t0 = Date.now()
     const links = await ehLogin.listGalleryPageLinks(url, {
-      proxy: setting.proxy, cookie: ehCookieHeader(), limit: 5000, maxPages: 200, stats
+      proxy: setting.proxy, cookie: ehCookieHeader(), limit: 5000, maxPages: 200, stats,
+      gate: ehGlobalRequestGuard
     })
     return { ok: true, ms: Date.now() - t0, count: links.length, first: links.slice(0, 2), stats }
   } catch (e) {
@@ -7018,7 +7113,8 @@ ipcMain.handle('eh-download-page-by-index', async (event, arg) => {
   const idx = Math.max(0, Number(index) | 0)
   try {
     const links = await ehLogin.listGalleryPageLinks(rec.url, {
-      proxy: setting.proxy, cookie: ehCookieHeader(), limit: 5000, maxPages: 200
+      proxy: setting.proxy, cookie: ehCookieHeader(), limit: 5000, maxPages: 200,
+      gate: ehGlobalRequestGuard
     })
     const pageUrl = links[idx]
     if (!pageUrl) return { ok: false, error: 'noPage' }

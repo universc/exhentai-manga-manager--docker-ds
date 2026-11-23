@@ -635,335 +635,132 @@
           </el-col>
         </el-row>
         <div class="advanced-section-title"><span class="label-with-hint">{{$t('m.cardStyle')}}<SettingHint :title="$t('m.cardStyle')" :lines="[$t('m.hintCardStyle')]" /></span></div>
-        <!-- 卡片相关开关(自其它分区归并到此):各元素显隐独立 + 填充封面 -->
-        <el-row :gutter="8">
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideBookmarkButton"
-              :active-text="$t('m.hideBookmarkButton')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hidePageCount"
-              :active-text="$t('m.hidePageCount')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideReadCount"
-              :active-text="$t('m.hideReadCount')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideReadButton"
-              :active-text="$t('m.hideReadButton')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideNonTag"
-              :active-text="$t('m.hideNonTag')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideTitle"
-              :active-text="$t('m.hideTitle')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideRating"
-              :active-text="$t('m.hideRating')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <!-- 卡片样式:一号(经典/填充封面)与二号(密集网格)与三号(条状列表)**互斥**,
-               用三选一的方式表达,不再是两个独立开关(以前两个都开时行为不确定)。
-               选中后在下方折叠展开对应的尺寸配置。 -->
-          <el-col :span="18" class="setting-switch">
-            <el-radio-group :model-value="activeCardStyle" size="small" @change="setActiveCardStyle">
-              <el-radio-button label="1">{{ $t('m.cardStyle1') }}</el-radio-button>
-              <el-radio-button label="2">{{ $t('m.cardStyle2') }}</el-radio-button>
-              <el-radio-button label="3">{{ $t('m.cardStyle3') }}</el-radio-button>
-            </el-radio-group>
-          </el-col>
-          <!-- 「合集」角标只出现在主界面的合集卡上 → 属于普通卡片开关(以前错放在合集界面分组里) -->
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.hideCollectionTag"
-              :active-text="$t('m.hideCollectionTag')"
-              @change="saveSetting"
-            />
-          </el-col>
-        </el-row>
-        <!-- 尺寸配置:每种样式各一套,按当前选中的样式折叠展开(用户要求:
-             「一号样式和二号样式折叠并列,启用后展开」)。 -->
-        <el-collapse v-model="cardStylePanelOpen" class="card-style-collapse">
-          <el-collapse-item name="style1">
-            <template #title>
-              <span class="card-style-collapse-title">{{ $t('m.cardStyle1') }}<template v-if="activeCardStyle === '1'"> · {{ $t('m.cardStyleActive') }}</template></span>
-            </template>
-        <template v-if="!setting.cardStyle2">
-          <!-- 封面大小(整体百分比,宽高等比)/ 封面宽度 / 封面高度 -->
-          <el-row :gutter="8">
-            <el-col :span="12">
-              <div class="setting-line">
-                <NameFormItem class="label-input" prependWidth="100px">
-                  <template #prepend><span class="setting-label">{{$t('m.uiZoom')}}</span></template>
-                  <el-input-number v-model="uiZoomPercent" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" placeholder="100" />
-                </NameFormItem>
+        <!-- 卡片样式重排:主界面卡片 / 合集界面卡片 —— 两个平级、结构完全同构的独立区块 -->
+        <div class="block card-style-block">
+          <div class="block-hd"><span class="bh-dot"></span>{{ $t('m.mainCardBlockTitle') }}<span class="bh-note">{{ $t('m.mainCardBlockNote') }}</span></div>
+          <div class="style-block">
+            <div class="segpick" role="group" :aria-label="$t('m.cardStyle')">
+              <button type="button" class="si" :class="{ on: activeCardStyle === '1' }" :aria-pressed="activeCardStyle === '1'" @click="setActiveCardStyle('1')">
+                <span class="thumb"><span class="col"><span class="blk" style="width:30px;height:40px"></span><span class="ln" style="width:24px"></span><span class="ln" style="width:14px"></span></span></span>
+                <span class="txt"><span class="nm">{{ $t('m.cardStyle1') }}</span><span class="ds">{{ $t('m.styleDesc1') }}</span></span>
+              </button>
+              <button type="button" class="si" :class="{ on: activeCardStyle === '2' }" :aria-pressed="activeCardStyle === '2'" @click="setActiveCardStyle('2')">
+                <span class="thumb"><span class="grid2x2"><span class="blk"></span><span class="blk"></span><span class="blk"></span><span class="blk"></span></span></span>
+                <span class="txt"><span class="nm">{{ $t('m.cardStyle2') }}</span><span class="ds">{{ $t('m.styleDesc2') }}</span></span>
+              </button>
+              <button type="button" class="si" :class="{ on: activeCardStyle === '3' }" :aria-pressed="activeCardStyle === '3'" @click="setActiveCardStyle('3')">
+                <span class="thumb"><span class="rows3"><span class="r"><span class="blk"></span><span class="lns"><span class="ln" style="width:12px"></span><span class="ln" style="width:8px"></span></span></span><span class="r"><span class="blk"></span><span class="lns"><span class="ln" style="width:12px"></span><span class="ln" style="width:8px"></span></span></span><span class="r"><span class="blk"></span><span class="lns"><span class="ln" style="width:12px"></span><span class="ln" style="width:8px"></span></span></span></span></span>
+                <span class="txt"><span class="nm">{{ $t('m.cardStyle3') }}</span><span class="ds">{{ $t('m.styleDesc3') }}</span></span>
+              </button>
+            </div>
+            <div class="param-wrap">
+              <template v-if="activeCardStyle === '1'">
+                <div class="fgrid c3">
+                  <div class="field"><span class="lb">{{ $t('m.uiZoom') }}</span><span class="ctl"><el-input-number v-model="uiZoomPercent" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" /><span class="unit">%</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.coverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.coverWidth" :min="80" :max="800" :step="10" :value-on-clear="220" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.coverHeight') }}</span><span class="ctl"><el-input-number v-model="setting.coverHeight" :min="100" :max="1200" :step="10" :value-on-clear="360" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                </div>
+                <div class="fgrid c2">
+                  <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.cardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.cardGapH" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                </div>
+              </template>
+              <template v-else-if="activeCardStyle === '2'">
+                <div class="fgrid c3">
+                  <div class="field"><span class="lb">{{ $t('m.uiZoom') }}</span><span class="ctl"><el-input-number v-model="setting.style2UiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">%</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.coverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.style2CoverWidth" :min="80" :max="800" :step="10" :value-on-clear="140" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.coverHeight') }}</span><span class="ctl"><el-input-number v-model="setting.style2CoverHeight" :min="100" :max="1200" :step="10" :value-on-clear="220" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                </div>
+                <div class="fgrid c2">
+                  <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.style2CardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.style2CardGapH" :min="0" :max="40" :step="2" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                </div>
+              </template>
+              <template v-else>
+                <div class="fgrid c3">
+                  <div class="field"><span class="lb">{{ $t('m.uiZoom') }}</span><span class="ctl"><el-input-number v-model="setting.style3UiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">%</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3RowHeight') }}</span><span class="ctl"><el-input-number v-model="setting.style3RowHeight" :min="64" :max="240" :step="4" :value-on-clear="96" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CoverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.style3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.coverWidthCap') }}</span></span></div>
+                </div>
+                <div class="fgrid c2">
+                  <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.style3GapV" :min="4" :max="40" :step="2" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.gapVLower') }}</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.style3GapH" :min="0" :max="40" :step="2" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                </div>
+              </template>
+              <div class="sumline">
+                <span>{{ mainSummary }}</span>
+                <span v-if="mainClampHint" class="clamp">{{ mainClampHint }}</span>
+                <a class="reset-link" role="button" tabindex="0" @click="resetMainStyleDefaults" @keydown.enter.prevent="resetMainStyleDefaults">{{ $t('m.resetDefaults') }}</a>
               </div>
-            </el-col>
-            <el-col :span="12">
-              <div class="setting-line">
-                <NameFormItem class="label-input" prependWidth="100px">
-                  <template #prepend><span class="setting-label">{{$t('m.coverWidth')}}</span></template>
-                  <el-input-number v-model="setting.coverWidth" :min="80" :max="800" :step="10" :value-on-clear="220" controls-position="right" placeholder="220" @change="handleCoverStyleChange" />
-                </NameFormItem>
-              </div>
-            </el-col>
-            <el-col :span="12">
-              <div class="setting-line">
-                <NameFormItem class="label-input" prependWidth="100px">
-                  <template #prepend><span class="setting-label">{{$t('m.coverHeight')}}</span></template>
-                  <el-input-number v-model="setting.coverHeight" :min="100" :max="1200" :step="10" :value-on-clear="360" controls-position="right" placeholder="360" @change="handleCoverStyleChange" />
-                </NameFormItem>
-              </div>
-            </el-col>
-          </el-row>
-          <!-- 卡片间距:上下 / 左右 分别调整 -->
-          <el-row :gutter="8">
-            <el-col :span="12">
-              <div class="setting-line">
-                <NameFormItem class="label-input" prependWidth="100px">
-                  <template #prepend><span class="setting-label">{{$t('m.cardGapV')}}</span></template>
-                  <el-input-number v-model="setting.cardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
-                </NameFormItem>
-              </div>
-            </el-col>
-            <el-col :span="12">
-              <div class="setting-line">
-                <NameFormItem class="label-input" prependWidth="100px">
-                  <template #prepend><span class="setting-label">{{$t('m.cardGapH')}}</span></template>
-                  <el-input-number v-model="setting.cardGapH" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
-                </NameFormItem>
-              </div>
-            </el-col>
-          </el-row>
-        </template>
-          </el-collapse-item>
-          <el-collapse-item name="style2">
-            <template #title>
-              <span class="card-style-collapse-title">{{ $t('m.cardStyle2') }}<template v-if="activeCardStyle === '2'"> · {{ $t('m.cardStyleActive') }}</template></span>
-            </template>
-        <template v-if="setting.cardStyle2 || activeCardStyle === '2'">
-          <!-- 二号样式的第二套尺寸(默认值取用户给的参考图:140×210,间距 6/8) -->
-          <el-row :gutter="8">
-            <el-col :span="12">
-              <div class="setting-line">
-                <NameFormItem class="label-input" prependWidth="100px">
-                  <template #prepend><span class="setting-label">{{$t('m.uiZoom')}}</span></template>
-                  <el-input-number v-model="setting.style2UiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" placeholder="100" @change="handleCoverStyleChange" />
-                </NameFormItem>
-              </div>
-            </el-col>
-            <el-col :span="12">
-              <div class="setting-line">
-                <NameFormItem class="label-input" prependWidth="100px">
-                  <template #prepend><span class="setting-label">{{$t('m.coverWidth')}}</span></template>
-                  <el-input-number v-model="setting.style2CoverWidth" :min="80" :max="800" :step="10" :value-on-clear="140" controls-position="right" placeholder="140" @change="handleCoverStyleChange" />
-                </NameFormItem>
-              </div>
-            </el-col>
-            <el-col :span="12">
-              <div class="setting-line">
-                <NameFormItem class="label-input" prependWidth="100px">
-                  <template #prepend><span class="setting-label">{{$t('m.coverHeight')}}</span></template>
-                  <el-input-number v-model="setting.style2CoverHeight" :min="100" :max="1200" :step="10" :value-on-clear="220" controls-position="right" placeholder="220" @change="handleCoverStyleChange" />
-                </NameFormItem>
-              </div>
-            </el-col>
-          </el-row>
-          <el-row :gutter="8">
-            <el-col :span="12">
-              <div class="setting-line">
-                <NameFormItem class="label-input" prependWidth="100px">
-                  <template #prepend><span class="setting-label">{{$t('m.cardGapV')}}</span></template>
-                  <el-input-number v-model="setting.style2CardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="handleCoverStyleChange" />
-                </NameFormItem>
-              </div>
-            </el-col>
-            <el-col :span="12">
-              <div class="setting-line">
-                <NameFormItem class="label-input" prependWidth="100px">
-                  <template #prepend><span class="setting-label">{{$t('m.cardGapH')}}</span></template>
-                  <el-input-number v-model="setting.style2CardGapH" :min="0" :max="40" :step="2" :value-on-clear="8" controls-position="right" placeholder="8" @change="handleCoverStyleChange" />
-                </NameFormItem>
-              </div>
-            </el-col>
-          </el-row>
-        </template>
-          </el-collapse-item>
-          <!-- 三号样式:条状列表(类似「下载记录」的每一行:小封面 + 标题 + 标签 + 进度) -->
-          <el-collapse-item name="style3">
-            <template #title>
-              <span class="card-style-collapse-title">{{ $t('m.cardStyle3') }}<template v-if="activeCardStyle === '3'"> · {{ $t('m.cardStyleActive') }}</template></span>
-            </template>
-            <template v-if="setting.cardStyle3">
-              <el-row :gutter="8">
-                <el-col :span="12">
-                  <div class="setting-line">
-                    <NameFormItem class="label-input" prependWidth="100px">
-                      <template #prepend><span class="setting-label">{{ $t('m.cardStyle3RowHeight') }}</span></template>
-                      <el-input-number v-model="setting.style3RowHeight" :min="56" :max="240" :step="4" :value-on-clear="96" controls-position="right" placeholder="96" @change="handleCoverStyleChange" />
-                    </NameFormItem>
-                  </div>
-                </el-col>
-                <el-col :span="12">
-                  <div class="setting-line">
-                    <NameFormItem class="label-input" prependWidth="100px">
-                      <template #prepend><span class="setting-label">{{ $t('m.cardStyle3CoverWidth') }}</span></template>
-                      <el-input-number v-model="setting.style3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" placeholder="64" @change="handleCoverStyleChange" />
-                    </NameFormItem>
-                  </div>
-                </el-col>
-              </el-row>
-            </template>
-          </el-collapse-item>
-        </el-collapse>
-        <!-- 合集界面卡片:是「卡片样式」的分支(不是同级分区),只管打开合集后
-             底部抽屉里那些卡片;主界面的合集卡跟普通卡片走同一套开关。
-             带一个总开关:关掉时抽屉卡片完全跟随主界面样式,打开后才展开下面的设置。 -->
-        <div class="advanced-subsection-title with-switch">
-          <span class="label-with-hint">{{$t('m.collectionCardStyle')}}<SettingHint :title="$t('m.collectionCardStyle')" :lines="[$t('m.hintCollectionCardStyle')]" /></span>
-          <el-switch
-            v-model="setting.collectionCardStyleEnabled"
-            :active-text="$t('m.collectionCardStyleEnable')"
-            @change="handleCoverStyleChange"
-          />
+            </div>
+            <div class="swgroup"><div class="swgrid">
+              <el-switch v-for="item in mainVisItems" :key="item.key" v-model="setting[item.key]" :active-text="$t(item.label)" @change="saveSetting" />
+            </div></div>
+          </div>
         </div>
-        <template v-if="setting.collectionCardStyleEnabled">
-        <el-row :gutter="8">
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.collectionHideBookmarkButton"
-              :active-text="$t('m.hideBookmarkButton')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.collectionHideCount"
-              :active-text="$t('m.hidePageCount')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.collectionHideReadCount"
-              :active-text="$t('m.hideReadCount')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.collectionHideReadButton"
-              :active-text="$t('m.hideReadButton')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.collectionHideNonTag"
-              :active-text="$t('m.hideNonTag')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.collectionHideTitle"
-              :active-text="$t('m.hideTitle')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.collectionHideRating"
-              :active-text="$t('m.hideRating')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.collectionFillCover"
-              :active-text="$t('m.fillCover')"
-              @change="saveSetting"
-            />
-          </el-col>
-          <!-- 二号样式:抽屉里换成「封面 + 标题」的密集网格(尺寸沿用下面这套合集尺寸) -->
-          <el-col :span="6" class="setting-switch">
-            <el-switch
-              v-model="setting.collectionCardStyle2"
-              :active-text="$t('m.cardStyle2')"
-              @change="handleCollectionStyle2Change"
-            />
-          </el-col>
-        </el-row>
-        <!-- 合集界面卡片的第二套尺寸(只作用在打开合集后的底部抽屉) -->
-        <el-row :gutter="8">
-          <el-col :span="12">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="100px">
-                <template #prepend><span class="setting-label">{{$t('m.uiZoom')}}</span></template>
-                <el-input-number v-model="setting.collectionUiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" placeholder="100" @change="handleCoverStyleChange" />
-              </NameFormItem>
+
+        <div class="block card-style-block">
+          <div class="block-hd"><span class="bh-dot bh-dot-2"></span>{{ $t('m.collectionCardStyle') }}<span class="bh-note">{{ $t('m.collCardBlockNote') }}</span></div>
+          <div class="style-block">
+            <div class="segpick" role="group" :aria-label="$t('m.cardStyle')">
+              <button type="button" class="si" :class="{ on: activeCollectionCardStyle === '1' }" :aria-pressed="activeCollectionCardStyle === '1'" @click="setActiveCollectionCardStyle('1')">
+                <span class="thumb"><span class="col"><span class="blk" style="width:30px;height:40px"></span><span class="ln" style="width:24px"></span><span class="ln" style="width:14px"></span></span></span>
+                <span class="txt"><span class="nm">{{ $t('m.cardStyle1') }}</span><span class="ds">{{ $t('m.styleDesc1') }}</span></span>
+              </button>
+              <button type="button" class="si" :class="{ on: activeCollectionCardStyle === '2' }" :aria-pressed="activeCollectionCardStyle === '2'" @click="setActiveCollectionCardStyle('2')">
+                <span class="thumb"><span class="grid2x2"><span class="blk"></span><span class="blk"></span><span class="blk"></span><span class="blk"></span></span></span>
+                <span class="txt"><span class="nm">{{ $t('m.cardStyle2') }}</span><span class="ds">{{ $t('m.styleDesc2') }}</span></span>
+              </button>
+              <button type="button" class="si" :class="{ on: activeCollectionCardStyle === '3' }" :aria-pressed="activeCollectionCardStyle === '3'" @click="setActiveCollectionCardStyle('3')">
+                <span class="thumb"><span class="rows3"><span class="r"><span class="blk"></span><span class="lns"><span class="ln" style="width:12px"></span><span class="ln" style="width:8px"></span></span></span><span class="r"><span class="blk"></span><span class="lns"><span class="ln" style="width:12px"></span><span class="ln" style="width:8px"></span></span></span><span class="r"><span class="blk"></span><span class="lns"><span class="ln" style="width:12px"></span><span class="ln" style="width:8px"></span></span></span></span></span>
+                <span class="txt"><span class="nm">{{ $t('m.cardStyle3') }}</span><span class="ds">{{ $t('m.styleDesc3') }}</span></span>
+              </button>
             </div>
-          </el-col>
-          <el-col :span="12">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="100px">
-                <template #prepend><span class="setting-label">{{$t('m.coverWidth')}}</span></template>
-                <el-input-number v-model="setting.collectionCoverWidth" :min="80" :max="800" :step="10" :value-on-clear="220" controls-position="right" placeholder="220" @change="handleCoverStyleChange" />
-              </NameFormItem>
+            <div class="param-wrap">
+              <template v-if="activeCollectionCardStyle === '1'">
+                <div class="fgrid c3">
+                  <div class="field"><span class="lb">{{ $t('m.uiZoom') }}</span><span class="ctl"><el-input-number v-model="setting.collectionUiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">%</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.coverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.collectionCoverWidth" :min="80" :max="800" :step="10" :value-on-clear="220" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.coverHeight') }}</span><span class="ctl"><el-input-number v-model="setting.collectionCoverHeight" :min="100" :max="1200" :step="10" :value-on-clear="360" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                </div>
+                <div class="fgrid c2">
+                  <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.collectionCardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.collectionCardGapH" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                </div>
+              </template>
+              <template v-else-if="activeCollectionCardStyle === '2'">
+                <div class="fgrid c3">
+                  <div class="field"><span class="lb">{{ $t('m.uiZoom') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle2UiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">%</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.coverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle2CoverWidth" :min="80" :max="800" :step="10" :value-on-clear="140" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.coverHeight') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle2CoverHeight" :min="100" :max="1200" :step="10" :value-on-clear="220" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                </div>
+                <div class="fgrid c2">
+                  <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle2CardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle2CardGapH" :min="0" :max="40" :step="2" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                </div>
+              </template>
+              <template v-else>
+                <div class="fgrid c3">
+                  <div class="field"><span class="lb">{{ $t('m.uiZoom') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3UiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">%</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3RowHeight') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3RowHeight" :min="64" :max="240" :step="4" :value-on-clear="96" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CoverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.coverWidthCap') }}</span></span></div>
+                </div>
+                <div class="fgrid c2">
+                  <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3GapV" :min="4" :max="40" :step="2" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.gapVLower') }}</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3GapH" :min="0" :max="40" :step="2" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                </div>
+              </template>
+              <div class="sumline">
+                <span>{{ collectionSummary }}</span>
+                <span v-if="collectionClampHint" class="clamp">{{ collectionClampHint }}</span>
+                <a class="reset-link" role="button" tabindex="0" @click="resetCollectionStyleDefaults" @keydown.enter.prevent="resetCollectionStyleDefaults">{{ $t('m.resetDefaults') }}</a>
+              </div>
             </div>
-          </el-col>
-          <el-col :span="12">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="100px">
-                <template #prepend><span class="setting-label">{{$t('m.coverHeight')}}</span></template>
-                <el-input-number v-model="setting.collectionCoverHeight" :min="100" :max="1200" :step="10" :value-on-clear="360" controls-position="right" placeholder="360" @change="handleCoverStyleChange" />
-              </NameFormItem>
-            </div>
-          </el-col>
-        </el-row>
-        <el-row :gutter="8">
-          <el-col :span="12">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="100px">
-                <template #prepend><span class="setting-label">{{$t('m.cardGapV')}}</span></template>
-                <el-input-number v-model="setting.collectionCardGapV" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="saveSetting" />
-              </NameFormItem>
-            </div>
-          </el-col>
-          <el-col :span="12">
-            <div class="setting-line">
-              <NameFormItem class="label-input" prependWidth="100px">
-                <template #prepend><span class="setting-label">{{$t('m.cardGapH')}}</span></template>
-                <el-input-number v-model="setting.collectionCardGapH" :min="0" :max="40" :step="2" :value-on-clear="6" controls-position="right" placeholder="6" @change="saveSetting" />
-              </NameFormItem>
-            </div>
-          </el-col>
-        </el-row>
-        </template>
+            <div class="swgroup"><div class="swgrid">
+              <el-switch v-for="item in collVisItems" :key="item.key" v-model="setting[item.key]" :active-text="$t(item.label)" @change="saveSetting" />
+            </div></div>
+          </div>
+        </div>
 
         <!-- 工具栏按钮自定义(设置按钮始终保留) -->
         <div class="advanced-section-title"><span class="label-with-hint">{{$t('m.toolbarButtons')}}<SettingHint :title="$t('m.toolbarButtons')" :lines="[$t('m.hintToolbarButtons'), $t('m.toolbarButtonsHint')]" /></span></div>
@@ -2467,49 +2264,52 @@ const handleCustomThemeChange = () => {
   }
   saveSetting()
 }
-// 封面尺寸 / 间距(清空即回到默认:宽 220、高 360、间距 6)
+// 封面尺寸 / 间距(清空即回到默认)。三套样式 + 合集三套样式各自独立兜底。
+// 三号:行高下限 64(56 时内高仅 44,会被读成渲染坏了)、间距 V 下限 4。
 const handleCoverStyleChange = () => {
   fillNumberDefault('coverWidth', 220, 80, 800)
   fillNumberDefault('coverHeight', 360, 100, 1200)
   fillNumberDefault('cardGapV', 6, 0, 40)
   fillNumberDefault('cardGapH', 6, 0, 40)
-  // 二号样式的第二套尺寸:清空时回到参考图的默认值(140×210,间距 6/8,缩放 100)
   const fill2 = (key, def, min, max) => {
     let v = Number(setting.value[key])
     if (!Number.isFinite(v) || v === 0) v = def
     setting.value[key] = Math.min(max, Math.max(min, v))
   }
+  // 主界面二号
   fill2('style2UiZoom', 100, 50, 300)
   fill2('style2CoverWidth', 140, 80, 800)
   fill2('style2CoverHeight', 220, 100, 1200)
   fill2('style2CardGapV', 6, 0, 40)
   fill2('style2CardGapH', 8, 0, 40)
-  // 合集界面卡片的独立尺寸(抽屉):清空同样回到默认值
+  // 主界面三号
+  fill2('style3UiZoom', 100, 50, 300)
+  fill2('style3RowHeight', 96, 64, 240)
+  fill2('style3CoverWidth', 64, 40, 200)
+  fill2('style3GapV', 8, 4, 40)
+  fill2('style3GapH', 8, 0, 40)
+  // 合集一号(抽屉)
   fill2('collectionUiZoom', 100, 50, 300)
   fill2('collectionCoverWidth', 220, 80, 800)
   fill2('collectionCoverHeight', 360, 100, 1200)
   fill2('collectionCardGapV', 6, 0, 40)
   fill2('collectionCardGapH', 6, 0, 40)
+  // 合集二号
+  fill2('collectionStyle2UiZoom', 100, 50, 300)
+  fill2('collectionStyle2CoverWidth', 140, 80, 800)
+  fill2('collectionStyle2CoverHeight', 220, 100, 1200)
+  fill2('collectionStyle2CardGapV', 6, 0, 40)
+  fill2('collectionStyle2CardGapH', 8, 0, 40)
+  // 合集三号
+  fill2('collectionStyle3UiZoom', 100, 50, 300)
+  fill2('collectionStyle3RowHeight', 96, 64, 240)
+  fill2('collectionStyle3CoverWidth', 64, 40, 200)
+  fill2('collectionStyle3GapV', 8, 4, 40)
+  fill2('collectionStyle3GapH', 8, 0, 40)
   applyCoverStyle(setting.value)
-  // 卡片尺寸 / 样式变了:主界面首屏要重新填满(二号样式一行能放十几张,24 张不到一屏时
-  // 没有滚动条也滚不动) —— 通知 App 重新铺一次
+  // 卡片尺寸 / 样式变了:主界面首屏要重新填满 —— 通知 App 重新铺一次
   emit('cover-style-change')
   saveSetting()
-}
-// 合集界面卡片「二号样式」开关:
-// 打开时如果合集尺寸还是旧默认(220×360、间距 6/6),顺手换成与主界面二号样式一致的密度
-// (140×220、间距 6/8) —— 否则抽屉里一张卡比抽屉还高,标题直接被裁在可视区外。
-const handleCollectionStyle2Change = () => {
-  const s = setting.value
-  if (s.collectionCardStyle2 &&
-      Number(s.collectionCoverWidth) === 220 && Number(s.collectionCoverHeight) === 360 &&
-      Number(s.collectionCardGapV) === 6 && Number(s.collectionCardGapH) === 6 &&
-      Number(s.collectionUiZoom) === 100) {
-    s.collectionCoverWidth = 140
-    s.collectionCoverHeight = 220
-    s.collectionCardGapH = 8
-  }
-  handleCoverStyleChange()
 }
 // 界面缩放:和 Ctrl + 鼠标滚轮是同一套(Electron 的 zoom level,每级 ×1.2)
 //   百分比 = 1.2^level,反解 level = log(百分比 / 100) / log(1.2)
@@ -3334,6 +3134,62 @@ onMounted(() => {
           setting.value[key] = false
         }
         setting.value.coverOnly = false
+      }
+      // ---------- 卡片样式 v2:每套样式独立显隐/尺寸字段 ----------
+      // 老配置缺这些键 → 补默认值。两区块字段同构、各自独立。
+      const cssV2Defaults = {
+        // 主界面二号显隐
+        style2HideTitle: false, style2FillCover: false,
+        // 主界面三号显隐(无「隐藏合集角标」:条状卡没有合集角标元素)
+        style3HideTitle: false, style3HideNonTag: false, style3HideRating: false,
+        style3HidePageCount: false, style3HideReadCount: false, style3HideReadButton: false,
+        // 主界面三号尺寸
+        style3UiZoom: 100, style3GapV: 8, style3GapH: 8,
+        // 合集三选一(与 collectionCardStyle2 互斥)
+        collectionCardStyle3: false,
+        // 合集二号显隐/尺寸
+        collectionStyle2HideTitle: false, collectionStyle2FillCover: false,
+        collectionStyle2UiZoom: 100, collectionStyle2CoverWidth: 140, collectionStyle2CoverHeight: 220,
+        collectionStyle2CardGapV: 6, collectionStyle2CardGapH: 8,
+        // 合集三号显隐/尺寸
+        collectionStyle3HideTitle: false, collectionStyle3HideNonTag: false, collectionStyle3HideRating: false,
+        collectionStyle3HidePageCount: false, collectionStyle3HideReadCount: false, collectionStyle3HideReadButton: false,
+        collectionStyle3UiZoom: 100, collectionStyle3RowHeight: 96, collectionStyle3CoverWidth: 64,
+        collectionStyle3GapV: 8, collectionStyle3GapH: 8,
+        // 一次性迁移标记(内部字段,UI 不展示)
+        cardStyleV2Migrated: false
+      }
+      for (const [k, v] of Object.entries(cssV2Defaults)) {
+        if (res[k] === undefined) setting.value[k] = v
+      }
+      // 老配置 style3GapV=0 按 4 生效(三号间距 V 下限 4),合集三号同理
+      if (Number(res.style3GapV) === 0) setting.value.style3GapV = 4
+      if (Number(res.collectionStyle3GapV) === 0) setting.value.collectionStyle3GapV = 4
+      // 一次性迁移:老配置 collectionCardStyleEnabled=false 表示「合集跟随主界面」,
+      // 把主界面当前样式复制到合集;一号显隐值复制成二/三号初值,升级后观感不变。
+      // 用标记防止用户之后在设置里改了合集样式又被反复覆盖。
+      if (!setting.value.cardStyleV2Migrated) {
+        if (res.collectionCardStyleEnabled === false) {
+          setting.value.collectionCardStyle2 = !!setting.value.cardStyle2
+          setting.value.collectionCardStyle3 = !!setting.value.cardStyle3
+        }
+        setting.value.style2HideTitle = !!setting.value.hideTitle
+        setting.value.style2FillCover = !!setting.value.fillCover
+        setting.value.style3HideTitle = !!setting.value.hideTitle
+        setting.value.style3HideNonTag = !!setting.value.hideNonTag
+        setting.value.style3HideRating = !!setting.value.hideRating
+        setting.value.style3HidePageCount = !!setting.value.hidePageCount
+        setting.value.style3HideReadCount = !!setting.value.hideReadCount
+        setting.value.style3HideReadButton = !!setting.value.hideReadButton
+        setting.value.collectionStyle2HideTitle = !!setting.value.collectionHideTitle
+        setting.value.collectionStyle2FillCover = !!setting.value.collectionFillCover
+        setting.value.collectionStyle3HideTitle = !!setting.value.collectionHideTitle
+        setting.value.collectionStyle3HideNonTag = !!setting.value.collectionHideNonTag
+        setting.value.collectionStyle3HideRating = !!setting.value.collectionHideRating
+        setting.value.collectionStyle3HidePageCount = !!setting.value.collectionHideCount
+        setting.value.collectionStyle3HideReadCount = !!setting.value.collectionHideReadCount
+        setting.value.collectionStyle3HideReadButton = !!setting.value.collectionHideReadButton
+        setting.value.cardStyleV2Migrated = true
       }
       // 自定义主题/图标/工具栏/分页默认值
       if (res.themeCustomBg === undefined) setting.value.themeCustomBg = ''
@@ -5486,29 +5342,219 @@ const doEhPasswordLogin = async () => {
   }
 }
 // ---------- 卡片样式:一号(经典/填充封面) / 二号(密集网格) / 三号(条状列表) ----------
-// 三者**互斥**(用户要求)。以前 fillCover 和 cardStyle2 是两个独立开关,
-// 同时打开时行为取决于模板里的判断顺序,结果不确定 —— 现在统一成一个选择。
+// 主界面与合集界面各自三选一、互斥;两区块字段完全同构、独立存储。
 const activeCardStyle = computed(() => {
   const s = setting.value || {}
   if (s.cardStyle3) return '3'
   if (s.cardStyle2) return '2'
   return '1'
 })
-// 折叠面板的展开项:只展开当前样式,切换时跟着换(「启用后展开」)
+const activeCollectionCardStyle = computed(() => {
+  const s = setting.value || {}
+  if (s.collectionCardStyle3) return '3'
+  if (s.collectionCardStyle2) return '2'
+  return '1'
+})
+// 旧版折叠面板状态:新结构不再依赖,保留仅为兼容外部引用
 const cardStylePanelOpen = ref(['style1'])
-// 打开设置面板时,默认展开「当前正在用的那种样式」
 watch(() => [setting.value && setting.value.cardStyle2, setting.value && setting.value.cardStyle3], () => {
   cardStylePanelOpen.value = ['style' + activeCardStyle.value]
 }, { immediate: true })
+
 const setActiveCardStyle = (v) => {
   const s = setting.value
   const style = String(v || '1')
-  // 三个开关互斥设置:选中的那个为 true,其余强制 false
   s.cardStyle2 = style === '2'
   s.cardStyle3 = style === '3'
-  // 一号样式内部还有「填充封面」这个子形态,选一号时保留用户原来的 fillCover 偏好
-  if (style !== '1') s.fillCover = false
   cardStylePanelOpen.value = ['style' + style]
+  handleCoverStyleChange()
+}
+const setActiveCollectionCardStyle = (v) => {
+  const s = setting.value
+  const style = String(v || '1')
+  s.collectionCardStyle2 = style === '2'
+  s.collectionCardStyle3 = style === '3'
+  handleCoverStyleChange()
+}
+
+// 每种样式真正拥有的显隐开关:没有的功能不渲染、不置灰、不占位。
+// 主界面:一号 9 项 / 二号 2 项 / 三号 6 项;合集:一号 8 项 / 二号 2 项 / 三号 6 项。
+// 三号条状卡没有合集角标元素,所以不渲染「隐藏合集角标」开关(合集抽屉卡同理)。
+const MAIN_VIS_BY_STYLE = {
+  1: [
+    { key: 'hideBookmarkButton', label: 'm.hideBookmarkButton' },
+    { key: 'hidePageCount', label: 'm.hidePageCount' },
+    { key: 'hideReadCount', label: 'm.hideReadCount' },
+    { key: 'hideReadButton', label: 'm.hideReadButton' },
+    { key: 'hideNonTag', label: 'm.hideNonTag' },
+    { key: 'hideTitle', label: 'm.hideTitle' },
+    { key: 'hideRating', label: 'm.hideRating' },
+    { key: 'hideCollectionTag', label: 'm.hideCollectionTag' },
+    { key: 'fillCover', label: 'm.fillCover' }
+  ],
+  2: [
+    { key: 'style2HideTitle', label: 'm.hideTitle' },
+    { key: 'style2FillCover', label: 'm.fillCover' }
+  ],
+  3: [
+    { key: 'style3HideTitle', label: 'm.hideTitle' },
+    { key: 'style3HideNonTag', label: 'm.hideNonTag' },
+    { key: 'style3HideRating', label: 'm.hideRating' },
+    { key: 'style3HidePageCount', label: 'm.hidePageCount' },
+    { key: 'style3HideReadCount', label: 'm.hideReadCount' },
+    { key: 'style3HideReadButton', label: 'm.hideReadButton' }
+  ]
+}
+const COLL_VIS_BY_STYLE = {
+  1: [
+    { key: 'collectionHideBookmarkButton', label: 'm.hideBookmarkButton' },
+    { key: 'collectionHideCount', label: 'm.hidePageCount' },
+    { key: 'collectionHideReadCount', label: 'm.hideReadCount' },
+    { key: 'collectionHideReadButton', label: 'm.hideReadButton' },
+    { key: 'collectionHideNonTag', label: 'm.hideNonTag' },
+    { key: 'collectionHideTitle', label: 'm.hideTitle' },
+    { key: 'collectionHideRating', label: 'm.hideRating' },
+    { key: 'collectionFillCover', label: 'm.fillCover' }
+  ],
+  2: [
+    { key: 'collectionStyle2HideTitle', label: 'm.hideTitle' },
+    { key: 'collectionStyle2FillCover', label: 'm.fillCover' }
+  ],
+  3: [
+    { key: 'collectionStyle3HideTitle', label: 'm.hideTitle' },
+    { key: 'collectionStyle3HideNonTag', label: 'm.hideNonTag' },
+    { key: 'collectionStyle3HideRating', label: 'm.hideRating' },
+    { key: 'collectionStyle3HidePageCount', label: 'm.hidePageCount' },
+    { key: 'collectionStyle3HideReadCount', label: 'm.hideReadCount' },
+    { key: 'collectionStyle3HideReadButton', label: 'm.hideReadButton' }
+  ]
+}
+const mainVisItems = computed(() => MAIN_VIS_BY_STYLE[activeCardStyle.value] || [])
+const collVisItems = computed(() => COLL_VIS_BY_STYLE[activeCollectionCardStyle.value] || [])
+
+// ---------- 总结行:与 utils.js applyCoverStyle 三号公式保持一致(仅用于显示) ----------
+// 档位只看设置值(与缩放无关):≥88 标准 / <88 紧凑。
+const densityTierOf = (rowHeight) => (Number(rowHeight) || 96) >= 88 ? 'standard' : 'compact'
+const style3Metrics = (zoomVal, rowHeight, coverCap, gapV, gapH) => {
+  const zoomPct = Math.max(50, Math.min(300, Number(zoomVal) || 100))
+  const z = zoomPct / 100
+  const rh = Number(rowHeight) || 96
+  const cap = Number(coverCap) || 64
+  const innerH = (rh - 12) * z
+  const rawW = cap * z
+  let w = Math.floor(Math.min(rawW, innerH * 0.75))
+  let minClamped = false
+  if (w < 24) { w = 24; minClamped = true }
+  const capPx = Math.floor(rawW)
+  return {
+    rh, zoomPct, cap, capPx,
+    rowPx: Math.round(rh * z),
+    tier: densityTierOf(rh),
+    gapV: Math.max(4, Math.round((Number(gapV) || 8) * z)),
+    gapH: Math.round((Number(gapH) || 8) * z),
+    w, h: w / 0.75,
+    capClamped: !minClamped && capPx > w,
+    minClamped
+  }
+}
+const sum3Text = (m) => t('m.cardSum3', {
+  row: m.rh,
+  tier: t(m.tier === 'standard' ? 'm.cardTierStandard' : 'm.cardTierCompact'),
+  zoom: m.zoomPct,
+  rowpx: m.rowPx,
+  gv: m.gapV,
+  gh: m.gapH,
+  w: m.w,
+  h: Math.round(m.h * 100) / 100
+})
+const sum12Text = (w, h, gv, gh) => t('m.cardSum12', {
+  w: Math.round(w), h: Math.round(h), gv: Math.round(gv), gh: Math.round(gh)
+})
+const clampHintOf = (m) => {
+  if (m.minClamped) return t('m.cardCoverMinClamp')
+  if (m.capClamped) return t('m.cardCoverClamp', { cap: m.capPx, actual: m.w })
+  return ''
+}
+const mainSummary = computed(() => {
+  const s = setting.value || {}
+  const st = activeCardStyle.value
+  if (st === '3') return sum3Text(style3Metrics(s.style3UiZoom, s.style3RowHeight, s.style3CoverWidth, s.style3GapV, s.style3GapH))
+  // 一号走 Electron 全局 zoom,不影响 CSS 尺寸,故 z 固定 1
+  const z = st === '2' ? (Number(s.style2UiZoom) || 100) / 100 : 1
+  const w = (st === '2' ? (Number(s.style2CoverWidth) || 140) : (Number(s.coverWidth) || 220)) * z
+  const h = (st === '2' ? (Number(s.style2CoverHeight) || 220) : (Number(s.coverHeight) || 360)) * z
+  const gv = (st === '2' ? (Number(s.style2CardGapV) || 6) : (Number(s.cardGapV) || 6)) * z
+  const gh = (st === '2' ? (Number(s.style2CardGapH) || 8) : (Number(s.cardGapH) || 6)) * z
+  return sum12Text(w, h, gv, gh)
+})
+const mainClampHint = computed(() => activeCardStyle.value === '3'
+  ? clampHintOf(style3Metrics(setting.value.style3UiZoom, setting.value.style3RowHeight,
+      setting.value.style3CoverWidth, setting.value.style3GapV, setting.value.style3GapH))
+  : '')
+const collectionSummary = computed(() => {
+  const s = setting.value || {}
+  const st = activeCollectionCardStyle.value
+  if (st === '3') return sum3Text(style3Metrics(s.collectionStyle3UiZoom, s.collectionStyle3RowHeight,
+    s.collectionStyle3CoverWidth, s.collectionStyle3GapV, s.collectionStyle3GapH))
+  const z = (Number(st === '2' ? s.collectionStyle2UiZoom : s.collectionUiZoom) || 100) / 100
+  const w = (st === '2' ? (Number(s.collectionStyle2CoverWidth) || 140) : (Number(s.collectionCoverWidth) || 220)) * z
+  const h = (st === '2' ? (Number(s.collectionStyle2CoverHeight) || 220) : (Number(s.collectionCoverHeight) || 360)) * z
+  const gv = (st === '2' ? (Number(s.collectionStyle2CardGapV) || 6) : (Number(s.collectionCardGapV) || 6)) * z
+  const gh = (st === '2' ? (Number(s.collectionStyle2CardGapH) || 8) : (Number(s.collectionCardGapH) || 6)) * z
+  return sum12Text(w, h, gv, gh)
+})
+const collectionClampHint = computed(() => activeCollectionCardStyle.value === '3'
+  ? clampHintOf(style3Metrics(setting.value.collectionStyle3UiZoom, setting.value.collectionStyle3RowHeight,
+      setting.value.collectionStyle3CoverWidth, setting.value.collectionStyle3GapV, setting.value.collectionStyle3GapH))
+  : '')
+
+// ---------- 各区块「恢复默认值」:只恢复当前样式的参数与显隐 ----------
+const MAIN_STYLE_DEFAULTS = {
+  1: {
+    coverWidth: 220, coverHeight: 360, cardGapV: 6, cardGapH: 6,
+    hideBookmarkButton: false, hidePageCount: false, hideReadCount: false, hideReadButton: false,
+    hideNonTag: false, hideTitle: false, hideRating: false, hideCollectionTag: false, fillCover: false
+  },
+  2: {
+    style2UiZoom: 100, style2CoverWidth: 140, style2CoverHeight: 220, style2CardGapV: 6, style2CardGapH: 8,
+    style2HideTitle: false, style2FillCover: false
+  },
+  3: {
+    style3UiZoom: 100, style3RowHeight: 96, style3CoverWidth: 64, style3GapV: 8, style3GapH: 8,
+    style3HideTitle: false, style3HideNonTag: false, style3HideRating: false, style3HidePageCount: false,
+    style3HideReadCount: false, style3HideReadButton: false
+  }
+}
+const COLL_STYLE_DEFAULTS = {
+  1: {
+    collectionUiZoom: 100, collectionCoverWidth: 220, collectionCoverHeight: 360,
+    collectionCardGapV: 6, collectionCardGapH: 6,
+    collectionHideBookmarkButton: false, collectionHideCount: false, collectionHideReadCount: false,
+    collectionHideReadButton: false, collectionHideNonTag: false, collectionHideTitle: false,
+    collectionHideRating: false, collectionFillCover: false
+  },
+  2: {
+    collectionStyle2UiZoom: 100, collectionStyle2CoverWidth: 140, collectionStyle2CoverHeight: 220,
+    collectionStyle2CardGapV: 6, collectionStyle2CardGapH: 8,
+    collectionStyle2HideTitle: false, collectionStyle2FillCover: false
+  },
+  3: {
+    collectionStyle3UiZoom: 100, collectionStyle3RowHeight: 96, collectionStyle3CoverWidth: 64,
+    collectionStyle3GapV: 8, collectionStyle3GapH: 8,
+    collectionStyle3HideTitle: false, collectionStyle3HideNonTag: false, collectionStyle3HideRating: false,
+    collectionStyle3HidePageCount: false, collectionStyle3HideReadCount: false, collectionStyle3HideReadButton: false
+  }
+}
+const resetMainStyleDefaults = () => {
+  const st = activeCardStyle.value
+  if (st === '1') uiZoomPercent.value = 100
+  const defs = MAIN_STYLE_DEFAULTS[st] || {}
+  for (const [k, v] of Object.entries(defs)) setting.value[k] = v
+  handleCoverStyleChange()
+}
+const resetCollectionStyleDefaults = () => {
+  const defs = COLL_STYLE_DEFAULTS[activeCollectionCardStyle.value] || {}
+  for (const [k, v] of Object.entries(defs)) setting.value[k] = v
   handleCoverStyleChange()
 }
 // ---------- 下载记录表(用户要求 4) ----------
@@ -6077,6 +6123,213 @@ defineExpose({
       .el-switch
         flex: none
         font-weight: 400
+  // ---------- 卡片样式:两个平级区块(主界面 / 合集界面),结构完全同构 ----------
+  .card-style-block
+    border: 1px solid var(--el-border-color-lighter)
+    border-radius: 8px
+    margin-top: 12px
+    background: var(--el-bg-color)
+    overflow: hidden
+    .block-hd
+      display: flex
+      align-items: center
+      gap: 8px
+      height: 42px
+      padding: 0 16px
+      background: var(--el-fill-color-extra-light)
+      border-bottom: 1px solid var(--el-border-color-extra-light)
+      font-size: 13px
+      font-weight: 700
+      color: var(--el-text-color-primary)
+      .bh-dot
+        width: 8px
+        height: 8px
+        border-radius: 2px
+        background: var(--el-color-primary)
+        flex: none
+        &.bh-dot-2
+          background: var(--el-color-warning)
+      .bh-note
+        font-weight: 400
+        font-size: 11px
+        color: var(--el-text-color-secondary)
+    .style-block
+      padding: 14px 16px 18px
+      .segpick
+        display: flex
+        height: 72px
+        border: 1px solid var(--el-border-color-light)
+        border-radius: 6px
+        overflow: hidden
+        background: var(--el-bg-color)
+        .si
+          position: relative
+          flex: 1
+          display: flex
+          align-items: center
+          gap: 12px
+          padding: 8px 12px
+          background: var(--el-bg-color)
+          border: 0
+          border-right: 1px solid var(--el-border-color-extra-light)
+          cursor: pointer
+          text-align: left
+          font-family: inherit
+          min-width: 0
+          transition: background .15s
+          &:last-child
+            border-right: 0
+          &:hover
+            background: var(--el-fill-color-lighter)
+          &.on
+            background: var(--el-color-primary-light-9)
+            &::after
+              content: ""
+              position: absolute
+              left: 0
+              right: 0
+              bottom: 0
+              height: 2px
+              background: var(--el-color-primary)
+            .nm
+              color: var(--el-color-primary)
+            .thumb .blk:first-child
+              background: var(--el-color-primary-light-5)
+          &:focus-visible
+            outline: 2px solid var(--el-color-primary)
+            outline-offset: -2px
+          .txt
+            min-width: 0
+            flex: 1
+          .nm
+            font-size: 14px
+            font-weight: 600
+            color: var(--el-text-color-primary)
+            line-height: 1.25
+          .ds
+            font-size: 11px
+            color: var(--el-text-color-secondary)
+            line-height: 1.4
+            margin-top: 2px
+            display: -webkit-box
+            -webkit-line-clamp: 2
+            -webkit-box-orient: vertical
+            overflow: hidden
+      .thumb
+        width: 40px
+        height: 56px
+        flex: none
+        border: 1px solid var(--el-border-color)
+        border-radius: 3px
+        background: var(--el-fill-color-lighter)
+        display: flex
+        align-items: center
+        justify-content: center
+        overflow: hidden
+        .col
+          display: flex
+          flex-direction: column
+          align-items: center
+          gap: 3px
+        .blk
+          background: #ccd6e2
+          border-radius: 1px
+        .ln
+          height: 3px
+          background: #c3ccd6
+          border-radius: 1px
+        .grid2x2
+          display: grid
+          grid-template-columns: 16px 16px
+          grid-template-rows: 21px 21px
+          gap: 3px
+        .rows3
+          display: flex
+          flex-direction: column
+          gap: 4px
+          .r
+            display: flex
+            gap: 2px
+            align-items: center
+            .blk
+              width: 10px
+              height: 10px
+            .lns
+              display: flex
+              flex-direction: column
+              gap: 2px
+      .param-wrap
+        margin-left: 14px
+        padding-top: 14px
+        .fgrid
+          display: grid
+          gap: 10px 18px
+          &.c3
+            grid-template-columns: repeat(3, 1fr)
+          &.c2
+            grid-template-columns: repeat(2, 1fr)
+            margin-top: 10px
+        .field
+          display: flex
+          align-items: center
+          gap: 7px
+          min-width: 0
+          .lb
+            width: 86px
+            flex: none
+            font-size: 12px
+            color: var(--el-text-color-regular)
+            white-space: nowrap
+          .ctl
+            display: flex
+            align-items: center
+            gap: 5px
+            min-width: 0
+            .el-input-number
+              width: 104px
+          .unit
+            font-size: 11px
+            color: var(--el-text-color-secondary)
+            white-space: nowrap
+          .calc
+            font-size: 10.5px
+            color: var(--el-text-color-secondary)
+            white-space: nowrap
+            background: var(--el-fill-color)
+            border-radius: 3px
+            padding: 1px 5px
+        .sumline
+          display: flex
+          align-items: center
+          gap: 6px
+          flex-wrap: wrap
+          margin: 12px 0 0
+          font-size: 11.5px
+          color: var(--el-text-color-secondary)
+          line-height: 1.7
+          .clamp
+            color: var(--el-color-warning)
+          .reset-link
+            margin-left: auto
+            font-size: 11.5px
+            color: var(--el-color-primary)
+            text-decoration: none
+            cursor: pointer
+            &:hover
+              text-decoration: underline
+      .swgroup
+        margin: 18px 0 0 14px
+        padding-top: 14px
+        border-top: 1px solid var(--el-border-color-extra-light)
+      .swgrid
+        display: grid
+        grid-template-columns: repeat(4, 1fr)
+        gap: 12px 8px
+        .el-switch
+          font-size: 12.5px
+          color: var(--el-text-color-regular)
+          .el-switch__label
+            white-space: nowrap
   // 设置项说明文字(灰字小提示)
   .setting-hint
     font-size: 12px
