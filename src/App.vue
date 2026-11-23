@@ -6007,6 +6007,13 @@ export default defineComponent({
       if (task.phase === 'links' && task.status === 'downloading') return ''
       if ((task.fallback | 0) > 0) return this.$t('m.downloadFallback', { n: task.fallback | 0 })
       if (task.status === 'waiting' && task.error === 'gp') return this.$t('m.downloadErrGpShort')
+      // 缺口页:磁盘上确实还差几页,必须显式告诉用户「还缺 N 页 / 缺哪几页」
+      if ((task.missing | 0) > 0) {
+        return this.$t('m.downloadMissingShort', {
+          n: task.missing | 0,
+          ranges: task.missingRanges || ''
+        })
+      }
       // 站点级封禁/IP 限速:照 JHenTai 的 pause 语义停在「等待中」,文案要说清「不是坏了,是等解封」
       if (task.status === 'waiting' && task.error === 'banned') return this.$t('m.downloadErrBannedShort')
       if (task.status === 'waiting' && task.error === 'imageLimit') return this.$t('m.downloadErrImageLimitShort')

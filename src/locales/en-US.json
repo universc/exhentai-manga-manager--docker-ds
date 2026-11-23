@@ -56,6 +56,7 @@
     "historyEmptyOnline": "No EH online history yet",
     "downloadErrGpShort": "Originals need GP (peak quota); the task is waiting",
     "downloadErrBannedShort": "EH temporarily banned this IP (too many requests). Paused; resumes after the ban lifts",
+    "downloadMissingShort": "Missing {n} page(s) ({ranges}). Click Resume to fill in",
     "downloadErrImageLimitShort": "EH image quota reached. Paused",
     "downloadErrDns": "DNS lookup failed — check your network or proxy settings",
     "downloadErrTimeout": "Connection timed out — EH may be rate-limiting or the network is down; press Resume in a moment",
@@ -1014,7 +1015,7 @@
     "characterNamesPlaceholder": "Enter character names, comma separated, press Enter or click to query",
     "customTheme": "Custom Theme",
     "hideReadButton": "Hide Read Buttons",
-    "hideNonTag": "Hide Status Tag",
+    "hideNonTag": "Hide Category",
     "hideTitle": "Hide Title",
     "toolbarButtons": "Toolbar Buttons",
     "toolbarAddButton": "Add button…",
@@ -1392,7 +1393,9 @@
     "cardCoverClamp": "(cap {cap} → actual {actual}, cover derived from row height)",
     "cardCoverMinClamp": "(cover clamped to minimum 24px)",
     "coverWidthCap": "Cap",
-    "gapVLower": "Min 4"
+    "gapVLower": "Min 4",
+    "showTags": "Show Tags",
+    "imageCountDate": "{n} images, added {date}"
   },
   "cm": {
     "title": "Title menu (right-click / long-press)",

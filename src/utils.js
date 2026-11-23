@@ -1159,6 +1159,7 @@ const defaultUiSettings = () => ({
   style3HidePageCount: false,
   style3HideReadCount: false,
   style3HideReadButton: false,
+  style3ShowTags: true,
 
   // 合集界面卡片:三选一(collectionCardStyle2 旧字段沿用) + 各自一套尺寸/显隐
   collectionCardStyle3: false,
@@ -1182,6 +1183,7 @@ const defaultUiSettings = () => ({
   collectionStyle3HidePageCount: false,
   collectionStyle3HideReadCount: false,
   collectionStyle3HideReadButton: false,
+  collectionStyle3ShowTags: true,
 
   themeCustomBg: '',
   themeCustomBgImage: '',

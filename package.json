@@ -1,7 +1,7 @@
 {
   "name": "exhentai-manga-manager",
   "private": true,
-  "version": "1.18.11",
+  "version": "1.18.12",
   "main": "index.js",
   "license": "MIT",
   "author": "SchneeHertz (modified fork by universc)",
@@ -115,5 +115,5 @@
     "vue-i18n": "^9.2.2",
     "vuedraggable": "^4.1.0"
   },
-  "buildTime": "20261124-0026"
+  "buildTime": "20261124-0223"
 }

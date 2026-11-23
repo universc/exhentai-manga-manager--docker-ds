@@ -56,6 +56,7 @@
     "historyEmptyOnline": "EH在线还没有阅读记录",
     "downloadErrGpShort": "原图需要 GP(高峰额度),已停在等待中",
     "downloadErrBannedShort": "EH 临时封禁了本机 IP(请求太频繁),已停在等待中,解封后自动继续",
+    "downloadMissingShort": "还缺 {n} 页({ranges}),点「继续」补齐",
     "downloadErrImageLimitShort": "已达 EH 图片配额上限,已停在等待中",
     "downloadErrDns": "域名解析失败:检查网络或代理设置",
     "downloadErrTimeout": "连接超时:EH 可能在限速或网络不通,稍后点「继续」重试",
@@ -1034,7 +1035,7 @@
     "characterNamesPlaceholder": "输入角色名,多个用逗号分隔,回车或点击查询",
     "customTheme": "自定义主题",
     "hideReadButton": "隐藏阅读按钮",
-    "hideNonTag": "隐藏标签",
+    "hideNonTag": "隐藏类别",
     "hideTitle": "隐藏标题",
     "toolbarButtons": "工具栏按钮",
     "toolbarAddButton": "添加按钮…",
@@ -1391,7 +1392,9 @@
     "cardCoverClamp": "（上限 {cap} → 实际 {actual}，封面已按行高反推）",
     "cardCoverMinClamp": "（封面已钳到下限 24px）",
     "coverWidthCap": "上限",
-    "gapVLower": "下限 4"
+    "gapVLower": "下限 4",
+    "showTags": "显示标签",
+    "imageCountDate": "{n}张图片，创建于 {date}"
   },
   "cm": {
     "title": "标题右键/长按菜单",

@@ -5748,6 +5748,9 @@ const publicDownload = (t) => ({
   bytes: t.bytes | 0, status: t.status, error: t.error || '', fallback: t.fallback | 0, gpBlocked: t.gpBlocked | 0,
   // 站点级拦截(ban / 配额):前端据此显示「等待中(IP 被限速)」而不是「失败」
   siteBlocked: t.siteBlocked || '',
+  // 缺口页数(收尾对账得出):>0 时界面要显示「还缺 N 页」,不能显示「已完成」
+  missing: t.missing | 0,
+  missingRanges: t.missingRanges || '',
   phase: t.phase || '', linkCount: t.linkCount | 0,
   // 移动到本地库之后的目标路径(空 = 还在下载目录)
   movedTo: t.movedTo || '',
@@ -5807,6 +5810,10 @@ const restoreDownloads = () => {
         // total 兜底:links 收集不全的老记录会出现 done+failed > total(235/218,实际 236 页)。
         // 任务已经停了不会再走 onProgress,所以在恢复时按 done+failed 修正一次。
         total: Math.max(Number(t.total) || 0, (Number(t.done) || 0) + (Number(t.failed) || 0), Number(t.pageCount) || 0),
+        // 缺口页数兜底:老记录没有 missing 字段。这里**不臆造**,
+        // 交给下次「继续」时由下载器对账得出真实缺口(见 ehDownload 收尾对账)。
+        missing: Number(t.missing) || 0,
+        missingRanges: String(t.missingRanges || ''),
         // 运行锁相关字段一律复位:重启后不可能有 worker 在跑
         running: false,
         pendingResume: false,
@@ -6573,6 +6580,13 @@ const runDownloadJob = (rec) => {
       if (u.linkCount) rec.linkCount = u.linkCount | 0
       if (u.total) { rec.phase = ''; rec.linkCount = 0 }
       if (u.lastError) rec.lastError = u.lastError
+      // ★EH 真实页数(.gpc 里的 "of N images"):记下来,续传时当 knownPageCount 用。
+      //   以前 pageCount 只在「从书架卡片发起下载」时由前端传,续传走记录没有这个值,
+      //   下载器内 total 就缩成 links.length —— 少收几页时永远发现不了缺口。
+      if (u.imageCount) rec.pageCount = Math.max(Number(rec.pageCount) || 0, Number(u.imageCount) || 0)
+      // ★缺口页数:收尾对账算出来的「磁盘上还差几页」,判定能不能算「已完成」必须看它
+      if (u.missing !== undefined) rec.missing = u.missing | 0
+      if (u.missingRanges !== undefined) rec.missingRanges = String(u.missingRanges || '')
       if (u.dir) rec.dir = u.dir
       const now = Date.now()
       if (u.finished || now - lastEmit > 400) {
@@ -6605,8 +6619,16 @@ const runDownloadJob = (rec) => {
     } else {
       // 有页失败就标成 failed(可「继续」补:继续时会跳过已下好的文件),不是 done ——
       // 否则用户看到 ✗ 却没有任何按钮能补齐(JHenTai 的 downloadFailed 也是可重下的状态)
-      rec.status = state.stopped ? 'paused' : ((rec.failed | 0) === 0 ? 'done' : 'failed')
-      if (rec.status === 'failed' && !rec.error) rec.error = (rec.lastError || '部分页面下载失败')
+      // ★判「已完成」必须同时满足:没被停 + 没有失败页 + **磁盘上没有缺页**。
+      //   以前只看 failed === 0,而续传时已有文件的页既不记 done 也不记 failed,
+      //   于是 187/190 这种明显没下完的也被判成 done(用户报的「未下载完却完成了」)。
+      const missing = rec.missing | 0
+      rec.status = state.stopped ? 'paused' : ((rec.failed | 0) === 0 && missing === 0 ? 'done' : 'failed')
+      if (rec.status === 'failed' && !rec.error) {
+        rec.error = missing > 0
+          ? ('还缺 ' + missing + ' 页' + (rec.missingRanges ? '(' + rec.missingRanges + ')' : '') + ',点「继续」补齐')
+          : (rec.lastError || '部分页面下载失败')
+      }
       // ⚠ 这里 status 只可能是 done / failed / paused,不可能是 waiting(gpBlocked 已在上面的分支分流),
       //   以前写成 `status === 'failed' || status === 'waiting'`,后半句是永远不成立的死代码。
       rec.nextRetryAt = rec.status === 'failed' ? Date.now() + retryDelayMs : 0
@@ -6617,6 +6639,14 @@ const runDownloadJob = (rec) => {
       }
     }
   }).catch((e) => {
+    // ★收页阶段就撞上封禁:下载器抛的是带 siteError 的错误 —— 走「等待中 + 自动重试」,
+    //   不能标 failed(否则解封后不会自己继续,用户得手动点)。
+    if (e && e.siteError) {
+      rec.status = 'waiting'
+      rec.error = e.siteError
+      rec.nextRetryAt = Date.now() + Math.max(1, Number(setting.retryIntervalMin) || 10) * 60000
+      return
+    }
     rec.status = state.stopped ? 'paused' : 'failed'
     rec.error = String((e && e.message) || e)
   }).finally(() => {

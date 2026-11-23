@@ -56,6 +56,7 @@
     "historyEmptyOnline": "EH在線還沒有閱讀記錄",
     "downloadErrGpShort": "原圖需要 GP(高峰額度),已停在等待中",
     "downloadErrBannedShort": "EH 暫時封鎖了本機 IP(請求太頻繁),已停在等待中,解封後自動繼續",
+    "downloadMissingShort": "還缺 {n} 頁({ranges}),點「繼續」補齊",
     "downloadErrImageLimitShort": "已達 EH 圖片配額上限,已停在等待中",
     "downloadErrDns": "網域解析失敗:檢查網路或代理設定",
     "downloadErrTimeout": "連線逾時:EH 可能在限速或網路不通,稍後點「繼續」重試",
@@ -1035,7 +1036,7 @@
     "characterNamesPlaceholder": "輸入角色名,多個用逗號分隔,回車或點擊查詢",
     "customTheme": "自定義主題",
     "hideReadButton": "隱藏閱讀按鈕",
-    "hideNonTag": "隱藏標籤",
+    "hideNonTag": "隱藏類別",
     "hideTitle": "隱藏標題",
     "toolbarButtons": "工具列按鈕",
     "toolbarAddButton": "添加按鈕…",
@@ -1392,7 +1393,9 @@
     "cardCoverClamp": "（上限 {cap} → 實際 {actual}，封面依條高反推）",
     "cardCoverMinClamp": "（封面已鉗到下限 24px）",
     "coverWidthCap": "上限",
-    "gapVLower": "下限 4"
+    "gapVLower": "下限 4",
+    "showTags": "顯示標籤",
+    "imageCountDate": "{n}張圖片，建立於 {date}"
   },
   "cm": {
     "title": "標題右鍵/長按選單",

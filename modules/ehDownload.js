@@ -260,7 +260,17 @@ const runGalleryDownload = async ({
   })
   // 一条都没收到时,区分「请求本身失败(限速/网络)」和「页面里确实没有页链接」
   if (!links.length) {
-    if (linkStats.failed) throw new Error('linksFailed: ' + (linkStats.lastError || 'request failed'))
+    const detail = String((linkStats && (linkStats.lastError || linkStats.lastEmpty)) || '')
+    // ★被封禁/限速时,收页阶段就一个链接都拿不到。这种要按「站点级」处理:
+    //   标 waiting 等解封,而不是 failed —— 否则一解封就自动重试的链路断掉。
+    const siteErr = ehSiteErrorOf(detail) || ehSiteErrorOf(String((linkStats && linkStats.lastEmpty) || ''))
+    if (siteErr && siteErr.kind !== 'reparse') {
+      const err = new Error('siteError: ' + siteErr.kind)
+      err.siteError = siteErr.kind
+      err.siteMessage = siteErr.message
+      throw err
+    }
+    if (linkStats.failed) throw new Error('linksFailed: ' + (detail || 'request failed'))
     if (linkStats.lastEmpty) throw new Error('linksFailed: ' + linkStats.lastEmpty)
     throw new Error('noPages')
   }
@@ -306,24 +316,33 @@ const runGalleryDownload = async ({
   dir = resolvedDir
   fs.mkdirSync(dir, { recursive: true })
 
-  // links 可能少收(EH 限速/反爬时静默丢页):与 EH 标注页数取大,
-  // 少的那几页会在下载时标失败,但计数不会出现 done > total
+  // links 可能少收(EH 限速/反爬时静默丢页):与 EH 标注页数取大,计数不会出现 done > total
   const total = Math.max(links.length, Number(knownPageCount) || 0)
-  // 断点续传的初始计数:**先把目录里已下好的页数出来**,让进度从真实值开始。
-  // 以前是边扫边数:继续下载后 done 先从 0 往上爬,界面进度条先掉到 0 再回来(用户看到的「短暂失灵」)。
+  // 断点续传的初始计数:**先扫一遍目录里已下好的页**,让进度从真实值开始。
+  // ⚠ 只统计「落在 1..total 序号范围内」的文件 —— 以前是 /^0*\d+\./ 全收,
+  //   目录里混进超范围的旧文件(换过位数/换过总页数)就会让 done 虚高,把缺口盖住。
   let existingDone = 0
   let existingBytes = 0
+  // 实际落地的页集合:收尾时用它算「真正缺哪几页」,不再只靠 failed 计数判断有没有下完
+  const havePage = new Set()
   try {
     if (fs.existsSync(dir)) {
       for (const f of fs.readdirSync(dir)) {
-        if (!/^0*\d+\./.test(f)) continue
+        const m = /^(\d+)\.[a-z0-9]+$/i.exec(f)
+        if (!m) continue
+        const n = Number(m[1])
+        if (!Number.isFinite(n) || n < 1 || n > total) continue
         const st = fs.statSync(path.join(dir, f))
-        if (st.size > 0) { existingDone += 1; existingBytes += st.size }
+        if (st.size > 0) { havePage.add(n); existingDone += 1; existingBytes += st.size }
       }
     }
   } catch (e) { /* 读不了就按 0 开始,不影响下载 */
   }
-  const update = { total, done: existingDone, failed: 0, bytes: existingBytes }
+  const update = {
+    total, done: existingDone, failed: 0, bytes: existingBytes,
+    // EH 标注的真实页数(links 可能少收):上层用它持久化 pageCount,续传时不再丢
+    imageCount: Number(knownPageCount) || 0
+  }
   onProgress({ ...update, dir })
 
   // 补零位数固定(见 indexPad 的注释):有旧文件就沿用旧文件的位数,否则至少 4 位
@@ -348,7 +367,7 @@ const runGalleryDownload = async ({
         const existing = existingIndex.get(index) || null
         if (existing) {
           const st = fs.statSync(path.join(dir, existing))
-          if (st.size > 0) { onProgress({ ...update, dir }); continue }
+          if (st.size > 0) { havePage.add(index); onProgress({ ...update, dir }); continue }
           // 空壳文件(上次下到一半被中断):先删掉,免得这一页最后留下 001.jpg + 0001.jpg 两份
           try { fs.rmSync(path.join(dir, existing), { force: true }) } catch (e) { /* 删不掉就让它留着 */ }
         }
@@ -395,6 +414,7 @@ const runGalleryDownload = async ({
             const bytes = gate && gate.slot
               ? await gate.slot(() => downloadFile(target, path.join(dir, name + '.' + extOf(target)), { proxy, cookie, referer: links[i] }))
               : await downloadFile(target, path.join(dir, name + '.' + extOf(target)), { proxy, cookie, referer: links[i] })
+            havePage.add(index)
             update.done += 1
             update.bytes += bytes
             if (limiter) await limiter.add(bytes)
@@ -435,8 +455,133 @@ const runGalleryDownload = async ({
     }
   }
   await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, total)) }, worker))
+
+  // ★补缺轮:worker 正常跑完后,对「有页链接但磁盘上还没有」的页再补抓一次。
+  //   为什么要单独一轮:续传时那些命中已有文件的页全程走 continue,不会发请求,
+  //   于是「链接够但文件缺」(上次写盘中断、被查杀删掉、位数不一致)永远补不上,
+  //   而 failed 又是 0 —— 表现就是「显示已完成,但页数不够」。
+  // ★第一件事:如果缺的页「连页链接都没有」(收页阶段被限速吞掉),先补收一次页链接。
+  //   照 JHenTai parseImageHrefTask:哪一页缺,就重新解析覆盖它的那一页缩略图分页;
+  //   这里用「整体重收一次」实现,效果等价且实现简单。重收时若撞上封禁,按站点级处理。
+  //   不加这一步的话,188-190 这种「压根没有链接」的缺口永远不会触发任何请求,
+  //   封禁也就永远检测不到 —— 界面只会显示「还缺 3 页」,用户点继续也没用。
+  if (!state.stopped && !update.siteBlocked && havePage.size < total) {
+    const needMoreLinks = (() => {
+      for (let n = 1; n <= total; n++) if (!havePage.has(n) && n > links.length) return true
+      return false
+    })()
+    if (needMoreLinks) {
+      try {
+        update.phase = 'links'
+        onProgress({ ...update, dir })
+        // 用独立的 stats:上一次收页的残留(尤其 lastEmpty)会把这次的结果带偏
+        const againStats = {}
+        // ★必须先清掉画廊首页/各分页的缓存,否则这次「重收」拿到的还是第一次那份 187 条
+        //   (页面缓存 TTL 1 小时),既补不到链接、也看不到封禁 —— 等于白跑一趟。
+        for (let pg = 0; pg < 40; pg++) {
+          try { pageCacheDelete(pg === 0 ? galleryUrl : galleryUrl + (galleryUrl.includes('?') ? '&' : '?') + 'p=' + pg, cookie) } catch (e) { /* 忽略 */ }
+        }
+        const again = await listGalleryPageLinks(galleryUrl, {
+          proxy, cookie, limit: 5000, maxPages: 200, stats: againStats, gate
+        })
+        if (again.length > links.length) {
+          // 补到的链接追加到后面(前面已解析过的不动,序号含义不变)
+          for (let k = links.length; k < again.length; k++) links.push(again[k])
+        } else if (!again.length) {
+          // ★一条都没补到:先看是不是被封禁/限速(200 + 纯文本),这才是真实原因。
+          //   以前这里静默跳过,于是「缺口 + 被封禁」只报成「还缺 3 页」,
+          //   用户点「继续」也补不上(每次都被 ban),而自动重试链路也不会启动。
+          const detail = String((againStats && (againStats.lastError || againStats.lastEmpty)) || '')
+          const siteErr = ehSiteErrorOf(detail)
+          if (siteErr && siteErr.kind !== 'reparse') {
+            update.siteBlocked = siteErr.kind
+            update.lastError = siteErr.message || siteErr.kind
+            state.stopped = true
+          }
+        }
+      } catch (e) {
+        if (e && e.siteError) {
+          update.siteBlocked = e.siteError
+          update.lastError = e.siteMessage || e.siteError
+          state.stopped = true
+        }
+      }
+      update.phase = ''
+    }
+  }
+
+  if (!state.stopped && !update.siteBlocked) {
+    const retryPages = []
+    for (let n = 1; n <= links.length; n++) if (!havePage.has(n)) retryPages.push(n)
+    if (retryPages.length) {
+      update.phase = 'fill'
+      onProgress({ ...update, dir })
+      for (const index of retryPages) {
+        if (state.stopped || update.siteBlocked) break
+        const name = String(index).padStart(pad, '0')
+        const pageUrl = links[index - 1]
+        try {
+          if (reqTick) await reqTick.acquire()
+          if (gate && gate.acquire) await gate.acquire()
+          const info = await resolveImagePage(pageUrl, { proxy, cookie, fresh: true })
+          if (info.siteError && info.siteError.kind !== 'reparse') {
+            update.siteBlocked = info.siteError.kind
+            update.lastError = info.siteError.message || info.siteError.kind
+            state.stopped = true
+            break
+          }
+          const target = original ? (info.originalUrl || info.url) : info.url
+          if (!target) { update.failed += 1; update.lastError = 'noImageUrl'; continue }
+          if (gate && gate.acquire) await gate.acquire()
+          const bytes = await (gate && gate.slot
+            ? gate.slot(() => downloadFile(target, path.join(dir, name + '.' + extOf(target)), { proxy, cookie, referer: pageUrl }))
+            : downloadFile(target, path.join(dir, name + '.' + extOf(target)), { proxy, cookie, referer: pageUrl }))
+          havePage.add(index)
+          update.bytes += bytes
+          update.done = havePage.size
+          onProgress({ ...update, dir })
+        } catch (e) {
+          update.failed += 1
+          update.lastError = String((e && e.message) || e)
+          onProgress({ ...update, dir })
+        }
+      }
+      update.phase = ''
+    }
+  }
+
+  // ★收尾对账:以「磁盘上真实存在的页」为准,而不是只信 done/failed 两个计数器。
+  //   这就是「187/190 却显示已完成」的根因 —— 以前只要 failed === 0 就判 done,
+  //   而续传时命中已有文件的页全程走 continue(既不 +done 也不 +failed),
+  //   缺的几页如果 links 没收全或被限速吞掉,failed 依然是 0。
+  const missingPages = []
+  for (let n = 1; n <= total; n++) if (!havePage.has(n)) missingPages.push(n)
+  update.done = havePage.size
+  update.missing = missingPages.length
+  if (missingPages.length) {
+    // 把缺口压成区间,方便界面/日志一眼看出缺哪几页
+    update.missingRanges = (() => {
+      const out = []
+      let s = missingPages[0]; let prev = missingPages[0]
+      for (let k = 1; k < missingPages.length; k++) {
+        const n = missingPages[k]
+        if (n === prev + 1) { prev = n; continue }
+        out.push(s === prev ? String(s) : s + '-' + prev)
+        s = n; prev = n
+      }
+      out.push(s === prev ? String(s) : s + '-' + prev)
+      return out.join(',')
+    })()
+    update.lastError = update.lastError || ('缺 ' + missingPages.length + ' 页: ' + update.missingRanges)
+  } else {
+    update.missingRanges = ''
+  }
   onProgress({ ...update, dir, finished: true, stopped: !!state.stopped })
-  return { dir, ...update, stopped: !!state.stopped, siteBlocked: update.siteBlocked || '' }
+  return {
+    dir, ...update, stopped: !!state.stopped,
+    siteBlocked: update.siteBlocked || '',
+    missing: missingPages.length
+  }
 }
 
 // 单页下载:url 已经是图片地址(阅读器里解析好的);original 时优先用 originalUrl,
