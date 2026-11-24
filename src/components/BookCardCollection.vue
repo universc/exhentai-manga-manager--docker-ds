@@ -5,7 +5,7 @@
        这是**预期**的遮挡行为;可在 设置 → 高级 → 卡片样式 →「隐藏合集」里关掉。
        底部状态标签保持原样(显示「合集」),与普通卡的 non-tag/tagged 状态标签对齐。 -->
   <div class="book-card book-card-collection"
-    :class="{ 'fill-cover': cardFillCover, 'style-3': isStyle3, 'compact': isStyle3 && style3Compact }"
+    :class="{ 'fill-cover': cardFillCover, 'style-3': isStyle3, 'compact': isStyle3 && style3Compact, 'tall': isStyle3 && style3Tall }"
     :role="isStyle3 ? 'listitem' : undefined"
     :aria-label="isStyle3 ? style3AriaLabel : undefined"
   >
@@ -20,11 +20,9 @@
         <span class="strip-coll-count">{{ book.chapterCount }} 本</span>
       </div>
       <div class="strip-body">
-        <div class="strip-title-line">
-          <p class="strip-title" v-if="!viewSetting.hideTitle" :title="book.title"
-            @click.stop="$emit('titleClick')" @contextmenu="onTitleContextMenu($event)"
-          >{{ book.title }}</p>
-        </div>
+        <p class="strip-title" v-if="!viewSetting.hideTitle" :title="book.title"
+          @click.stop="$emit('titleClick')" @contextmenu="onTitleContextMenu($event)"
+        >{{ book.title }}</p>
         <div class="strip-tags" v-if="!style3Compact && !viewSetting.hideNonTag">
           <el-tag class="strip-tag is-cat" size="small" effect="plain" type="warning"
             :title="$t('m.collection')" @click.stop="$emit('openCollectionInfo', book)"
@@ -38,10 +36,7 @@
           </template>
         </div>
       </div>
-      <el-button-group v-if="!viewSetting.hideReadButton" class="strip-actions">
-        <el-button type="success" size="small" plain @click.stop="$emit('yueClick', book)">{{$t('m.re')}}</el-button>
-        <el-button type="success" size="small" plain @click.stop="$emit('duClick', book)">{{$t('m.ad')}}</el-button>
-      </el-button-group>
+      <!-- 三号样式不再显示阅/读按钮(与普通卡片一致) -->
     </template>
 
     <!-- ================= 经典卡片布局(默认) ================= -->
@@ -224,6 +219,7 @@ const firstMember = computed(() => memberBooks.value[0] || null)
 const isStyle3 = computed(() => !!setting.value.cardStyle3)
 // 双档判据与 BookCard 完全一致:只看行高设置值(<88 紧凑),与 zoom 无关。
 const style3Compact = computed(() => (Number(setting.value.style3RowHeight) > 0 ? Number(setting.value.style3RowHeight) : 96) < 88)
+const style3Tall = computed(() => (Number(setting.value.style3RowHeight) > 0 ? Number(setting.value.style3RowHeight) : 96) >= 140)
 // 三号有自己的条状布局,永不与填充封面同时命中
 const cardFillCover = computed(() => !isStyle3.value && !!setting.value.fillCover)
 

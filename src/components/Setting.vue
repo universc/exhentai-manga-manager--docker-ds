@@ -680,17 +680,15 @@
                 <div class="fgrid c3">
                   <div class="field"><span class="lb">{{ $t('m.uiZoom') }}</span><span class="ctl"><el-input-number v-model="setting.style3UiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">%</span></span></div>
                   <div class="field"><span class="lb">{{ $t('m.cardStyle3RowHeight') }}</span><span class="ctl"><el-input-number v-model="setting.style3RowHeight" :min="64" :max="1000" :step="4" :value-on-clear="96" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
-                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CardWidth') }}</span><span class="ctl"><el-input-number v-model="setting.style3CardWidth" :min="120" :max="2000" :step="10" :value-on-clear="320" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.cardStyle3CardWidthHint') }}</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CardWidth') }}</span><span class="ctl"><el-input-number v-model="setting.style3CardWidth" :min="120" :max="2000" :step="10" :value-on-clear="320" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
                 </div>
                 <div class="fgrid c3">
-                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CoverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.style3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.coverWidthCap') }}</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CoverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.style3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
                   <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.style3GapV" :min="0" :max="1000" :step="1" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
                   <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.style3GapH" :min="0" :max="1000" :step="1" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
                 </div>
               </template>
               <div class="sumline">
-                <span>{{ mainSummary }}</span>
-                <span v-if="mainClampHint" class="clamp">{{ mainClampHint }}</span>
                 <a class="reset-link" role="button" tabindex="0" @click="resetMainStyleDefaults" @keydown.enter.prevent="resetMainStyleDefaults">{{ $t('m.resetDefaults') }}</a>
               </div>
             </div>
@@ -744,17 +742,15 @@
                 <div class="fgrid c3">
                   <div class="field"><span class="lb">{{ $t('m.uiZoom') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3UiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">%</span></span></div>
                   <div class="field"><span class="lb">{{ $t('m.cardStyle3RowHeight') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3RowHeight" :min="64" :max="1000" :step="4" :value-on-clear="96" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
-                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CardWidth') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3CardWidth" :min="120" :max="2000" :step="10" :value-on-clear="320" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.cardStyle3CardWidthHint') }}</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CardWidth') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3CardWidth" :min="120" :max="2000" :step="10" :value-on-clear="320" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
                 </div>
                 <div class="fgrid c3">
-                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CoverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.coverWidthCap') }}</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CoverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
                   <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3GapV" :min="0" :max="1000" :step="1" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
                   <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3GapH" :min="0" :max="1000" :step="1" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
                 </div>
               </template>
               <div class="sumline">
-                <span>{{ collectionSummary }}</span>
-                <span v-if="collectionClampHint" class="clamp">{{ collectionClampHint }}</span>
                 <a class="reset-link" role="button" tabindex="0" @click="resetCollectionStyleDefaults" @keydown.enter.prevent="resetCollectionStyleDefaults">{{ $t('m.resetDefaults') }}</a>
               </div>
             </div>
@@ -5418,8 +5414,7 @@ const MAIN_VIS_BY_STYLE = {
     { key: 'style3ShowTags', label: 'm.showTags' },
     { key: 'style3HideRating', label: 'm.hideRating' },
     { key: 'style3HidePageCount', label: 'm.hidePageCount' },
-    { key: 'style3HideReadCount', label: 'm.hideReadCount' },
-    { key: 'style3HideReadButton', label: 'm.hideReadButton' }
+    { key: 'style3HideReadCount', label: 'm.hideReadCount' }
   ]
 }
 const COLL_VIS_BY_STYLE = {
@@ -5444,88 +5439,14 @@ const COLL_VIS_BY_STYLE = {
     { key: 'collectionStyle3ShowTags', label: 'm.showTags' },
     { key: 'collectionStyle3HideRating', label: 'm.hideRating' },
     { key: 'collectionStyle3HidePageCount', label: 'm.hidePageCount' },
-    { key: 'collectionStyle3HideReadCount', label: 'm.hideReadCount' },
-    { key: 'collectionStyle3HideReadButton', label: 'm.hideReadButton' }
+    { key: 'collectionStyle3HideReadCount', label: 'm.hideReadCount' }
   ]
 }
 const mainVisItems = computed(() => MAIN_VIS_BY_STYLE[activeCardStyle.value] || [])
 const collVisItems = computed(() => COLL_VIS_BY_STYLE[activeCollectionCardStyle.value] || [])
 
-// ---------- 总结行:与 utils.js applyCoverStyle 三号公式保持一致(仅用于显示) ----------
-// 档位只看设置值(与缩放无关):≥88 标准 / <88 紧凑。
-const densityTierOf = (rowHeight) => (Number(rowHeight) || 96) >= 88 ? 'standard' : 'compact'
-const style3Metrics = (zoomVal, rowHeight, coverCap, gapV, gapH) => {
-  const zoomPct = Math.max(50, Math.min(300, Number(zoomVal) || 100))
-  const z = zoomPct / 100
-  const rh = Number(rowHeight) || 96
-  const cap = Number(coverCap) || 64
-  const innerH = (rh - 12) * z
-  const rawW = cap * z
-  let w = Math.floor(Math.min(rawW, innerH * 0.75))
-  let minClamped = false
-  if (w < 24) { w = 24; minClamped = true }
-  const capPx = Math.floor(rawW)
-  return {
-    rh, zoomPct, cap, capPx,
-    rowPx: Math.round(rh * z),
-    tier: densityTierOf(rh),
-    gapV: Math.round((Number(gapV) >= 0 ? Number(gapV) : 8) * z),
-    gapH: Math.round((Number(gapH) >= 0 ? Number(gapH) : 8) * z),
-    w, h: w / 0.75,
-    capClamped: !minClamped && capPx > w,
-    minClamped
-  }
-}
-const sum3Text = (m) => t('m.cardSum3', {
-  row: m.rh,
-  tier: t(m.tier === 'standard' ? 'm.cardTierStandard' : 'm.cardTierCompact'),
-  zoom: m.zoomPct,
-  rowpx: m.rowPx,
-  gv: m.gapV,
-  gh: m.gapH,
-  w: m.w,
-  h: Math.round(m.h * 100) / 100
-})
-const sum12Text = (w, h, gv, gh) => t('m.cardSum12', {
-  w: Math.round(w), h: Math.round(h), gv: Math.round(gv), gh: Math.round(gh)
-})
-const clampHintOf = (m) => {
-  if (m.minClamped) return t('m.cardCoverMinClamp')
-  if (m.capClamped) return t('m.cardCoverClamp', { cap: m.capPx, actual: m.w })
-  return ''
-}
-const mainSummary = computed(() => {
-  const s = setting.value || {}
-  const st = activeCardStyle.value
-  if (st === '3') return sum3Text(style3Metrics(s.style3UiZoom, s.style3RowHeight, s.style3CoverWidth, s.style3GapV, s.style3GapH))
-  // 一号走 Electron 全局 zoom,不影响 CSS 尺寸,故 z 固定 1
-  const z = st === '2' ? (Number(s.style2UiZoom) || 100) / 100 : 1
-  const w = (st === '2' ? (Number(s.style2CoverWidth) || 140) : (Number(s.coverWidth) || 220)) * z
-  const h = (st === '2' ? (Number(s.style2CoverHeight) || 220) : (Number(s.coverHeight) || 360)) * z
-  const gv = (st === '2' ? (Number(s.style2CardGapV) || 6) : (Number(s.cardGapV) || 6)) * z
-  const gh = (st === '2' ? (Number(s.style2CardGapH) || 8) : (Number(s.cardGapH) || 6)) * z
-  return sum12Text(w, h, gv, gh)
-})
-const mainClampHint = computed(() => activeCardStyle.value === '3'
-  ? clampHintOf(style3Metrics(setting.value.style3UiZoom, setting.value.style3RowHeight,
-      setting.value.style3CoverWidth, setting.value.style3GapV, setting.value.style3GapH))
-  : '')
-const collectionSummary = computed(() => {
-  const s = setting.value || {}
-  const st = activeCollectionCardStyle.value
-  if (st === '3') return sum3Text(style3Metrics(s.collectionStyle3UiZoom, s.collectionStyle3RowHeight,
-    s.collectionStyle3CoverWidth, s.collectionStyle3GapV, s.collectionStyle3GapH))
-  const z = (Number(st === '2' ? s.collectionStyle2UiZoom : s.collectionUiZoom) || 100) / 100
-  const w = (st === '2' ? (Number(s.collectionStyle2CoverWidth) || 140) : (Number(s.collectionCoverWidth) || 220)) * z
-  const h = (st === '2' ? (Number(s.collectionStyle2CoverHeight) || 220) : (Number(s.collectionCoverHeight) || 360)) * z
-  const gv = (st === '2' ? (Number(s.collectionStyle2CardGapV) || 6) : (Number(s.collectionCardGapV) || 6)) * z
-  const gh = (st === '2' ? (Number(s.collectionStyle2CardGapH) || 8) : (Number(s.collectionCardGapH) || 6)) * z
-  return sum12Text(w, h, gv, gh)
-})
-const collectionClampHint = computed(() => activeCollectionCardStyle.value === '3'
-  ? clampHintOf(style3Metrics(setting.value.collectionStyle3UiZoom, setting.value.collectionStyle3RowHeight,
-      setting.value.collectionStyle3CoverWidth, setting.value.collectionStyle3GapV, setting.value.collectionStyle3GapH))
-  : '')
+// 总结行已按用户要求移除(不再显示「间距 0 / 0」「上限 … 实际 …」这类说明文字),
+// 对应的 style3Metrics / clampHint 计算也一并删掉,避免留死代码。
 
 // ---------- 各区块「恢复默认值」:只恢复当前样式的参数与显隐 ----------
 const MAIN_STYLE_DEFAULTS = {

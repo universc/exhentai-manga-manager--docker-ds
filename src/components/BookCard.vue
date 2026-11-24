@@ -1,6 +1,6 @@
 <template>
   <div class="book-card"
-    :class="{'fill-cover': fillCover, 'style-3': isStyle3, 'compact': isStyle3 && style3Compact, 'is-selected': isStyle3 && style3Selected}"
+    :class="{'fill-cover': fillCover, 'style-3': isStyle3, 'compact': isStyle3 && style3Compact, 'tall': isStyle3 && style3Tall, 'is-selected': isStyle3 && style3Selected}"
     :role="isStyle3 ? 'listitem' : undefined"
     :aria-label="isStyle3 ? style3AriaLabel : undefined"
   >
@@ -24,15 +24,10 @@
         <div class="cover-loading" v-if="coverLoading"><el-icon class="is-loading" :size="18"><Loading /></el-icon></div>
       </div>
       <div class="strip-body">
-        <!-- 标题行:+N 常占位(只改透明度),hover / 键盘焦点才淡入,标题省略号不跳 -->
-        <div class="strip-title-line">
-          <p class="strip-title" v-if="!viewSetting.hideTitle" :title="getDisplayTitle(book)"
-            @click="$emit('titleClick')" @contextmenu="onTitleContextMenu($event)"
-          >{{ getDisplayTitle(book) }}</p>
-          <span v-if="!style3Compact && viewSetting.showTags" class="strip-more" :class="{ 'is-empty': !style3TagOverflow }"
-            :aria-hidden="style3TagOverflow ? undefined : 'true'"
-          >{{ style3TagOverflow ? '+' + style3TagOverflow : '' }}</span>
-        </div>
+        <!-- 标题行:顶部靠左,允许折行(优先把完整标题显示出来;行高越高行数越多) -->
+        <p class="strip-title" v-if="!viewSetting.hideTitle" :title="getDisplayTitle(book)"
+          @click="$emit('titleClick')" @contextmenu="onTitleContextMenu($event)"
+        >{{ getDisplayTitle(book) }}</p>
         <!-- 标准档标签行:
              · 类别标签(如「同人誌/漢化」)受「隐藏类别」hideNonTag 控制
              · 画廊标签(如「其他/汉语/翻译/单女主…」)受独立的「显示标签」showTags 控制,
@@ -49,6 +44,7 @@
             :title="t.cat + ':' + t.tag"
             @click="$emit('searchFromTag', t.tag, t.cat)"
           >{{ t.name }}</el-tag>
+          <span v-if="style3TagOverflow > 0" class="strip-tag-more" :title="'+' + style3TagOverflow">+{{ style3TagOverflow }}</span>
         </div>
         <div class="strip-meta">
           <span v-if="!viewSetting.hidePageCount" class="strip-meta-item is-pagecount" @click="$emit('pageCountClick')">{{ book.pageCount }}P</span>
@@ -63,11 +59,7 @@
           </template>
         </div>
       </div>
-      <!-- 固定操作列:阅/读,与封面、正文同级,宽度固定不随内容伸缩 -->
-      <el-button-group v-if="!viewSetting.hideReadButton" class="strip-actions">
-        <el-button type="success" size="small" plain @click.stop="$emit('yueClick')">{{$t('m.re')}}</el-button>
-        <el-button type="success" size="small" plain @click.stop="$emit('duClick')">{{$t('m.ad')}}</el-button>
-      </el-button-group>
+      <!-- 三号样式不再显示阅/读按钮(用户要求):整块操作列已移除,设置里也没有对应开关 -->
     </template>
     <!-- ================= 经典卡片布局(默认;原版布局原样保留) ================= -->
     <template v-else-if="!fillCover">
@@ -472,6 +464,8 @@ const style3RowSetting = computed(() => {
   return firstPositive(s.style3RowHeight, 96)
 })
 const style3Compact = computed(() => style3RowSetting.value < 88)
+// 高行高(≥140)时标题可以显示 4 行,把长标题尽量完整展示出来
+const style3Tall = computed(() => style3RowSetting.value >= 140)
 // ---------- 三号「显示标签」:展示画廊自身的标签(参考图2:其他/汉语/翻译/单女主…) ----------
 // ★ 以前这里只渲染 filterCollectTag(用户自定义的「收藏标签」):没配置收藏标签就是空数组,
 //   于是「显示标签」开关开了也什么都看不到 —— 用户说的「就加了个开关,功能根本没有」。
@@ -1475,7 +1469,8 @@ onUnmounted(() => {
 .book-card.style-3 {
   display: flex !important;
   flex-direction: row !important;
-  align-items: center;
+  // 正文区要撑满整个行高,标题才能贴顶、meta 才能贴底(封面自己 align-self:center)
+  align-items: stretch;
   box-sizing: border-box;
   height: var(--style3-row-h, 96px);
   min-height: 0;
@@ -1505,7 +1500,6 @@ onUnmounted(() => {
     box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
     background: var(--el-fill-color-light, #f5f7fa);
     .strip-title { color: var(--el-color-primary); }
-    .strip-more { opacity: 1; }
   }
   &:focus-visible {
     outline: 2px solid var(--el-color-primary);
@@ -1555,47 +1549,36 @@ onUnmounted(() => {
     min-width: 0;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    // 顶部对齐:标题贴顶(用户要求「标题顶部靠左」);meta 用 margin-top:auto 贴底
+    justify-content: flex-start;
     gap: calc(4px * var(--style3-zoom, 1));
-    padding: 0 calc(2px * var(--style3-zoom, 1));
+    padding: calc(2px * var(--style3-zoom, 1)) calc(2px * var(--style3-zoom, 1)) 0;
+    overflow: hidden;
   }
-  .strip-title-line {
-    display: flex;
-    align-items: center;
-    gap: calc(6px * var(--style3-zoom, 1));
-    min-width: 0;
-  }
+  // 标题:左对齐 + 允许折行,优先显示完整标题。
+  // 行数按行高分级(见 .compact / .tall),默认 2 行,行高够高时 4 行。
   .strip-title {
     margin: 0;
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
     font-size: calc(13px * var(--style3-zoom, 1));
     line-height: 1.35;
     font-weight: 600;
     letter-spacing: .1px;
     cursor: pointer;
+    text-align: left;
+    white-space: normal;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     transition: color .15s;
   }
-  .strip-more {
-    flex: 0 0 auto;
-    // 常占位:有没有 +N 都占同一宽度,标题省略号不因 hover 而跳
-    min-width: calc(26px * var(--style3-zoom, 1));
-    height: calc(18px * var(--style3-zoom, 1));
-    line-height: calc(16px * var(--style3-zoom, 1));
-    padding: 0 calc(5px * var(--style3-zoom, 1));
-    border-radius: calc(9px * var(--style3-zoom, 1));
-    background: var(--el-color-primary-light-9, #ecf5ff);
-    border: 1px solid var(--el-color-primary-light-8, #d9ecff);
-    color: var(--el-color-primary);
-    font-size: calc(11px * var(--style3-zoom, 1));
-    text-align: center;
-    opacity: 0;
-    transition: opacity .12s;
-    &.is-empty { opacity: 0 !important; }
-  }
+  // 行高越高,标题能显示的行数越多(224px 这类高行高可以放下 4 行)
+  &.tall .strip-title { -webkit-line-clamp: 4; }
+  // 紧凑档只保留 1 行标题
+  &.compact .strip-title { -webkit-line-clamp: 1; }
   .strip-tags {
     display: flex;
     flex-wrap: nowrap;
@@ -1603,6 +1586,7 @@ onUnmounted(() => {
     gap: calc(4px * var(--style3-zoom, 1));
     height: calc(18px * var(--style3-zoom, 1));
     overflow: hidden;
+    flex: 0 0 auto;
     .strip-tag {
       flex: 0 0 auto;
       max-width: calc(96px * var(--style3-zoom, 1));
@@ -1613,21 +1597,38 @@ onUnmounted(() => {
       height: calc(18px * var(--style3-zoom, 1));
       line-height: calc(18px * var(--style3-zoom, 1));
     }
+    // 标签溢出的 +N(从标题行挪到标签行末尾)
+    .strip-tag-more {
+      flex: 0 0 auto;
+      font-size: calc(11px * var(--style3-zoom, 1));
+      line-height: calc(18px * var(--style3-zoom, 1));
+      height: calc(18px * var(--style3-zoom, 1));
+      padding: 0 calc(5px * var(--style3-zoom, 1));
+      border-radius: calc(9px * var(--style3-zoom, 1));
+      background: var(--el-color-primary-light-9, #ecf5ff);
+      border: 1px solid var(--el-color-primary-light-8, #d9ecff);
+      color: var(--el-color-primary);
+    }
   }
   // 紧凑档:整行标签不渲染(模板已 v-if,这里兜底)
   &.compact .strip-tags { display: none; }
 
+  // 元信息:贴在卡片底部、左对齐(用户要求「页数/阅读次数/评分底部靠左」)
   .strip-meta {
     display: flex;
     align-items: center;
+    justify-content: flex-start;
     gap: calc(6px * var(--style3-zoom, 1));
     flex-wrap: nowrap;
+    flex: 0 0 auto;
+    margin-top: auto;
     height: calc(16px * var(--style3-zoom, 1));
     font-size: calc(11px * var(--style3-zoom, 1));
     line-height: calc(16px * var(--style3-zoom, 1));
     color: var(--el-text-color-secondary);
     white-space: nowrap;
     overflow: hidden;
+    text-align: left;
     .strip-meta-item { cursor: pointer; flex: 0 0 auto; }
     // 页数永不截;时间短格式,完整时间进 title
     .is-pagecount { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
@@ -1636,38 +1637,16 @@ onUnmounted(() => {
     .el-rate { flex: 0 0 auto; height: calc(16px * var(--style3-zoom, 1)); }
     .el-rate__text { color: var(--el-text-color-secondary); font-size: calc(11px * var(--style3-zoom, 1)); }
   }
-
-  // 固定操作列:阅/读。68px 是设计固定值,不随 zoom 伸缩(热区稳定)
-  .strip-actions {
-    flex: 0 0 68px;
-    width: 68px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    justify-content: center;
-    align-self: stretch;
-    margin: 0;
-    padding: 0 0 0 8px;
-    border-left: 1px solid var(--el-border-color-lighter, #ebeef5);
-    .el-button {
-      height: 28px;
-      margin: 0;
-      padding: 0;
-      font-size: 11.5px;
-    }
-  }
 }
 
 // 键盘焦点实际落在 .book-card-frame 的 tabindex 上,不是 .book-card 自身 ——
-// 把焦点环与 +N 淡入转发到内层条状卡,否则 focus-visible 永远不触发。
+// 把焦点环转发到内层条状卡,否则 focus-visible 永远不触发。
 .card-style-3 .book-card-frame:focus-visible
   outline: none
   .book-card
     outline: 2px solid var(--el-color-primary)
     outline-offset: -2px
     background: var(--el-fill-color-light, #f5f7fa)
-    .strip-more
-      opacity: 1
 
 /* 绅士漫画的「合集」角标:紧跟在分类标签右边,用暖色区分 */
 .book-series-tag {
