@@ -35,21 +35,20 @@
         </div>
         <!-- 标准档标签行:
              · 类别标签(如「同人誌/漢化」)受「隐藏类别」hideNonTag 控制
-             · 收藏标签(如「其他/漢語/翻譯…」)受独立的「显示标签」showTags 控制,可一行显示多个(参考设计图)
+             · 画廊标签(如「其他/汉语/翻译/单女主…」)受独立的「显示标签」showTags 控制,
+               一行显示多个、超出收成 +N(参考图2)
              · 紧凑档整行不渲染(档位只看行高设置值,与 zoom 无关) -->
-        <div class="strip-tags" v-if="!style3Compact && (!viewSetting.hideNonTag || viewSetting.showTags)">
+        <div class="strip-tags" v-if="!style3Compact && (!viewSetting.hideNonTag || style3GalleryTags.length)">
           <el-tag v-if="!viewSetting.hideNonTag && (book.category || book.status)" class="strip-tag is-cat" size="small" effect="plain"
             :title="book.status"
             @click="$emit('searchFromTag', book.category || book.status, book.category ? 'category' : '')"
           >{{ book.site === 'wnacg' ? (wnacgCategoryText(book) || book.status) : (galleryCategoryName(book.category, $t) || book.status) }}</el-tag>
           <el-tag
-            v-for="tag in filterCollectTag(book.tags).slice(0, style3TagLimit)" :key="tag.id"
-            class="book-collect-tag strip-tag" size="small" effect="dark" :color="tag.color"
-            @click="onCollectTagClick(tag)"
-            @mousedown="startTagPress(tag)" @mouseup="cancelTagPress" @mouseleave="cancelTagPress"
-            @touchstart.passive="startTagPress(tag)" @touchend="cancelTagPress" @touchmove.passive="cancelTagPress"
-            @contextmenu="onCollectTagContextMenu($event, tag)"
-          >{{tag.letter}}:{{ tagDisplayName(setting, resolvedTranslation, resolveCatKey(tag.cat), tag.tag) }}</el-tag>
+            v-for="(t, ti) in style3GalleryTags" :key="t.cat + '::' + t.tag + ti"
+            class="strip-tag" size="small" effect="plain"
+            :title="t.cat + ':' + t.tag"
+            @click="$emit('searchFromTag', t.tag, t.cat)"
+          >{{ t.name }}</el-tag>
         </div>
         <div class="strip-meta">
           <span v-if="!viewSetting.hidePageCount" class="strip-meta-item is-pagecount" @click="$emit('pageCountClick')">{{ book.pageCount }}P</span>
@@ -411,11 +410,12 @@ const viewSetting = computed(() => {
   const s = setting.value
   // ---------- 主界面:二号 / 三号各有自己的显隐;一号沿用原 hide* ----------
   if (!props.collectionView) {
-    // 二号:自己的两个开关(隐藏标题 / 填充封面),不能跟着一号的 hideTitle/fillCover 走
+    // 二号:自己的开关(隐藏标题 / 隐藏类别 / 填充封面),不能跟着一号的 hideTitle/fillCover 走
     if (s.cardStyle2) {
       return {
         ...s,
         hideTitle: pickHide(s.style2HideTitle, s.hideTitle),
+        hideNonTag: pickHide(s.style2HideNonTag, s.hideNonTag),
         fillCover: pickHide(s.style2FillCover, s.fillCover)
       }
     }
@@ -446,7 +446,7 @@ const viewSetting = computed(() => {
     fillCover: mode === 3 ? false : (mode === 2 ? pickHide(s.collectionStyle2FillCover, s.collectionFillCover) : !!s.collectionFillCover),
     hideBookmarkButton: !!s.collectionHideBookmarkButton,
     hideTitle: hidden(s.collectionStyle3HideTitle, s.collectionStyle2HideTitle, s.collectionHideTitle),
-    hideNonTag: hidden(s.collectionStyle3HideNonTag, undefined, s.collectionHideNonTag),
+    hideNonTag: hidden(s.collectionStyle3HideNonTag, s.collectionStyle2HideNonTag, s.collectionHideNonTag),
     hideRating: hidden(s.collectionStyle3HideRating, undefined, s.collectionHideRating),
     hidePageCount: hidden(s.collectionStyle3HidePageCount, undefined, s.collectionHideCount),
     hideReadCount: hidden(s.collectionStyle3HideReadCount, undefined, s.collectionHideReadCount),
@@ -472,14 +472,37 @@ const style3RowSetting = computed(() => {
   return firstPositive(s.style3RowHeight, 96)
 })
 const style3Compact = computed(() => style3RowSetting.value < 88)
-// 收藏标签(参考图2:一行多个,如「其他/漢語/翻譯/单女主…」)由独立开关「显示标签」showTags 控制。
-// 「隐藏类别」hideNonTag 只管类别标签(如「同人誌/漢化」),两者互不干扰。
-// 标准档最多显示 8 个收藏标签,其余收成 +N;紧凑档整行标签不渲染。
-const STYLE3_STANDARD_TAG_LIMIT = 8
-const style3TagLimit = computed(() => (style3Compact.value || !viewSetting.value.showTags) ? 0 : STYLE3_STANDARD_TAG_LIMIT)
+// ---------- 三号「显示标签」:展示画廊自身的标签(参考图2:其他/汉语/翻译/单女主…) ----------
+// ★ 以前这里只渲染 filterCollectTag(用户自定义的「收藏标签」):没配置收藏标签就是空数组,
+//   于是「显示标签」开关开了也什么都看不到 —— 用户说的「就加了个开关,功能根本没有」。
+//   现在改为展平 book.tags(画廊自带标签),与标签设置里的语言/翻译一致。
+const STYLE3_STANDARD_TAG_LIMIT = 12
+const style3GalleryTags = computed(() => {
+  if (style3Compact.value || !viewSetting.value.showTags) return []
+  const tags = props.book && props.book.tags
+  if (!tags || typeof tags !== 'object') return []
+  const out = []
+  for (const [cat, arr] of Object.entries(tags)) {
+    if (!Array.isArray(arr)) continue
+    for (const name of arr) {
+      if (!name) continue
+      out.push({
+        cat,
+        tag: name,
+        name: tagDisplayName(setting.value, resolvedTranslation.value, resolveCatKey(cat), name)
+      })
+      if (out.length >= STYLE3_STANDARD_TAG_LIMIT) return out
+    }
+  }
+  return out
+})
 const style3TagOverflow = computed(() => {
-  if (!style3TagLimit.value) return 0
-  return Math.max(0, filterCollectTag(props.book && props.book.tags).length - style3TagLimit.value)
+  if (style3Compact.value || !viewSetting.value.showTags) return 0
+  const tags = props.book && props.book.tags
+  if (!tags || typeof tags !== 'object') return 0
+  let total = 0
+  for (const arr of Object.values(tags)) if (Array.isArray(arr)) total += arr.length
+  return Math.max(0, total - STYLE3_STANDARD_TAG_LIMIT)
 })
 // 完整时间只进 title,可见文案走 historyTimeText 的短格式(3天前 / 12-31)
 const style3TimeTitle = computed(() => {
@@ -500,10 +523,14 @@ const style3AriaLabel = computed(() => {
   return parts.filter(Boolean).join('，')
 })
 
-// 填充封面右上角的「类别」标签(参考图1:同人誌／漢化),受「隐藏类别」hideNonTag 控制。
+// 二号样式右上角的「类别」标签(参考图1:同人誌／漢化)。
+// ★ 只在「二号样式」出现 —— 一号的填充封面不显示,避免污染一号观感。
+// ★ 受二号自己的「隐藏类别」开关 style2HideNonTag 控制(一/三号各有各的,互不影响)。
 // 注意:这与「收藏标签」是两回事 —— 类别取 category/status,收藏标签取 book.tags。
 const fillCatText = computed(() => {
-  if (viewSetting.value.hideNonTag) return ''
+  const s = viewSetting.value
+  if (!s.cardStyle2) return ''
+  if (s.hideNonTag) return ''
   const b = props.book || {}
   return b.site === 'wnacg'
     ? (wnacgCategoryText(b) || b.status || '')
@@ -1266,48 +1293,49 @@ onUnmounted(() => {
     text-shadow: 0 1px 1px rgba(0, 0, 0, .5)
     &:hover
       background: rgba(255, 255, 255, .25) !important
-    // 右上角类别标签(参考图1:同人誌／漢化):深色半透明胶囊,绝对定位到右上角,
-    // 不与中间的标题争宽度;z-index 高于收藏标签区。
-    .fill-cat-tag
-      position: absolute
-      top: 6px
-      right: 8px
-      z-index: 4
-      max-width: 70%
-      height: 22px
-      line-height: 20px
-      padding: 0 8px
-      border: 1px solid rgba(255, 255, 255, .28) !important
-      border-radius: 4px
-      background: rgba(0, 0, 0, .55) !important
-      color: #fff !important
-      font-weight: 600
-      font-size: calc(var(--emm-custom-font-size, 14px) - 3px)
-      white-space: nowrap
-      overflow: hidden
-      text-overflow: ellipsis
-      box-shadow: 0 1px 3px rgba(0, 0, 0, .5)
-    // 图片数量 + 添加时间(参考图1):底部独立一行,二号样式隐藏 fill-footer 时仍可见。
-    .fill-counttime
-      position: absolute
-      left: 0
-      right: 0
-      bottom: 4px
-      z-index: 3
-      padding: 0 8px
-      text-align: center
-      color: rgba(255, 255, 255, .88)
-      font-size: calc(var(--emm-custom-font-size, 14px) - 2px)
-      line-height: 1.5
-      text-shadow: 0 1px 3px rgba(0, 0, 0, .9)
-      pointer-events: none
-    // 收藏标签:保留自定义彩色信息色
-    .book-collect-tag
-      flex: 0 0 auto
-      cursor: pointer
-      border-width: 0
-      opacity: .94
-      box-shadow: 0 1px 3px rgba(0, 0, 0, .35)
+  // ★ 以下三条必须与 .fill-badge 同级(2 空格缩进),不能嵌进 .fill-badge 里 ——
+  //   曾因缩进错位编译成 `.fill-badge .fill-cat-tag`,绝对定位失效,标签掉到左上角。
+  // 右上角类别标签(参考图1:同人誌／漢化):深色半透明胶囊,绝对定位到右上角
+  .fill-cat-tag
+    position: absolute
+    top: 6px
+    right: 8px
+    z-index: 4
+    max-width: 70%
+    height: 22px
+    line-height: 20px
+    padding: 0 8px
+    border: 1px solid rgba(255, 255, 255, .28) !important
+    border-radius: 4px
+    background: rgba(0, 0, 0, .55) !important
+    color: #fff !important
+    font-weight: 600
+    font-size: calc(var(--emm-custom-font-size, 14px) - 3px)
+    white-space: nowrap
+    overflow: hidden
+    text-overflow: ellipsis
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .5)
+  // 图片数量 + 添加时间(参考图1):底部独立一行,二号样式隐藏 fill-footer 时仍可见。
+  .fill-counttime
+    position: absolute
+    left: 0
+    right: 0
+    bottom: 4px
+    z-index: 3
+    padding: 0 8px
+    text-align: center
+    color: rgba(255, 255, 255, .88)
+    font-size: calc(var(--emm-custom-font-size, 14px) - 2px)
+    line-height: 1.5
+    text-shadow: 0 1px 3px rgba(0, 0, 0, .9)
+    pointer-events: none
+  // 收藏标签:保留自定义彩色信息色
+  .book-collect-tag
+    flex: 0 0 auto
+    cursor: pointer
+    border-width: 0
+    opacity: .94
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .35)
   // 阅/读按钮:透明浮层(无白底)
   .outer-read-button-group
     flex: 0 0 auto
@@ -1363,8 +1391,9 @@ onUnmounted(() => {
 // 与一/二号互斥(由设置里的三选一保证),这里只负责容器层面的列数。
 .card-style-3
   display: grid !important
-  // min(320px,100%):窄屏时列下限不超过容器,避免横向溢出
-  grid-template-columns: repeat(auto-fill, minmax(unquote('min(320px, 100%)'), 1fr))
+  // 列宽下限 = 设置里的「条宽」(--style3-card-w,默认 320px)。
+  // min(…,100%) 兜底:窄屏/设置过大时列下限不超过容器,避免横向溢出。
+  grid-template-columns: repeat(auto-fill, minmax(unquote('min(var(--style3-card-w, 320px), 100%)'), 1fr))
   align-content: start
   // 行/列间距分开:--style3-gap-v / --style3-gap-h 已由唯一写入方按 zoom 算好
   gap: var(--style3-gap-v, 8px) var(--style3-gap-h, 8px)
@@ -1432,6 +1461,9 @@ onUnmounted(() => {
     // 填充封面:保留标题浮层,字号与上面一致
     &.fill-cover .fill-title
       font-size: calc(12px * var(--emm-card-zoom, 1))
+    // 二号填充封面:右上角「类别标签」在第一行,收藏标签区顺延到它下面,避免两块重叠
+    &.fill-cover .fill-top-tags
+      top: 34px
 
 
 /* ================= 三号样式:条状列表 =================

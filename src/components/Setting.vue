@@ -680,11 +680,12 @@
                 <div class="fgrid c3">
                   <div class="field"><span class="lb">{{ $t('m.uiZoom') }}</span><span class="ctl"><el-input-number v-model="setting.style3UiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">%</span></span></div>
                   <div class="field"><span class="lb">{{ $t('m.cardStyle3RowHeight') }}</span><span class="ctl"><el-input-number v-model="setting.style3RowHeight" :min="64" :max="1000" :step="4" :value-on-clear="96" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
-                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CoverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.style3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.coverWidthCap') }}</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CardWidth') }}</span><span class="ctl"><el-input-number v-model="setting.style3CardWidth" :min="120" :max="2000" :step="10" :value-on-clear="320" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.cardStyle3CardWidthHint') }}</span></span></div>
                 </div>
-                <div class="fgrid c2">
-                  <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.style3GapV" :min="0" :max="1000" :step="2" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
-                  <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.style3GapH" :min="0" :max="1000" :step="2" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                <div class="fgrid c3">
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CoverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.style3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.coverWidthCap') }}</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.style3GapV" :min="0" :max="1000" :step="1" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.style3GapH" :min="0" :max="1000" :step="1" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
                 </div>
               </template>
               <div class="sumline">
@@ -743,11 +744,12 @@
                 <div class="fgrid c3">
                   <div class="field"><span class="lb">{{ $t('m.uiZoom') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3UiZoom" :min="50" :max="300" :step="10" :value-on-clear="100" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">%</span></span></div>
                   <div class="field"><span class="lb">{{ $t('m.cardStyle3RowHeight') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3RowHeight" :min="64" :max="1000" :step="4" :value-on-clear="96" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
-                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CoverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.coverWidthCap') }}</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CardWidth') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3CardWidth" :min="120" :max="2000" :step="10" :value-on-clear="320" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.cardStyle3CardWidthHint') }}</span></span></div>
                 </div>
-                <div class="fgrid c2">
-                  <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3GapV" :min="0" :max="1000" :step="2" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
-                  <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3GapH" :min="0" :max="1000" :step="2" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                <div class="fgrid c3">
+                  <div class="field"><span class="lb">{{ $t('m.cardStyle3CoverWidth') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3CoverWidth" :min="40" :max="200" :step="4" :value-on-clear="64" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span><span class="calc">{{ $t('m.coverWidthCap') }}</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardGapV') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3GapV" :min="0" :max="1000" :step="1" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
+                  <div class="field"><span class="lb">{{ $t('m.cardGapH') }}</span><span class="ctl"><el-input-number v-model="setting.collectionStyle3GapH" :min="0" :max="1000" :step="1" :value-on-clear="8" controls-position="right" @change="handleCoverStyleChange" /><span class="unit">px</span></span></div>
                 </div>
               </template>
               <div class="sumline">
@@ -2272,8 +2274,16 @@ const handleCoverStyleChange = () => {
   fillNumberDefault('cardGapV', 6, 0, 40)
   fillNumberDefault('cardGapH', 6, 0, 40)
   const fill2 = (key, def, min, max) => {
-    let v = Number(setting.value[key])
-    if (!Number.isFinite(v) || v === 0) v = def
+    const raw = setting.value[key]
+    // ★ 只有「真的没填」(null / undefined / 空字符串) 才回退默认值。
+    //   0 是合法值 —— 以前写 `v === 0 → def` 会把用户设的 0 间距强行改成 6/8,
+    //   用户要求「取消间距限制」后必须允许 0。
+    if (raw === null || raw === undefined || String(raw).trim() === '') {
+      setting.value[key] = def
+      return
+    }
+    let v = Number(raw)
+    if (!Number.isFinite(v)) v = def
     setting.value[key] = Math.min(max, Math.max(min, v))
   }
   // 主界面二号(间距上限放开到 1000,不再锁 40)
@@ -2286,6 +2296,7 @@ const handleCoverStyleChange = () => {
   fill2('style3UiZoom', 100, 50, 300)
   fill2('style3RowHeight', 96, 64, 1000)
   fill2('style3CoverWidth', 64, 40, 200)
+  fill2('style3CardWidth', 320, 120, 2000)
   fill2('style3GapV', 8, 0, 1000)
   fill2('style3GapH', 8, 0, 1000)
   // 合集一号(抽屉)
@@ -2304,6 +2315,7 @@ const handleCoverStyleChange = () => {
   fill2('collectionStyle3UiZoom', 100, 50, 300)
   fill2('collectionStyle3RowHeight', 96, 64, 1000)
   fill2('collectionStyle3CoverWidth', 64, 40, 200)
+  fill2('collectionStyle3CardWidth', 320, 120, 2000)
   fill2('collectionStyle3GapV', 8, 0, 1000)
   fill2('collectionStyle3GapH', 8, 0, 1000)
   applyCoverStyle(setting.value)
@@ -3138,19 +3150,19 @@ onMounted(() => {
       // ---------- 卡片样式 v2:每套样式独立显隐/尺寸字段 ----------
       // 老配置缺这些键 → 补默认值。两区块字段同构、各自独立。
       const cssV2Defaults = {
-        // 主界面二号显隐
-        style2HideTitle: false, style2FillCover: false,
+        // 主界面二号显隐(含独立的「隐藏类别」—— 控制右上角类别标签)
+        style2HideTitle: false, style2HideNonTag: false, style2FillCover: false,
         // 主界面三号显隐(无「隐藏合集角标」:条状卡没有合集角标元素)
         style3HideTitle: false, style3HideNonTag: false, style3HideRating: false,
         style3HidePageCount: false, style3HideReadCount: false, style3HideReadButton: false,
         // 「显示标签」:收藏标签行独立于「隐藏类别」(默认开)。老配置补 true 保持升级后能看到标签。
         style3ShowTags: true,
-        // 主界面三号尺寸
-        style3UiZoom: 100, style3GapV: 8, style3GapH: 8,
+        // 主界面三号尺寸(条宽 = 左右长度,默认 320 与旧版写死的列宽一致)
+        style3UiZoom: 100, style3GapV: 8, style3GapH: 8, style3CardWidth: 320,
         // 合集三选一(与 collectionCardStyle2 互斥)
         collectionCardStyle3: false,
         // 合集二号显隐/尺寸
-        collectionStyle2HideTitle: false, collectionStyle2FillCover: false,
+        collectionStyle2HideTitle: false, collectionStyle2HideNonTag: false, collectionStyle2FillCover: false,
         collectionStyle2UiZoom: 100, collectionStyle2CoverWidth: 140, collectionStyle2CoverHeight: 220,
         collectionStyle2CardGapV: 6, collectionStyle2CardGapH: 8,
         // 合集三号显隐/尺寸
@@ -3158,7 +3170,7 @@ onMounted(() => {
         collectionStyle3HidePageCount: false, collectionStyle3HideReadCount: false, collectionStyle3HideReadButton: false,
         collectionStyle3ShowTags: true,
         collectionStyle3UiZoom: 100, collectionStyle3RowHeight: 96, collectionStyle3CoverWidth: 64,
-        collectionStyle3GapV: 8, collectionStyle3GapH: 8,
+        collectionStyle3GapV: 8, collectionStyle3GapH: 8, collectionStyle3CardWidth: 320,
         // 一次性迁移标记(内部字段,UI 不展示)
         cardStyleV2Migrated: false
       }
@@ -3175,6 +3187,7 @@ onMounted(() => {
           setting.value.collectionCardStyle3 = !!setting.value.cardStyle3
         }
         setting.value.style2HideTitle = !!setting.value.hideTitle
+        setting.value.style2HideNonTag = !!setting.value.hideNonTag
         setting.value.style2FillCover = !!setting.value.fillCover
         setting.value.style3HideTitle = !!setting.value.hideTitle
         setting.value.style3HideNonTag = !!setting.value.hideNonTag
@@ -3183,6 +3196,7 @@ onMounted(() => {
         setting.value.style3HideReadCount = !!setting.value.hideReadCount
         setting.value.style3HideReadButton = !!setting.value.hideReadButton
         setting.value.collectionStyle2HideTitle = !!setting.value.collectionHideTitle
+        setting.value.collectionStyle2HideNonTag = !!setting.value.collectionHideNonTag
         setting.value.collectionStyle2FillCover = !!setting.value.collectionFillCover
         setting.value.collectionStyle3HideTitle = !!setting.value.collectionHideTitle
         setting.value.collectionStyle3HideNonTag = !!setting.value.collectionHideNonTag
@@ -5395,6 +5409,7 @@ const MAIN_VIS_BY_STYLE = {
   ],
   2: [
     { key: 'style2HideTitle', label: 'm.hideTitle' },
+    { key: 'style2HideNonTag', label: 'm.hideNonTag' },
     { key: 'style2FillCover', label: 'm.fillCover' }
   ],
   3: [
@@ -5420,6 +5435,7 @@ const COLL_VIS_BY_STYLE = {
   ],
   2: [
     { key: 'collectionStyle2HideTitle', label: 'm.hideTitle' },
+    { key: 'collectionStyle2HideNonTag', label: 'm.hideNonTag' },
     { key: 'collectionStyle2FillCover', label: 'm.fillCover' }
   ],
   3: [
@@ -5453,8 +5469,8 @@ const style3Metrics = (zoomVal, rowHeight, coverCap, gapV, gapH) => {
     rh, zoomPct, cap, capPx,
     rowPx: Math.round(rh * z),
     tier: densityTierOf(rh),
-    gapV: Math.max(4, Math.round((Number(gapV) || 8) * z)),
-    gapH: Math.round((Number(gapH) || 8) * z),
+    gapV: Math.round((Number(gapV) >= 0 ? Number(gapV) : 8) * z),
+    gapH: Math.round((Number(gapH) >= 0 ? Number(gapH) : 8) * z),
     w, h: w / 0.75,
     capClamped: !minClamped && capPx > w,
     minClamped
@@ -5520,10 +5536,11 @@ const MAIN_STYLE_DEFAULTS = {
   },
   2: {
     style2UiZoom: 100, style2CoverWidth: 140, style2CoverHeight: 220, style2CardGapV: 6, style2CardGapH: 8,
-    style2HideTitle: false, style2FillCover: false
+    style2HideTitle: false, style2HideNonTag: false, style2FillCover: false
   },
   3: {
     style3UiZoom: 100, style3RowHeight: 96, style3CoverWidth: 64, style3GapV: 8, style3GapH: 8,
+    style3CardWidth: 320,
     style3HideTitle: false, style3HideNonTag: false, style3HideRating: false, style3HidePageCount: false,
     style3HideReadCount: false, style3HideReadButton: false, style3ShowTags: true
   }
@@ -5539,11 +5556,11 @@ const COLL_STYLE_DEFAULTS = {
   2: {
     collectionStyle2UiZoom: 100, collectionStyle2CoverWidth: 140, collectionStyle2CoverHeight: 220,
     collectionStyle2CardGapV: 6, collectionStyle2CardGapH: 8,
-    collectionStyle2HideTitle: false, collectionStyle2FillCover: false
+    collectionStyle2HideTitle: false, collectionStyle2HideNonTag: false, collectionStyle2FillCover: false
   },
   3: {
     collectionStyle3UiZoom: 100, collectionStyle3RowHeight: 96, collectionStyle3CoverWidth: 64,
-    collectionStyle3GapV: 8, collectionStyle3GapH: 8,
+    collectionStyle3GapV: 8, collectionStyle3GapH: 8, collectionStyle3CardWidth: 320,
     collectionStyle3HideTitle: false, collectionStyle3HideNonTag: false, collectionStyle3HideRating: false,
     collectionStyle3HidePageCount: false, collectionStyle3HideReadCount: false, collectionStyle3HideReadButton: false,
     collectionStyle3ShowTags: true

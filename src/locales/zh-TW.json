@@ -1395,7 +1395,9 @@
     "coverWidthCap": "上限",
     "gapVLower": "下限 4",
     "showTags": "顯示標籤",
-    "imageCountDate": "{n}張圖片，建立於 {date}"
+    "imageCountDate": "{n}張圖片，建立於 {date}",
+    "cardStyle3CardWidth": "條寬(左右)",
+    "cardStyle3CardWidthHint": "卡片的橫向長度"
   },
   "cm": {
     "title": "標題右鍵/長按選單",

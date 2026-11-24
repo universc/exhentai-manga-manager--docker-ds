@@ -1243,14 +1243,18 @@ export default defineComponent({
         const ch = cw / 0.75
         const gv = firstNonNeg(s.collectionStyle3GapV)
         const gh = firstNonNeg(s.collectionStyle3GapH)
-        const gapV = Math.max(Math.round((gv === undefined ? 8 : gv) * zoom), 4)
+        // 间距不再设 4px 下限:用户要求「取消间距限制」,填 0 就是 0。
+        const gapV = Math.round((gv === undefined ? 8 : gv) * zoom)
         const gapH = Math.round((gh === undefined ? 8 : gh) * zoom)
+        // 「左右长度」= 网格列宽,不乘 zoom(缩放只放大内容,列宽保持用户设置)
+        const cardW = Number(s.collectionStyle3CardWidth) >= 120 ? Math.round(Number(s.collectionStyle3CardWidth)) : 320
         return {
           '--style3-row-h': rowH + 'px',
           '--style3-cover-w': cw + 'px',
           '--style3-cover-h': ch + 'px',
           '--style3-gap-v': gapV + 'px',
           '--style3-gap-h': gapH + 'px',
+          '--style3-card-w': cardW + 'px',
           '--style3-zoom': String(zoom),
           // 下面是通用兜底;条状封面高度直接读 --style3-cover-h,这里只给隐藏的经典元素用
           '--emm-cover-size': cw + 'px',

@@ -1395,7 +1395,9 @@
     "coverWidthCap": "Cap",
     "gapVLower": "Min 4",
     "showTags": "Show Tags",
-    "imageCountDate": "{n} images, added {date}"
+    "imageCountDate": "{n} images, added {date}",
+    "cardStyle3CardWidth": "Row Width",
+    "cardStyle3CardWidthHint": "Horizontal length of the row"
   },
   "cm": {
     "title": "Title menu (right-click / long-press)",

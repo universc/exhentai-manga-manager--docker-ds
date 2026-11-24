@@ -584,20 +584,25 @@ const applyCoverStyle = (setting) => {
     const innerH = (rowBase - 12) * zoom
     const coverW = Math.max(24, Math.floor(Math.min(coverMax * zoom, innerH * 0.75)))
     const coverH = coverW / 0.75
-    const gapV = Math.max(4, Math.round(gapVBase * zoom))
+    // 间距不再设 4px 下限:用户要求「取消间距限制」,填 0 就是 0。
+    const gapV = Math.round(gapVBase * zoom)
     const gapH = Math.round(gapHBase * zoom)
+    // 「左右长度」= 网格列宽:不乘 zoom —— 缩放只放大卡片内容(行高/字号),
+    // 列宽跟着缩放会让「一行几张」来回跳,用户调宽度时也会被缩放二次放大。
+    const cardW = Number(s.style3CardWidth) >= 120 ? Math.round(Number(s.style3CardWidth)) : 320
     root.style.setProperty('--style3-row-h', rowH + 'px')
     root.style.setProperty('--style3-cover-w', coverW + 'px')
     root.style.setProperty('--style3-cover-h', coverH + 'px')
     root.style.setProperty('--style3-gap-v', gapV + 'px')
     root.style.setProperty('--style3-gap-h', gapH + 'px')
+    root.style.setProperty('--style3-card-w', cardW + 'px')
     // 只给三号模板的字号用(标题13 / 元信息11 / chip18 都乘这一个值)
     root.style.setProperty('--style3-zoom', String(zoom))
   }
   // 切换回一/二号时,清掉三号遗留变量,避免热重载/迁移等瞬时不一致路径下被误读。
   // 合集抽屉的三号变量写在容器上(collectionCardStyleVars),不受这里影响。
   if (!style3) {
-    ;['--style3-row-h', '--style3-cover-w', '--style3-cover-h', '--style3-gap-v', '--style3-gap-h', '--style3-zoom']
+    ;['--style3-row-h', '--style3-cover-w', '--style3-cover-h', '--style3-gap-v', '--style3-gap-h', '--style3-card-w', '--style3-zoom']
       .forEach(k => root.style.removeProperty(k))
   }
 }
@@ -1144,8 +1149,9 @@ const defaultUiSettings = () => ({
   cardGapH: 6,
 
   // ---------- 卡片样式:三套样式各自的显隐与尺寸 ----------
-  // 二号样式(封面+标题密集网格):只保留真正存在的两个开关
+  // 二号样式(封面+标题密集网格):隐藏标题 / 隐藏类别(右上角类别标签) / 填充封面
   style2HideTitle: false,
+  style2HideNonTag: false,
   style2FillCover: false,
   // 三号样式(条状列表):5 项尺寸 + 7 项显隐(无收藏按钮、无填充封面)
   style3UiZoom: 100,
@@ -1160,6 +1166,8 @@ const defaultUiSettings = () => ({
   style3HideReadCount: false,
   style3HideReadButton: false,
   style3ShowTags: true,
+  // 三号条状卡的「左右长度」= 网格列宽(px)。用户要求能横向拉长/缩短。
+  style3CardWidth: 320,
 
   // 合集界面卡片:三选一(collectionCardStyle2 旧字段沿用) + 各自一套尺寸/显隐
   collectionCardStyle3: false,
@@ -1170,6 +1178,7 @@ const defaultUiSettings = () => ({
   collectionStyle2CardGapV: 6,
   collectionStyle2CardGapH: 8,
   collectionStyle2HideTitle: false,
+  collectionStyle2HideNonTag: false,
   collectionStyle2FillCover: false,
   // 合集三号(条状;无角标开关 —— 抽屉里是普通书卡,不是合集卡)
   collectionStyle3UiZoom: 100,
@@ -1184,6 +1193,7 @@ const defaultUiSettings = () => ({
   collectionStyle3HideReadCount: false,
   collectionStyle3HideReadButton: false,
   collectionStyle3ShowTags: true,
+  collectionStyle3CardWidth: 320,
 
   themeCustomBg: '',
   themeCustomBgImage: '',

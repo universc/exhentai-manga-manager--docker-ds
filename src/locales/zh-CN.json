@@ -1394,7 +1394,9 @@
     "coverWidthCap": "上限",
     "gapVLower": "下限 4",
     "showTags": "显示标签",
-    "imageCountDate": "{n}张图片，创建于 {date}"
+    "imageCountDate": "{n}张图片，创建于 {date}",
+    "cardStyle3CardWidth": "条宽(左右)",
+    "cardStyle3CardWidthHint": "卡片的横向长度"
   },
   "cm": {
     "title": "标题右键/长按菜单",
