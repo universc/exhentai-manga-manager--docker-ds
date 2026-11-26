@@ -260,6 +260,24 @@ const intOf = (text) => {
 
 const CATEGORY_RE = /(?:^|\s)cate-(\d+)(?:\s|$)/
 
+// 站点卡片上的「合集 / 連載中」标记:
+//   <div class="pic_box cate-1">
+//     <a …><img …></a>
+//     <span class="sr_tags"><span class="sr_ctag">合集</span><span class="sr_stag on">連載中</span></span>
+//   </div>
+// ★ 这两个标记以前完全没解析(只取了 cate-N),于是:
+//   列表卡片不显示「合集」、右键菜单按普通单本给三条下载线路、点了也只是打开单本详情 ——
+//   必须点开详情页(mergeWnacgDetail 写 isSeries)才「变成」合集,前后两副面孔。
+//   站点本身在列表页就把话说清楚了,这里照抄即可。
+const readSeriesTags = (scope) => {
+  if (!scope || !scope.querySelector) return { isSeries: false, seriesStatus: '' }
+  const box = scope.querySelector('.sr_tags') || scope
+  const ctag = (box.querySelector('.sr_ctag')?.textContent || '').trim()
+  const stag = (box.querySelector('.sr_stag')?.textContent || '').trim()
+  // sr_ctag 目前只有「合集」一种值;用包含判断,站点将来加后缀也不会漏
+  return { isSeries: /合集/.test(ctag), seriesStatus: stag }
+}
+
 // 一行 → 一个相册。列表/排行/搜索三种页面的卡片结构相同,排行页多一个名次与收藏数。
 const parseRow = (row, host) => {
   const linkEl = row.querySelector('.pic_box a[href*="photos-index-aid-"]')
@@ -288,7 +306,11 @@ const parseRow = (row, host) => {
   // 站点角标原文(如「單行本／漢化」)。category 只取主分类用于筛选/搜索,
   // fullCategory 保留完整写法给卡片显示 —— 以前卡片直接显示 category,
   // 于是「单行本／汉化」被截成「单行本」(用户报的问题 6)。
-  const badgeFull = (cate == null ? '' : String(WNACG_CATE_BADGE[cate] || '')).trim()
+  let badgeFull = (cate == null ? '' : String(WNACG_CATE_BADGE[cate] || '')).trim()
+  // 合集:站点的完整写法也是「同人誌／漢化／合集」,这里补上尾段 ——
+  // 卡片角标与点开详情后的写法就完全一致了(不会再出现「点开前 / 点开后」两个样)。
+  const series = readSeriesTags(picBox)
+  if (series.isSeries && !/合集/.test(badgeFull)) badgeFull = badgeFull ? badgeFull + '／合集' : '合集'
   return {
     id: 'wnacg:' + aid,
     aid,
@@ -303,6 +325,11 @@ const parseRow = (row, host) => {
     language: cate == null ? '' : wnacgSplitCategory(cate).language,
     // 站点角标原文(详情页/卡片悬停用)
     fullCategory: badgeFull,
+    // 合集(多话作品):列表页就能认出来 —— 卡片角标、右键菜单、点击行为全按它走,
+    // 不用再等点开详情页才「变成」合集
+    isSeries: series.isSeries,
+    // 連載中 / 完結(站点原话,拿来当角标的悬停说明)
+    seriesStatus: series.seriesStatus,
     rank,
     favCount: favMatch ? Number(favMatch[1].replace(/,/g, '')) : null
   }
@@ -590,7 +617,9 @@ export const parseWnacgShelf = (html, host = WNACG_DEFAULT_HOST) => {
         return dm ? absUrl('/users-fav_del-id-' + dm[1] + '.html', host) : ''
       })(),
       // 书架里的条目:卡片上的收藏星标直接点亮
-      inShelf: true
+      inShelf: true,
+      // 书架行(.asTB)多数没有 .sr_tags,有就照收(和列表页同一套判据)
+      ...readSeriesTags(row)
     }
   }
 
@@ -989,6 +1018,10 @@ export const wnacgToBook = (item) => {
     language: item.language || '',
     // 完整分类(站点角标原文):卡片显示用;详情页会再合并一次
     fullCategory: item.fullCategory || item.category || '',
+    // 合集(多话作品):列表页 .sr_ctag 已经标了,直接带进书对象 ——
+    // 卡片角标 / 右键菜单 / 点封面进合集抽屉都靠它,不必等详情页
+    isSeries: !!item.isSeries,
+    seriesStatus: item.seriesStatus || '',
     coverPath: wnacgImageSrc(item.cover, item.url),
     pageCount: pages,
     filecount: pages,
@@ -1048,7 +1081,11 @@ export const mergeWnacgDetail = (book, detail) => {
     // 站点完整分类(同人誌／漢化／合集):卡片要在「同人志」右边单独标一个「合集」
     fullCategory: detail.category || book.fullCategory || '',
     // 是不是合集(多话作品):有章节列表 / 分类里带「合集」
-    isSeries: !!(detail.series && detail.series.isSeries) || wnacgIsSeriesCategory(detail.category || book.fullCategory || ''),
+    // ★ 保留列表页就已经认出来的合集标记:详情页偶尔解析失败(改版/风控页)时,
+    //   不至于把「明明是合集」的书又降级成单本(右键菜单会跟着变回去)。
+    isSeries: !!(detail.series && detail.series.isSeries) ||
+      wnacgIsSeriesCategory(detail.category || book.fullCategory || '') ||
+      !!book.isSeries,
     // ★ 封面不要重新生成:卡片上已经加载过的封面,详情页必须沿用同一个 URL。
     //   以前是 wnacgImageSrc(detail.cover, book.url) —— 详情页给的图床地址
     //   (t3/t4 节点、缩略图 vs 大图)常常和列表页不同,拼出来的代理 URL 也就不同,

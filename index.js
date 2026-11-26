@@ -7826,7 +7826,11 @@ const runWnacgJob = (rec, opts = {}) => {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ file_key: fk[1], file_name: (fn && fn[1]) || fileName }),
-              agent: proxy ? ehLogin.agentFor(proxy) : undefined
+              agent: proxy ? ehLogin.agentFor(proxy) : undefined,
+              // ★ 必须带超时:node-fetch 默认永不超时。这条请求挂住的话,
+              //   作业永远不结束 → 全局 zip 闸门(wancgZipSlot)永远不释放 →
+              //   后面排队的下载全部永久等待,只能重启容器。120s = 空闲超时,不是总时长。
+              timeout: 120000
             })
             const data = await res.json()
             if (!data || !data.url) return fail('worker: ' + JSON.stringify(data).slice(0, 140))
@@ -7870,7 +7874,11 @@ const runWnacgJob = (rec, opts = {}) => {
         if (startBytes > 0) reqHeaders.Range = 'bytes=' + startBytes + '-'
         let res2 = await fetch(dlUrl, {
           agent: proxy ? ehLogin.agentFor(proxy) : undefined,
-          headers: reqHeaders
+          headers: reqHeaders,
+          // ★ 同上:node-fetch 默认永不超时。zip 下到一半连接半死(不 FIN、不再给数据)时,
+          //   没有这个超时作业会一直挂着,把全局 zip 闸门占死,后面的任务永远排不到。
+          //   120s 是**空闲**超时:只要还在出数据就不会触发,正常慢速下载不受影响。
+          timeout: 120000
         })
         let resumed = false
         if (startBytes > 0) {
@@ -7885,7 +7893,8 @@ const runWnacgJob = (rec, opts = {}) => {
             try { fs.rmSync(filePath, { force: true }) } catch (e) { /* 忽略 */ }
             res2 = await fetch(dlUrl, {
               agent: proxy ? ehLogin.agentFor(proxy) : undefined,
-              headers: { Referer: base + '/' }
+              headers: { Referer: base + '/' },
+              timeout: 120000
             })
           }
         }
@@ -8091,42 +8100,60 @@ ipcMain.handle('wnacg-download', async (event, arg) => {
     //   · 从未出现过的新标签      → 写进「标签」这个类别
     // 归类结果同时登记成「全局标签」,标签设置里立刻能看到。
     // 这一步失败不影响下载本身(拿不到就保留前端带上来的那份)。
-    try {
-      const detail = await ehLogin.request(base + '/photos-index-aid-' + aid + '.html', {
-        proxy, cookie, referer: base + '/', raw: true, timeout: 20000, retries: 1
-      }).then(r2 => parseWnacgDetailBrief(String((r2 && r2.buffer) || ''))).catch(() => null)
-      if (detail && detail.ok) {
-        if (detail.title && !String((book && book.title) || '').trim()) rec.title = WNACG_DL_SANITIZE(detail.title)
-        // 类别 + 语言:站点原文已按规则拆好(见 wnacgSplitCategoryText)
-        if (detail.category && !rec.category) rec.category = detail.category
-        if (detail.language && !rec.language) rec.language = detail.language
-        if (detail.pageCount && !rec.total) rec.total = detail.pageCount
-        if (detail.tags.length) {
-          const index = await wnacgBuildTagIndex()
-          const classified = wnacgClassifyTags({ tag: detail.tags }, index)
-          if (Object.keys(classified).length) {
-            rec.tags = classified
-            registerGlobalTags(classified)
+    //
+    // ★ 为什么要包成一个函数:网页版必须「点完立刻返回」(见下面的 WEB_MODE 分支)。
+    //   抓详情页(20s×2 次)+ 跑整本作业原本都在这一个 HTTP 处理函数里同步等,
+    //   于是一次下载就占住浏览器一条连接好几分钟;浏览器对同一站点只有 6 条连接,
+    //   连着点几个下载就把整个界面堵死(按钮点不动、新开页面一直加载)。
+    const enrichAndRun = async () => {
+      try {
+        const detail = await ehLogin.request(base + '/photos-index-aid-' + aid + '.html', {
+          proxy, cookie, referer: base + '/', raw: true, timeout: 20000, retries: 1
+        }).then(r2 => parseWnacgDetailBrief(String((r2 && r2.buffer) || ''))).catch(() => null)
+        if (detail && detail.ok) {
+          if (detail.title && !String((book && book.title) || '').trim()) rec.title = WNACG_DL_SANITIZE(detail.title)
+          // 类别 + 语言:站点原文已按规则拆好(见 wnacgSplitCategoryText)
+          if (detail.category && !rec.category) rec.category = detail.category
+          if (detail.language && !rec.language) rec.language = detail.language
+          if (detail.pageCount && !rec.total) rec.total = detail.pageCount
+          if (detail.tags.length) {
+            const index = await wnacgBuildTagIndex()
+            const classified = wnacgClassifyTags({ tag: detail.tags }, index)
+            if (Object.keys(classified).length) {
+              rec.tags = classified
+              registerGlobalTags(classified)
+            }
           }
-        }
-        // ★ 语言标签:分类拆分出来的语言要以「语言」类别写进标签,
-        //   这样下载记录和本地书库都能按语言筛选(用户要求:汉化→语言)。
-        if (detail.language) {
-          const langLabel = ({ chinese: 'chinese', japanese: 'japanese', english: 'english', korean: 'korean' })[detail.language] || ''
-          if (langLabel) {
-            const merged = { ...(rec.tags || {}) }
-            const key = '语言'
-            const arr = Array.isArray(merged[key]) ? merged[key].slice() : []
-            if (!arr.includes(langLabel)) arr.push(langLabel)
-            merged[key] = arr
-            rec.tags = merged
+          // ★ 语言标签:分类拆分出来的语言要以「语言」类别写进标签,
+          //   这样下载记录和本地书库都能按语言筛选(用户要求:汉化→语言)。
+          if (detail.language) {
+            const langLabel = ({ chinese: 'chinese', japanese: 'japanese', english: 'english', korean: 'korean' })[detail.language] || ''
+            if (langLabel) {
+              const merged = { ...(rec.tags || {}) }
+              const key = '语言'
+              const arr = Array.isArray(merged[key]) ? merged[key].slice() : []
+              if (!arr.includes(langLabel)) arr.push(langLabel)
+              merged[key] = arr
+              rec.tags = merged
+            }
           }
+          emitWnacgTask(rec)
         }
-        emitWnacgTask(rec)
-      }
-    } catch (e) { /* 标签拿到多少算多少,绝不影响下载 */ }
+      } catch (e) { /* 标签拿到多少算多少,绝不影响下载 */ }
+      return runWnacgJob(rec)
+    }
 
-    return await runWnacgJob(rec)
+    // ★ 网页版:建好任务就立刻返回,进度/成败全部走 SSE 广播(eh-download-progress)。
+    //   以前这里是 `return await runWnacgJob(rec)` —— 要等整本 zip 下完才 resolve,
+    //   浏览器那条 POST 连接就一直举着不还;6 条同源连接被几个下载占满之后,
+    //   点按钮发的请求根本出不去、新开标签页连 index.html 都拿不到,
+    //   表现就是「界面卡死、一直加载」。现在只回一句「已入队」,连接几毫秒就还回去。
+    //   桌面版维持原行为(等整本跑完再返回),不影响既有调用方。
+    if (WEB_MODE) {
+      enrichAndRun().catch(() => {})
+      return { ok: true, queued: true, task: publicWnacgTask(rec) }
+    }
+    return await enrichAndRun()
   } catch (e) {
     if (rec) {
       rec.status = 'failed'
