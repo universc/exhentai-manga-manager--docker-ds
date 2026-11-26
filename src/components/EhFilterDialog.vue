@@ -20,7 +20,7 @@
           @pointerdown="onCatDown(c.key)"
           @pointerup="onCatUp"
           @pointerleave="onCatUp"
-        >{{ galleryCategoryName(c.name, $t) }}</div>
+        >{{ c.label || galleryCategoryName(c.name, $t) }}</div>
       </div>
 
       <div class="ehf-field">
@@ -284,16 +284,23 @@ const removeKeywordTerm = (idx) => {
 //   只有**本地库**筛选才改成「由已有标签决定」—— 这是两个完全不同的语义,
 //   混在一起会把 EH 筛选污染成「AI图集」「绅士漫画分类」这种站点不认的值。
 const categories = computed(() => {
-  // 在线:永远用 EH 常量
+  // 在线:仍是 EH 10 类 + 模板兜底的中文译名(R8,行为零改动)
   if (props.online) return EH_FILTER_CATEGORIES
-  const used = valuesOfTagCat('category')
+  const used = appStore.localCategoryValues || []
+  // 空库/标签未加载:回退 EH 10 类(R7),同样由模板显示中文译名
   if (!used.length) return EH_FILTER_CATEGORIES
   const byName = new Map(EH_FILTER_CATEGORIES.map(c => [c.name.toLowerCase(), c]))
+  const seen = new Set()
   const out = []
   for (const name of used) {
     const hit = byName.get(String(name).toLowerCase())
-    // 已知类别沿用 EH 的 key/bit(过滤逻辑依赖它们);未知类别用名字本身当 key
-    out.push(hit || { key: name, name, bit: 0 })
+    // 已知 EH 类别沿用 EH key(normalize/ehFilterMatch 依赖);label 用原值,不再翻译,
+    // 否则 Doujinshi 会和库里真实的「同人志」撞名(用户报障)。
+    const key = hit ? hit.key : name
+    const dedupeKey = String(key).toLowerCase()
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
+    out.push({ key, name, bit: hit ? hit.bit : 0, label: name })
   }
   return out
 })
@@ -419,7 +426,7 @@ const langLabel = (l) => {
 const toggleCat = (key) => { model[key] = !model[key] }
 // 长按 / 右键 = 只看这一类(JHenTai 长按分类格就是这个动作)
 const onlyCat = (key) => {
-  for (const c of categories) model[c.key] = (c.key === key)
+  for (const c of categories.value) model[c.key] = (c.key === key)
 }
 let catTimer = null
 const onCatDown = (key) => {
@@ -429,14 +436,14 @@ const onCatDown = (key) => {
 const onCatUp = () => { clearTimeout(catTimer) }
 
 const resetAll = () => {
-  const base = defaultEhFilter()
-  // 重置**全部**筛选条件(关键词/语言/页数/评分/分类格/两个开关/黑名单开关都在 base 里),
-  // 但保留黑名单标签内容(用户明确要求:重置不再重置黑名单内容)。
-  for (const k of Object.keys(base)) {
-    if (k === 'blacklist') continue
-    model[k] = base[k]
+  const base = defaultEhFilter(dynamicCatKeys.value)
+  // 先补齐当前类别集合,再遍历 model 的全部键 —— 动态类别(AI图集/单行本/…)也要恢复勾选,
+  // 以前只遍历 defaultEhFilter() 的键,动态类别会停在未选中。
+  ensureDynamicCats()
+  for (const k of Object.keys(model)) {
+    if (k === 'blacklist') continue                 // 黑名单内容保留,只把开关回默认
+    model[k] = Object.prototype.hasOwnProperty.call(base, k) ? base[k] : true
   }
-  // 星星是独立 ref,不跟着 minimumRating 自动回落时必须显式清零,否则还亮着
   ratingStars.value = 0
   newBlacklistTerm.value = ''
 }

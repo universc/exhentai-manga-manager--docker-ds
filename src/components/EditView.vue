@@ -245,7 +245,7 @@
         <div class="manage-sub-title">{{$t('m.changeCategory')}}</div>
         <div class="manage-inline-block" ref="categorySectionRef">
           <el-select v-model="categorySelected" :placeholder="$t('m.category')" clearable style="width: 100%">
-            <el-option v-for="cat in categoryOption" :value="cat" :key="cat" :label="galleryCategoryName(cat, $t)" />
+            <el-option v-for="cat in categoryOptions" :value="cat" :key="cat" :label="cat" />
           </el-select>
           <div class="manage-inline-actions">
             <el-button size="small" type="primary" :disabled="!selectedBookObjects.length" @click="applyCategory">{{ $t('m.apply') }}</el-button>
@@ -324,12 +324,13 @@ import TagSettingsSection from './TagSettingsSection.vue'
 
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '../pinia.js'
-import { galleryCategoryName, bookImgSrc, categoryDisplayName, resolveCatKey, tagColorOf, retryBookCover, collectionMemberKey } from '../utils.js'
+import { bookImgSrc, categoryDisplayName, resolveCatKey, tagColorOf, retryBookCover, collectionMemberKey } from '../utils.js'
+import { EH_FILTER_CATEGORIES } from '../ehFilter.js'
 const appStore = useAppStore()
 const {
   cat2letter,
   statusOption,
-  categoryOption,
+  localCategoryValues,
   setting,
   resolvedTranslation,
   bookList,
@@ -1085,6 +1086,12 @@ const removeSelectedFromCollection = () => {
 
 const groupTagSelected = ref([])
 const categorySelected = ref(null)
+// 「更改类别」下拉:库中实际类别原值(不翻译);空库回退 EH 10 项。
+// value 就是原值,applyFieldToSelection 会原样写进 book.category。
+const categoryOptions = computed(() => {
+  const vals = localCategoryValues.value || []
+  return vals.length ? vals : EH_FILTER_CATEGORIES.map(c => c.name)
+})
 const statusSelected = ref('tagged')
 
 // group edit tags viewer

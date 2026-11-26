@@ -230,7 +230,7 @@
             </div>
             <div class="edit-line">
               <el-select v-model="bookDetail.category" :placeholder="$t('m.category')" @change="saveBook(bookDetail)" clearable>
-                <el-option v-for="cat in categoryOption" :value="cat" :key="cat" :label="galleryCategoryName(cat, $t)" />
+                <el-option v-for="cat in categoryOptions" :value="cat" :key="cat" :label="cat" />
               </el-select>
             </div>
             <!-- 标签:与原选择框一致(框内可打字筛选/新建),下拉里标签一排一排排列 -->
@@ -567,7 +567,7 @@ import { isContextMenuItemEnabled, sortContextMenuItems, ensureBookCover, retryB
 import  { insertLocalReadRecord, toAssetUrl } from '../utils.js'
 import { parseGalleryDetail, mergeDetailIntoBook, ehImageSrc, fetchGalleryThumbsPage } from '../ehOnline.js'
 import { isWnacgUrl, parseWnacgDetail, mergeWnacgDetail, collectWnacgThumbs, wnacgHtmlLooksBroken, wnacgIsDeletedPage, parseWnacgFavDialog, wnacgAidOf, parseWnacgComments, parseWnacgChapterCover, wnacgImageSrc } from '../wnacgOnline.js'
-import { addTagToBlacklist, setBlacklistEnabled } from '../ehFilter.js'
+import { addTagToBlacklist, setBlacklistEnabled, EH_FILTER_CATEGORIES } from '../ehFilter.js'
 
 // 合集预览图的排序口径:由 App 把「合集界面设定的排序」传进来,
 // 保证详情页成员网格的顺序与合集抽屉完全一致(名称走自然序,见 utils.compareCollectionBooks)。
@@ -580,11 +580,17 @@ const appStore = useAppStore()
 const {
   setting, bookDetail, resolvedTranslation,
   bookList, displayBookList, collectionList, openCollectionBookList,
-  statusOption, categoryOption,
+  statusOption, categoryOption, localCategoryValues,
   pathSep,
 } = storeToRefs(appStore)
 // 预览图页码角标:与阅读器「隐藏页码」同一个开关(设置 → 阅读器 → 隐藏页码)
 const hidePageNumber = computed(() => !!(setting.value && setting.value.hidePageNumber))
+
+// 详情页「编辑信息 → 类别」下拉:库中实际类别原值(不翻译),与管理页同源。
+const categoryOptions = computed(() => {
+  const vals = localCategoryValues.value || []
+  return vals.length ? vals : EH_FILTER_CATEGORIES.map(c => c.name)
+})
 
 // ---------- 预览格尺寸(--preview-cell) ----------
 // 需求:预览图太小。对比站 wnacg 每格 160x202、e-hentai 每格高 150 —— 本项目以前死钉 118px

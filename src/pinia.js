@@ -151,6 +151,23 @@ export const useAppStore = defineStore('appStore', {
         }
       })
     },
+    // 本地库「实际类别」:书 category 字段的原值(tagListRaw 的 category 组)。
+    // ★ 必须用原值:category 是写进数据库的值,翻译只用于展示;
+    //   把 Doujinshi 译成「同人志」会和库里真实的「同人志」撞名(用户报障)。
+    localCategoryValues () {
+      const out = []
+      const seen = new Set()
+      for (const item of this.tagListRaw) {
+        if (!item || String(item.cat || '').toLowerCase() !== 'category') continue
+        const value = String(item.tag || '').trim()
+        if (!value) continue                     // 空值不产生类别项
+        const dedupeKey = value.toLowerCase()     // 大小写去重,保留首次出现的写法
+        if (seen.has(dedupeKey)) continue
+        seen.add(dedupeKey)
+        out.push(value)
+      }
+      return out
+    },
     tagListForSelect (state) {
       if (state.setting.showTranslation) {
         return state.tagListRaw.map(({letter, cat, tag}) => {
